@@ -18,7 +18,7 @@ designs each attack half of this:
   tool output, structure-aware compressors, command guards, a session budget governor, and — its
   essence — a **contextual Thompson-sampling bandit with warm priors, regret attribution and
   cross-project posteriors** that learns how aggressively to trim per situation.
-- **Reference B — TokenEconomizer** (Microsoft Research / UC Berkeley, MIT, arXiv 2610.22732): a
+- **Reference B — TokenEconomizer** (MIT, arXiv 2610.22732): a
   cross-session optimizer — learned repository facts ("micro-skills"), pruning of never-used tools,
   and failure-loop intervention.
 
