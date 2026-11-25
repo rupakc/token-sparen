@@ -1,0 +1,244 @@
+lib/util/str0.cpp:30:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n0 < size) {
+           ~~ ^ ~~~~
+lib/util/str1.cpp:31:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n1 < size) {
+           ~~ ^ ~~~~
+lib/util/str2.cpp:32:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n2 < size) {
+           ~~ ^ ~~~~
+lib/util/str3.cpp:33:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n3 < size) {
+           ~~ ^ ~~~~
+lib/util/str4.cpp:34:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n4 < size) {
+           ~~ ^ ~~~~
+lib/util/str5.cpp:35:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n5 < size) {
+           ~~ ^ ~~~~
+lib/util/str6.cpp:36:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n6 < size) {
+           ~~ ^ ~~~~
+lib/util/str7.cpp:37:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n7 < size) {
+           ~~ ^ ~~~~
+lib/util/str8.cpp:38:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n8 < size) {
+           ~~ ^ ~~~~
+lib/util/str9.cpp:39:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n9 < size) {
+           ~~ ^ ~~~~
+lib/util/str10.cpp:40:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n10 < size) {
+           ~~ ^ ~~~~
+lib/util/str11.cpp:41:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n11 < size) {
+           ~~ ^ ~~~~
+lib/util/str0.cpp:42:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n12 < size) {
+           ~~ ^ ~~~~
+lib/util/str1.cpp:43:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n13 < size) {
+           ~~ ^ ~~~~
+lib/util/str2.cpp:44:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n14 < size) {
+           ~~ ^ ~~~~
+lib/util/str3.cpp:45:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n15 < size) {
+           ~~ ^ ~~~~
+lib/util/str4.cpp:46:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n16 < size) {
+           ~~ ^ ~~~~
+lib/util/str5.cpp:47:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n17 < size) {
+           ~~ ^ ~~~~
+lib/util/str6.cpp:48:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n18 < size) {
+           ~~ ^ ~~~~
+lib/util/str7.cpp:49:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n19 < size) {
+           ~~ ^ ~~~~
+lib/util/str8.cpp:50:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n20 < size) {
+           ~~ ^ ~~~~
+lib/util/str9.cpp:51:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n21 < size) {
+           ~~ ^ ~~~~
+lib/util/str10.cpp:52:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n22 < size) {
+           ~~ ^ ~~~~
+lib/util/str11.cpp:53:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n23 < size) {
+           ~~ ^ ~~~~
+lib/util/str0.cpp:54:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n24 < size) {
+           ~~ ^ ~~~~
+lib/util/str1.cpp:55:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n25 < size) {
+           ~~ ^ ~~~~
+lib/util/str2.cpp:56:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n26 < size) {
+           ~~ ^ ~~~~
+lib/util/str3.cpp:57:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n27 < size) {
+           ~~ ^ ~~~~
+lib/util/str4.cpp:58:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n28 < size) {
+           ~~ ^ ~~~~
+lib/util/str5.cpp:59:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n29 < size) {
+           ~~ ^ ~~~~
+lib/util/str6.cpp:60:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n30 < size) {
+           ~~ ^ ~~~~
+lib/util/str7.cpp:61:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n31 < size) {
+           ~~ ^ ~~~~
+lib/util/str8.cpp:62:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n32 < size) {
+           ~~ ^ ~~~~
+lib/util/str9.cpp:63:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n33 < size) {
+           ~~ ^ ~~~~
+lib/util/str10.cpp:64:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n34 < size) {
+           ~~ ^ ~~~~
+lib/util/str11.cpp:65:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n35 < size) {
+           ~~ ^ ~~~~
+lib/util/str0.cpp:66:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n36 < size) {
+           ~~ ^ ~~~~
+lib/util/str1.cpp:67:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n37 < size) {
+           ~~ ^ ~~~~
+lib/util/str2.cpp:68:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n38 < size) {
+           ~~ ^ ~~~~
+lib/util/str3.cpp:69:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n39 < size) {
+           ~~ ^ ~~~~
+lib/util/str5.cpp:77:3: error: use of undeclared identifier 'normalise_key'
+  normalise_key(buf);
+  ^
+lib/util/str4.cpp:70:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n40 < size) {
+           ~~ ^ ~~~~
+lib/util/str5.cpp:71:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n41 < size) {
+           ~~ ^ ~~~~
+lib/util/str6.cpp:72:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n42 < size) {
+           ~~ ^ ~~~~
+lib/util/str7.cpp:73:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n43 < size) {
+           ~~ ^ ~~~~
+lib/util/str8.cpp:74:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n44 < size) {
+           ~~ ^ ~~~~
+lib/util/str9.cpp:75:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n45 < size) {
+           ~~ ^ ~~~~
+lib/util/str10.cpp:76:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n46 < size) {
+           ~~ ^ ~~~~
+lib/util/str11.cpp:77:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n47 < size) {
+           ~~ ^ ~~~~
+lib/util/str0.cpp:78:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n48 < size) {
+           ~~ ^ ~~~~
+lib/util/str1.cpp:79:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n49 < size) {
+           ~~ ^ ~~~~
+lib/util/str2.cpp:80:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n50 < size) {
+           ~~ ^ ~~~~
+lib/util/str3.cpp:81:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n51 < size) {
+           ~~ ^ ~~~~
+lib/util/str4.cpp:82:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n52 < size) {
+           ~~ ^ ~~~~
+lib/util/str5.cpp:83:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n53 < size) {
+           ~~ ^ ~~~~
+lib/util/str6.cpp:84:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n54 < size) {
+           ~~ ^ ~~~~
+lib/util/str7.cpp:85:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n55 < size) {
+           ~~ ^ ~~~~
+lib/util/str8.cpp:86:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n56 < size) {
+           ~~ ^ ~~~~
+lib/util/str9.cpp:87:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n57 < size) {
+           ~~ ^ ~~~~
+lib/util/str10.cpp:88:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n58 < size) {
+           ~~ ^ ~~~~
+lib/util/str11.cpp:89:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n59 < size) {
+           ~~ ^ ~~~~
+lib/util/str0.cpp:90:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n60 < size) {
+           ~~ ^ ~~~~
+lib/util/str1.cpp:91:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n61 < size) {
+           ~~ ^ ~~~~
+lib/util/str2.cpp:92:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n62 < size) {
+           ~~ ^ ~~~~
+lib/util/str3.cpp:93:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n63 < size) {
+           ~~ ^ ~~~~
+lib/util/str4.cpp:94:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n64 < size) {
+           ~~ ^ ~~~~
+lib/util/str5.cpp:95:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n65 < size) {
+           ~~ ^ ~~~~
+lib/util/str6.cpp:96:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n66 < size) {
+           ~~ ^ ~~~~
+lib/util/str7.cpp:97:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n67 < size) {
+           ~~ ^ ~~~~
+lib/util/str8.cpp:98:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n68 < size) {
+           ~~ ^ ~~~~
+lib/util/str9.cpp:99:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n69 < size) {
+           ~~ ^ ~~~~
+lib/util/str10.cpp:100:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n70 < size) {
+           ~~ ^ ~~~~
+lib/util/str11.cpp:101:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n71 < size) {
+           ~~ ^ ~~~~
+lib/util/str0.cpp:102:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n72 < size) {
+           ~~ ^ ~~~~
+lib/util/str1.cpp:103:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n73 < size) {
+           ~~ ^ ~~~~
+lib/util/str2.cpp:104:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n74 < size) {
+           ~~ ^ ~~~~
+lib/util/str3.cpp:105:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n75 < size) {
+           ~~ ^ ~~~~
+lib/util/str4.cpp:106:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n76 < size) {
+           ~~ ^ ~~~~
+lib/util/str5.cpp:107:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n77 < size) {
+           ~~ ^ ~~~~
+lib/util/str6.cpp:108:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n78 < size) {
+           ~~ ^ ~~~~
+lib/util/str7.cpp:109:11: warning: comparison of integers of different signs [-Wsign-compare]
+    if (n79 < size) {
+           ~~ ^ ~~~~
+1 error and 80 warnings generated.

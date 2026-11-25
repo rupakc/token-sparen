@@ -1,0 +1,220 @@
+src/main/java/com/acme/Legacy0.java:20: warning: [deprecation] oldCall0() in Helper has been deprecated
+        Helper.oldCall0();
+              ^
+src/main/java/com/acme/Legacy1.java:21: warning: [deprecation] oldCall1() in Helper has been deprecated
+        Helper.oldCall1();
+              ^
+src/main/java/com/acme/Legacy2.java:22: warning: [deprecation] oldCall2() in Helper has been deprecated
+        Helper.oldCall2();
+              ^
+src/main/java/com/acme/Legacy3.java:23: warning: [deprecation] oldCall3() in Helper has been deprecated
+        Helper.oldCall3();
+              ^
+src/main/java/com/acme/Legacy4.java:24: warning: [deprecation] oldCall4() in Helper has been deprecated
+        Helper.oldCall4();
+              ^
+src/main/java/com/acme/Legacy5.java:25: warning: [deprecation] oldCall5() in Helper has been deprecated
+        Helper.oldCall5();
+              ^
+src/main/java/com/acme/Legacy6.java:26: warning: [deprecation] oldCall6() in Helper has been deprecated
+        Helper.oldCall6();
+              ^
+src/main/java/com/acme/Legacy7.java:27: warning: [deprecation] oldCall7() in Helper has been deprecated
+        Helper.oldCall7();
+              ^
+src/main/java/com/acme/Legacy8.java:28: warning: [deprecation] oldCall8() in Helper has been deprecated
+        Helper.oldCall8();
+              ^
+src/main/java/com/acme/Legacy9.java:29: warning: [deprecation] oldCall9() in Helper has been deprecated
+        Helper.oldCall9();
+              ^
+src/main/java/com/acme/Legacy10.java:30: warning: [deprecation] oldCall10() in Helper has been deprecated
+        Helper.oldCall10();
+              ^
+src/main/java/com/acme/Legacy11.java:31: warning: [deprecation] oldCall11() in Helper has been deprecated
+        Helper.oldCall11();
+              ^
+src/main/java/com/acme/Legacy12.java:32: warning: [deprecation] oldCall12() in Helper has been deprecated
+        Helper.oldCall12();
+              ^
+src/main/java/com/acme/Legacy13.java:33: warning: [deprecation] oldCall13() in Helper has been deprecated
+        Helper.oldCall13();
+              ^
+src/main/java/com/acme/Legacy14.java:34: warning: [deprecation] oldCall14() in Helper has been deprecated
+        Helper.oldCall14();
+              ^
+src/main/java/com/acme/Legacy15.java:35: warning: [deprecation] oldCall15() in Helper has been deprecated
+        Helper.oldCall15();
+              ^
+src/main/java/com/acme/Legacy16.java:36: warning: [deprecation] oldCall16() in Helper has been deprecated
+        Helper.oldCall16();
+              ^
+src/main/java/com/acme/Legacy17.java:37: warning: [deprecation] oldCall17() in Helper has been deprecated
+        Helper.oldCall17();
+              ^
+src/main/java/com/acme/Legacy18.java:38: warning: [deprecation] oldCall18() in Helper has been deprecated
+        Helper.oldCall18();
+              ^
+src/main/java/com/acme/Legacy19.java:39: warning: [deprecation] oldCall19() in Helper has been deprecated
+        Helper.oldCall19();
+              ^
+src/main/java/com/acme/Legacy20.java:40: warning: [deprecation] oldCall20() in Helper has been deprecated
+        Helper.oldCall20();
+              ^
+src/main/java/com/acme/Legacy21.java:41: warning: [deprecation] oldCall21() in Helper has been deprecated
+        Helper.oldCall21();
+              ^
+src/main/java/com/acme/Legacy22.java:42: warning: [deprecation] oldCall22() in Helper has been deprecated
+        Helper.oldCall22();
+              ^
+src/main/java/com/acme/Legacy23.java:43: warning: [deprecation] oldCall23() in Helper has been deprecated
+        Helper.oldCall23();
+              ^
+src/main/java/com/acme/Legacy24.java:44: warning: [deprecation] oldCall24() in Helper has been deprecated
+        Helper.oldCall24();
+              ^
+src/main/java/com/acme/Legacy25.java:45: warning: [deprecation] oldCall25() in Helper has been deprecated
+        Helper.oldCall25();
+              ^
+src/main/java/com/acme/Legacy26.java:46: warning: [deprecation] oldCall26() in Helper has been deprecated
+        Helper.oldCall26();
+              ^
+src/main/java/com/acme/Legacy27.java:47: warning: [deprecation] oldCall27() in Helper has been deprecated
+        Helper.oldCall27();
+              ^
+src/main/java/com/acme/Legacy28.java:48: warning: [deprecation] oldCall28() in Helper has been deprecated
+        Helper.oldCall28();
+              ^
+src/main/java/com/acme/Legacy29.java:49: warning: [deprecation] oldCall29() in Helper has been deprecated
+        Helper.oldCall29();
+              ^
+src/main/java/com/acme/Legacy30.java:50: warning: [deprecation] oldCall30() in Helper has been deprecated
+        Helper.oldCall30();
+              ^
+src/main/java/com/acme/Legacy31.java:51: warning: [deprecation] oldCall31() in Helper has been deprecated
+        Helper.oldCall31();
+              ^
+src/main/java/com/acme/Legacy32.java:52: warning: [deprecation] oldCall32() in Helper has been deprecated
+        Helper.oldCall32();
+              ^
+src/main/java/com/acme/Legacy33.java:53: warning: [deprecation] oldCall33() in Helper has been deprecated
+        Helper.oldCall33();
+              ^
+src/main/java/com/acme/Legacy34.java:54: warning: [deprecation] oldCall34() in Helper has been deprecated
+        Helper.oldCall34();
+              ^
+src/main/java/com/acme/Legacy35.java:55: warning: [deprecation] oldCall35() in Helper has been deprecated
+        Helper.oldCall35();
+              ^
+src/main/java/com/acme/Legacy36.java:56: warning: [deprecation] oldCall36() in Helper has been deprecated
+        Helper.oldCall36();
+              ^
+src/main/java/com/acme/Legacy37.java:57: warning: [deprecation] oldCall37() in Helper has been deprecated
+        Helper.oldCall37();
+              ^
+src/main/java/com/acme/Legacy38.java:58: warning: [deprecation] oldCall38() in Helper has been deprecated
+        Helper.oldCall38();
+              ^
+src/main/java/com/acme/Legacy39.java:59: warning: [deprecation] oldCall39() in Helper has been deprecated
+        Helper.oldCall39();
+              ^
+src/main/java/com/acme/Legacy40.java:60: warning: [deprecation] oldCall40() in Helper has been deprecated
+        Helper.oldCall40();
+              ^
+src/main/java/com/acme/Legacy41.java:61: warning: [deprecation] oldCall41() in Helper has been deprecated
+        Helper.oldCall41();
+              ^
+src/main/java/com/acme/Legacy42.java:62: warning: [deprecation] oldCall42() in Helper has been deprecated
+        Helper.oldCall42();
+              ^
+src/main/java/com/acme/Legacy43.java:63: warning: [deprecation] oldCall43() in Helper has been deprecated
+        Helper.oldCall43();
+              ^
+src/main/java/com/acme/Legacy44.java:64: warning: [deprecation] oldCall44() in Helper has been deprecated
+        Helper.oldCall44();
+              ^
+src/main/java/com/acme/Legacy45.java:65: warning: [deprecation] oldCall45() in Helper has been deprecated
+        Helper.oldCall45();
+              ^
+src/main/java/com/acme/Legacy46.java:66: warning: [deprecation] oldCall46() in Helper has been deprecated
+        Helper.oldCall46();
+              ^
+src/main/java/com/acme/Legacy47.java:67: warning: [deprecation] oldCall47() in Helper has been deprecated
+        Helper.oldCall47();
+              ^
+src/main/java/com/acme/Legacy48.java:68: warning: [deprecation] oldCall48() in Helper has been deprecated
+        Helper.oldCall48();
+              ^
+src/main/java/com/acme/Legacy49.java:69: warning: [deprecation] oldCall49() in Helper has been deprecated
+        Helper.oldCall49();
+              ^
+src/main/java/com/acme/Legacy50.java:70: warning: [deprecation] oldCall50() in Helper has been deprecated
+        Helper.oldCall50();
+              ^
+src/main/java/com/acme/Legacy51.java:71: warning: [deprecation] oldCall51() in Helper has been deprecated
+        Helper.oldCall51();
+              ^
+src/main/java/com/acme/Legacy52.java:72: warning: [deprecation] oldCall52() in Helper has been deprecated
+        Helper.oldCall52();
+              ^
+src/main/java/com/acme/Legacy53.java:73: warning: [deprecation] oldCall53() in Helper has been deprecated
+        Helper.oldCall53();
+              ^
+src/main/java/com/acme/Legacy54.java:74: warning: [deprecation] oldCall54() in Helper has been deprecated
+        Helper.oldCall54();
+              ^
+src/main/java/com/acme/Legacy55.java:75: warning: [deprecation] oldCall55() in Helper has been deprecated
+        Helper.oldCall55();
+              ^
+src/main/java/com/acme/Legacy56.java:76: warning: [deprecation] oldCall56() in Helper has been deprecated
+        Helper.oldCall56();
+              ^
+src/main/java/com/acme/Legacy57.java:77: warning: [deprecation] oldCall57() in Helper has been deprecated
+        Helper.oldCall57();
+              ^
+src/main/java/com/acme/Legacy58.java:78: warning: [deprecation] oldCall58() in Helper has been deprecated
+        Helper.oldCall58();
+              ^
+src/main/java/com/acme/Legacy59.java:79: warning: [deprecation] oldCall59() in Helper has been deprecated
+        Helper.oldCall59();
+              ^
+src/main/java/com/acme/Legacy60.java:80: warning: [deprecation] oldCall60() in Helper has been deprecated
+        Helper.oldCall60();
+              ^
+src/main/java/com/acme/Legacy61.java:81: warning: [deprecation] oldCall61() in Helper has been deprecated
+        Helper.oldCall61();
+              ^
+src/main/java/com/acme/Legacy62.java:82: warning: [deprecation] oldCall62() in Helper has been deprecated
+        Helper.oldCall62();
+              ^
+src/main/java/com/acme/Legacy63.java:83: warning: [deprecation] oldCall63() in Helper has been deprecated
+        Helper.oldCall63();
+              ^
+src/main/java/com/acme/Legacy64.java:84: warning: [deprecation] oldCall64() in Helper has been deprecated
+        Helper.oldCall64();
+              ^
+src/main/java/com/acme/Legacy65.java:85: warning: [deprecation] oldCall65() in Helper has been deprecated
+        Helper.oldCall65();
+              ^
+src/main/java/com/acme/Legacy66.java:86: warning: [deprecation] oldCall66() in Helper has been deprecated
+        Helper.oldCall66();
+              ^
+src/main/java/com/acme/Legacy67.java:87: warning: [deprecation] oldCall67() in Helper has been deprecated
+        Helper.oldCall67();
+              ^
+src/main/java/com/acme/Legacy68.java:88: warning: [deprecation] oldCall68() in Helper has been deprecated
+        Helper.oldCall68();
+              ^
+src/main/java/com/acme/Legacy69.java:89: warning: [deprecation] oldCall69() in Helper has been deprecated
+        Helper.oldCall69();
+              ^
+src/main/java/com/acme/Foo.java:3: error: package com.acme.util does not exist
+import com.acme.util.Missing;
+                    ^
+src/main/java/com/acme/Foo.java:19: error: cannot find symbol
+int total = count + offset;
+^
+  symbol:   variable offset
+  location: class Foo
+2 errors
+70 warnings

@@ -1,0 +1,359 @@
+> Task :module0:compileJava
+> Task :module0:processResources NO-SOURCE
+> Task :module0:classes
+> Task :module0:jar UP-TO-DATE
+Resolved 12 dependencies for :module0
+> Task :module1:compileJava
+> Task :module1:processResources NO-SOURCE
+> Task :module1:classes
+> Task :module1:jar UP-TO-DATE
+Resolved 12 dependencies for :module1
+> Task :module2:compileJava
+> Task :module2:processResources NO-SOURCE
+> Task :module2:classes
+> Task :module2:jar UP-TO-DATE
+Resolved 12 dependencies for :module2
+> Task :module3:compileJava
+> Task :module3:processResources NO-SOURCE
+> Task :module3:classes
+> Task :module3:jar UP-TO-DATE
+Resolved 12 dependencies for :module3
+> Task :module4:compileJava
+> Task :module4:processResources NO-SOURCE
+> Task :module4:classes
+> Task :module4:jar UP-TO-DATE
+Resolved 12 dependencies for :module4
+> Task :module5:compileJava
+> Task :module5:processResources NO-SOURCE
+> Task :module5:classes
+> Task :module5:jar UP-TO-DATE
+Resolved 12 dependencies for :module5
+> Task :module6:compileJava
+> Task :module6:processResources NO-SOURCE
+> Task :module6:classes
+> Task :module6:jar UP-TO-DATE
+Resolved 12 dependencies for :module6
+> Task :module7:compileJava
+> Task :module7:processResources NO-SOURCE
+> Task :module7:classes
+> Task :module7:jar UP-TO-DATE
+Resolved 12 dependencies for :module7
+> Task :module8:compileJava
+> Task :module8:processResources NO-SOURCE
+> Task :module8:classes
+> Task :module8:jar UP-TO-DATE
+Resolved 12 dependencies for :module8
+> Task :module9:compileJava
+> Task :module9:processResources NO-SOURCE
+> Task :module9:classes
+> Task :module9:jar UP-TO-DATE
+Resolved 12 dependencies for :module9
+> Task :module10:compileJava
+> Task :module10:processResources NO-SOURCE
+> Task :module10:classes
+> Task :module10:jar UP-TO-DATE
+Resolved 12 dependencies for :module10
+> Task :module11:compileJava
+> Task :module11:processResources NO-SOURCE
+> Task :module11:classes
+> Task :module11:jar UP-TO-DATE
+Resolved 12 dependencies for :module11
+> Task :module12:compileJava
+> Task :module12:processResources NO-SOURCE
+> Task :module12:classes
+> Task :module12:jar UP-TO-DATE
+Resolved 12 dependencies for :module12
+> Task :module13:compileJava
+> Task :module13:processResources NO-SOURCE
+> Task :module13:classes
+> Task :module13:jar UP-TO-DATE
+Resolved 12 dependencies for :module13
+> Task :module14:compileJava
+> Task :module14:processResources NO-SOURCE
+> Task :module14:classes
+> Task :module14:jar UP-TO-DATE
+Resolved 12 dependencies for :module14
+> Task :module15:compileJava
+> Task :module15:processResources NO-SOURCE
+> Task :module15:classes
+> Task :module15:jar UP-TO-DATE
+Resolved 12 dependencies for :module15
+> Task :module16:compileJava
+> Task :module16:processResources NO-SOURCE
+> Task :module16:classes
+> Task :module16:jar UP-TO-DATE
+Resolved 12 dependencies for :module16
+> Task :module17:compileJava
+> Task :module17:processResources NO-SOURCE
+> Task :module17:classes
+> Task :module17:jar UP-TO-DATE
+Resolved 12 dependencies for :module17
+> Task :module18:compileJava
+> Task :module18:processResources NO-SOURCE
+> Task :module18:classes
+> Task :module18:jar UP-TO-DATE
+Resolved 12 dependencies for :module18
+> Task :module19:compileJava
+> Task :module19:processResources NO-SOURCE
+> Task :module19:classes
+> Task :module19:jar UP-TO-DATE
+Resolved 12 dependencies for :module19
+> Task :module20:compileJava
+> Task :module20:processResources NO-SOURCE
+> Task :module20:classes
+> Task :module20:jar UP-TO-DATE
+Resolved 12 dependencies for :module20
+> Task :module21:compileJava
+> Task :module21:processResources NO-SOURCE
+> Task :module21:classes
+> Task :module21:jar UP-TO-DATE
+Resolved 12 dependencies for :module21
+> Task :module22:compileJava
+> Task :module22:processResources NO-SOURCE
+> Task :module22:classes
+> Task :module22:jar UP-TO-DATE
+Resolved 12 dependencies for :module22
+> Task :module23:compileJava
+> Task :module23:processResources NO-SOURCE
+> Task :module23:classes
+> Task :module23:jar UP-TO-DATE
+Resolved 12 dependencies for :module23
+> Task :module24:compileJava
+> Task :module24:processResources NO-SOURCE
+> Task :module24:classes
+> Task :module24:jar UP-TO-DATE
+Resolved 12 dependencies for :module24
+> Task :module25:compileJava
+> Task :module25:processResources NO-SOURCE
+> Task :module25:classes
+> Task :module25:jar UP-TO-DATE
+Resolved 12 dependencies for :module25
+> Task :module26:compileJava
+> Task :module26:processResources NO-SOURCE
+> Task :module26:classes
+> Task :module26:jar UP-TO-DATE
+Resolved 12 dependencies for :module26
+> Task :module27:compileJava
+> Task :module27:processResources NO-SOURCE
+> Task :module27:classes
+> Task :module27:jar UP-TO-DATE
+Resolved 12 dependencies for :module27
+> Task :module28:compileJava
+> Task :module28:processResources NO-SOURCE
+> Task :module28:classes
+> Task :module28:jar UP-TO-DATE
+Resolved 12 dependencies for :module28
+> Task :module29:compileJava
+> Task :module29:processResources NO-SOURCE
+> Task :module29:classes
+> Task :module29:jar UP-TO-DATE
+Resolved 12 dependencies for :module29
+> Task :module30:compileJava
+> Task :module30:processResources NO-SOURCE
+> Task :module30:classes
+> Task :module30:jar UP-TO-DATE
+Resolved 12 dependencies for :module30
+> Task :module31:compileJava
+> Task :module31:processResources NO-SOURCE
+> Task :module31:classes
+> Task :module31:jar UP-TO-DATE
+Resolved 12 dependencies for :module31
+> Task :module32:compileJava
+> Task :module32:processResources NO-SOURCE
+> Task :module32:classes
+> Task :module32:jar UP-TO-DATE
+Resolved 12 dependencies for :module32
+> Task :module33:compileJava
+> Task :module33:processResources NO-SOURCE
+> Task :module33:classes
+> Task :module33:jar UP-TO-DATE
+Resolved 12 dependencies for :module33
+> Task :module34:compileJava
+> Task :module34:processResources NO-SOURCE
+> Task :module34:classes
+> Task :module34:jar UP-TO-DATE
+Resolved 12 dependencies for :module34
+> Task :module35:compileJava
+> Task :module35:processResources NO-SOURCE
+> Task :module35:classes
+> Task :module35:jar UP-TO-DATE
+Resolved 12 dependencies for :module35
+> Task :module36:compileJava
+> Task :module36:processResources NO-SOURCE
+> Task :module36:classes
+> Task :module36:jar UP-TO-DATE
+Resolved 12 dependencies for :module36
+> Task :module37:compileJava
+> Task :module37:processResources NO-SOURCE
+> Task :module37:classes
+> Task :module37:jar UP-TO-DATE
+Resolved 12 dependencies for :module37
+> Task :module38:compileJava
+> Task :module38:processResources NO-SOURCE
+> Task :module38:classes
+> Task :module38:jar UP-TO-DATE
+Resolved 12 dependencies for :module38
+> Task :module39:compileJava
+> Task :module39:processResources NO-SOURCE
+> Task :module39:classes
+> Task :module39:jar UP-TO-DATE
+Resolved 12 dependencies for :module39
+> Task :module40:compileJava
+> Task :module40:processResources NO-SOURCE
+> Task :module40:classes
+> Task :module40:jar UP-TO-DATE
+Resolved 12 dependencies for :module40
+> Task :module41:compileJava
+> Task :module41:processResources NO-SOURCE
+> Task :module41:classes
+> Task :module41:jar UP-TO-DATE
+Resolved 12 dependencies for :module41
+> Task :module42:compileJava
+> Task :module42:processResources NO-SOURCE
+> Task :module42:classes
+> Task :module42:jar UP-TO-DATE
+Resolved 12 dependencies for :module42
+> Task :module43:compileJava
+> Task :module43:processResources NO-SOURCE
+> Task :module43:classes
+> Task :module43:jar UP-TO-DATE
+Resolved 12 dependencies for :module43
+> Task :module44:compileJava
+> Task :module44:processResources NO-SOURCE
+> Task :module44:classes
+> Task :module44:jar UP-TO-DATE
+Resolved 12 dependencies for :module44
+> Task :module45:compileJava
+> Task :module45:processResources NO-SOURCE
+> Task :module45:classes
+> Task :module45:jar UP-TO-DATE
+Resolved 12 dependencies for :module45
+> Task :module46:compileJava
+> Task :module46:processResources NO-SOURCE
+> Task :module46:classes
+> Task :module46:jar UP-TO-DATE
+Resolved 12 dependencies for :module46
+> Task :module47:compileJava
+> Task :module47:processResources NO-SOURCE
+> Task :module47:classes
+> Task :module47:jar UP-TO-DATE
+Resolved 12 dependencies for :module47
+> Task :module48:compileJava
+> Task :module48:processResources NO-SOURCE
+> Task :module48:classes
+> Task :module48:jar UP-TO-DATE
+Resolved 12 dependencies for :module48
+> Task :module49:compileJava
+> Task :module49:processResources NO-SOURCE
+> Task :module49:classes
+> Task :module49:jar UP-TO-DATE
+Resolved 12 dependencies for :module49
+> Task :module50:compileJava
+> Task :module50:processResources NO-SOURCE
+> Task :module50:classes
+> Task :module50:jar UP-TO-DATE
+Resolved 12 dependencies for :module50
+> Task :module51:compileJava
+> Task :module51:processResources NO-SOURCE
+> Task :module51:classes
+> Task :module51:jar UP-TO-DATE
+Resolved 12 dependencies for :module51
+> Task :module52:compileJava
+> Task :module52:processResources NO-SOURCE
+> Task :module52:classes
+> Task :module52:jar UP-TO-DATE
+Resolved 12 dependencies for :module52
+> Task :module53:compileJava
+> Task :module53:processResources NO-SOURCE
+> Task :module53:classes
+> Task :module53:jar UP-TO-DATE
+Resolved 12 dependencies for :module53
+> Task :module54:compileJava
+> Task :module54:processResources NO-SOURCE
+> Task :module54:classes
+> Task :module54:jar UP-TO-DATE
+Resolved 12 dependencies for :module54
+> Task :module55:compileJava
+> Task :module55:processResources NO-SOURCE
+> Task :module55:classes
+> Task :module55:jar UP-TO-DATE
+Resolved 12 dependencies for :module55
+> Task :module56:compileJava
+> Task :module56:processResources NO-SOURCE
+> Task :module56:classes
+> Task :module56:jar UP-TO-DATE
+Resolved 12 dependencies for :module56
+> Task :module57:compileJava
+> Task :module57:processResources NO-SOURCE
+> Task :module57:classes
+> Task :module57:jar UP-TO-DATE
+Resolved 12 dependencies for :module57
+> Task :module58:compileJava
+> Task :module58:processResources NO-SOURCE
+> Task :module58:classes
+> Task :module58:jar UP-TO-DATE
+Resolved 12 dependencies for :module58
+> Task :module59:compileJava
+> Task :module59:processResources NO-SOURCE
+> Task :module59:classes
+> Task :module59:jar UP-TO-DATE
+Resolved 12 dependencies for :module59
+> Task :module60:compileJava
+> Task :module60:processResources NO-SOURCE
+> Task :module60:classes
+> Task :module60:jar UP-TO-DATE
+Resolved 12 dependencies for :module60
+> Task :module61:compileJava
+> Task :module61:processResources NO-SOURCE
+> Task :module61:classes
+> Task :module61:jar UP-TO-DATE
+Resolved 12 dependencies for :module61
+> Task :module62:compileJava
+> Task :module62:processResources NO-SOURCE
+> Task :module62:classes
+> Task :module62:jar UP-TO-DATE
+Resolved 12 dependencies for :module62
+> Task :module63:compileJava
+> Task :module63:processResources NO-SOURCE
+> Task :module63:classes
+> Task :module63:jar UP-TO-DATE
+Resolved 12 dependencies for :module63
+> Task :module64:compileJava
+> Task :module64:processResources NO-SOURCE
+> Task :module64:classes
+> Task :module64:jar UP-TO-DATE
+Resolved 12 dependencies for :module64
+> Task :module65:compileJava
+> Task :module65:processResources NO-SOURCE
+> Task :module65:classes
+> Task :module65:jar UP-TO-DATE
+Resolved 12 dependencies for :module65
+> Task :module66:compileJava
+> Task :module66:processResources NO-SOURCE
+> Task :module66:classes
+> Task :module66:jar UP-TO-DATE
+Resolved 12 dependencies for :module66
+> Task :module67:compileJava
+> Task :module67:processResources NO-SOURCE
+> Task :module67:classes
+> Task :module67:jar UP-TO-DATE
+Resolved 12 dependencies for :module67
+> Task :module68:compileJava
+> Task :module68:processResources NO-SOURCE
+> Task :module68:classes
+> Task :module68:jar UP-TO-DATE
+Resolved 12 dependencies for :module68
+> Task :module69:compileJava
+> Task :module69:processResources NO-SOURCE
+> Task :module69:classes
+> Task :module69:jar UP-TO-DATE
+Resolved 12 dependencies for :module69
+> Task :app:compileTestJava FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:compileTestJava'.
+> Compilation failed; see the compiler error output for details.
+
+BUILD FAILED in 41s

@@ -1,0 +1,645 @@
+=== RUN   TestCase0
+--- PASS: TestCase0 (0.00s)
+=== RUN   TestCase1
+--- PASS: TestCase1 (0.01s)
+=== RUN   TestCase2
+--- PASS: TestCase2 (0.02s)
+=== RUN   TestCase3
+--- PASS: TestCase3 (0.03s)
+=== RUN   TestCase4
+--- PASS: TestCase4 (0.04s)
+=== RUN   TestCase5
+--- PASS: TestCase5 (0.05s)
+=== RUN   TestCase6
+--- PASS: TestCase6 (0.06s)
+=== RUN   TestCase7
+--- PASS: TestCase7 (0.07s)
+=== RUN   TestCase8
+--- PASS: TestCase8 (0.08s)
+=== RUN   TestCase9
+--- PASS: TestCase9 (0.09s)
+=== RUN   TestCase10
+--- PASS: TestCase10 (0.00s)
+=== RUN   TestCase11
+--- PASS: TestCase11 (0.01s)
+=== RUN   TestCase12
+--- PASS: TestCase12 (0.02s)
+=== RUN   TestCase13
+--- PASS: TestCase13 (0.03s)
+=== RUN   TestCase14
+--- PASS: TestCase14 (0.04s)
+=== RUN   TestCase15
+--- PASS: TestCase15 (0.05s)
+=== RUN   TestCase16
+--- PASS: TestCase16 (0.06s)
+=== RUN   TestCase17
+--- PASS: TestCase17 (0.07s)
+=== RUN   TestCase18
+--- PASS: TestCase18 (0.08s)
+=== RUN   TestCase19
+--- PASS: TestCase19 (0.09s)
+=== RUN   TestCase20
+--- PASS: TestCase20 (0.00s)
+=== RUN   TestCase21
+--- PASS: TestCase21 (0.01s)
+=== RUN   TestCase22
+--- PASS: TestCase22 (0.02s)
+=== RUN   TestCase23
+--- PASS: TestCase23 (0.03s)
+=== RUN   TestCase24
+--- PASS: TestCase24 (0.04s)
+=== RUN   TestCase25
+--- PASS: TestCase25 (0.05s)
+=== RUN   TestCase26
+--- PASS: TestCase26 (0.06s)
+=== RUN   TestCase27
+--- PASS: TestCase27 (0.07s)
+=== RUN   TestCase28
+--- PASS: TestCase28 (0.08s)
+=== RUN   TestCase29
+--- PASS: TestCase29 (0.09s)
+=== RUN   TestCase30
+--- PASS: TestCase30 (0.00s)
+=== RUN   TestCase31
+--- PASS: TestCase31 (0.01s)
+=== RUN   TestCase32
+--- PASS: TestCase32 (0.02s)
+=== RUN   TestCase33
+--- PASS: TestCase33 (0.03s)
+=== RUN   TestCase34
+--- PASS: TestCase34 (0.04s)
+=== RUN   TestCase35
+--- PASS: TestCase35 (0.05s)
+=== RUN   TestCase36
+--- PASS: TestCase36 (0.06s)
+=== RUN   TestCase37
+--- PASS: TestCase37 (0.07s)
+=== RUN   TestCase38
+--- PASS: TestCase38 (0.08s)
+=== RUN   TestCase39
+--- PASS: TestCase39 (0.09s)
+=== RUN   TestCase40
+--- PASS: TestCase40 (0.00s)
+=== RUN   TestCase41
+--- PASS: TestCase41 (0.01s)
+=== RUN   TestCase42
+--- PASS: TestCase42 (0.02s)
+=== RUN   TestCase43
+--- PASS: TestCase43 (0.03s)
+=== RUN   TestCase44
+--- PASS: TestCase44 (0.04s)
+=== RUN   TestCase45
+--- PASS: TestCase45 (0.05s)
+=== RUN   TestCase46
+--- PASS: TestCase46 (0.06s)
+=== RUN   TestCase47
+--- PASS: TestCase47 (0.07s)
+=== RUN   TestCase48
+--- PASS: TestCase48 (0.08s)
+=== RUN   TestCase49
+--- PASS: TestCase49 (0.09s)
+=== RUN   TestCase50
+--- PASS: TestCase50 (0.00s)
+=== RUN   TestCase51
+--- PASS: TestCase51 (0.01s)
+=== RUN   TestCase52
+--- PASS: TestCase52 (0.02s)
+=== RUN   TestCase53
+--- PASS: TestCase53 (0.03s)
+=== RUN   TestCase54
+--- PASS: TestCase54 (0.04s)
+=== RUN   TestCase55
+--- PASS: TestCase55 (0.05s)
+=== RUN   TestCase56
+--- PASS: TestCase56 (0.06s)
+=== RUN   TestCase57
+--- PASS: TestCase57 (0.07s)
+=== RUN   TestCase58
+--- PASS: TestCase58 (0.08s)
+=== RUN   TestCase59
+--- PASS: TestCase59 (0.09s)
+=== RUN   TestCase60
+--- PASS: TestCase60 (0.00s)
+=== RUN   TestCase61
+--- PASS: TestCase61 (0.01s)
+=== RUN   TestCase62
+--- PASS: TestCase62 (0.02s)
+=== RUN   TestCase63
+--- PASS: TestCase63 (0.03s)
+=== RUN   TestCase64
+--- PASS: TestCase64 (0.04s)
+=== RUN   TestCase65
+--- PASS: TestCase65 (0.05s)
+=== RUN   TestCase66
+--- PASS: TestCase66 (0.06s)
+=== RUN   TestCase67
+--- PASS: TestCase67 (0.07s)
+=== RUN   TestCase68
+--- PASS: TestCase68 (0.08s)
+=== RUN   TestCase69
+--- PASS: TestCase69 (0.09s)
+=== RUN   TestCase70
+--- PASS: TestCase70 (0.00s)
+=== RUN   TestCase71
+--- PASS: TestCase71 (0.01s)
+=== RUN   TestCase72
+--- PASS: TestCase72 (0.02s)
+=== RUN   TestCase73
+--- PASS: TestCase73 (0.03s)
+=== RUN   TestCase74
+--- PASS: TestCase74 (0.04s)
+=== RUN   TestCase75
+--- PASS: TestCase75 (0.05s)
+=== RUN   TestCase76
+--- PASS: TestCase76 (0.06s)
+=== RUN   TestCase77
+--- PASS: TestCase77 (0.07s)
+=== RUN   TestCase78
+--- PASS: TestCase78 (0.08s)
+=== RUN   TestCase79
+--- PASS: TestCase79 (0.09s)
+=== RUN   TestCase80
+--- PASS: TestCase80 (0.00s)
+=== RUN   TestCase81
+--- PASS: TestCase81 (0.01s)
+=== RUN   TestCase82
+--- PASS: TestCase82 (0.02s)
+=== RUN   TestCase83
+--- PASS: TestCase83 (0.03s)
+=== RUN   TestCase84
+--- PASS: TestCase84 (0.04s)
+=== RUN   TestCase85
+--- PASS: TestCase85 (0.05s)
+=== RUN   TestCase86
+--- PASS: TestCase86 (0.06s)
+=== RUN   TestCase87
+--- PASS: TestCase87 (0.07s)
+=== RUN   TestCase88
+--- PASS: TestCase88 (0.08s)
+=== RUN   TestCase89
+--- PASS: TestCase89 (0.09s)
+=== RUN   TestCase90
+--- PASS: TestCase90 (0.00s)
+=== RUN   TestCase91
+--- PASS: TestCase91 (0.01s)
+=== RUN   TestCase92
+--- PASS: TestCase92 (0.02s)
+=== RUN   TestCase93
+--- PASS: TestCase93 (0.03s)
+=== RUN   TestCase94
+--- PASS: TestCase94 (0.04s)
+=== RUN   TestCase95
+--- PASS: TestCase95 (0.05s)
+=== RUN   TestCase96
+--- PASS: TestCase96 (0.06s)
+=== RUN   TestCase97
+--- PASS: TestCase97 (0.07s)
+=== RUN   TestCase98
+--- PASS: TestCase98 (0.08s)
+=== RUN   TestCase99
+--- PASS: TestCase99 (0.09s)
+=== RUN   TestCase100
+--- PASS: TestCase100 (0.00s)
+=== RUN   TestCase101
+--- PASS: TestCase101 (0.01s)
+=== RUN   TestLedgerBalance
+    ledger_test.go:58: balance mismatch: got 41, want 42
+--- FAIL: TestLedgerBalance (0.01s)
+=== RUN   TestCase102
+--- PASS: TestCase102 (0.02s)
+=== RUN   TestCase103
+--- PASS: TestCase103 (0.03s)
+=== RUN   TestCase104
+--- PASS: TestCase104 (0.04s)
+=== RUN   TestCase105
+--- PASS: TestCase105 (0.05s)
+=== RUN   TestCase106
+--- PASS: TestCase106 (0.06s)
+=== RUN   TestCase107
+--- PASS: TestCase107 (0.07s)
+=== RUN   TestCase108
+--- PASS: TestCase108 (0.08s)
+=== RUN   TestCase109
+--- PASS: TestCase109 (0.09s)
+=== RUN   TestCase110
+--- PASS: TestCase110 (0.00s)
+=== RUN   TestCase111
+--- PASS: TestCase111 (0.01s)
+=== RUN   TestCase112
+--- PASS: TestCase112 (0.02s)
+=== RUN   TestCase113
+--- PASS: TestCase113 (0.03s)
+=== RUN   TestCase114
+--- PASS: TestCase114 (0.04s)
+=== RUN   TestCase115
+--- PASS: TestCase115 (0.05s)
+=== RUN   TestCase116
+--- PASS: TestCase116 (0.06s)
+=== RUN   TestCase117
+--- PASS: TestCase117 (0.07s)
+=== RUN   TestCase118
+--- PASS: TestCase118 (0.08s)
+=== RUN   TestCase119
+--- PASS: TestCase119 (0.09s)
+=== RUN   TestCase120
+--- PASS: TestCase120 (0.00s)
+=== RUN   TestCase121
+--- PASS: TestCase121 (0.01s)
+=== RUN   TestCase122
+--- PASS: TestCase122 (0.02s)
+=== RUN   TestCase123
+--- PASS: TestCase123 (0.03s)
+=== RUN   TestCase124
+--- PASS: TestCase124 (0.04s)
+=== RUN   TestCase125
+--- PASS: TestCase125 (0.05s)
+=== RUN   TestCase126
+--- PASS: TestCase126 (0.06s)
+=== RUN   TestCase127
+--- PASS: TestCase127 (0.07s)
+=== RUN   TestCase128
+--- PASS: TestCase128 (0.08s)
+=== RUN   TestCase129
+--- PASS: TestCase129 (0.09s)
+=== RUN   TestCase130
+--- PASS: TestCase130 (0.00s)
+=== RUN   TestCase131
+--- PASS: TestCase131 (0.01s)
+=== RUN   TestCase132
+--- PASS: TestCase132 (0.02s)
+=== RUN   TestCase133
+--- PASS: TestCase133 (0.03s)
+=== RUN   TestCase134
+--- PASS: TestCase134 (0.04s)
+=== RUN   TestCase135
+--- PASS: TestCase135 (0.05s)
+=== RUN   TestCase136
+--- PASS: TestCase136 (0.06s)
+=== RUN   TestCase137
+--- PASS: TestCase137 (0.07s)
+=== RUN   TestCase138
+--- PASS: TestCase138 (0.08s)
+=== RUN   TestCase139
+--- PASS: TestCase139 (0.09s)
+=== RUN   TestCase140
+--- PASS: TestCase140 (0.00s)
+=== RUN   TestCase141
+--- PASS: TestCase141 (0.01s)
+=== RUN   TestCase142
+--- PASS: TestCase142 (0.02s)
+=== RUN   TestCase143
+--- PASS: TestCase143 (0.03s)
+=== RUN   TestCase144
+--- PASS: TestCase144 (0.04s)
+=== RUN   TestCase145
+--- PASS: TestCase145 (0.05s)
+=== RUN   TestCase146
+--- PASS: TestCase146 (0.06s)
+=== RUN   TestCase147
+--- PASS: TestCase147 (0.07s)
+=== RUN   TestCase148
+--- PASS: TestCase148 (0.08s)
+=== RUN   TestCase149
+--- PASS: TestCase149 (0.09s)
+=== RUN   TestCase150
+--- PASS: TestCase150 (0.00s)
+=== RUN   TestCase151
+--- PASS: TestCase151 (0.01s)
+=== RUN   TestCase152
+--- PASS: TestCase152 (0.02s)
+=== RUN   TestCase153
+--- PASS: TestCase153 (0.03s)
+=== RUN   TestCase154
+--- PASS: TestCase154 (0.04s)
+=== RUN   TestCase155
+--- PASS: TestCase155 (0.05s)
+=== RUN   TestCase156
+--- PASS: TestCase156 (0.06s)
+=== RUN   TestCase157
+--- PASS: TestCase157 (0.07s)
+=== RUN   TestCase158
+--- PASS: TestCase158 (0.08s)
+=== RUN   TestCase159
+--- PASS: TestCase159 (0.09s)
+=== RUN   TestCase160
+--- PASS: TestCase160 (0.00s)
+=== RUN   TestCase161
+--- PASS: TestCase161 (0.01s)
+=== RUN   TestCase162
+--- PASS: TestCase162 (0.02s)
+=== RUN   TestCase163
+--- PASS: TestCase163 (0.03s)
+=== RUN   TestCase164
+--- PASS: TestCase164 (0.04s)
+=== RUN   TestCase165
+--- PASS: TestCase165 (0.05s)
+=== RUN   TestCase166
+--- PASS: TestCase166 (0.06s)
+=== RUN   TestCase167
+--- PASS: TestCase167 (0.07s)
+=== RUN   TestCase168
+--- PASS: TestCase168 (0.08s)
+=== RUN   TestCase169
+--- PASS: TestCase169 (0.09s)
+=== RUN   TestCase170
+--- PASS: TestCase170 (0.00s)
+=== RUN   TestCase171
+--- PASS: TestCase171 (0.01s)
+=== RUN   TestCase172
+--- PASS: TestCase172 (0.02s)
+=== RUN   TestCase173
+--- PASS: TestCase173 (0.03s)
+=== RUN   TestCase174
+--- PASS: TestCase174 (0.04s)
+=== RUN   TestCase175
+--- PASS: TestCase175 (0.05s)
+=== RUN   TestCase176
+--- PASS: TestCase176 (0.06s)
+=== RUN   TestCase177
+--- PASS: TestCase177 (0.07s)
+=== RUN   TestCase178
+--- PASS: TestCase178 (0.08s)
+=== RUN   TestCase179
+--- PASS: TestCase179 (0.09s)
+=== RUN   TestCase180
+--- PASS: TestCase180 (0.00s)
+=== RUN   TestCase181
+--- PASS: TestCase181 (0.01s)
+=== RUN   TestCase182
+--- PASS: TestCase182 (0.02s)
+=== RUN   TestCase183
+--- PASS: TestCase183 (0.03s)
+=== RUN   TestCase184
+--- PASS: TestCase184 (0.04s)
+=== RUN   TestCase185
+--- PASS: TestCase185 (0.05s)
+=== RUN   TestCase186
+--- PASS: TestCase186 (0.06s)
+=== RUN   TestCase187
+--- PASS: TestCase187 (0.07s)
+=== RUN   TestCase188
+--- PASS: TestCase188 (0.08s)
+=== RUN   TestCase189
+--- PASS: TestCase189 (0.09s)
+=== RUN   TestCase190
+--- PASS: TestCase190 (0.00s)
+=== RUN   TestCase191
+--- PASS: TestCase191 (0.01s)
+=== RUN   TestCase192
+--- PASS: TestCase192 (0.02s)
+=== RUN   TestCase193
+--- PASS: TestCase193 (0.03s)
+=== RUN   TestCase194
+--- PASS: TestCase194 (0.04s)
+=== RUN   TestCase195
+--- PASS: TestCase195 (0.05s)
+=== RUN   TestCase196
+--- PASS: TestCase196 (0.06s)
+=== RUN   TestCase197
+--- PASS: TestCase197 (0.07s)
+=== RUN   TestCase198
+--- PASS: TestCase198 (0.08s)
+=== RUN   TestCase199
+--- PASS: TestCase199 (0.09s)
+=== RUN   TestCase200
+--- PASS: TestCase200 (0.00s)
+=== RUN   TestCase201
+--- PASS: TestCase201 (0.01s)
+=== RUN   TestCase202
+--- PASS: TestCase202 (0.02s)
+=== RUN   TestCase203
+--- PASS: TestCase203 (0.03s)
+=== RUN   TestCase204
+--- PASS: TestCase204 (0.04s)
+=== RUN   TestCase205
+--- PASS: TestCase205 (0.05s)
+=== RUN   TestCase206
+--- PASS: TestCase206 (0.06s)
+=== RUN   TestCase207
+--- PASS: TestCase207 (0.07s)
+=== RUN   TestCase208
+--- PASS: TestCase208 (0.08s)
+=== RUN   TestCase209
+--- PASS: TestCase209 (0.09s)
+=== RUN   TestCase210
+--- PASS: TestCase210 (0.00s)
+=== RUN   TestCase211
+--- PASS: TestCase211 (0.01s)
+=== RUN   TestCase212
+--- PASS: TestCase212 (0.02s)
+=== RUN   TestCase213
+--- PASS: TestCase213 (0.03s)
+=== RUN   TestCase214
+--- PASS: TestCase214 (0.04s)
+=== RUN   TestCase215
+--- PASS: TestCase215 (0.05s)
+=== RUN   TestCase216
+--- PASS: TestCase216 (0.06s)
+=== RUN   TestCase217
+--- PASS: TestCase217 (0.07s)
+=== RUN   TestCase218
+--- PASS: TestCase218 (0.08s)
+=== RUN   TestCase219
+--- PASS: TestCase219 (0.09s)
+=== RUN   TestCase220
+--- PASS: TestCase220 (0.00s)
+=== RUN   TestCase221
+--- PASS: TestCase221 (0.01s)
+=== RUN   TestCase222
+--- PASS: TestCase222 (0.02s)
+=== RUN   TestCase223
+--- PASS: TestCase223 (0.03s)
+=== RUN   TestCase224
+--- PASS: TestCase224 (0.04s)
+=== RUN   TestCase225
+--- PASS: TestCase225 (0.05s)
+=== RUN   TestCase226
+--- PASS: TestCase226 (0.06s)
+=== RUN   TestCase227
+--- PASS: TestCase227 (0.07s)
+=== RUN   TestCase228
+--- PASS: TestCase228 (0.08s)
+=== RUN   TestCase229
+--- PASS: TestCase229 (0.09s)
+=== RUN   TestCase230
+--- PASS: TestCase230 (0.00s)
+=== RUN   TestCase231
+--- PASS: TestCase231 (0.01s)
+=== RUN   TestCase232
+--- PASS: TestCase232 (0.02s)
+=== RUN   TestCase233
+--- PASS: TestCase233 (0.03s)
+=== RUN   TestCase234
+--- PASS: TestCase234 (0.04s)
+=== RUN   TestCase235
+--- PASS: TestCase235 (0.05s)
+=== RUN   TestCase236
+--- PASS: TestCase236 (0.06s)
+=== RUN   TestCase237
+--- PASS: TestCase237 (0.07s)
+=== RUN   TestCase238
+--- PASS: TestCase238 (0.08s)
+=== RUN   TestCase239
+--- PASS: TestCase239 (0.09s)
+=== RUN   TestCase240
+--- PASS: TestCase240 (0.00s)
+=== RUN   TestCase241
+--- PASS: TestCase241 (0.01s)
+=== RUN   TestCase242
+--- PASS: TestCase242 (0.02s)
+=== RUN   TestCase243
+--- PASS: TestCase243 (0.03s)
+=== RUN   TestCase244
+--- PASS: TestCase244 (0.04s)
+=== RUN   TestCase245
+--- PASS: TestCase245 (0.05s)
+=== RUN   TestCase246
+--- PASS: TestCase246 (0.06s)
+=== RUN   TestCase247
+--- PASS: TestCase247 (0.07s)
+=== RUN   TestCase248
+--- PASS: TestCase248 (0.08s)
+=== RUN   TestCase249
+--- PASS: TestCase249 (0.09s)
+=== RUN   TestCase250
+--- PASS: TestCase250 (0.00s)
+=== RUN   TestCase251
+--- PASS: TestCase251 (0.01s)
+=== RUN   TestCase252
+--- PASS: TestCase252 (0.02s)
+=== RUN   TestCase253
+--- PASS: TestCase253 (0.03s)
+=== RUN   TestCase254
+--- PASS: TestCase254 (0.04s)
+=== RUN   TestCase255
+--- PASS: TestCase255 (0.05s)
+=== RUN   TestCase256
+--- PASS: TestCase256 (0.06s)
+=== RUN   TestCase257
+--- PASS: TestCase257 (0.07s)
+=== RUN   TestCase258
+--- PASS: TestCase258 (0.08s)
+=== RUN   TestCase259
+--- PASS: TestCase259 (0.09s)
+=== RUN   TestCase260
+--- PASS: TestCase260 (0.00s)
+=== RUN   TestCase261
+--- PASS: TestCase261 (0.01s)
+=== RUN   TestCase262
+--- PASS: TestCase262 (0.02s)
+=== RUN   TestCase263
+--- PASS: TestCase263 (0.03s)
+=== RUN   TestCase264
+--- PASS: TestCase264 (0.04s)
+=== RUN   TestCase265
+--- PASS: TestCase265 (0.05s)
+=== RUN   TestCase266
+--- PASS: TestCase266 (0.06s)
+=== RUN   TestCase267
+--- PASS: TestCase267 (0.07s)
+=== RUN   TestCase268
+--- PASS: TestCase268 (0.08s)
+=== RUN   TestCase269
+--- PASS: TestCase269 (0.09s)
+=== RUN   TestCase270
+--- PASS: TestCase270 (0.00s)
+=== RUN   TestCase271
+--- PASS: TestCase271 (0.01s)
+=== RUN   TestCase272
+--- PASS: TestCase272 (0.02s)
+=== RUN   TestCase273
+--- PASS: TestCase273 (0.03s)
+=== RUN   TestCase274
+--- PASS: TestCase274 (0.04s)
+=== RUN   TestCase275
+--- PASS: TestCase275 (0.05s)
+=== RUN   TestCase276
+--- PASS: TestCase276 (0.06s)
+=== RUN   TestCase277
+--- PASS: TestCase277 (0.07s)
+=== RUN   TestCase278
+--- PASS: TestCase278 (0.08s)
+=== RUN   TestCase279
+--- PASS: TestCase279 (0.09s)
+=== RUN   TestCase280
+--- PASS: TestCase280 (0.00s)
+=== RUN   TestCase281
+--- PASS: TestCase281 (0.01s)
+=== RUN   TestCase282
+--- PASS: TestCase282 (0.02s)
+=== RUN   TestCase283
+--- PASS: TestCase283 (0.03s)
+=== RUN   TestCase284
+--- PASS: TestCase284 (0.04s)
+=== RUN   TestCase285
+--- PASS: TestCase285 (0.05s)
+=== RUN   TestCase286
+--- PASS: TestCase286 (0.06s)
+=== RUN   TestCase287
+--- PASS: TestCase287 (0.07s)
+=== RUN   TestCase288
+--- PASS: TestCase288 (0.08s)
+=== RUN   TestCase289
+--- PASS: TestCase289 (0.09s)
+=== RUN   TestCase290
+--- PASS: TestCase290 (0.00s)
+=== RUN   TestCase291
+--- PASS: TestCase291 (0.01s)
+=== RUN   TestCase292
+--- PASS: TestCase292 (0.02s)
+=== RUN   TestCase293
+--- PASS: TestCase293 (0.03s)
+=== RUN   TestCase294
+--- PASS: TestCase294 (0.04s)
+=== RUN   TestCase295
+--- PASS: TestCase295 (0.05s)
+=== RUN   TestCase296
+--- PASS: TestCase296 (0.06s)
+=== RUN   TestCase297
+--- PASS: TestCase297 (0.07s)
+=== RUN   TestCase298
+--- PASS: TestCase298 (0.08s)
+=== RUN   TestCase299
+--- PASS: TestCase299 (0.09s)
+=== RUN   TestCase300
+--- PASS: TestCase300 (0.00s)
+=== RUN   TestCase301
+--- PASS: TestCase301 (0.01s)
+=== RUN   TestCase302
+--- PASS: TestCase302 (0.02s)
+=== RUN   TestCase303
+--- PASS: TestCase303 (0.03s)
+=== RUN   TestCase304
+--- PASS: TestCase304 (0.04s)
+=== RUN   TestCase305
+--- PASS: TestCase305 (0.05s)
+=== RUN   TestCase306
+--- PASS: TestCase306 (0.06s)
+=== RUN   TestCase307
+--- PASS: TestCase307 (0.07s)
+=== RUN   TestCase308
+--- PASS: TestCase308 (0.08s)
+=== RUN   TestCase309
+--- PASS: TestCase309 (0.09s)
+=== RUN   TestCase310
+--- PASS: TestCase310 (0.00s)
+=== RUN   TestCase311
+--- PASS: TestCase311 (0.01s)
+=== RUN   TestCase312
+--- PASS: TestCase312 (0.02s)
+=== RUN   TestCase313
+--- PASS: TestCase313 (0.03s)
+=== RUN   TestCase314
+--- PASS: TestCase314 (0.04s)
+=== RUN   TestCase315
+--- PASS: TestCase315 (0.05s)
+=== RUN   TestCase316
+--- PASS: TestCase316 (0.06s)
+=== RUN   TestCase317
+--- PASS: TestCase317 (0.07s)
+=== RUN   TestCase318
+--- PASS: TestCase318 (0.08s)
+=== RUN   TestCase319
+--- PASS: TestCase319 (0.09s)
+FAIL
+FAIL	github.com/example/ledger	0.482s

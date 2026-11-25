@@ -1,0 +1,212 @@
+Collecting libpkg0==2.0.0
+  Downloading libpkg0-2.0.0-py3-none-any.whl (10 kB)
+Requirement already satisfied: six>=1.0 in /usr/lib/python3/site-packages (from libpkg0)
+Collecting libpkg1==2.1.0
+  Downloading libpkg1-2.1.0-py3-none-any.whl (11 kB)
+Requirement already satisfied: six>=1.1 in /usr/lib/python3/site-packages (from libpkg1)
+Collecting libpkg2==2.2.0
+  Downloading libpkg2-2.2.0-py3-none-any.whl (12 kB)
+Requirement already satisfied: six>=1.2 in /usr/lib/python3/site-packages (from libpkg2)
+Collecting libpkg3==2.3.0
+  Downloading libpkg3-2.3.0-py3-none-any.whl (13 kB)
+Requirement already satisfied: six>=1.3 in /usr/lib/python3/site-packages (from libpkg3)
+Collecting libpkg4==2.4.0
+  Downloading libpkg4-2.4.0-py3-none-any.whl (14 kB)
+Requirement already satisfied: six>=1.4 in /usr/lib/python3/site-packages (from libpkg4)
+Collecting libpkg5==2.5.0
+  Downloading libpkg5-2.5.0-py3-none-any.whl (15 kB)
+Requirement already satisfied: six>=1.5 in /usr/lib/python3/site-packages (from libpkg5)
+Collecting libpkg6==2.6.0
+  Downloading libpkg6-2.6.0-py3-none-any.whl (16 kB)
+Requirement already satisfied: six>=1.6 in /usr/lib/python3/site-packages (from libpkg6)
+Collecting libpkg7==2.7.0
+  Downloading libpkg7-2.7.0-py3-none-any.whl (17 kB)
+Requirement already satisfied: six>=1.7 in /usr/lib/python3/site-packages (from libpkg7)
+Collecting libpkg8==2.8.0
+  Downloading libpkg8-2.8.0-py3-none-any.whl (18 kB)
+Requirement already satisfied: six>=1.8 in /usr/lib/python3/site-packages (from libpkg8)
+Collecting libpkg9==2.9.0
+  Downloading libpkg9-2.9.0-py3-none-any.whl (19 kB)
+Requirement already satisfied: six>=1.9 in /usr/lib/python3/site-packages (from libpkg9)
+Collecting libpkg10==2.10.0
+  Downloading libpkg10-2.10.0-py3-none-any.whl (110 kB)
+Requirement already satisfied: six>=1.10 in /usr/lib/python3/site-packages (from libpkg10)
+Collecting libpkg11==2.11.0
+  Downloading libpkg11-2.11.0-py3-none-any.whl (111 kB)
+Requirement already satisfied: six>=1.11 in /usr/lib/python3/site-packages (from libpkg11)
+Collecting libpkg12==2.12.0
+  Downloading libpkg12-2.12.0-py3-none-any.whl (112 kB)
+Requirement already satisfied: six>=1.12 in /usr/lib/python3/site-packages (from libpkg12)
+Collecting libpkg13==2.13.0
+  Downloading libpkg13-2.13.0-py3-none-any.whl (113 kB)
+Requirement already satisfied: six>=1.13 in /usr/lib/python3/site-packages (from libpkg13)
+Collecting libpkg14==2.14.0
+  Downloading libpkg14-2.14.0-py3-none-any.whl (114 kB)
+Requirement already satisfied: six>=1.14 in /usr/lib/python3/site-packages (from libpkg14)
+Collecting libpkg15==2.15.0
+  Downloading libpkg15-2.15.0-py3-none-any.whl (115 kB)
+Requirement already satisfied: six>=1.15 in /usr/lib/python3/site-packages (from libpkg15)
+Collecting libpkg16==2.16.0
+  Downloading libpkg16-2.16.0-py3-none-any.whl (116 kB)
+Requirement already satisfied: six>=1.16 in /usr/lib/python3/site-packages (from libpkg16)
+Collecting libpkg17==2.17.0
+  Downloading libpkg17-2.17.0-py3-none-any.whl (117 kB)
+Requirement already satisfied: six>=1.17 in /usr/lib/python3/site-packages (from libpkg17)
+Collecting libpkg18==2.18.0
+  Downloading libpkg18-2.18.0-py3-none-any.whl (118 kB)
+Requirement already satisfied: six>=1.18 in /usr/lib/python3/site-packages (from libpkg18)
+Collecting libpkg19==2.19.0
+  Downloading libpkg19-2.19.0-py3-none-any.whl (119 kB)
+Requirement already satisfied: six>=1.19 in /usr/lib/python3/site-packages (from libpkg19)
+Collecting libpkg20==2.20.0
+  Downloading libpkg20-2.20.0-py3-none-any.whl (120 kB)
+Requirement already satisfied: six>=1.20 in /usr/lib/python3/site-packages (from libpkg20)
+Collecting libpkg21==2.21.0
+  Downloading libpkg21-2.21.0-py3-none-any.whl (121 kB)
+Requirement already satisfied: six>=1.21 in /usr/lib/python3/site-packages (from libpkg21)
+Collecting libpkg22==2.22.0
+  Downloading libpkg22-2.22.0-py3-none-any.whl (122 kB)
+Requirement already satisfied: six>=1.22 in /usr/lib/python3/site-packages (from libpkg22)
+Collecting libpkg23==2.23.0
+  Downloading libpkg23-2.23.0-py3-none-any.whl (123 kB)
+Requirement already satisfied: six>=1.23 in /usr/lib/python3/site-packages (from libpkg23)
+Collecting libpkg24==2.24.0
+  Downloading libpkg24-2.24.0-py3-none-any.whl (124 kB)
+Requirement already satisfied: six>=1.24 in /usr/lib/python3/site-packages (from libpkg24)
+Collecting libpkg25==2.25.0
+  Downloading libpkg25-2.25.0-py3-none-any.whl (125 kB)
+Requirement already satisfied: six>=1.25 in /usr/lib/python3/site-packages (from libpkg25)
+Collecting libpkg26==2.26.0
+  Downloading libpkg26-2.26.0-py3-none-any.whl (126 kB)
+Requirement already satisfied: six>=1.26 in /usr/lib/python3/site-packages (from libpkg26)
+Collecting libpkg27==2.27.0
+  Downloading libpkg27-2.27.0-py3-none-any.whl (127 kB)
+Requirement already satisfied: six>=1.27 in /usr/lib/python3/site-packages (from libpkg27)
+Collecting libpkg28==2.28.0
+  Downloading libpkg28-2.28.0-py3-none-any.whl (128 kB)
+Requirement already satisfied: six>=1.28 in /usr/lib/python3/site-packages (from libpkg28)
+Collecting libpkg29==2.29.0
+  Downloading libpkg29-2.29.0-py3-none-any.whl (129 kB)
+Requirement already satisfied: six>=1.29 in /usr/lib/python3/site-packages (from libpkg29)
+Collecting libpkg30==2.30.0
+  Downloading libpkg30-2.30.0-py3-none-any.whl (130 kB)
+Requirement already satisfied: six>=1.30 in /usr/lib/python3/site-packages (from libpkg30)
+Collecting libpkg31==2.31.0
+  Downloading libpkg31-2.31.0-py3-none-any.whl (131 kB)
+Requirement already satisfied: six>=1.31 in /usr/lib/python3/site-packages (from libpkg31)
+Collecting libpkg32==2.32.0
+  Downloading libpkg32-2.32.0-py3-none-any.whl (132 kB)
+Requirement already satisfied: six>=1.32 in /usr/lib/python3/site-packages (from libpkg32)
+Collecting libpkg33==2.33.0
+  Downloading libpkg33-2.33.0-py3-none-any.whl (133 kB)
+Requirement already satisfied: six>=1.33 in /usr/lib/python3/site-packages (from libpkg33)
+Collecting libpkg34==2.34.0
+  Downloading libpkg34-2.34.0-py3-none-any.whl (134 kB)
+Requirement already satisfied: six>=1.34 in /usr/lib/python3/site-packages (from libpkg34)
+Collecting libpkg35==2.35.0
+  Downloading libpkg35-2.35.0-py3-none-any.whl (135 kB)
+Requirement already satisfied: six>=1.35 in /usr/lib/python3/site-packages (from libpkg35)
+Collecting libpkg36==2.36.0
+  Downloading libpkg36-2.36.0-py3-none-any.whl (136 kB)
+Requirement already satisfied: six>=1.36 in /usr/lib/python3/site-packages (from libpkg36)
+Collecting libpkg37==2.37.0
+  Downloading libpkg37-2.37.0-py3-none-any.whl (137 kB)
+Requirement already satisfied: six>=1.37 in /usr/lib/python3/site-packages (from libpkg37)
+Collecting libpkg38==2.38.0
+  Downloading libpkg38-2.38.0-py3-none-any.whl (138 kB)
+Requirement already satisfied: six>=1.38 in /usr/lib/python3/site-packages (from libpkg38)
+Collecting libpkg39==2.39.0
+  Downloading libpkg39-2.39.0-py3-none-any.whl (139 kB)
+Requirement already satisfied: six>=1.39 in /usr/lib/python3/site-packages (from libpkg39)
+Collecting libpkg40==2.40.0
+  Downloading libpkg40-2.40.0-py3-none-any.whl (140 kB)
+Requirement already satisfied: six>=1.40 in /usr/lib/python3/site-packages (from libpkg40)
+Collecting libpkg41==2.41.0
+  Downloading libpkg41-2.41.0-py3-none-any.whl (141 kB)
+Requirement already satisfied: six>=1.41 in /usr/lib/python3/site-packages (from libpkg41)
+Collecting libpkg42==2.42.0
+  Downloading libpkg42-2.42.0-py3-none-any.whl (142 kB)
+Requirement already satisfied: six>=1.42 in /usr/lib/python3/site-packages (from libpkg42)
+Collecting libpkg43==2.43.0
+  Downloading libpkg43-2.43.0-py3-none-any.whl (143 kB)
+Requirement already satisfied: six>=1.43 in /usr/lib/python3/site-packages (from libpkg43)
+Collecting libpkg44==2.44.0
+  Downloading libpkg44-2.44.0-py3-none-any.whl (144 kB)
+Requirement already satisfied: six>=1.44 in /usr/lib/python3/site-packages (from libpkg44)
+Collecting libpkg45==2.45.0
+  Downloading libpkg45-2.45.0-py3-none-any.whl (145 kB)
+Requirement already satisfied: six>=1.45 in /usr/lib/python3/site-packages (from libpkg45)
+Collecting libpkg46==2.46.0
+  Downloading libpkg46-2.46.0-py3-none-any.whl (146 kB)
+Requirement already satisfied: six>=1.46 in /usr/lib/python3/site-packages (from libpkg46)
+Collecting libpkg47==2.47.0
+  Downloading libpkg47-2.47.0-py3-none-any.whl (147 kB)
+Requirement already satisfied: six>=1.47 in /usr/lib/python3/site-packages (from libpkg47)
+Collecting libpkg48==2.48.0
+  Downloading libpkg48-2.48.0-py3-none-any.whl (148 kB)
+Requirement already satisfied: six>=1.48 in /usr/lib/python3/site-packages (from libpkg48)
+Collecting libpkg49==2.49.0
+  Downloading libpkg49-2.49.0-py3-none-any.whl (149 kB)
+Requirement already satisfied: six>=1.49 in /usr/lib/python3/site-packages (from libpkg49)
+Collecting libpkg50==2.50.0
+  Downloading libpkg50-2.50.0-py3-none-any.whl (150 kB)
+Requirement already satisfied: six>=1.50 in /usr/lib/python3/site-packages (from libpkg50)
+Collecting libpkg51==2.51.0
+  Downloading libpkg51-2.51.0-py3-none-any.whl (151 kB)
+Requirement already satisfied: six>=1.51 in /usr/lib/python3/site-packages (from libpkg51)
+Collecting libpkg52==2.52.0
+  Downloading libpkg52-2.52.0-py3-none-any.whl (152 kB)
+Requirement already satisfied: six>=1.52 in /usr/lib/python3/site-packages (from libpkg52)
+Collecting libpkg53==2.53.0
+  Downloading libpkg53-2.53.0-py3-none-any.whl (153 kB)
+Requirement already satisfied: six>=1.53 in /usr/lib/python3/site-packages (from libpkg53)
+Collecting libpkg54==2.54.0
+  Downloading libpkg54-2.54.0-py3-none-any.whl (154 kB)
+Requirement already satisfied: six>=1.54 in /usr/lib/python3/site-packages (from libpkg54)
+Collecting libpkg55==2.55.0
+  Downloading libpkg55-2.55.0-py3-none-any.whl (155 kB)
+Requirement already satisfied: six>=1.55 in /usr/lib/python3/site-packages (from libpkg55)
+Collecting libpkg56==2.56.0
+  Downloading libpkg56-2.56.0-py3-none-any.whl (156 kB)
+Requirement already satisfied: six>=1.56 in /usr/lib/python3/site-packages (from libpkg56)
+Collecting libpkg57==2.57.0
+  Downloading libpkg57-2.57.0-py3-none-any.whl (157 kB)
+Requirement already satisfied: six>=1.57 in /usr/lib/python3/site-packages (from libpkg57)
+Collecting libpkg58==2.58.0
+  Downloading libpkg58-2.58.0-py3-none-any.whl (158 kB)
+Requirement already satisfied: six>=1.58 in /usr/lib/python3/site-packages (from libpkg58)
+Collecting libpkg59==2.59.0
+  Downloading libpkg59-2.59.0-py3-none-any.whl (159 kB)
+Requirement already satisfied: six>=1.59 in /usr/lib/python3/site-packages (from libpkg59)
+Collecting libpkg60==2.60.0
+  Downloading libpkg60-2.60.0-py3-none-any.whl (160 kB)
+Requirement already satisfied: six>=1.60 in /usr/lib/python3/site-packages (from libpkg60)
+Collecting libpkg61==2.61.0
+  Downloading libpkg61-2.61.0-py3-none-any.whl (161 kB)
+Requirement already satisfied: six>=1.61 in /usr/lib/python3/site-packages (from libpkg61)
+Collecting libpkg62==2.62.0
+  Downloading libpkg62-2.62.0-py3-none-any.whl (162 kB)
+Requirement already satisfied: six>=1.62 in /usr/lib/python3/site-packages (from libpkg62)
+Collecting libpkg63==2.63.0
+  Downloading libpkg63-2.63.0-py3-none-any.whl (163 kB)
+Requirement already satisfied: six>=1.63 in /usr/lib/python3/site-packages (from libpkg63)
+Collecting libpkg64==2.64.0
+  Downloading libpkg64-2.64.0-py3-none-any.whl (164 kB)
+Requirement already satisfied: six>=1.64 in /usr/lib/python3/site-packages (from libpkg64)
+Collecting libpkg65==2.65.0
+  Downloading libpkg65-2.65.0-py3-none-any.whl (165 kB)
+Requirement already satisfied: six>=1.65 in /usr/lib/python3/site-packages (from libpkg65)
+Collecting libpkg66==2.66.0
+  Downloading libpkg66-2.66.0-py3-none-any.whl (166 kB)
+Requirement already satisfied: six>=1.66 in /usr/lib/python3/site-packages (from libpkg66)
+Collecting libpkg67==2.67.0
+  Downloading libpkg67-2.67.0-py3-none-any.whl (167 kB)
+Requirement already satisfied: six>=1.67 in /usr/lib/python3/site-packages (from libpkg67)
+Collecting libpkg68==2.68.0
+  Downloading libpkg68-2.68.0-py3-none-any.whl (168 kB)
+Requirement already satisfied: six>=1.68 in /usr/lib/python3/site-packages (from libpkg68)
+Collecting libpkg69==2.69.0
+  Downloading libpkg69-2.69.0-py3-none-any.whl (169 kB)
+Requirement already satisfied: six>=1.69 in /usr/lib/python3/site-packages (from libpkg69)
+ERROR: Could not find a version that satisfies the requirement foo==9.9.9 (from versions: 1.0, 1.1)
+ERROR: No matching distribution found for foo==9.9.9

@@ -1,0 +1,442 @@
+Traceback (most recent call last):
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+  File "/srv/app/tree.py", line 12, in walk
+    return walk(node.child)
+RecursionError: maximum recursion depth exceeded

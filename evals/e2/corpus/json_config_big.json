@@ -1,0 +1,993 @@
+{
+  "service_0": {
+    "host": "10.0.0.5",
+    "port": 8000,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_1": {
+    "host": "10.0.1.5",
+    "port": 8001,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_2": {
+    "host": "10.0.2.5",
+    "port": 8002,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_3": {
+    "host": "10.0.3.5",
+    "port": 8003,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_4": {
+    "host": "10.0.4.5",
+    "port": 8004,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_5": {
+    "host": "10.0.5.5",
+    "port": 8005,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_6": {
+    "host": "10.0.6.5",
+    "port": 8006,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_7": {
+    "host": "10.0.7.5",
+    "port": 8007,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_8": {
+    "host": "10.0.8.5",
+    "port": 8008,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_9": {
+    "host": "10.0.9.5",
+    "port": 8009,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_10": {
+    "host": "10.0.10.5",
+    "port": 8010,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_11": {
+    "host": "10.0.11.5",
+    "port": 8011,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_12": {
+    "host": "10.0.12.5",
+    "port": 8012,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_13": {
+    "host": "10.0.13.5",
+    "port": 8013,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_14": {
+    "host": "10.0.14.5",
+    "port": 8014,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_15": {
+    "host": "10.0.15.5",
+    "port": 8015,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_16": {
+    "host": "10.0.16.5",
+    "port": 8016,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_17": {
+    "host": "10.0.17.5",
+    "port": 8017,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_18": {
+    "host": "10.0.18.5",
+    "port": 8018,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_19": {
+    "host": "10.0.19.5",
+    "port": 8019,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_20": {
+    "host": "10.0.20.5",
+    "port": 8020,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_21": {
+    "host": "10.0.21.5",
+    "port": 8021,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_22": {
+    "host": "10.0.22.5",
+    "port": 8022,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_23": {
+    "host": "10.0.23.5",
+    "port": 8023,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_24": {
+    "host": "10.0.24.5",
+    "port": 8024,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_25": {
+    "host": "10.0.25.5",
+    "port": 8025,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_26": {
+    "host": "10.0.26.5",
+    "port": 8026,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_27": {
+    "host": "10.0.27.5",
+    "port": 8027,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_28": {
+    "host": "10.0.28.5",
+    "port": 8028,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_29": {
+    "host": "10.0.29.5",
+    "port": 8029,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_30": {
+    "host": "10.0.30.5",
+    "port": 8030,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_31": {
+    "host": "10.0.31.5",
+    "port": 8031,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_32": {
+    "host": "10.0.32.5",
+    "port": 8032,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_33": {
+    "host": "10.0.33.5",
+    "port": 8033,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_34": {
+    "host": "10.0.34.5",
+    "port": 8034,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_35": {
+    "host": "10.0.35.5",
+    "port": 8035,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_36": {
+    "host": "10.0.36.5",
+    "port": 8036,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_37": {
+    "host": "10.0.37.5",
+    "port": 8037,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_38": {
+    "host": "10.0.38.5",
+    "port": 8038,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_39": {
+    "host": "10.0.39.5",
+    "port": 8039,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_40": {
+    "host": "10.0.40.5",
+    "port": 8040,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_41": {
+    "host": "10.0.41.5",
+    "port": 8041,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_42": {
+    "host": "10.0.42.5",
+    "port": 8042,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_43": {
+    "host": "10.0.43.5",
+    "port": 8043,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_44": {
+    "host": "10.0.44.5",
+    "port": 8044,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_45": {
+    "host": "10.0.45.5",
+    "port": 8045,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_46": {
+    "host": "10.0.46.5",
+    "port": 8046,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_47": {
+    "host": "10.0.47.5",
+    "port": 8047,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_48": {
+    "host": "10.0.48.5",
+    "port": 8048,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_49": {
+    "host": "10.0.49.5",
+    "port": 8049,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_50": {
+    "host": "10.0.50.5",
+    "port": 8050,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_51": {
+    "host": "10.0.51.5",
+    "port": 8051,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_52": {
+    "host": "10.0.52.5",
+    "port": 8052,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_53": {
+    "host": "10.0.53.5",
+    "port": 8053,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_54": {
+    "host": "10.0.54.5",
+    "port": 8054,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_55": {
+    "host": "10.0.55.5",
+    "port": 8055,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_56": {
+    "host": "10.0.56.5",
+    "port": 8056,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_57": {
+    "host": "10.0.57.5",
+    "port": 8057,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_58": {
+    "host": "10.0.58.5",
+    "port": 8058,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_59": {
+    "host": "10.0.59.5",
+    "port": 8059,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_60": {
+    "host": "10.0.60.5",
+    "port": 8060,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_61": {
+    "host": "10.0.61.5",
+    "port": 8061,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_62": {
+    "host": "10.0.62.5",
+    "port": 8062,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_63": {
+    "host": "10.0.63.5",
+    "port": 8063,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_64": {
+    "host": "10.0.64.5",
+    "port": 8064,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_65": {
+    "host": "10.0.65.5",
+    "port": 8065,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_66": {
+    "host": "10.0.66.5",
+    "port": 8066,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_67": {
+    "host": "10.0.67.5",
+    "port": 8067,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_68": {
+    "host": "10.0.68.5",
+    "port": 8068,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_69": {
+    "host": "10.0.69.5",
+    "port": 8069,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_70": {
+    "host": "10.0.70.5",
+    "port": 8070,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_71": {
+    "host": "10.0.71.5",
+    "port": 8071,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_72": {
+    "host": "10.0.72.5",
+    "port": 8072,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_73": {
+    "host": "10.0.73.5",
+    "port": 8073,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_74": {
+    "host": "10.0.74.5",
+    "port": 8074,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_75": {
+    "host": "10.0.75.5",
+    "port": 8075,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_76": {
+    "host": "10.0.76.5",
+    "port": 8076,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_77": {
+    "host": "10.0.77.5",
+    "port": 8077,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_78": {
+    "host": "10.0.78.5",
+    "port": 8078,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_79": {
+    "host": "10.0.79.5",
+    "port": 8079,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_80": {
+    "host": "10.0.80.5",
+    "port": 8080,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_81": {
+    "host": "10.0.81.5",
+    "port": 8081,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_82": {
+    "host": "10.0.82.5",
+    "port": 8082,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_83": {
+    "host": "10.0.83.5",
+    "port": 8083,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_84": {
+    "host": "10.0.84.5",
+    "port": 8084,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_85": {
+    "host": "10.0.85.5",
+    "port": 8085,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_86": {
+    "host": "10.0.86.5",
+    "port": 8086,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_87": {
+    "host": "10.0.87.5",
+    "port": 8087,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_88": {
+    "host": "10.0.88.5",
+    "port": 8088,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "service_89": {
+    "host": "10.0.89.5",
+    "port": 8089,
+    "retries": 3,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "enabled": true
+  },
+  "api_version": "2026-11-01"
+}

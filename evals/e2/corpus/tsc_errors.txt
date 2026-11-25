@@ -1,0 +1,224 @@
+src/ui/panel0.tsx(10,4): warning TS6133: 'unused0' is declared but its value is never read.
+src/ui/panel1.tsx(11,5): warning TS6133: 'unused1' is declared but its value is never read.
+src/ui/panel2.tsx(12,6): warning TS6133: 'unused2' is declared but its value is never read.
+src/ui/panel3.tsx(13,7): warning TS6133: 'unused3' is declared but its value is never read.
+src/ui/panel4.tsx(14,8): warning TS6133: 'unused4' is declared but its value is never read.
+src/ui/panel5.tsx(15,4): warning TS6133: 'unused5' is declared but its value is never read.
+src/ui/panel6.tsx(16,5): warning TS6133: 'unused6' is declared but its value is never read.
+src/ui/panel7.tsx(17,6): warning TS6133: 'unused7' is declared but its value is never read.
+src/ui/panel8.tsx(18,7): warning TS6133: 'unused8' is declared but its value is never read.
+src/ui/panel9.tsx(19,8): warning TS6133: 'unused9' is declared but its value is never read.
+src/ui/panel10.tsx(20,4): warning TS6133: 'unused10' is declared but its value is never read.
+src/ui/panel11.tsx(21,5): warning TS6133: 'unused11' is declared but its value is never read.
+src/ui/panel12.tsx(22,6): warning TS6133: 'unused12' is declared but its value is never read.
+src/ui/panel13.tsx(23,7): warning TS6133: 'unused13' is declared but its value is never read.
+src/ui/panel14.tsx(24,8): warning TS6133: 'unused14' is declared but its value is never read.
+src/ui/panel15.tsx(25,4): warning TS6133: 'unused15' is declared but its value is never read.
+src/ui/panel16.tsx(26,5): warning TS6133: 'unused16' is declared but its value is never read.
+src/ui/panel17.tsx(27,6): warning TS6133: 'unused17' is declared but its value is never read.
+src/ui/panel18.tsx(28,7): warning TS6133: 'unused18' is declared but its value is never read.
+src/ui/panel19.tsx(29,8): warning TS6133: 'unused19' is declared but its value is never read.
+src/ui/panel20.tsx(30,4): warning TS6133: 'unused20' is declared but its value is never read.
+src/ui/panel21.tsx(31,5): warning TS6133: 'unused21' is declared but its value is never read.
+src/ui/panel22.tsx(32,6): warning TS6133: 'unused22' is declared but its value is never read.
+src/ui/panel23.tsx(33,7): warning TS6133: 'unused23' is declared but its value is never read.
+src/ui/panel24.tsx(34,8): warning TS6133: 'unused24' is declared but its value is never read.
+src/ui/panel25.tsx(35,4): warning TS6133: 'unused25' is declared but its value is never read.
+src/ui/panel26.tsx(36,5): warning TS6133: 'unused26' is declared but its value is never read.
+src/ui/panel27.tsx(37,6): warning TS6133: 'unused27' is declared but its value is never read.
+src/ui/panel28.tsx(38,7): warning TS6133: 'unused28' is declared but its value is never read.
+src/ui/panel29.tsx(39,8): warning TS6133: 'unused29' is declared but its value is never read.
+src/ui/panel30.tsx(40,4): warning TS6133: 'unused30' is declared but its value is never read.
+src/ui/panel31.tsx(41,9): error TS2322: Type 'string' is not assignable to type 'number'.
+src/ui/panel31.tsx(41,5): warning TS6133: 'unused31' is declared but its value is never read.
+src/ui/panel32.tsx(42,6): warning TS6133: 'unused32' is declared but its value is never read.
+src/ui/panel33.tsx(43,7): warning TS6133: 'unused33' is declared but its value is never read.
+src/ui/panel34.tsx(44,8): warning TS6133: 'unused34' is declared but its value is never read.
+src/ui/panel35.tsx(45,4): warning TS6133: 'unused35' is declared but its value is never read.
+src/ui/panel36.tsx(46,5): warning TS6133: 'unused36' is declared but its value is never read.
+src/ui/panel37.tsx(47,6): warning TS6133: 'unused37' is declared but its value is never read.
+src/ui/panel38.tsx(48,7): warning TS6133: 'unused38' is declared but its value is never read.
+src/ui/panel39.tsx(49,8): warning TS6133: 'unused39' is declared but its value is never read.
+src/ui/panel40.tsx(50,4): warning TS6133: 'unused40' is declared but its value is never read.
+src/ui/panel41.tsx(51,5): warning TS6133: 'unused41' is declared but its value is never read.
+src/ui/panel42.tsx(52,6): warning TS6133: 'unused42' is declared but its value is never read.
+src/ui/panel43.tsx(53,7): warning TS6133: 'unused43' is declared but its value is never read.
+src/ui/panel44.tsx(54,8): warning TS6133: 'unused44' is declared but its value is never read.
+src/ui/panel45.tsx(55,4): warning TS6133: 'unused45' is declared but its value is never read.
+src/ui/panel46.tsx(56,5): warning TS6133: 'unused46' is declared but its value is never read.
+src/ui/panel47.tsx(57,6): warning TS6133: 'unused47' is declared but its value is never read.
+src/ui/panel48.tsx(58,7): warning TS6133: 'unused48' is declared but its value is never read.
+src/api/client.ts(7,1): error TS2307: Cannot find module './missing' or its corresponding type declarations.
+src/ui/panel49.tsx(59,8): warning TS6133: 'unused49' is declared but its value is never read.
+src/ui/panel50.tsx(60,4): warning TS6133: 'unused50' is declared but its value is never read.
+src/ui/panel51.tsx(61,5): warning TS6133: 'unused51' is declared but its value is never read.
+src/ui/panel52.tsx(62,6): warning TS6133: 'unused52' is declared but its value is never read.
+src/ui/panel53.tsx(63,7): warning TS6133: 'unused53' is declared but its value is never read.
+src/ui/panel54.tsx(64,8): warning TS6133: 'unused54' is declared but its value is never read.
+src/ui/panel55.tsx(65,4): warning TS6133: 'unused55' is declared but its value is never read.
+src/ui/panel56.tsx(66,5): warning TS6133: 'unused56' is declared but its value is never read.
+src/ui/panel57.tsx(67,6): warning TS6133: 'unused57' is declared but its value is never read.
+src/ui/panel58.tsx(68,7): warning TS6133: 'unused58' is declared but its value is never read.
+src/ui/panel59.tsx(69,8): warning TS6133: 'unused59' is declared but its value is never read.
+src/ui/panel60.tsx(70,4): warning TS6133: 'unused60' is declared but its value is never read.
+src/ui/panel61.tsx(71,5): warning TS6133: 'unused61' is declared but its value is never read.
+src/ui/panel62.tsx(72,6): warning TS6133: 'unused62' is declared but its value is never read.
+src/ui/panel63.tsx(73,7): warning TS6133: 'unused63' is declared but its value is never read.
+src/ui/panel64.tsx(74,8): warning TS6133: 'unused64' is declared but its value is never read.
+src/ui/panel65.tsx(75,4): warning TS6133: 'unused65' is declared but its value is never read.
+src/ui/panel66.tsx(76,5): warning TS6133: 'unused66' is declared but its value is never read.
+src/ui/panel67.tsx(77,6): warning TS6133: 'unused67' is declared but its value is never read.
+src/ui/panel68.tsx(78,7): warning TS6133: 'unused68' is declared but its value is never read.
+src/ui/panel69.tsx(79,8): warning TS6133: 'unused69' is declared but its value is never read.
+src/ui/panel70.tsx(80,4): warning TS6133: 'unused70' is declared but its value is never read.
+src/ui/panel71.tsx(81,5): warning TS6133: 'unused71' is declared but its value is never read.
+src/ui/panel72.tsx(82,6): warning TS6133: 'unused72' is declared but its value is never read.
+src/ui/panel73.tsx(83,7): warning TS6133: 'unused73' is declared but its value is never read.
+src/ui/panel74.tsx(84,8): warning TS6133: 'unused74' is declared but its value is never read.
+src/ui/panel75.tsx(85,4): warning TS6133: 'unused75' is declared but its value is never read.
+src/ui/panel76.tsx(86,5): warning TS6133: 'unused76' is declared but its value is never read.
+src/ui/panel77.tsx(87,6): warning TS6133: 'unused77' is declared but its value is never read.
+src/ui/panel78.tsx(88,7): warning TS6133: 'unused78' is declared but its value is never read.
+src/ui/panel79.tsx(89,8): warning TS6133: 'unused79' is declared but its value is never read.
+src/ui/panel80.tsx(90,4): warning TS6133: 'unused80' is declared but its value is never read.
+src/ui/panel81.tsx(91,5): warning TS6133: 'unused81' is declared but its value is never read.
+src/ui/panel82.tsx(92,6): warning TS6133: 'unused82' is declared but its value is never read.
+src/ui/panel83.tsx(93,7): warning TS6133: 'unused83' is declared but its value is never read.
+src/ui/panel84.tsx(94,8): warning TS6133: 'unused84' is declared but its value is never read.
+src/ui/panel85.tsx(95,4): warning TS6133: 'unused85' is declared but its value is never read.
+src/ui/panel86.tsx(96,5): warning TS6133: 'unused86' is declared but its value is never read.
+src/ui/panel87.tsx(97,6): warning TS6133: 'unused87' is declared but its value is never read.
+src/ui/panel88.tsx(98,7): warning TS6133: 'unused88' is declared but its value is never read.
+src/ui/panel89.tsx(99,8): warning TS6133: 'unused89' is declared but its value is never read.
+src/ui/panel90.tsx(100,4): warning TS6133: 'unused90' is declared but its value is never read.
+src/ui/panel91.tsx(101,5): warning TS6133: 'unused91' is declared but its value is never read.
+src/ui/panel92.tsx(102,6): warning TS6133: 'unused92' is declared but its value is never read.
+src/ui/panel93.tsx(103,7): warning TS6133: 'unused93' is declared but its value is never read.
+src/ui/panel94.tsx(104,8): warning TS6133: 'unused94' is declared but its value is never read.
+src/ui/panel95.tsx(105,4): warning TS6133: 'unused95' is declared but its value is never read.
+src/ui/panel96.tsx(106,5): warning TS6133: 'unused96' is declared but its value is never read.
+src/ui/panel97.tsx(107,6): warning TS6133: 'unused97' is declared but its value is never read.
+src/ui/panel98.tsx(108,7): warning TS6133: 'unused98' is declared but its value is never read.
+src/ui/panel99.tsx(109,8): warning TS6133: 'unused99' is declared but its value is never read.
+src/ui/panel100.tsx(110,4): warning TS6133: 'unused100' is declared but its value is never read.
+src/ui/panel101.tsx(111,5): warning TS6133: 'unused101' is declared but its value is never read.
+src/ui/panel102.tsx(112,6): warning TS6133: 'unused102' is declared but its value is never read.
+src/ui/panel103.tsx(113,7): warning TS6133: 'unused103' is declared but its value is never read.
+src/ui/panel104.tsx(114,8): warning TS6133: 'unused104' is declared but its value is never read.
+src/ui/panel105.tsx(115,4): warning TS6133: 'unused105' is declared but its value is never read.
+src/ui/panel106.tsx(116,5): warning TS6133: 'unused106' is declared but its value is never read.
+src/ui/panel107.tsx(117,6): warning TS6133: 'unused107' is declared but its value is never read.
+src/ui/panel108.tsx(118,7): warning TS6133: 'unused108' is declared but its value is never read.
+src/ui/panel109.tsx(119,8): warning TS6133: 'unused109' is declared but its value is never read.
+src/ui/panel110.tsx(120,4): warning TS6133: 'unused110' is declared but its value is never read.
+src/ui/panel111.tsx(121,5): warning TS6133: 'unused111' is declared but its value is never read.
+src/ui/panel112.tsx(122,6): warning TS6133: 'unused112' is declared but its value is never read.
+src/ui/panel113.tsx(123,7): warning TS6133: 'unused113' is declared but its value is never read.
+src/ui/panel114.tsx(124,8): warning TS6133: 'unused114' is declared but its value is never read.
+src/ui/panel115.tsx(125,4): warning TS6133: 'unused115' is declared but its value is never read.
+src/ui/panel116.tsx(126,5): warning TS6133: 'unused116' is declared but its value is never read.
+src/ui/panel117.tsx(127,6): warning TS6133: 'unused117' is declared but its value is never read.
+src/ui/panel118.tsx(128,7): warning TS6133: 'unused118' is declared but its value is never read.
+src/ui/panel119.tsx(129,8): warning TS6133: 'unused119' is declared but its value is never read.
+src/ui/panel120.tsx(130,4): warning TS6133: 'unused120' is declared but its value is never read.
+src/ui/panel121.tsx(131,5): warning TS6133: 'unused121' is declared but its value is never read.
+src/ui/panel122.tsx(132,6): warning TS6133: 'unused122' is declared but its value is never read.
+src/ui/panel123.tsx(133,7): warning TS6133: 'unused123' is declared but its value is never read.
+src/ui/panel124.tsx(134,8): warning TS6133: 'unused124' is declared but its value is never read.
+src/ui/panel125.tsx(135,4): warning TS6133: 'unused125' is declared but its value is never read.
+src/ui/panel126.tsx(136,5): warning TS6133: 'unused126' is declared but its value is never read.
+src/ui/panel127.tsx(137,6): warning TS6133: 'unused127' is declared but its value is never read.
+src/ui/panel128.tsx(138,7): warning TS6133: 'unused128' is declared but its value is never read.
+src/ui/panel129.tsx(139,8): warning TS6133: 'unused129' is declared but its value is never read.
+
+Found 2 errors in 2 files.
+  src/ui/panel0.tsx:10
+  src/ui/panel1.tsx:11
+  src/ui/panel2.tsx:12
+  src/ui/panel3.tsx:13
+  src/ui/panel4.tsx:14
+  src/ui/panel5.tsx:15
+  src/ui/panel6.tsx:16
+  src/ui/panel7.tsx:17
+  src/ui/panel8.tsx:18
+  src/ui/panel9.tsx:19
+  src/ui/panel10.tsx:20
+  src/ui/panel11.tsx:21
+  src/ui/panel12.tsx:22
+  src/ui/panel13.tsx:23
+  src/ui/panel14.tsx:24
+  src/ui/panel15.tsx:25
+  src/ui/panel16.tsx:26
+  src/ui/panel17.tsx:27
+  src/ui/panel18.tsx:28
+  src/ui/panel19.tsx:29
+  src/ui/panel20.tsx:30
+  src/ui/panel21.tsx:31
+  src/ui/panel22.tsx:32
+  src/ui/panel23.tsx:33
+  src/ui/panel24.tsx:34
+  src/ui/panel25.tsx:35
+  src/ui/panel26.tsx:36
+  src/ui/panel27.tsx:37
+  src/ui/panel28.tsx:38
+  src/ui/panel29.tsx:39
+  src/ui/panel30.tsx:40
+  src/ui/panel31.tsx:41
+  src/ui/panel32.tsx:42
+  src/ui/panel33.tsx:43
+  src/ui/panel34.tsx:44
+  src/ui/panel35.tsx:45
+  src/ui/panel36.tsx:46
+  src/ui/panel37.tsx:47
+  src/ui/panel38.tsx:48
+  src/ui/panel39.tsx:49
+  src/ui/panel40.tsx:50
+  src/ui/panel41.tsx:51
+  src/ui/panel42.tsx:52
+  src/ui/panel43.tsx:53
+  src/ui/panel44.tsx:54
+  src/ui/panel45.tsx:55
+  src/ui/panel46.tsx:56
+  src/ui/panel47.tsx:57
+  src/ui/panel48.tsx:58
+  src/ui/panel49.tsx:59
+  src/ui/panel50.tsx:60
+  src/ui/panel51.tsx:61
+  src/ui/panel52.tsx:62
+  src/ui/panel53.tsx:63
+  src/ui/panel54.tsx:64
+  src/ui/panel55.tsx:65
+  src/ui/panel56.tsx:66
+  src/ui/panel57.tsx:67
+  src/ui/panel58.tsx:68
+  src/ui/panel59.tsx:69
+  src/ui/panel60.tsx:70
+  src/ui/panel61.tsx:71
+  src/ui/panel62.tsx:72
+  src/ui/panel63.tsx:73
+  src/ui/panel64.tsx:74
+  src/ui/panel65.tsx:75
+  src/ui/panel66.tsx:76
+  src/ui/panel67.tsx:77
+  src/ui/panel68.tsx:78
+  src/ui/panel69.tsx:79
+  src/ui/panel70.tsx:80
+  src/ui/panel71.tsx:81
+  src/ui/panel72.tsx:82
+  src/ui/panel73.tsx:83
+  src/ui/panel74.tsx:84
+  src/ui/panel75.tsx:85
+  src/ui/panel76.tsx:86
+  src/ui/panel77.tsx:87
+  src/ui/panel78.tsx:88
+  src/ui/panel79.tsx:89
+  src/ui/panel80.tsx:90
+  src/ui/panel81.tsx:91
+  src/ui/panel82.tsx:92
+  src/ui/panel83.tsx:93
+  src/ui/panel84.tsx:94
+  src/ui/panel85.tsx:95
+  src/ui/panel86.tsx:96
+  src/ui/panel87.tsx:97
+  src/ui/panel88.tsx:98
+  src/ui/panel89.tsx:99

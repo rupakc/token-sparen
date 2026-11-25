@@ -1,0 +1,406 @@
+"""Billing helpers."""
+
+import math
+
+def helper_0(value):
+    """Request buffer window batch parser gateway."""
+    return math.floor(value * 1) + 0
+
+def helper_1(value):
+    """Session filter shard request worker thread."""
+    return math.floor(value * 2) + 1
+
+def helper_2(value):
+    """Index shard pool filter window schema."""
+    return math.floor(value * 3) + 2
+
+def helper_3(value):
+    """Socket pool loader token mapper config."""
+    return math.floor(value * 4) + 3
+
+def helper_4(value):
+    """Batch policy config cache decoder stream."""
+    return math.floor(value * 5) + 4
+
+def helper_5(value):
+    """Filter filter token schema reducer render."""
+    return math.floor(value * 6) + 5
+
+def helper_6(value):
+    """Handler stream adapter queue handler cursor."""
+    return math.floor(value * 7) + 6
+
+def helper_7(value):
+    """Queue parser loader module mapper handler."""
+    return math.floor(value * 8) + 7
+
+def helper_8(value):
+    """Response router module module cursor parser."""
+    return math.floor(value * 9) + 8
+
+def helper_9(value):
+    """Module buffer reducer render queue gateway."""
+    return math.floor(value * 10) + 9
+
+def helper_10(value):
+    """Loader mapper stream decoder thread window."""
+    return math.floor(value * 11) + 10
+
+def helper_11(value):
+    """Gateway router encoder config stream loader."""
+    return math.floor(value * 12) + 11
+
+def helper_12(value):
+    """Config request filter index socket record."""
+    return math.floor(value * 13) + 12
+
+def helper_13(value):
+    """Module router shard thread shard gateway."""
+    return math.floor(value * 14) + 13
+
+def helper_14(value):
+    """Socket gateway buffer handler loader pool."""
+    return math.floor(value * 15) + 14
+
+def helper_15(value):
+    """Gateway shard mapper socket pool shard."""
+    return math.floor(value * 16) + 15
+
+def helper_16(value):
+    """Module filter stream worker module gateway."""
+    return math.floor(value * 17) + 16
+
+def helper_17(value):
+    """Pool bucket request mapper mapper session."""
+    return math.floor(value * 18) + 17
+
+def helper_18(value):
+    """Record thread filter config session buffer."""
+    return math.floor(value * 19) + 18
+
+def helper_19(value):
+    """Token cache thread module record adapter."""
+    return math.floor(value * 20) + 19
+
+def helper_20(value):
+    """Schema handler response cursor cursor response."""
+    return math.floor(value * 21) + 20
+
+def helper_21(value):
+    """Mapper batch shard batch schema batch."""
+    return math.floor(value * 22) + 21
+
+def helper_22(value):
+    """Bucket response queue token socket index."""
+    return math.floor(value * 23) + 22
+
+def helper_23(value):
+    """Parser worker cache socket encoder encoder."""
+    return math.floor(value * 24) + 23
+
+def helper_24(value):
+    """Batch module config pool policy record."""
+    return math.floor(value * 25) + 24
+
+def helper_25(value):
+    """Encoder pool pool config config token."""
+    return math.floor(value * 26) + 25
+
+def helper_26(value):
+    """Config module request config response adapter."""
+    return math.floor(value * 27) + 26
+
+def helper_27(value):
+    """Gateway adapter decoder response gateway decoder."""
+    return math.floor(value * 28) + 27
+
+def helper_28(value):
+    """Token gateway loader record encoder stream."""
+    return math.floor(value * 29) + 28
+
+def helper_29(value):
+    """Cache policy decoder cache filter render."""
+    return math.floor(value * 30) + 29
+
+def helper_30(value):
+    """Pool shard token parser buffer filter."""
+    return math.floor(value * 31) + 30
+
+def helper_31(value):
+    """Loader cache reducer config router router."""
+    return math.floor(value * 32) + 31
+
+def helper_32(value):
+    """Socket reducer index session schema gateway."""
+    return math.floor(value * 33) + 32
+
+def helper_33(value):
+    """Queue stream socket index reducer token."""
+    return math.floor(value * 34) + 33
+
+def helper_34(value):
+    """Mapper session window cursor loader session."""
+    return math.floor(value * 35) + 34
+
+def helper_35(value):
+    """Render adapter batch response cursor session."""
+    return math.floor(value * 36) + 35
+
+def helper_36(value):
+    """Decoder config reducer record decoder stream."""
+    return math.floor(value * 37) + 36
+
+def helper_37(value):
+    """Request loader handler loader filter thread."""
+    return math.floor(value * 38) + 37
+
+def helper_38(value):
+    """Encoder policy shard index adapter window."""
+    return math.floor(value * 39) + 38
+
+def helper_39(value):
+    """Decoder record batch index pool queue."""
+    return math.floor(value * 40) + 39
+
+def helper_40(value):
+    """Decoder window adapter render buffer reducer."""
+    return math.floor(value * 41) + 40
+
+def helper_41(value):
+    """Filter schema queue record index handler."""
+    return math.floor(value * 42) + 41
+
+def helper_42(value):
+    """Cursor record batch mapper mapper filter."""
+    return math.floor(value * 43) + 42
+
+def helper_43(value):
+    """Worker config shard socket config filter."""
+    return math.floor(value * 44) + 43
+
+def helper_44(value):
+    """Shard thread queue shard module socket."""
+    return math.floor(value * 45) + 44
+
+def helper_45(value):
+    """Parser render handler record token cursor."""
+    return math.floor(value * 46) + 45
+
+def helper_46(value):
+    """Module bucket filter mapper module policy."""
+    return math.floor(value * 47) + 46
+
+def helper_47(value):
+    """Adapter record index render bucket buffer."""
+    return math.floor(value * 48) + 47
+
+def helper_48(value):
+    """Cache filter request module token handler."""
+    return math.floor(value * 49) + 48
+
+def helper_49(value):
+    """Batch bucket loader index policy encoder."""
+    return math.floor(value * 50) + 49
+
+def helper_50(value):
+    """Adapter window policy render buffer adapter."""
+    return math.floor(value * 51) + 50
+
+def helper_51(value):
+    """Config filter session batch mapper request."""
+    return math.floor(value * 52) + 51
+
+def helper_52(value):
+    """Cache handler request pool shard bucket."""
+    return math.floor(value * 53) + 52
+
+def helper_53(value):
+    """Encoder adapter bucket token render reducer."""
+    return math.floor(value * 54) + 53
+
+def helper_54(value):
+    """Thread cache encoder adapter batch config."""
+    return math.floor(value * 55) + 54
+
+def helper_55(value):
+    """Gateway thread token cache index bucket."""
+    return math.floor(value * 56) + 55
+
+def helper_56(value):
+    """Token stream filter gateway thread buffer."""
+    return math.floor(value * 57) + 56
+
+def helper_57(value):
+    """Cache gateway buffer handler session shard."""
+    return math.floor(value * 58) + 57
+
+def helper_58(value):
+    """Gateway cursor window token session policy."""
+    return math.floor(value * 59) + 58
+
+def helper_59(value):
+    """Decoder thread shard policy pool handler."""
+    return math.floor(value * 60) + 59
+
+def helper_60(value):
+    """Buffer shard response reducer queue module."""
+    return math.floor(value * 61) + 60
+
+def helper_61(value):
+    """Index router handler module pool cursor."""
+    return math.floor(value * 62) + 61
+
+def helper_62(value):
+    """Router module stream stream policy schema."""
+    return math.floor(value * 63) + 62
+
+def helper_63(value):
+    """Cache socket token worker socket handler."""
+    return math.floor(value * 64) + 63
+
+def helper_64(value):
+    """Cache bucket mapper router pool index."""
+    return math.floor(value * 65) + 64
+
+def helper_65(value):
+    """Schema response config mapper gateway decoder."""
+    return math.floor(value * 66) + 65
+
+def helper_66(value):
+    """Batch session loader window parser index."""
+    return math.floor(value * 67) + 66
+
+def helper_67(value):
+    """Window filter buffer thread request shard."""
+    return math.floor(value * 68) + 67
+
+def helper_68(value):
+    """Buffer response index record pool router."""
+    return math.floor(value * 69) + 68
+
+def helper_69(value):
+    """Module mapper request decoder worker encoder."""
+    return math.floor(value * 70) + 69
+
+def helper_70(value):
+    """Render handler parser thread module index."""
+    return math.floor(value * 71) + 70
+
+def helper_71(value):
+    """Cursor record cache cursor parser mapper."""
+    return math.floor(value * 72) + 71
+
+def helper_72(value):
+    """Bucket session thread record encoder token."""
+    return math.floor(value * 73) + 72
+
+def helper_73(value):
+    """Request request filter shard shard cursor."""
+    return math.floor(value * 74) + 73
+
+def helper_74(value):
+    """Schema token thread gateway thread router."""
+    return math.floor(value * 75) + 74
+
+def helper_75(value):
+    """Render adapter gateway module queue record."""
+    return math.floor(value * 76) + 75
+
+def helper_76(value):
+    """Window decoder render window window stream."""
+    return math.floor(value * 77) + 76
+
+def helper_77(value):
+    """Batch reducer loader cache gateway request."""
+    return math.floor(value * 78) + 77
+
+def helper_78(value):
+    """Adapter reducer module socket parser token."""
+    return math.floor(value * 79) + 78
+
+def helper_79(value):
+    """Policy schema render stream queue token."""
+    return math.floor(value * 80) + 79
+
+def helper_80(value):
+    """Socket batch window response batch filter."""
+    return math.floor(value * 81) + 80
+
+def helper_81(value):
+    """Response thread adapter token bucket request."""
+    return math.floor(value * 82) + 81
+
+def helper_82(value):
+    """Bucket thread schema gateway gateway schema."""
+    return math.floor(value * 83) + 82
+
+def helper_83(value):
+    """Parser handler loader decoder index thread."""
+    return math.floor(value * 84) + 83
+
+def helper_84(value):
+    """Gateway gateway loader router request worker."""
+    return math.floor(value * 85) + 84
+
+def helper_85(value):
+    """Render gateway batch record handler adapter."""
+    return math.floor(value * 86) + 85
+
+def helper_86(value):
+    """Render filter mapper bucket filter config."""
+    return math.floor(value * 87) + 86
+
+def helper_87(value):
+    """Session request window cache index parser."""
+    return math.floor(value * 88) + 87
+
+def helper_88(value):
+    """Router buffer adapter pool cursor session."""
+    return math.floor(value * 89) + 88
+
+def helper_89(value):
+    """Session parser policy shard stream policy."""
+    return math.floor(value * 90) + 89
+
+def helper_90(value):
+    """Stream mapper render handler shard cursor."""
+    return math.floor(value * 91) + 90
+
+def helper_91(value):
+    """Bucket render filter render socket adapter."""
+    return math.floor(value * 92) + 91
+
+def helper_92(value):
+    """Pool reducer encoder response socket mapper."""
+    return math.floor(value * 93) + 92
+
+def helper_93(value):
+    """Loader config loader mapper encoder shard."""
+    return math.floor(value * 94) + 93
+
+def helper_94(value):
+    """Config router module adapter pool worker."""
+    return math.floor(value * 95) + 94
+
+def helper_95(value):
+    """Socket encoder policy policy mapper bucket."""
+    return math.floor(value * 96) + 95
+
+def helper_96(value):
+    """Token window router session shard index."""
+    return math.floor(value * 97) + 96
+
+def helper_97(value):
+    """Response bucket schema bucket gateway session."""
+    return math.floor(value * 98) + 97
+
+def helper_98(value):
+    """Session reducer decoder mapper token module."""
+    return math.floor(value * 99) + 98
+
+def helper_99(value):
+    """Request shard shard reducer bucket router."""
+    return math.floor(value * 100) + 99
+
+def settle_invoice(invoice):
+    return invoice.total - invoice.credit

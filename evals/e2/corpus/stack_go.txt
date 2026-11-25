@@ -1,0 +1,403 @@
+panic: runtime error: index out of range [5] with length 3
+
+goroutine 1 [running]:
+main.worker0(0xc0000000)
+	/srv/go/worker.go:20 +0x0
+main.worker1(0xc0000001)
+	/srv/go/worker.go:21 +0x10
+main.worker2(0xc0000002)
+	/srv/go/worker.go:22 +0x20
+main.worker3(0xc0000003)
+	/srv/go/worker.go:23 +0x30
+main.worker4(0xc0000004)
+	/srv/go/worker.go:24 +0x40
+main.worker5(0xc0000005)
+	/srv/go/worker.go:25 +0x50
+main.worker6(0xc0000006)
+	/srv/go/worker.go:26 +0x60
+main.worker7(0xc0000007)
+	/srv/go/worker.go:27 +0x70
+main.worker8(0xc0000008)
+	/srv/go/worker.go:28 +0x80
+main.worker9(0xc0000009)
+	/srv/go/worker.go:29 +0x90
+main.worker10(0xc000000a)
+	/srv/go/worker.go:30 +0xa0
+main.worker11(0xc000000b)
+	/srv/go/worker.go:31 +0xb0
+main.worker12(0xc000000c)
+	/srv/go/worker.go:32 +0xc0
+main.worker13(0xc000000d)
+	/srv/go/worker.go:33 +0xd0
+main.worker14(0xc000000e)
+	/srv/go/worker.go:34 +0xe0
+main.worker15(0xc000000f)
+	/srv/go/worker.go:35 +0xf0
+main.worker16(0xc0000010)
+	/srv/go/worker.go:36 +0x100
+main.worker17(0xc0000011)
+	/srv/go/worker.go:37 +0x110
+main.worker18(0xc0000012)
+	/srv/go/worker.go:38 +0x120
+main.worker19(0xc0000013)
+	/srv/go/worker.go:39 +0x130
+main.worker20(0xc0000014)
+	/srv/go/worker.go:40 +0x140
+main.worker21(0xc0000015)
+	/srv/go/worker.go:41 +0x150
+main.worker22(0xc0000016)
+	/srv/go/worker.go:42 +0x160
+main.worker23(0xc0000017)
+	/srv/go/worker.go:43 +0x170
+main.worker24(0xc0000018)
+	/srv/go/worker.go:44 +0x180
+main.worker25(0xc0000019)
+	/srv/go/worker.go:45 +0x190
+main.worker26(0xc000001a)
+	/srv/go/worker.go:46 +0x1a0
+main.worker27(0xc000001b)
+	/srv/go/worker.go:47 +0x1b0
+main.worker28(0xc000001c)
+	/srv/go/worker.go:48 +0x1c0
+main.worker29(0xc000001d)
+	/srv/go/worker.go:49 +0x1d0
+main.worker30(0xc000001e)
+	/srv/go/worker.go:50 +0x1e0
+main.worker31(0xc000001f)
+	/srv/go/worker.go:51 +0x1f0
+main.worker32(0xc0000020)
+	/srv/go/worker.go:52 +0x200
+main.worker33(0xc0000021)
+	/srv/go/worker.go:53 +0x210
+main.worker34(0xc0000022)
+	/srv/go/worker.go:54 +0x220
+main.worker35(0xc0000023)
+	/srv/go/worker.go:55 +0x230
+main.worker36(0xc0000024)
+	/srv/go/worker.go:56 +0x240
+main.worker37(0xc0000025)
+	/srv/go/worker.go:57 +0x250
+main.worker38(0xc0000026)
+	/srv/go/worker.go:58 +0x260
+main.worker39(0xc0000027)
+	/srv/go/worker.go:59 +0x270
+main.worker40(0xc0000028)
+	/srv/go/worker.go:60 +0x280
+main.worker41(0xc0000029)
+	/srv/go/worker.go:61 +0x290
+main.worker42(0xc000002a)
+	/srv/go/worker.go:62 +0x2a0
+main.worker43(0xc000002b)
+	/srv/go/worker.go:63 +0x2b0
+main.worker44(0xc000002c)
+	/srv/go/worker.go:64 +0x2c0
+main.worker45(0xc000002d)
+	/srv/go/worker.go:65 +0x2d0
+main.worker46(0xc000002e)
+	/srv/go/worker.go:66 +0x2e0
+main.worker47(0xc000002f)
+	/srv/go/worker.go:67 +0x2f0
+main.worker48(0xc0000030)
+	/srv/go/worker.go:68 +0x300
+main.worker49(0xc0000031)
+	/srv/go/worker.go:69 +0x310
+main.worker50(0xc0000032)
+	/srv/go/worker.go:70 +0x320
+main.worker51(0xc0000033)
+	/srv/go/worker.go:71 +0x330
+main.worker52(0xc0000034)
+	/srv/go/worker.go:72 +0x340
+main.worker53(0xc0000035)
+	/srv/go/worker.go:73 +0x350
+main.worker54(0xc0000036)
+	/srv/go/worker.go:74 +0x360
+main.worker55(0xc0000037)
+	/srv/go/worker.go:75 +0x370
+main.worker56(0xc0000038)
+	/srv/go/worker.go:76 +0x380
+main.worker57(0xc0000039)
+	/srv/go/worker.go:77 +0x390
+main.worker58(0xc000003a)
+	/srv/go/worker.go:78 +0x3a0
+main.worker59(0xc000003b)
+	/srv/go/worker.go:79 +0x3b0
+main.worker60(0xc000003c)
+	/srv/go/worker.go:80 +0x3c0
+main.worker61(0xc000003d)
+	/srv/go/worker.go:81 +0x3d0
+main.worker62(0xc000003e)
+	/srv/go/worker.go:82 +0x3e0
+main.worker63(0xc000003f)
+	/srv/go/worker.go:83 +0x3f0
+main.worker64(0xc0000040)
+	/srv/go/worker.go:84 +0x400
+main.worker65(0xc0000041)
+	/srv/go/worker.go:85 +0x410
+main.worker66(0xc0000042)
+	/srv/go/worker.go:86 +0x420
+main.worker67(0xc0000043)
+	/srv/go/worker.go:87 +0x430
+main.worker68(0xc0000044)
+	/srv/go/worker.go:88 +0x440
+main.worker69(0xc0000045)
+	/srv/go/worker.go:89 +0x450
+main.worker70(0xc0000046)
+	/srv/go/worker.go:90 +0x460
+main.worker71(0xc0000047)
+	/srv/go/worker.go:91 +0x470
+main.worker72(0xc0000048)
+	/srv/go/worker.go:92 +0x480
+main.worker73(0xc0000049)
+	/srv/go/worker.go:93 +0x490
+main.worker74(0xc000004a)
+	/srv/go/worker.go:94 +0x4a0
+main.worker75(0xc000004b)
+	/srv/go/worker.go:95 +0x4b0
+main.worker76(0xc000004c)
+	/srv/go/worker.go:96 +0x4c0
+main.worker77(0xc000004d)
+	/srv/go/worker.go:97 +0x4d0
+main.worker78(0xc000004e)
+	/srv/go/worker.go:98 +0x4e0
+main.worker79(0xc000004f)
+	/srv/go/worker.go:99 +0x4f0
+main.worker80(0xc0000050)
+	/srv/go/worker.go:100 +0x500
+main.worker81(0xc0000051)
+	/srv/go/worker.go:101 +0x510
+main.worker82(0xc0000052)
+	/srv/go/worker.go:102 +0x520
+main.worker83(0xc0000053)
+	/srv/go/worker.go:103 +0x530
+main.worker84(0xc0000054)
+	/srv/go/worker.go:104 +0x540
+main.worker85(0xc0000055)
+	/srv/go/worker.go:105 +0x550
+main.worker86(0xc0000056)
+	/srv/go/worker.go:106 +0x560
+main.worker87(0xc0000057)
+	/srv/go/worker.go:107 +0x570
+main.worker88(0xc0000058)
+	/srv/go/worker.go:108 +0x580
+main.worker89(0xc0000059)
+	/srv/go/worker.go:109 +0x590
+main.worker90(0xc000005a)
+	/srv/go/worker.go:110 +0x5a0
+main.worker91(0xc000005b)
+	/srv/go/worker.go:111 +0x5b0
+main.worker92(0xc000005c)
+	/srv/go/worker.go:112 +0x5c0
+main.worker93(0xc000005d)
+	/srv/go/worker.go:113 +0x5d0
+main.worker94(0xc000005e)
+	/srv/go/worker.go:114 +0x5e0
+main.worker95(0xc000005f)
+	/srv/go/worker.go:115 +0x5f0
+main.worker96(0xc0000060)
+	/srv/go/worker.go:116 +0x600
+main.worker97(0xc0000061)
+	/srv/go/worker.go:117 +0x610
+main.worker98(0xc0000062)
+	/srv/go/worker.go:118 +0x620
+main.worker99(0xc0000063)
+	/srv/go/worker.go:119 +0x630
+main.worker100(0xc0000064)
+	/srv/go/worker.go:120 +0x640
+main.worker101(0xc0000065)
+	/srv/go/worker.go:121 +0x650
+main.worker102(0xc0000066)
+	/srv/go/worker.go:122 +0x660
+main.worker103(0xc0000067)
+	/srv/go/worker.go:123 +0x670
+main.worker104(0xc0000068)
+	/srv/go/worker.go:124 +0x680
+main.worker105(0xc0000069)
+	/srv/go/worker.go:125 +0x690
+main.worker106(0xc000006a)
+	/srv/go/worker.go:126 +0x6a0
+main.worker107(0xc000006b)
+	/srv/go/worker.go:127 +0x6b0
+main.worker108(0xc000006c)
+	/srv/go/worker.go:128 +0x6c0
+main.worker109(0xc000006d)
+	/srv/go/worker.go:129 +0x6d0
+main.worker110(0xc000006e)
+	/srv/go/worker.go:130 +0x6e0
+main.worker111(0xc000006f)
+	/srv/go/worker.go:131 +0x6f0
+main.worker112(0xc0000070)
+	/srv/go/worker.go:132 +0x700
+main.worker113(0xc0000071)
+	/srv/go/worker.go:133 +0x710
+main.worker114(0xc0000072)
+	/srv/go/worker.go:134 +0x720
+main.worker115(0xc0000073)
+	/srv/go/worker.go:135 +0x730
+main.worker116(0xc0000074)
+	/srv/go/worker.go:136 +0x740
+main.worker117(0xc0000075)
+	/srv/go/worker.go:137 +0x750
+main.worker118(0xc0000076)
+	/srv/go/worker.go:138 +0x760
+main.worker119(0xc0000077)
+	/srv/go/worker.go:139 +0x770
+main.worker120(0xc0000078)
+	/srv/go/worker.go:140 +0x780
+main.worker121(0xc0000079)
+	/srv/go/worker.go:141 +0x790
+main.worker122(0xc000007a)
+	/srv/go/worker.go:142 +0x7a0
+main.worker123(0xc000007b)
+	/srv/go/worker.go:143 +0x7b0
+main.worker124(0xc000007c)
+	/srv/go/worker.go:144 +0x7c0
+main.worker125(0xc000007d)
+	/srv/go/worker.go:145 +0x7d0
+main.worker126(0xc000007e)
+	/srv/go/worker.go:146 +0x7e0
+main.worker127(0xc000007f)
+	/srv/go/worker.go:147 +0x7f0
+main.worker128(0xc0000080)
+	/srv/go/worker.go:148 +0x800
+main.worker129(0xc0000081)
+	/srv/go/worker.go:149 +0x810
+main.worker130(0xc0000082)
+	/srv/go/worker.go:150 +0x820
+main.worker131(0xc0000083)
+	/srv/go/worker.go:151 +0x830
+main.worker132(0xc0000084)
+	/srv/go/worker.go:152 +0x840
+main.worker133(0xc0000085)
+	/srv/go/worker.go:153 +0x850
+main.worker134(0xc0000086)
+	/srv/go/worker.go:154 +0x860
+main.worker135(0xc0000087)
+	/srv/go/worker.go:155 +0x870
+main.worker136(0xc0000088)
+	/srv/go/worker.go:156 +0x880
+main.worker137(0xc0000089)
+	/srv/go/worker.go:157 +0x890
+main.worker138(0xc000008a)
+	/srv/go/worker.go:158 +0x8a0
+main.worker139(0xc000008b)
+	/srv/go/worker.go:159 +0x8b0
+main.worker140(0xc000008c)
+	/srv/go/worker.go:160 +0x8c0
+main.worker141(0xc000008d)
+	/srv/go/worker.go:161 +0x8d0
+main.worker142(0xc000008e)
+	/srv/go/worker.go:162 +0x8e0
+main.worker143(0xc000008f)
+	/srv/go/worker.go:163 +0x8f0
+main.worker144(0xc0000090)
+	/srv/go/worker.go:164 +0x900
+main.worker145(0xc0000091)
+	/srv/go/worker.go:165 +0x910
+main.worker146(0xc0000092)
+	/srv/go/worker.go:166 +0x920
+main.worker147(0xc0000093)
+	/srv/go/worker.go:167 +0x930
+main.worker148(0xc0000094)
+	/srv/go/worker.go:168 +0x940
+main.worker149(0xc0000095)
+	/srv/go/worker.go:169 +0x950
+main.worker150(0xc0000096)
+	/srv/go/worker.go:170 +0x960
+main.worker151(0xc0000097)
+	/srv/go/worker.go:171 +0x970
+main.worker152(0xc0000098)
+	/srv/go/worker.go:172 +0x980
+main.worker153(0xc0000099)
+	/srv/go/worker.go:173 +0x990
+main.worker154(0xc000009a)
+	/srv/go/worker.go:174 +0x9a0
+main.worker155(0xc000009b)
+	/srv/go/worker.go:175 +0x9b0
+main.worker156(0xc000009c)
+	/srv/go/worker.go:176 +0x9c0
+main.worker157(0xc000009d)
+	/srv/go/worker.go:177 +0x9d0
+main.worker158(0xc000009e)
+	/srv/go/worker.go:178 +0x9e0
+main.worker159(0xc000009f)
+	/srv/go/worker.go:179 +0x9f0
+main.worker160(0xc00000a0)
+	/srv/go/worker.go:180 +0xa00
+main.worker161(0xc00000a1)
+	/srv/go/worker.go:181 +0xa10
+main.worker162(0xc00000a2)
+	/srv/go/worker.go:182 +0xa20
+main.worker163(0xc00000a3)
+	/srv/go/worker.go:183 +0xa30
+main.worker164(0xc00000a4)
+	/srv/go/worker.go:184 +0xa40
+main.worker165(0xc00000a5)
+	/srv/go/worker.go:185 +0xa50
+main.worker166(0xc00000a6)
+	/srv/go/worker.go:186 +0xa60
+main.worker167(0xc00000a7)
+	/srv/go/worker.go:187 +0xa70
+main.worker168(0xc00000a8)
+	/srv/go/worker.go:188 +0xa80
+main.worker169(0xc00000a9)
+	/srv/go/worker.go:189 +0xa90
+main.worker170(0xc00000aa)
+	/srv/go/worker.go:190 +0xaa0
+main.worker171(0xc00000ab)
+	/srv/go/worker.go:191 +0xab0
+main.worker172(0xc00000ac)
+	/srv/go/worker.go:192 +0xac0
+main.worker173(0xc00000ad)
+	/srv/go/worker.go:193 +0xad0
+main.worker174(0xc00000ae)
+	/srv/go/worker.go:194 +0xae0
+main.worker175(0xc00000af)
+	/srv/go/worker.go:195 +0xaf0
+main.worker176(0xc00000b0)
+	/srv/go/worker.go:196 +0xb00
+main.worker177(0xc00000b1)
+	/srv/go/worker.go:197 +0xb10
+main.worker178(0xc00000b2)
+	/srv/go/worker.go:198 +0xb20
+main.worker179(0xc00000b3)
+	/srv/go/worker.go:199 +0xb30
+main.worker180(0xc00000b4)
+	/srv/go/worker.go:200 +0xb40
+main.worker181(0xc00000b5)
+	/srv/go/worker.go:201 +0xb50
+main.worker182(0xc00000b6)
+	/srv/go/worker.go:202 +0xb60
+main.worker183(0xc00000b7)
+	/srv/go/worker.go:203 +0xb70
+main.worker184(0xc00000b8)
+	/srv/go/worker.go:204 +0xb80
+main.worker185(0xc00000b9)
+	/srv/go/worker.go:205 +0xb90
+main.worker186(0xc00000ba)
+	/srv/go/worker.go:206 +0xba0
+main.worker187(0xc00000bb)
+	/srv/go/worker.go:207 +0xbb0
+main.worker188(0xc00000bc)
+	/srv/go/worker.go:208 +0xbc0
+main.worker189(0xc00000bd)
+	/srv/go/worker.go:209 +0xbd0
+main.worker190(0xc00000be)
+	/srv/go/worker.go:210 +0xbe0
+main.worker191(0xc00000bf)
+	/srv/go/worker.go:211 +0xbf0
+main.worker192(0xc00000c0)
+	/srv/go/worker.go:212 +0xc00
+main.worker193(0xc00000c1)
+	/srv/go/worker.go:213 +0xc10
+main.worker194(0xc00000c2)
+	/srv/go/worker.go:214 +0xc20
+main.worker195(0xc00000c3)
+	/srv/go/worker.go:215 +0xc30
+main.worker196(0xc00000c4)
+	/srv/go/worker.go:216 +0xc40
+main.worker197(0xc00000c5)
+	/srv/go/worker.go:217 +0xc50
+main.worker198(0xc00000c6)
+	/srv/go/worker.go:218 +0xc60
+main.worker199(0xc00000c7)
+	/srv/go/worker.go:219 +0xc70

@@ -1,0 +1,641 @@
+lib/mod0.rs-9-    // setup
+lib/mod0.rs:10:    fn dispatch_event(&self) {
+lib/mod0.rs-11-        self.bus.send();
+--
+lib/mod0.rs-39-    // setup
+lib/mod0.rs:40:    fn dispatch_event(&self) {
+lib/mod0.rs-41-        self.bus.send();
+--
+lib/mod0.rs-69-    // setup
+lib/mod0.rs:70:    fn dispatch_event(&self) {
+lib/mod0.rs-71-        self.bus.send();
+--
+lib/mod0.rs-99-    // setup
+lib/mod0.rs:100:    fn dispatch_event(&self) {
+lib/mod0.rs-101-        self.bus.send();
+--
+lib/mod1.rs-9-    // setup
+lib/mod1.rs:10:    fn dispatch_event(&self) {
+lib/mod1.rs-11-        self.bus.send();
+--
+lib/mod1.rs-39-    // setup
+lib/mod1.rs:40:    fn dispatch_event(&self) {
+lib/mod1.rs-41-        self.bus.send();
+--
+lib/mod1.rs-69-    // setup
+lib/mod1.rs:70:    fn dispatch_event(&self) {
+lib/mod1.rs-71-        self.bus.send();
+--
+lib/mod1.rs-99-    // setup
+lib/mod1.rs:100:    fn dispatch_event(&self) {
+lib/mod1.rs-101-        self.bus.send();
+--
+lib/mod2.rs-9-    // setup
+lib/mod2.rs:10:    fn dispatch_event(&self) {
+lib/mod2.rs-11-        self.bus.send();
+--
+lib/mod2.rs-39-    // setup
+lib/mod2.rs:40:    fn dispatch_event(&self) {
+lib/mod2.rs-41-        self.bus.send();
+--
+lib/mod2.rs-69-    // setup
+lib/mod2.rs:70:    fn dispatch_event(&self) {
+lib/mod2.rs-71-        self.bus.send();
+--
+lib/mod2.rs-99-    // setup
+lib/mod2.rs:100:    fn dispatch_event(&self) {
+lib/mod2.rs-101-        self.bus.send();
+--
+lib/mod3.rs-9-    // setup
+lib/mod3.rs:10:    fn dispatch_event(&self) {
+lib/mod3.rs-11-        self.bus.send();
+--
+lib/mod3.rs-39-    // setup
+lib/mod3.rs:40:    fn dispatch_event(&self) {
+lib/mod3.rs-41-        self.bus.send();
+--
+lib/mod3.rs-69-    // setup
+lib/mod3.rs:70:    fn dispatch_event(&self) {
+lib/mod3.rs-71-        self.bus.send();
+--
+lib/mod3.rs-99-    // setup
+lib/mod3.rs:100:    fn dispatch_event(&self) {
+lib/mod3.rs-101-        self.bus.send();
+--
+lib/mod4.rs-9-    // setup
+lib/mod4.rs:10:    fn dispatch_event(&self) {
+lib/mod4.rs-11-        self.bus.send();
+--
+lib/mod4.rs-39-    // setup
+lib/mod4.rs:40:    fn dispatch_event(&self) {
+lib/mod4.rs-41-        self.bus.send();
+--
+lib/mod4.rs-69-    // setup
+lib/mod4.rs:70:    fn dispatch_event(&self) {
+lib/mod4.rs-71-        self.bus.send();
+--
+lib/mod4.rs-99-    // setup
+lib/mod4.rs:100:    fn dispatch_event(&self) {
+lib/mod4.rs-101-        self.bus.send();
+--
+lib/mod5.rs-9-    // setup
+lib/mod5.rs:10:    fn dispatch_event(&self) {
+lib/mod5.rs-11-        self.bus.send();
+--
+lib/mod5.rs-39-    // setup
+lib/mod5.rs:40:    fn dispatch_event(&self) {
+lib/mod5.rs-41-        self.bus.send();
+--
+lib/mod5.rs-69-    // setup
+lib/mod5.rs:70:    fn dispatch_event(&self) {
+lib/mod5.rs-71-        self.bus.send();
+--
+lib/mod5.rs-99-    // setup
+lib/mod5.rs:100:    fn dispatch_event(&self) {
+lib/mod5.rs-101-        self.bus.send();
+--
+lib/mod6.rs-9-    // setup
+lib/mod6.rs:10:    fn dispatch_event(&self) {
+lib/mod6.rs-11-        self.bus.send();
+--
+lib/mod6.rs-39-    // setup
+lib/mod6.rs:40:    fn dispatch_event(&self) {
+lib/mod6.rs-41-        self.bus.send();
+--
+lib/mod6.rs-69-    // setup
+lib/mod6.rs:70:    fn dispatch_event(&self) {
+lib/mod6.rs-71-        self.bus.send();
+--
+lib/mod6.rs-99-    // setup
+lib/mod6.rs:100:    fn dispatch_event(&self) {
+lib/mod6.rs-101-        self.bus.send();
+--
+lib/mod7.rs-9-    // setup
+lib/mod7.rs:10:    fn dispatch_event(&self) {
+lib/mod7.rs-11-        self.bus.send();
+--
+lib/mod7.rs-39-    // setup
+lib/mod7.rs:40:    fn dispatch_event(&self) {
+lib/mod7.rs-41-        self.bus.send();
+--
+lib/mod7.rs-69-    // setup
+lib/mod7.rs:70:    fn dispatch_event(&self) {
+lib/mod7.rs-71-        self.bus.send();
+--
+lib/mod7.rs-99-    // setup
+lib/mod7.rs:100:    fn dispatch_event(&self) {
+lib/mod7.rs-101-        self.bus.send();
+--
+lib/mod8.rs-9-    // setup
+lib/mod8.rs:10:    fn dispatch_event(&self) {
+lib/mod8.rs-11-        self.bus.send();
+--
+lib/mod8.rs-39-    // setup
+lib/mod8.rs:40:    fn dispatch_event(&self) {
+lib/mod8.rs-41-        self.bus.send();
+--
+lib/mod8.rs-69-    // setup
+lib/mod8.rs:70:    fn dispatch_event(&self) {
+lib/mod8.rs-71-        self.bus.send();
+--
+lib/mod8.rs-99-    // setup
+lib/mod8.rs:100:    fn dispatch_event(&self) {
+lib/mod8.rs-101-        self.bus.send();
+--
+lib/mod9.rs-9-    // setup
+lib/mod9.rs:10:    fn dispatch_event(&self) {
+lib/mod9.rs-11-        self.bus.send();
+--
+lib/mod9.rs-39-    // setup
+lib/mod9.rs:40:    fn dispatch_event(&self) {
+lib/mod9.rs-41-        self.bus.send();
+--
+lib/mod9.rs-69-    // setup
+lib/mod9.rs:70:    fn dispatch_event(&self) {
+lib/mod9.rs-71-        self.bus.send();
+--
+lib/mod9.rs-99-    // setup
+lib/mod9.rs:100:    fn dispatch_event(&self) {
+lib/mod9.rs-101-        self.bus.send();
+--
+lib/mod10.rs-9-    // setup
+lib/mod10.rs:10:    fn dispatch_event(&self) {
+lib/mod10.rs-11-        self.bus.send();
+--
+lib/mod10.rs-39-    // setup
+lib/mod10.rs:40:    fn dispatch_event(&self) {
+lib/mod10.rs-41-        self.bus.send();
+--
+lib/mod10.rs-69-    // setup
+lib/mod10.rs:70:    fn dispatch_event(&self) {
+lib/mod10.rs-71-        self.bus.send();
+--
+lib/mod10.rs-99-    // setup
+lib/mod10.rs:100:    fn dispatch_event(&self) {
+lib/mod10.rs-101-        self.bus.send();
+--
+lib/mod11.rs-9-    // setup
+lib/mod11.rs:10:    fn dispatch_event(&self) {
+lib/mod11.rs-11-        self.bus.send();
+--
+lib/mod11.rs-39-    // setup
+lib/mod11.rs:40:    fn dispatch_event(&self) {
+lib/mod11.rs-41-        self.bus.send();
+--
+lib/mod11.rs-69-    // setup
+lib/mod11.rs:70:    fn dispatch_event(&self) {
+lib/mod11.rs-71-        self.bus.send();
+--
+lib/mod11.rs-99-    // setup
+lib/mod11.rs:100:    fn dispatch_event(&self) {
+lib/mod11.rs-101-        self.bus.send();
+--
+lib/mod12.rs-9-    // setup
+lib/mod12.rs:10:    fn dispatch_event(&self) {
+lib/mod12.rs-11-        self.bus.send();
+--
+lib/mod12.rs-39-    // setup
+lib/mod12.rs:40:    fn dispatch_event(&self) {
+lib/mod12.rs-41-        self.bus.send();
+--
+lib/mod12.rs-69-    // setup
+lib/mod12.rs:70:    fn dispatch_event(&self) {
+lib/mod12.rs-71-        self.bus.send();
+--
+lib/mod12.rs-99-    // setup
+lib/mod12.rs:100:    fn dispatch_event(&self) {
+lib/mod12.rs-101-        self.bus.send();
+--
+lib/mod13.rs-9-    // setup
+lib/mod13.rs:10:    fn dispatch_event(&self) {
+lib/mod13.rs-11-        self.bus.send();
+--
+lib/mod13.rs-39-    // setup
+lib/mod13.rs:40:    fn dispatch_event(&self) {
+lib/mod13.rs-41-        self.bus.send();
+--
+lib/mod13.rs-69-    // setup
+lib/mod13.rs:70:    fn dispatch_event(&self) {
+lib/mod13.rs-71-        self.bus.send();
+--
+lib/mod13.rs-99-    // setup
+lib/mod13.rs:100:    fn dispatch_event(&self) {
+lib/mod13.rs-101-        self.bus.send();
+--
+lib/mod14.rs-9-    // setup
+lib/mod14.rs:10:    fn dispatch_event(&self) {
+lib/mod14.rs-11-        self.bus.send();
+--
+lib/mod14.rs-39-    // setup
+lib/mod14.rs:40:    fn dispatch_event(&self) {
+lib/mod14.rs-41-        self.bus.send();
+--
+lib/mod14.rs-69-    // setup
+lib/mod14.rs:70:    fn dispatch_event(&self) {
+lib/mod14.rs-71-        self.bus.send();
+--
+lib/mod14.rs-99-    // setup
+lib/mod14.rs:100:    fn dispatch_event(&self) {
+lib/mod14.rs-101-        self.bus.send();
+--
+lib/mod15.rs-9-    // setup
+lib/mod15.rs:10:    fn dispatch_event(&self) {
+lib/mod15.rs-11-        self.bus.send();
+--
+lib/mod15.rs-39-    // setup
+lib/mod15.rs:40:    fn dispatch_event(&self) {
+lib/mod15.rs-41-        self.bus.send();
+--
+lib/mod15.rs-69-    // setup
+lib/mod15.rs:70:    fn dispatch_event(&self) {
+lib/mod15.rs-71-        self.bus.send();
+--
+lib/mod15.rs-99-    // setup
+lib/mod15.rs:100:    fn dispatch_event(&self) {
+lib/mod15.rs-101-        self.bus.send();
+--
+lib/mod16.rs-9-    // setup
+lib/mod16.rs:10:    fn dispatch_event(&self) {
+lib/mod16.rs-11-        self.bus.send();
+--
+lib/mod16.rs-39-    // setup
+lib/mod16.rs:40:    fn dispatch_event(&self) {
+lib/mod16.rs-41-        self.bus.send();
+--
+lib/mod16.rs-69-    // setup
+lib/mod16.rs:70:    fn dispatch_event(&self) {
+lib/mod16.rs-71-        self.bus.send();
+--
+lib/mod16.rs-99-    // setup
+lib/mod16.rs:100:    fn dispatch_event(&self) {
+lib/mod16.rs-101-        self.bus.send();
+--
+lib/mod17.rs-9-    // setup
+lib/mod17.rs:10:    fn dispatch_event(&self) {
+lib/mod17.rs-11-        self.bus.send();
+--
+lib/mod17.rs-39-    // setup
+lib/mod17.rs:40:    fn dispatch_event(&self) {
+lib/mod17.rs-41-        self.bus.send();
+--
+lib/mod17.rs-69-    // setup
+lib/mod17.rs:70:    fn dispatch_event(&self) {
+lib/mod17.rs-71-        self.bus.send();
+--
+lib/mod17.rs-99-    // setup
+lib/mod17.rs:100:    fn dispatch_event(&self) {
+lib/mod17.rs-101-        self.bus.send();
+--
+lib/mod18.rs-9-    // setup
+lib/mod18.rs:10:    fn dispatch_event(&self) {
+lib/mod18.rs-11-        self.bus.send();
+--
+lib/mod18.rs-39-    // setup
+lib/mod18.rs:40:    fn dispatch_event(&self) {
+lib/mod18.rs-41-        self.bus.send();
+--
+lib/mod18.rs-69-    // setup
+lib/mod18.rs:70:    fn dispatch_event(&self) {
+lib/mod18.rs-71-        self.bus.send();
+--
+lib/mod18.rs-99-    // setup
+lib/mod18.rs:100:    fn dispatch_event(&self) {
+lib/mod18.rs-101-        self.bus.send();
+--
+lib/mod19.rs-9-    // setup
+lib/mod19.rs:10:    fn dispatch_event(&self) {
+lib/mod19.rs-11-        self.bus.send();
+--
+lib/mod19.rs-39-    // setup
+lib/mod19.rs:40:    fn dispatch_event(&self) {
+lib/mod19.rs-41-        self.bus.send();
+--
+lib/mod19.rs-69-    // setup
+lib/mod19.rs:70:    fn dispatch_event(&self) {
+lib/mod19.rs-71-        self.bus.send();
+--
+lib/mod19.rs-99-    // setup
+lib/mod19.rs:100:    fn dispatch_event(&self) {
+lib/mod19.rs-101-        self.bus.send();
+--
+lib/mod20.rs-9-    // setup
+lib/mod20.rs:10:    fn dispatch_event(&self) {
+lib/mod20.rs-11-        self.bus.send();
+--
+lib/mod20.rs-39-    // setup
+lib/mod20.rs:40:    fn dispatch_event(&self) {
+lib/mod20.rs-41-        self.bus.send();
+--
+lib/mod20.rs-69-    // setup
+lib/mod20.rs:70:    fn dispatch_event(&self) {
+lib/mod20.rs-71-        self.bus.send();
+--
+lib/mod20.rs-99-    // setup
+lib/mod20.rs:100:    fn dispatch_event(&self) {
+lib/mod20.rs-101-        self.bus.send();
+--
+lib/mod21.rs-9-    // setup
+lib/mod21.rs:10:    fn dispatch_event(&self) {
+lib/mod21.rs-11-        self.bus.send();
+--
+lib/mod21.rs-39-    // setup
+lib/mod21.rs:40:    fn dispatch_event(&self) {
+lib/mod21.rs-41-        self.bus.send();
+--
+lib/mod21.rs-69-    // setup
+lib/mod21.rs:70:    fn dispatch_event(&self) {
+lib/mod21.rs-71-        self.bus.send();
+--
+lib/mod21.rs-99-    // setup
+lib/mod21.rs:100:    fn dispatch_event(&self) {
+lib/mod21.rs-101-        self.bus.send();
+--
+lib/mod22.rs-9-    // setup
+lib/mod22.rs:10:    fn dispatch_event(&self) {
+lib/mod22.rs-11-        self.bus.send();
+--
+lib/mod22.rs-39-    // setup
+lib/mod22.rs:40:    fn dispatch_event(&self) {
+lib/mod22.rs-41-        self.bus.send();
+--
+lib/mod22.rs-69-    // setup
+lib/mod22.rs:70:    fn dispatch_event(&self) {
+lib/mod22.rs-71-        self.bus.send();
+--
+lib/mod22.rs-99-    // setup
+lib/mod22.rs:100:    fn dispatch_event(&self) {
+lib/mod22.rs-101-        self.bus.send();
+--
+lib/mod23.rs-9-    // setup
+lib/mod23.rs:10:    fn dispatch_event(&self) {
+lib/mod23.rs-11-        self.bus.send();
+--
+lib/mod23.rs-39-    // setup
+lib/mod23.rs:40:    fn dispatch_event(&self) {
+lib/mod23.rs-41-        self.bus.send();
+--
+lib/mod23.rs-69-    // setup
+lib/mod23.rs:70:    fn dispatch_event(&self) {
+lib/mod23.rs-71-        self.bus.send();
+--
+lib/mod23.rs-99-    // setup
+lib/mod23.rs:100:    fn dispatch_event(&self) {
+lib/mod23.rs-101-        self.bus.send();
+--
+lib/mod24.rs-9-    // setup
+lib/mod24.rs:10:    fn dispatch_event(&self) {
+lib/mod24.rs-11-        self.bus.send();
+--
+lib/mod24.rs-39-    // setup
+lib/mod24.rs:40:    fn dispatch_event(&self) {
+lib/mod24.rs-41-        self.bus.send();
+--
+lib/mod24.rs-69-    // setup
+lib/mod24.rs:70:    fn dispatch_event(&self) {
+lib/mod24.rs-71-        self.bus.send();
+--
+lib/mod24.rs-99-    // setup
+lib/mod24.rs:100:    fn dispatch_event(&self) {
+lib/mod24.rs-101-        self.bus.send();
+--
+lib/mod25.rs-9-    // setup
+lib/mod25.rs:10:    fn dispatch_event(&self) {
+lib/mod25.rs-11-        self.bus.send();
+--
+lib/mod25.rs-39-    // setup
+lib/mod25.rs:40:    fn dispatch_event(&self) {
+lib/mod25.rs-41-        self.bus.send();
+--
+lib/mod25.rs-69-    // setup
+lib/mod25.rs:70:    fn dispatch_event(&self) {
+lib/mod25.rs-71-        self.bus.send();
+--
+lib/mod25.rs-99-    // setup
+lib/mod25.rs:100:    fn dispatch_event(&self) {
+lib/mod25.rs-101-        self.bus.send();
+--
+lib/mod26.rs-9-    // setup
+lib/mod26.rs:10:    fn dispatch_event(&self) {
+lib/mod26.rs-11-        self.bus.send();
+--
+lib/mod26.rs-39-    // setup
+lib/mod26.rs:40:    fn dispatch_event(&self) {
+lib/mod26.rs-41-        self.bus.send();
+--
+lib/mod26.rs-69-    // setup
+lib/mod26.rs:70:    fn dispatch_event(&self) {
+lib/mod26.rs-71-        self.bus.send();
+--
+lib/mod26.rs-99-    // setup
+lib/mod26.rs:100:    fn dispatch_event(&self) {
+lib/mod26.rs-101-        self.bus.send();
+--
+lib/mod27.rs-9-    // setup
+lib/mod27.rs:10:    fn dispatch_event(&self) {
+lib/mod27.rs-11-        self.bus.send();
+--
+lib/mod27.rs-39-    // setup
+lib/mod27.rs:40:    fn dispatch_event(&self) {
+lib/mod27.rs-41-        self.bus.send();
+--
+lib/mod27.rs-69-    // setup
+lib/mod27.rs:70:    fn dispatch_event(&self) {
+lib/mod27.rs-71-        self.bus.send();
+--
+lib/mod27.rs-99-    // setup
+lib/mod27.rs:100:    fn dispatch_event(&self) {
+lib/mod27.rs-101-        self.bus.send();
+--
+lib/mod28.rs-9-    // setup
+lib/mod28.rs:10:    fn dispatch_event(&self) {
+lib/mod28.rs-11-        self.bus.send();
+--
+lib/mod28.rs-39-    // setup
+lib/mod28.rs:40:    fn dispatch_event(&self) {
+lib/mod28.rs-41-        self.bus.send();
+--
+lib/mod28.rs-69-    // setup
+lib/mod28.rs:70:    fn dispatch_event(&self) {
+lib/mod28.rs-71-        self.bus.send();
+--
+lib/mod28.rs-99-    // setup
+lib/mod28.rs:100:    fn dispatch_event(&self) {
+lib/mod28.rs-101-        self.bus.send();
+--
+lib/mod29.rs-9-    // setup
+lib/mod29.rs:10:    fn dispatch_event(&self) {
+lib/mod29.rs-11-        self.bus.send();
+--
+lib/mod29.rs-39-    // setup
+lib/mod29.rs:40:    fn dispatch_event(&self) {
+lib/mod29.rs-41-        self.bus.send();
+--
+lib/mod29.rs-69-    // setup
+lib/mod29.rs:70:    fn dispatch_event(&self) {
+lib/mod29.rs-71-        self.bus.send();
+--
+lib/mod29.rs-99-    // setup
+lib/mod29.rs:100:    fn dispatch_event(&self) {
+lib/mod29.rs-101-        self.bus.send();
+--
+lib/mod30.rs-9-    // setup
+lib/mod30.rs:10:    fn dispatch_event(&self) {
+lib/mod30.rs-11-        self.bus.send();
+--
+lib/mod30.rs-39-    // setup
+lib/mod30.rs:40:    fn dispatch_event(&self) {
+lib/mod30.rs-41-        self.bus.send();
+--
+lib/mod30.rs-69-    // setup
+lib/mod30.rs:70:    fn dispatch_event(&self) {
+lib/mod30.rs-71-        self.bus.send();
+--
+lib/mod30.rs-99-    // setup
+lib/mod30.rs:100:    fn dispatch_event(&self) {
+lib/mod30.rs-101-        self.bus.send();
+--
+lib/mod31.rs-9-    // setup
+lib/mod31.rs:10:    fn dispatch_event(&self) {
+lib/mod31.rs-11-        self.bus.send();
+--
+lib/mod31.rs-39-    // setup
+lib/mod31.rs:40:    fn dispatch_event(&self) {
+lib/mod31.rs-41-        self.bus.send();
+--
+lib/mod31.rs-69-    // setup
+lib/mod31.rs:70:    fn dispatch_event(&self) {
+lib/mod31.rs-71-        self.bus.send();
+--
+lib/mod31.rs-99-    // setup
+lib/mod31.rs:100:    fn dispatch_event(&self) {
+lib/mod31.rs-101-        self.bus.send();
+--
+lib/mod32.rs-9-    // setup
+lib/mod32.rs:10:    fn dispatch_event(&self) {
+lib/mod32.rs-11-        self.bus.send();
+--
+lib/mod32.rs-39-    // setup
+lib/mod32.rs:40:    fn dispatch_event(&self) {
+lib/mod32.rs-41-        self.bus.send();
+--
+lib/mod32.rs-69-    // setup
+lib/mod32.rs:70:    fn dispatch_event(&self) {
+lib/mod32.rs-71-        self.bus.send();
+--
+lib/mod32.rs-99-    // setup
+lib/mod32.rs:100:    fn dispatch_event(&self) {
+lib/mod32.rs-101-        self.bus.send();
+--
+lib/mod33.rs-9-    // setup
+lib/mod33.rs:10:    fn dispatch_event(&self) {
+lib/mod33.rs-11-        self.bus.send();
+--
+lib/mod33.rs-39-    // setup
+lib/mod33.rs:40:    fn dispatch_event(&self) {
+lib/mod33.rs-41-        self.bus.send();
+--
+lib/mod33.rs-69-    // setup
+lib/mod33.rs:70:    fn dispatch_event(&self) {
+lib/mod33.rs-71-        self.bus.send();
+--
+lib/mod33.rs-99-    // setup
+lib/mod33.rs:100:    fn dispatch_event(&self) {
+lib/mod33.rs-101-        self.bus.send();
+--
+lib/mod34.rs-9-    // setup
+lib/mod34.rs:10:    fn dispatch_event(&self) {
+lib/mod34.rs-11-        self.bus.send();
+--
+lib/mod34.rs-39-    // setup
+lib/mod34.rs:40:    fn dispatch_event(&self) {
+lib/mod34.rs-41-        self.bus.send();
+--
+lib/mod34.rs-69-    // setup
+lib/mod34.rs:70:    fn dispatch_event(&self) {
+lib/mod34.rs-71-        self.bus.send();
+--
+lib/mod34.rs-99-    // setup
+lib/mod34.rs:100:    fn dispatch_event(&self) {
+lib/mod34.rs-101-        self.bus.send();
+--
+lib/mod35.rs-9-    // setup
+lib/mod35.rs:10:    fn dispatch_event(&self) {
+lib/mod35.rs-11-        self.bus.send();
+--
+lib/mod35.rs-39-    // setup
+lib/mod35.rs:40:    fn dispatch_event(&self) {
+lib/mod35.rs-41-        self.bus.send();
+--
+lib/mod35.rs-69-    // setup
+lib/mod35.rs:70:    fn dispatch_event(&self) {
+lib/mod35.rs-71-        self.bus.send();
+--
+lib/mod35.rs-99-    // setup
+lib/mod35.rs:100:    fn dispatch_event(&self) {
+lib/mod35.rs-101-        self.bus.send();
+--
+lib/mod36.rs-9-    // setup
+lib/mod36.rs:10:    fn dispatch_event(&self) {
+lib/mod36.rs-11-        self.bus.send();
+--
+lib/mod36.rs-39-    // setup
+lib/mod36.rs:40:    fn dispatch_event(&self) {
+lib/mod36.rs-41-        self.bus.send();
+--
+lib/mod36.rs-69-    // setup
+lib/mod36.rs:70:    fn dispatch_event(&self) {
+lib/mod36.rs-71-        self.bus.send();
+--
+lib/mod36.rs-99-    // setup
+lib/mod36.rs:100:    fn dispatch_event(&self) {
+lib/mod36.rs-101-        self.bus.send();
+--
+lib/mod37.rs-9-    // setup
+lib/mod37.rs:10:    fn dispatch_event(&self) {
+lib/mod37.rs-11-        self.bus.send();
+--
+lib/mod37.rs-39-    // setup
+lib/mod37.rs:40:    fn dispatch_event(&self) {
+lib/mod37.rs-41-        self.bus.send();
+--
+lib/mod37.rs-69-    // setup
+lib/mod37.rs:70:    fn dispatch_event(&self) {
+lib/mod37.rs-71-        self.bus.send();
+--
+lib/mod37.rs-99-    // setup
+lib/mod37.rs:100:    fn dispatch_event(&self) {
+lib/mod37.rs-101-        self.bus.send();
+--
+lib/mod38.rs-9-    // setup
+lib/mod38.rs:10:    fn dispatch_event(&self) {
+lib/mod38.rs-11-        self.bus.send();
+--
+lib/mod38.rs-39-    // setup
+lib/mod38.rs:40:    fn dispatch_event(&self) {
+lib/mod38.rs-41-        self.bus.send();
+--
+lib/mod38.rs-69-    // setup
+lib/mod38.rs:70:    fn dispatch_event(&self) {
+lib/mod38.rs-71-        self.bus.send();
+--
+lib/mod38.rs-99-    // setup
+lib/mod38.rs:100:    fn dispatch_event(&self) {
+lib/mod38.rs-101-        self.bus.send();
+--
+lib/mod39.rs-9-    // setup
+lib/mod39.rs:10:    fn dispatch_event(&self) {
+lib/mod39.rs-11-        self.bus.send();
+--
+lib/mod39.rs-39-    // setup
+lib/mod39.rs:40:    fn dispatch_event(&self) {
+lib/mod39.rs-41-        self.bus.send();
+--
+lib/mod39.rs-69-    // setup
+lib/mod39.rs:70:    fn dispatch_event(&self) {
+lib/mod39.rs-71-        self.bus.send();
+--
+lib/mod39.rs-99-    // setup
+lib/mod39.rs:100:    fn dispatch_event(&self) {
+lib/mod39.rs-101-        self.bus.send();
+--
+lib/special_case.rs:999:    fn dispatch_event(&self) {

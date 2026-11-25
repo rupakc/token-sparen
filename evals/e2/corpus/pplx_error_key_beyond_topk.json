@@ -1,0 +1,212 @@
+{
+  "results": [
+    {
+      "title": "Guide to router 0",
+      "url": "https://docs.example.org/guide/0",
+      "date": "2026-02-10",
+      "snippet": "Bucket reducer adapter policy stream stream render reducer schema socket filter loader parser shard worker cursor adapter pool gateway schema response index parser socket index bucket adapter cache worker record.",
+      "summary": "Bucket batch render request index cache response module mapper filter mapper module policy gateway schema loader reducer batch handler queue pool decoder response policy session router handler schema config loader mapper loader stream bucket router module queue schema filter token cursor handler config cursor policy."
+    },
+    {
+      "title": "Guide to reducer 1",
+      "url": "https://docs.example.org/guide/1",
+      "date": "2026-02-11",
+      "snippet": "Stream thread response encoder parser policy buffer request render buffer pool loader bucket module index cursor mapper thread request parser buffer adapter reducer socket policy encoder adapter render policy gateway.",
+      "summary": "Schema encoder filter loader loader window session cache policy module window batch loader window config session filter session worker shard decoder buffer queue mapper thread window reducer decoder filter pool mapper adapter queue schema cache shard batch request router batch policy render reducer parser gateway."
+    },
+    {
+      "title": "Guide to router 2",
+      "url": "https://docs.example.org/guide/2",
+      "date": "2026-02-12",
+      "snippet": "Policy session handler pool response socket policy window policy worker bucket bucket router router adapter gateway stream loader window batch shard handler router router mapper parser policy cursor shard schema.",
+      "summary": "Encoder render module session config session router reducer module parser filter decoder token cache socket pool window gateway request shard decoder window cache bucket bucket config queue loader socket window thread policy response loader gateway queue cache pool decoder request response config policy bucket encoder."
+    },
+    {
+      "title": "Guide to handler 3",
+      "url": "https://docs.example.org/guide/3",
+      "date": "2026-02-13",
+      "snippet": "Request module batch pool schema token index schema socket cache index batch bucket pool bucket buffer shard encoder shard index buffer module encoder module handler buffer response shard shard shard.",
+      "summary": "Stream buffer thread decoder request policy adapter record queue policy window encoder gateway response reducer batch policy cursor loader pool index session bucket record parser render mapper batch session window record token policy loader render pool loader batch config worker reducer router session gateway socket."
+    },
+    {
+      "title": "Guide to policy 4",
+      "url": "https://docs.example.org/guide/4",
+      "date": "2026-02-14",
+      "snippet": "Schema stream schema session adapter response decoder mapper token session module router pool loader thread parser encoder socket token render stream request thread parser reducer adapter worker policy pool encoder.",
+      "summary": "Response adapter schema mapper shard batch decoder socket schema index loader request gateway render record decoder session loader schema token filter record worker request stream response request index queue bucket session record bucket response policy cursor batch decoder record index schema decoder decoder token worker."
+    },
+    {
+      "title": "Guide to pool 5",
+      "url": "https://docs.example.org/guide/5",
+      "date": "2026-02-15",
+      "snippet": "Window handler handler shard config encoder handler reducer shard thread shard session response batch window encoder parser mapper mapper filter filter cache policy thread record mapper config config filter thread.",
+      "summary": "Module cache encoder token window token token thread worker window gateway worker cursor router worker bucket router router decoder encoder gateway decoder handler cache filter loader cache module filter token adapter record pool index cache policy module schema gateway buffer gateway cache schema mapper parser."
+    },
+    {
+      "title": "Guide to handler 6",
+      "url": "https://docs.example.org/guide/6",
+      "date": "2026-02-16",
+      "snippet": "Record bucket filter pool gateway session batch shard request reducer token bucket module filter pool router loader pool handler thread render request policy filter buffer record cache decoder buffer router.",
+      "summary": "Render cache mapper policy encoder shard cursor decoder router token policy token socket module reducer session socket render request stream filter gateway cursor policy index router router buffer bucket render filter encoder module session record config encoder buffer render cursor queue config thread pool policy."
+    },
+    {
+      "title": "Guide to mapper 7",
+      "url": "https://docs.example.org/guide/7",
+      "date": "2026-02-17",
+      "snippet": "Loader pool buffer pool cursor bucket window queue module router cursor batch thread session router policy socket index config token response schema policy policy parser schema session module response cursor.",
+      "summary": "Thread gateway buffer handler config parser queue session loader adapter window handler record shard bucket schema mapper window queue handler batch buffer stream bucket encoder bucket adapter schema shard index buffer policy mapper bucket handler config stream window cursor module mapper handler cursor stream thread."
+    },
+    {
+      "title": "Guide to adapter 8",
+      "url": "https://docs.example.org/guide/8",
+      "date": "2026-02-18",
+      "snippet": "Bucket config socket render pool module batch record gateway cursor shard router router thread parser loader parser encoder request bucket cache config policy request module token reducer bucket socket adapter.",
+      "summary": "Bucket session adapter module policy request loader handler worker config socket loader render cache schema render index record handler handler decoder batch token buffer index bucket loader bucket response encoder adapter decoder token render worker queue parser record adapter gateway render response index cache encoder."
+    },
+    {
+      "title": "Guide to router 9",
+      "url": "https://docs.example.org/guide/9",
+      "date": "2026-02-10",
+      "snippet": "Socket gateway gateway queue response worker policy pool batch token buffer window shard batch cache request response shard worker config handler cache policy index queue cursor response filter queue mapper.",
+      "summary": "Render schema handler cache loader parser index reducer batch index gateway schema stream worker response session queue filter cursor mapper router thread schema token cache config record router bucket index window buffer response pool index shard token stream worker schema cache schema adapter gateway decoder."
+    },
+    {
+      "title": "Guide to token 10",
+      "url": "https://docs.example.org/guide/10",
+      "date": "2026-02-11",
+      "snippet": "Record filter index policy session schema thread adapter index decoder session bucket window render config stream filter filter module schema request session cursor shard worker parser record session policy module.",
+      "summary": "Module request worker policy render schema parser config thread encoder adapter decoder loader reducer gateway window config bucket module router cache mapper stream socket request response pool gateway encoder bucket window gateway pool session adapter filter loader thread window encoder handler adapter shard queue token."
+    },
+    {
+      "title": "Guide to request 11",
+      "url": "https://docs.example.org/guide/11",
+      "date": "2026-02-12",
+      "snippet": "Parser stream module config config loader config bucket adapter cursor queue socket render parser buffer stream token module handler request config decoder response router record record session encoder router reducer.",
+      "summary": "Module worker filter socket config socket adapter policy worker bucket adapter thread mapper stream queue parser request batch window schema batch response shard request buffer router window cache router policy loader stream encoder pool module mapper response module bucket encoder window socket pool mapper loader."
+    },
+    {
+      "title": "Guide to record 12",
+      "url": "https://docs.example.org/guide/12",
+      "date": "2026-02-13",
+      "snippet": "Render handler cache filter loader worker socket reducer worker worker token encoder token token config reducer batch socket pool record encoder parser worker config cache loader pool encoder filter gateway.",
+      "summary": "Shard worker cursor shard decoder index queue cursor cache index config gateway token stream handler cursor encoder mapper index token record policy gateway cursor index module record filter record gateway request thread worker request token adapter stream stream socket token render batch mapper record bucket."
+    },
+    {
+      "title": "Guide to module 13",
+      "url": "https://docs.example.org/guide/13",
+      "date": "2026-02-14",
+      "snippet": "Filter loader stream adapter batch config window response pool encoder decoder mapper shard router thread render parser config shard loader response batch module buffer token window token adapter cursor mapper.",
+      "summary": "Shard buffer token stream module buffer gateway schema response mapper thread token shard session loader stream stream schema router bucket cache request index cache index schema bucket bucket socket config cursor parser record thread cursor token handler record policy pool cursor worker record mapper handler."
+    },
+    {
+      "title": "Guide to handler 14",
+      "url": "https://docs.example.org/guide/14",
+      "date": "2026-02-15",
+      "snippet": "Mapper socket router window handler bucket filter buffer mapper request bucket mapper mapper router router module filter encoder loader index stream router module record stream schema window cursor policy router.",
+      "summary": "Loader cache config module decoder response token encoder parser pool module request token buffer loader cache parser render thread token record window parser router render config batch index thread index socket shard mapper socket decoder loader pool cache adapter reducer module decoder gateway pool module."
+    },
+    {
+      "title": "Guide to schema 15",
+      "url": "https://docs.example.org/guide/15",
+      "date": "2026-02-16",
+      "snippet": "Reducer bucket decoder index shard router index router loader config schema filter queue record parser decoder response render schema stream filter schema router index filter queue policy token index schema.",
+      "summary": "Module token module module pool queue worker session config thread window decoder policy session bucket mapper policy queue gateway handler thread worker stream encoder loader session pool parser buffer stream bucket index mapper gateway pool record handler gateway filter module stream router handler shard schema."
+    },
+    {
+      "title": "Guide to handler 16",
+      "url": "https://docs.example.org/guide/16",
+      "date": "2026-02-17",
+      "snippet": "Adapter socket config response index encoder reducer parser window mapper token module record render token record module schema module adapter filter socket session mapper filter stream cache encoder window cache.",
+      "summary": "Gateway record session adapter session policy decoder request index mapper index config filter pool cache config adapter decoder render router queue pool batch worker stream cache bucket socket worker encoder record reducer thread encoder router render index queue gateway gateway adapter router render reducer worker."
+    },
+    {
+      "title": "Guide to request 17",
+      "url": "https://docs.example.org/guide/17",
+      "date": "2026-02-18",
+      "snippet": "Schema record encoder handler index mapper batch thread reducer record request policy session cache filter worker mapper token handler queue stream buffer request cache bucket policy request shard cursor queue.",
+      "summary": "Thread queue thread record mapper cursor stream gateway response cache parser adapter shard cache queue shard decoder parser record request adapter response batch batch filter index loader shard shard schema buffer worker policy filter stream index window adapter worker module encoder request render policy index."
+    },
+    {
+      "title": "Guide to buffer 18",
+      "url": "https://docs.example.org/guide/18",
+      "date": "2026-02-10",
+      "snippet": "Worker bucket bucket handler bucket cache schema handler token buffer loader gateway decoder socket response response encoder render pool shard filter worker gateway bucket router pool render record thread index.",
+      "summary": "Adapter bucket session thread index filter shard worker filter parser bucket adapter shard request filter index cursor bucket cursor socket batch socket record cursor router batch filter stream router schema loader buffer request queue filter config schema buffer batch cache index window reducer buffer queue."
+    },
+    {
+      "title": "Source down",
+      "url": "https://docs.example.org/guide/19",
+      "error": "upstream fetch failed: HTTP 503"
+    },
+    {
+      "title": "Guide to worker 20",
+      "url": "https://docs.example.org/guide/20",
+      "date": "2026-02-12",
+      "snippet": "Adapter filter buffer loader queue request batch loader loader record window index mapper response module pool index cursor response request config module response cursor render adapter cursor stream config record.",
+      "summary": "Token window index filter handler config window window index session request token reducer encoder decoder handler mapper reducer cache session cache module schema batch session queue render response cache policy shard thread thread worker config mapper loader pool request encoder batch batch queue pool filter."
+    },
+    {
+      "title": "Guide to filter 21",
+      "url": "https://docs.example.org/guide/21",
+      "date": "2026-02-13",
+      "snippet": "Render policy buffer batch filter module window index buffer batch thread socket thread schema shard cache cursor request render mapper handler queue window schema mapper token buffer bucket shard batch.",
+      "summary": "Queue adapter reducer worker schema reducer pool buffer batch window batch request index adapter filter mapper socket stream worker policy loader buffer record module window render handler filter router reducer worker handler index record response gateway policy encoder socket gateway parser reducer cursor worker shard."
+    },
+    {
+      "title": "Guide to batch 22",
+      "url": "https://docs.example.org/guide/22",
+      "date": "2026-02-14",
+      "snippet": "Module router cache handler stream module decoder record worker queue buffer token token socket filter pool filter shard socket mapper cursor window thread mapper thread shard gateway gateway render thread.",
+      "summary": "Parser shard request stream parser render policy cache buffer record config request render request bucket gateway handler loader policy bucket window encoder pool cache config session queue reducer decoder gateway shard adapter cache render thread adapter token request socket cursor pool adapter pool token batch."
+    },
+    {
+      "title": "Guide to router 23",
+      "url": "https://docs.example.org/guide/23",
+      "date": "2026-02-15",
+      "snippet": "Response socket filter schema index adapter parser decoder thread gateway bucket mapper batch decoder handler record token gateway request response filter handler response window loader decoder gateway response reducer worker.",
+      "summary": "Session stream window thread index reducer response parser token bucket mapper mapper bucket cache batch gateway mapper policy bucket loader router worker thread request buffer cursor decoder socket worker bucket filter record loader record loader queue module loader filter cursor socket mapper adapter batch queue."
+    },
+    {
+      "title": "Guide to cache 24",
+      "url": "https://docs.example.org/guide/24",
+      "date": "2026-02-16",
+      "snippet": "Config bucket buffer cache index adapter request router parser thread bucket session session worker record decoder request module pool request pool buffer bucket reducer pool reducer parser cursor bucket mapper.",
+      "summary": "Loader queue encoder reducer stream adapter filter bucket batch socket socket gateway render render module gateway request filter session parser cache thread router render config socket loader mapper encoder socket response mapper schema decoder socket loader stream mapper thread cache encoder loader config policy mapper."
+    },
+    {
+      "title": "Guide to loader 25",
+      "url": "https://docs.example.org/guide/25",
+      "date": "2026-02-17",
+      "snippet": "Record shard bucket filter request reducer bucket pool pool handler token adapter config encoder request schema window session parser window worker bucket cache mapper batch queue stream bucket token render.",
+      "summary": "Config schema handler session parser render buffer record module gateway mapper render cursor stream cache handler window render handler handler response encoder router router socket adapter cache window loader pool record loader encoder request worker schema bucket shard adapter bucket pool response router window schema."
+    },
+    {
+      "title": "Guide to session 26",
+      "url": "https://docs.example.org/guide/26",
+      "date": "2026-02-18",
+      "snippet": "Parser loader token window session queue pool record buffer batch bucket batch buffer batch cache thread cursor stream record schema queue window window cursor buffer router policy shard gateway session.",
+      "summary": "Parser reducer response socket loader router render thread thread response worker stream router batch queue cursor window response filter batch queue index render response worker decoder response mapper parser filter router decoder render index bucket render reducer handler stream session cache stream token stream worker."
+    },
+    {
+      "title": "Guide to record 27",
+      "url": "https://docs.example.org/guide/27",
+      "date": "2026-02-10",
+      "snippet": "Adapter handler thread mapper cache module response reducer token encoder pool module worker adapter parser response filter request shard reducer config pool render socket adapter session worker cache policy module.",
+      "summary": "Loader gateway queue loader record schema encoder cache filter pool filter session schema decoder schema policy batch reducer buffer socket handler config encoder mapper schema pool pool schema encoder config stream buffer queue reducer module parser index buffer shard shard thread gateway cursor cache parser."
+    },
+    {
+      "title": "Guide to thread 28",
+      "url": "https://docs.example.org/guide/28",
+      "date": "2026-02-11",
+      "snippet": "Module cursor response router render adapter buffer handler cursor token buffer worker module schema policy cache buffer decoder schema worker handler module cursor handler pool shard record decoder worker record.",
+      "summary": "Reducer loader policy token render render mapper module cache batch config schema cursor decoder token thread stream adapter adapter batch mapper response cache schema socket index session response pool decoder shard encoder mapper render schema request record response schema reducer decoder worker config loader bucket."
+    },
+    {
+      "title": "Guide to schema 29",
+      "url": "https://docs.example.org/guide/29",
+      "date": "2026-02-12",
+      "snippet": "Parser batch reducer router stream render cursor stream module request worker batch loader reducer encoder filter bucket cursor decoder reducer decoder token queue mapper window socket handler pool filter request.",
+      "summary": "Buffer bucket worker loader queue handler loader buffer policy index window reducer window filter loader mapper encoder shard encoder decoder stream decoder gateway worker config shard module config request request index thread schema schema gateway queue bucket request adapter policy router loader parser bucket stream."
+    }
+  ]
+}

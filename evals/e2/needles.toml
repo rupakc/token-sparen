@@ -1,0 +1,710 @@
+# E2 needles. See README for the schema. types = expected detect() result.
+
+[[case]]
+file = "json_api_users.json"
+types = ["json"]
+needles = [
+  "\"total\": 160",
+  "special.target@example.com",
+  "u-0137",
+]
+
+[[case]]
+file = "json_deep_error.json"
+types = ["json"]
+needles = [
+  "failed: quota exceeded for tenant acme-42",
+  "\"session\": \"s-9\"",
+]
+must_inline = [
+  "failed: quota exceeded for tenant acme-42",
+]
+
+[[case]]
+file = "json_config_big.json"
+types = ["json"]
+needles = [
+  "\"api_version\": \"2026-11-01\"",
+  "\"port\": 8077",
+]
+
+[[case]]
+file = "json_matrix.json"
+types = ["json"]
+needles = [
+  "\"schema\": \"v3\"",
+  "cell-299",
+]
+
+[[case]]
+file = "json_orders.json"
+types = ["json"]
+needles = [
+  "ERROR: payment gateway timeout",
+  "90064",
+]
+must_inline = [
+  "ERROR: payment gateway timeout",
+]
+
+[[case]]
+file = "diff_multi_0.diff"
+types = ["diff"]
+needles = [
+  "+    timeout = 45",
+  "+    timeout = 46",
+  "+    timeout = 47",
+  "+    timeout = 48",
+  "+    timeout = 49",
+  "+    timeout = 50",
+  "-    timeout = 10",
+  "-    timeout = 11",
+  "-    timeout = 12",
+  "-    timeout = 13",
+  "-    timeout = 14",
+  "-    timeout = 15",
+  "diff --git a/src/app/module_0.py b/src/app/module_0.py",
+  "diff --git a/src/app/module_1.py b/src/app/module_1.py",
+  "diff --git a/src/app/module_2.py b/src/app/module_2.py",
+  "diff --git a/src/app/module_3.py b/src/app/module_3.py",
+  "diff --git a/src/app/module_4.py b/src/app/module_4.py",
+  "diff --git a/src/app/module_5.py b/src/app/module_5.py",
+]
+must_inline = [
+  "+    timeout = 45",
+  "+    timeout = 46",
+  "+    timeout = 47",
+  "+    timeout = 48",
+  "+    timeout = 49",
+  "+    timeout = 50",
+  "-    timeout = 10",
+]
+
+[[case]]
+file = "diff_multi_1.diff"
+types = ["diff"]
+needles = [
+  "+    timeout = 45",
+  "+    timeout = 46",
+  "+    timeout = 47",
+  "+    timeout = 48",
+  "+    timeout = 49",
+  "+    timeout = 50",
+  "+    timeout = 51",
+  "+    timeout = 52",
+  "+    timeout = 53",
+  "+    timeout = 54",
+  "-    timeout = 10",
+  "-    timeout = 11",
+  "-    timeout = 12",
+  "-    timeout = 13",
+  "-    timeout = 14",
+  "-    timeout = 15",
+  "-    timeout = 16",
+  "-    timeout = 17",
+  "-    timeout = 18",
+  "-    timeout = 19",
+  "diff --git a/src/app/module_0.py b/src/app/module_0.py",
+  "diff --git a/src/app/module_1.py b/src/app/module_1.py",
+  "diff --git a/src/app/module_2.py b/src/app/module_2.py",
+  "diff --git a/src/app/module_3.py b/src/app/module_3.py",
+  "diff --git a/src/app/module_4.py b/src/app/module_4.py",
+  "diff --git a/src/app/module_5.py b/src/app/module_5.py",
+  "diff --git a/src/app/module_6.py b/src/app/module_6.py",
+  "diff --git a/src/app/module_7.py b/src/app/module_7.py",
+  "diff --git a/src/app/module_8.py b/src/app/module_8.py",
+  "diff --git a/src/app/module_9.py b/src/app/module_9.py",
+]
+must_inline = [
+  "+    timeout = 45",
+  "+    timeout = 46",
+  "+    timeout = 47",
+  "+    timeout = 48",
+  "+    timeout = 49",
+  "+    timeout = 50",
+  "+    timeout = 51",
+  "+    timeout = 52",
+  "+    timeout = 53",
+  "+    timeout = 54",
+  "-    timeout = 10",
+]
+
+[[case]]
+file = "diff_multi_2.diff"
+types = ["diff"]
+needles = [
+  "+    timeout = 45",
+  "+    timeout = 46",
+  "+    timeout = 47",
+  "+    timeout = 48",
+  "-    timeout = 10",
+  "-    timeout = 11",
+  "-    timeout = 12",
+  "-    timeout = 13",
+  "diff --git a/src/app/module_0.py b/src/app/module_0.py",
+  "diff --git a/src/app/module_1.py b/src/app/module_1.py",
+  "diff --git a/src/app/module_2.py b/src/app/module_2.py",
+  "diff --git a/src/app/module_3.py b/src/app/module_3.py",
+]
+must_inline = [
+  "+    timeout = 45",
+  "+    timeout = 46",
+  "+    timeout = 47",
+  "+    timeout = 48",
+  "-    timeout = 10",
+]
+
+[[case]]
+file = "diff_multi_3.diff"
+types = ["diff"]
+needles = [
+  "+    timeout = 45",
+  "+    timeout = 46",
+  "+    timeout = 47",
+  "+    timeout = 48",
+  "+    timeout = 49",
+  "+    timeout = 50",
+  "+    timeout = 51",
+  "+    timeout = 52",
+  "-    timeout = 10",
+  "-    timeout = 11",
+  "-    timeout = 12",
+  "-    timeout = 13",
+  "-    timeout = 14",
+  "-    timeout = 15",
+  "-    timeout = 16",
+  "-    timeout = 17",
+  "diff --git a/src/app/module_0.py b/src/app/module_0.py",
+  "diff --git a/src/app/module_1.py b/src/app/module_1.py",
+  "diff --git a/src/app/module_2.py b/src/app/module_2.py",
+  "diff --git a/src/app/module_3.py b/src/app/module_3.py",
+  "diff --git a/src/app/module_4.py b/src/app/module_4.py",
+  "diff --git a/src/app/module_5.py b/src/app/module_5.py",
+  "diff --git a/src/app/module_6.py b/src/app/module_6.py",
+  "diff --git a/src/app/module_7.py b/src/app/module_7.py",
+]
+must_inline = [
+  "+    timeout = 45",
+  "+    timeout = 46",
+  "+    timeout = 47",
+  "+    timeout = 48",
+  "+    timeout = 49",
+  "+    timeout = 50",
+  "+    timeout = 51",
+  "+    timeout = 52",
+  "-    timeout = 10",
+]
+
+[[case]]
+file = "stack_python_java_py.txt"
+types = ["stacktrace"]
+needles = [
+  "ValueError: invalid shard id 'x-17'",
+  "File \"/srv/app/java.py\", line 88, in bridge",
+  "File \"/srv/app/service/handlers.py\", line 57, in handle",
+]
+must_inline = [
+  "ValueError: invalid shard id 'x-17'",
+]
+
+[[case]]
+file = "stack_python_chained.txt"
+types = ["stacktrace"]
+needles = [
+  "KeyError: 'tenant'",
+  "RuntimeError: lookup aborted",
+  "File \"/srv/app/service/handlers.py\", line 57, in handle",
+]
+must_inline = [
+  "KeyError: 'tenant'",
+  "RuntimeError: lookup aborted",
+]
+
+[[case]]
+file = "stack_python_recursion.txt"
+types = ["stacktrace"]
+needles = [
+  "RecursionError: maximum recursion depth exceeded",
+  "File \"/srv/app/tree.py\", line 12, in walk",
+]
+must_inline = [
+  "RecursionError: maximum recursion depth exceeded",
+]
+
+[[case]]
+file = "stack_java.txt"
+types = ["stacktrace"]
+needles = [
+  "java.lang.IllegalStateException: inventory missing for sku 9913",
+  "java.sql.SQLException: connection reset",
+  "at com.acme.orders.OrderService.place(OrderService.java:142)",
+  "at com.acme.orders.Main.run(Main.java:31)",
+]
+must_inline = [
+  "java.lang.IllegalStateException: inventory missing for sku 9913",
+  "at com.acme.orders.OrderService.place(OrderService.java:142)",
+]
+
+[[case]]
+file = "stack_node.txt"
+types = ["text"]
+needles = [
+  "TypeError: Cannot read properties of undefined (reading 'items')",
+  "at renderCart (/srv/web/src/cart.js:48:11)",
+]
+must_inline = [
+  "TypeError: Cannot read properties of undefined (reading 'items')",
+]
+
+[[case]]
+file = "stack_go.txt"
+types = ["stacktrace"]
+needles = [
+  "panic: runtime error: index out of range [5] with length 3",
+  "goroutine 1 [running]:",
+]
+must_inline = [
+  "panic: runtime error: index out of range [5] with length 3",
+]
+
+[[case]]
+file = "pytest_fail_verbose.txt"
+command = "pytest -v"
+types = ["test_report"]
+needles = [
+  "FAILED tests/test_unit_3.py::test_case_7 - assert 1999 == 2000",
+  "FAILED tests/test_unit_9.py::test_case_20 - assert 'paid' == 'due'",
+  "2 failed, 448 passed",
+]
+must_inline = [
+  "FAILED tests/test_unit_3.py::test_case_7 - assert 1999 == 2000",
+  "FAILED tests/test_unit_9.py::test_case_20 - assert 'paid' == 'due'",
+]
+
+[[case]]
+file = "pytest_fail_quiet.txt"
+command = "pytest -q"
+types = ["test_report"]
+needles = [
+  "FAILED tests/test_unit_11.py::test_case_2 - AssertionError: expected 3 rows, got 4",
+  "1 failed, 7499 passed",
+]
+must_inline = [
+  "FAILED tests/test_unit_11.py::test_case_2 - AssertionError: expected 3 rows, got 4",
+]
+
+[[case]]
+file = "pytest_error_buried.txt"
+types = ["test_report"]
+needles = [
+  "fixture 'db_conn' raised OSError: disk quota exceeded",
+]
+must_inline = [
+  "fixture 'db_conn' raised OSError: disk quota exceeded",
+]
+
+[[case]]
+file = "jest_fail.txt"
+command = "npx jest"
+types = ["test_report"]
+needles = [
+  "FAIL src/cart/cart.test.js",
+  "● Cart › applies coupon to subtotal",
+  "Expected: 90",
+  "Tests:       1 failed, 480 passed, 481 total",
+]
+must_inline = [
+  "FAIL src/cart/cart.test.js",
+  "● Cart › applies coupon to subtotal",
+]
+
+[[case]]
+file = "go_test_fail.txt"
+command = "go test ./..."
+types = ["test_report"]
+needles = [
+  "--- FAIL: TestLedgerBalance (0.01s)",
+  "ledger_test.go:58: balance mismatch: got 41, want 42",
+  "FAIL\tgithub.com/example/ledger\t0.482s",
+]
+must_inline = [
+  "--- FAIL: TestLedgerBalance (0.01s)",
+  "ledger_test.go:58: balance mismatch: got 41, want 42",
+]
+
+[[case]]
+file = "cargo_test_fail.txt"
+command = "cargo test"
+types = ["test_report"]
+needles = [
+  "test engine::case_150 ... FAILED",
+  "panicked at src/engine.rs:77:9:",
+  "test result: FAILED. 479 passed; 1 failed; 0 ignored",
+]
+must_inline = [
+  "test engine::case_150 ... FAILED",
+]
+
+[[case]]
+file = "gcc_warnings.txt"
+command = "gcc -Wall -c src/net/conn.c"
+types = ["compiler"]
+needles = [
+  "src/net/conn_3.c:301:13: error: 'sock_fd' undeclared (first use in this function)",
+  "src/net/conn_4.c:12:1: error: expected ';' before '}' token",
+]
+must_inline = [
+  "src/net/conn_3.c:301:13: error: 'sock_fd' undeclared (first use in this function)",
+  "src/net/conn_4.c:12:1: error: expected ';' before '}' token",
+]
+
+[[case]]
+file = "tsc_errors.txt"
+types = ["compiler"]
+needles = [
+  "src/ui/panel31.tsx(41,9): error TS2322: Type 'string' is not assignable to type 'number'.",
+  "src/api/client.ts(7,1): error TS2307: Cannot find module './missing' or its corresponding type declarations.",
+  "Found 2 errors in 2 files.",
+]
+must_inline = [
+  "src/ui/panel31.tsx(41,9): error TS2322: Type 'string' is not assignable to type 'number'.",
+  "src/api/client.ts(7,1): error TS2307: Cannot find module './missing' or its corresponding type declarations.",
+]
+
+[[case]]
+file = "rustc_errors.txt"
+command = "cargo build"
+types = ["compiler"]
+needles = [
+  "error[E0308]: mismatched types",
+  "--> src/lib.rs:140:20",
+  "error: aborting due to 1 previous error; 55 warnings emitted",
+]
+must_inline = [
+  "error[E0308]: mismatched types",
+  "error: aborting due to 1 previous error; 55 warnings emitted",
+]
+
+[[case]]
+file = "javac_col0.txt"
+command = "javac -Xlint:all src/main/java/com/acme/Foo.java"
+types = ["compiler"]
+needles = [
+  "src/main/java/com/acme/Foo.java:3: error: package com.acme.util does not exist",
+  "import com.acme.util.Missing;",
+  "src/main/java/com/acme/Foo.java:19: error: cannot find symbol",
+  "symbol:   variable offset",
+  "2 errors",
+]
+must_inline = [
+  "src/main/java/com/acme/Foo.java:3: error: package com.acme.util does not exist",
+  "src/main/java/com/acme/Foo.java:19: error: cannot find symbol",
+  "import com.acme.util.Missing;",
+]
+
+[[case]]
+file = "clang_mixed.txt"
+command = "clang++ -c lib/util/str5.cpp"
+types = ["compiler"]
+needles = [
+  "lib/util/str5.cpp:77:3: error: use of undeclared identifier 'normalise_key'",
+  "1 error and 80 warnings generated.",
+]
+must_inline = [
+  "lib/util/str5.cpp:77:3: error: use of undeclared identifier 'normalise_key'",
+]
+
+[[case]]
+file = "npm_install_fail.txt"
+command = "npm install"
+types = ["build_log"]
+needles = [
+  "npm ERR! code ERESOLVE",
+  "npm ERR! Found: react@18.3.1",
+  "peer react@\"^17.0.0\" from old-widgets@2.1.0",
+]
+must_inline = [
+  "npm ERR! code ERESOLVE",
+  "npm ERR! Found: react@18.3.1",
+]
+
+[[case]]
+file = "pip_install_fail.txt"
+command = "pip install -r requirements.txt"
+types = ["build_log"]
+needles = [
+  "ERROR: Could not find a version that satisfies the requirement foo==9.9.9",
+  "ERROR: No matching distribution found for foo==9.9.9",
+]
+must_inline = [
+  "ERROR: Could not find a version that satisfies the requirement foo==9.9.9",
+  "ERROR: No matching distribution found for foo==9.9.9",
+]
+
+[[case]]
+file = "docker_build_fail.txt"
+command = "docker build ."
+types = ["build_log"]
+needles = [
+  "#11 ERROR: process \"/bin/sh -c make install\" did not complete successfully: exit code: 2",
+  "#11 [11/12] RUN make install",
+]
+must_inline = [
+  "#11 ERROR: process \"/bin/sh -c make install\" did not complete successfully: exit code: 2",
+]
+
+[[case]]
+file = "gradle_fail.txt"
+command = "./gradlew build"
+types = ["build_log"]
+needles = [
+  "> Task :app:compileTestJava FAILED",
+  "FAILURE: Build failed with an exception.",
+  "BUILD FAILED in 41s",
+]
+must_inline = [
+  "> Task :app:compileTestJava FAILED",
+  "FAILURE: Build failed with an exception.",
+]
+
+[[case]]
+file = "grep_50th_file.txt"
+command = "grep -rn TODO src"
+types = ["search"]
+needles = [
+  "src/billing/invoice_export.py:",
+  "src/pkg69/handler.py:",
+]
+must_inline = [
+  "src/billing/invoice_export.py:",
+]
+
+[[case]]
+file = "rg_context.txt"
+command = "rg -n -C1 dispatch_event"
+types = ["search"]
+needles = [
+  "lib/special_case.rs:999:",
+  "lib/mod39.rs:100:",
+]
+must_inline = [
+  "lib/special_case.rs:999:",
+]
+
+[[case]]
+file = "grep_html_sniffed.txt"
+types = ["search"]
+needles = [
+  "app/views/page79.html:",
+  "app/views/page0.html:3:",
+]
+must_inline = [
+  "app/views/page79.html:",
+]
+
+[[case]]
+file = "grep_error_line.txt"
+command = "grep -rn retry svc"
+types = ["search"]
+needles = [
+  "svc/api20.go:77:    return fmt.Errorf(\"upstream failure: %w\", err)",
+  "svc/api74.go:",
+]
+must_inline = [
+  "svc/api20.go:77:    return fmt.Errorf(\"upstream failure: %w\", err)",
+  "svc/api74.go:",
+]
+
+[[case]]
+file = "pplx_error_beyond_topk.json"
+command = "pplx search 'rate limit'"
+types = ["pplx"]
+needles = [
+  "https://docs.example.org/guide/22",
+  "https://docs.example.org/guide/29",
+  "https://docs.example.org/guide/0",
+  "error: source rate limit exceeded, partial results",
+]
+must_inline = [
+  "https://docs.example.org/guide/22",
+  "https://docs.example.org/guide/29",
+  "https://docs.example.org/guide/0",
+  "error: source rate limit exceeded, partial results",
+]
+
+[[case]]
+file = "pplx_error_key_beyond_topk.json"
+command = "pplx search 'status page'"
+types = ["pplx"]
+needles = [
+  "upstream fetch failed: HTTP 503",
+  "https://docs.example.org/guide/19",
+  "https://docs.example.org/guide/29",
+]
+must_inline = [
+  "upstream fetch failed: HTTP 503",
+  "https://docs.example.org/guide/19",
+  "https://docs.example.org/guide/29",
+]
+
+[[case]]
+file = "pplx_list.json"
+command = "pplx search 'cache policy'"
+types = ["pplx"]
+needles = [
+  "https://docs.example.org/guide/0",
+  "https://docs.example.org/guide/12",
+  "https://docs.example.org/guide/24",
+]
+must_inline = [
+  "https://docs.example.org/guide/0",
+  "https://docs.example.org/guide/12",
+  "https://docs.example.org/guide/24",
+]
+
+[[case]]
+file = "pplx_web_results.json"
+command = "pplx ask 'queue backoff'"
+types = ["pplx"]
+needles = [
+  "https://docs.example.org/guide/34",
+  "https://docs.example.org/guide/17",
+]
+must_inline = [
+  "https://docs.example.org/guide/34",
+  "https://docs.example.org/guide/17",
+]
+
+[[case]]
+file = "pplx_indent4.json"
+command = "pplx search sharding"
+types = ["pplx"]
+needles = [
+  "Official reference: sharding",
+  "https://docs.example.org/guide/17",
+]
+must_inline = [
+  "Official reference: sharding",
+  "https://docs.example.org/guide/17",
+]
+
+[[case]]
+file = "log_error_mid.txt"
+types = ["log"]
+needles = [
+  "db pool exhausted: 50/50 connections in use, request rid=7f3a dropped",
+]
+must_inline = [
+  "db pool exhausted: 50/50 connections in use, request rid=7f3a dropped",
+]
+
+[[case]]
+file = "log_folded_run.txt"
+types = ["log"]
+needles = [
+  "backoff reset by operator",
+  "retry attempt 399 of 400",
+]
+
+[[case]]
+file = "log_access.txt"
+types = ["log"]
+needles = [
+  "server started on :8080 build=2026.11.3",
+  "unrecoverable: config reload failed",
+]
+must_inline = [
+  "unrecoverable: config reload failed",
+]
+
+[[case]]
+file = "log_syslog.txt"
+types = ["log"]
+needles = [
+  "Killed process 4412 (java)",
+  "app.service: Failed with result 'oom-kill'.",
+]
+must_inline = [
+  "app.service: Failed with result 'oom-kill'.",
+]
+
+[[case]]
+file = "table_customers.csv"
+types = ["table"]
+needles = [
+  "id,name,email,plan,amount,status",
+  "vip.target@example.com",
+]
+must_inline = [
+  "id,name,email,plan,amount,status",
+]
+
+[[case]]
+file = "table_inventory.tsv"
+types = ["table"]
+needles = [
+  "sku\twarehouse\tqty\tbin",
+  "Z-99-special",
+]
+must_inline = [
+  "sku\twarehouse\tqty\tbin",
+]
+
+[[case]]
+file = "table_pipes.md"
+types = ["table"]
+needles = [
+  "| id | service | p95_ms | owner_team |",
+  "| 148 | svc-148 | 4021 | team-payments |",
+]
+must_inline = [
+  "| id | service | p95_ms | owner_team |",
+]
+
+[[case]]
+file = "table_metrics_error_row.csv"
+types = ["table"]
+needles = [
+  "failed: sensor offline",
+  "minute,metric,value,unit",
+]
+must_inline = [
+  "failed: sensor offline",
+  "minute,metric,value,unit",
+]
+
+[[case]]
+file = "text_readme.md"
+types = ["text"]
+needles = [
+  "WIDGET_CACHE_TTL=900",
+  "## Section 0",
+]
+
+[[case]]
+file = "text_script_output_error.txt"
+types = ["text"]
+needles = [
+  "Error: connection reset by peer while uploading shard 17",
+  "Processing record 499 ... done",
+]
+must_inline = [
+  "Error: connection reset by peer while uploading shard 17",
+]
+
+[[case]]
+file = "text_source_file.txt"
+types = ["text"]
+needles = [
+  "def settle_invoice(invoice):",
+  "def helper_0(value):",
+]
+
+[[case]]
+file = "text_git_log.txt"
+command = "git log"
+types = ["text"]
+needles = [
+  "Revert \"bump ledger schema to v9\"",
+  "Author: Dev Person",
+]

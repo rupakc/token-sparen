@@ -1,0 +1,146 @@
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1400, in dispatch_0
+    return self.call_0(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1401, in dispatch_1
+    return self.call_1(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1402, in dispatch_2
+    return self.call_2(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1403, in dispatch_3
+    return self.call_3(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1404, in dispatch_4
+    return self.call_4(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1405, in dispatch_5
+    return self.call_5(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1406, in dispatch_6
+    return self.call_6(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1407, in dispatch_7
+    return self.call_7(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1408, in dispatch_8
+    return self.call_8(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1409, in dispatch_9
+    return self.call_9(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1410, in dispatch_10
+    return self.call_10(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1411, in dispatch_11
+    return self.call_11(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1412, in dispatch_12
+    return self.call_12(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1413, in dispatch_13
+    return self.call_13(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1414, in dispatch_14
+    return self.call_14(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1415, in dispatch_15
+    return self.call_15(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1416, in dispatch_16
+    return self.call_16(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1417, in dispatch_17
+    return self.call_17(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1418, in dispatch_18
+    return self.call_18(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1419, in dispatch_19
+    return self.call_19(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1420, in dispatch_20
+    return self.call_20(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1421, in dispatch_21
+    return self.call_21(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1422, in dispatch_22
+    return self.call_22(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1423, in dispatch_23
+    return self.call_23(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1424, in dispatch_24
+    return self.call_24(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1425, in dispatch_25
+    return self.call_25(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1426, in dispatch_26
+    return self.call_26(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1427, in dispatch_27
+    return self.call_27(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1428, in dispatch_28
+    return self.call_28(req)
+  File "/usr/lib/python3.12/site-packages/flask/app.py", line 1429, in dispatch_29
+    return self.call_29(req)
+  File "/srv/app/service/handlers.py", line 57, in handle
+    result = repo.load(item)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 900, in _execute_0
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 901, in _execute_1
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 902, in _execute_2
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 903, in _execute_3
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 904, in _execute_4
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 905, in _execute_5
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 906, in _execute_6
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 907, in _execute_7
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 908, in _execute_8
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 909, in _execute_9
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 910, in _execute_10
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 911, in _execute_11
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 912, in _execute_12
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 913, in _execute_13
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 914, in _execute_14
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 915, in _execute_15
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 916, in _execute_16
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 917, in _execute_17
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 918, in _execute_18
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 919, in _execute_19
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 920, in _execute_20
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 921, in _execute_21
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 922, in _execute_22
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 923, in _execute_23
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 924, in _execute_24
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 925, in _execute_25
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 926, in _execute_26
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 927, in _execute_27
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 928, in _execute_28
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 929, in _execute_29
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 930, in _execute_30
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 931, in _execute_31
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 932, in _execute_32
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 933, in _execute_33
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 934, in _execute_34
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 935, in _execute_35
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 936, in _execute_36
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 937, in _execute_37
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 938, in _execute_38
+    return meth(self, args, kw)
+  File "/usr/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 939, in _execute_39
+    return meth(self, args, kw)
+  File "/srv/app/java.py", line 88, in bridge
+    return native.call(payload)
+ValueError: invalid shard id 'x-17'
