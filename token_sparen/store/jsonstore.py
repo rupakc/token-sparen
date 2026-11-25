@@ -100,7 +100,10 @@ def read(
 
 def _quarantine(path: Path, reason: str, env: Mapping[str, str] | None) -> None:
     """Move a corrupt file aside under a unique name; call only while holding the lock."""
-    dest = path.with_name(f"{path.name}.corrupt-{time.time_ns()}-{os.getpid()}")
+    stem = f"{path.name}.corrupt-{time.time_ns()}-{os.getpid()}"
+    dest = path.with_name(f"{stem}-{secrets.token_hex(4)}")
+    while dest.exists():  # never overwrite an earlier forensic copy
+        dest = path.with_name(f"{stem}-{secrets.token_hex(4)}")
     with contextlib.suppress(OSError):
         os.replace(path, dest)
     log_error(os.environ if env is None else env, "jsonstore", f"{path}: corrupt ({reason})")

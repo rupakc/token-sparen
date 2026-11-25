@@ -125,15 +125,25 @@ def test_read_never_renames(tmp_path: Path) -> None:
     assert (tmp_path / "home" / "logs" / "errors.jsonl").exists()
 
 
-def test_quarantines_same_second_do_not_collide(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(jsonstore.time, "time", lambda: 1000.0)
+def test_quarantines_in_tight_loop_do_not_collide(tmp_path: Path) -> None:
     p = tmp_path / "s.json"
     for _ in range(3):
-        p.write_text("garbage", encoding="utf-8")
+        p.write_text("garbage")
         jsonstore.update(p, _incr, {})
     assert len(list(tmp_path.glob("s.json.corrupt-*"))) == 3
+
+
+def test_quarantine_name_collision_retries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(jsonstore.time, "time_ns", lambda: 1)
+    monkeypatch.setattr(jsonstore.os, "getpid", lambda: 2)
+    tokens = iter(["aa", "aa", "bb"])
+    monkeypatch.setattr(jsonstore.secrets, "token_hex", lambda n: next(tokens))
+    p = tmp_path / "s.json"
+    (tmp_path / "s.json.corrupt-1-2-aa").write_text("old")
+    p.write_text("garbage")
+    jsonstore._quarantine(p, "x", {"TOKEN_SPAREN_HOME": str(tmp_path / "h")})
+    assert (tmp_path / "s.json.corrupt-1-2-aa").read_text() == "old"
+    assert (tmp_path / "s.json.corrupt-1-2-bb").read_text() == "garbage"
 
 
 def test_lock_files_are_per_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
