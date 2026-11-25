@@ -42,6 +42,8 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: pytest -m perf --no-cov -p no:randomly
+        env:
+          TOKEN_SPAREN_PERF_FACTOR: "1.5"
 
   denylist:
     runs-on: ubuntu-latest

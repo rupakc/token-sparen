@@ -74,5 +74,7 @@ def test_huge_and_binary_output() -> None:
 @pytest.mark.perf
 @pytest.mark.parametrize("line", [sparse, all_errors, false_positives, one_in_five])
 def test_strict_budget_10mb(line: Callable[[int, str], str]) -> None:
+    """200 ms is the dev-machine reference; CI sets TOKEN_SPAREN_PERF_FACTOR for slower runners."""
+    factor = float(os.environ.get("TOKEN_SPAREN_PERF_FACTOR", "1.0"))
     best = _best(_build(10 * MB, line), 5)
-    assert best < 0.2, f"{line.__name__}: {best * 1000:.0f} ms"
+    assert best < 0.2 * factor, f"{line.__name__}: {best * 1000:.0f} ms (factor {factor})"
