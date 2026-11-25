@@ -38,6 +38,15 @@ block_lines = { light = 30, standard = 15, aggressive = 8 }  # lines kept per fa
 [compression.compiler]
 warnings = { light = "keep", standard = "keep", aggressive = "count" }  # keep | count
 
+[compression.search]
+per_file = { light = 20, standard = 8, aggressive = 3 }  # matches kept per file (errors always kept)
+
+[compression.pplx]
+results = { light = 10, standard = 5, aggressive = 3 }  # results shown in full; the rest as URLs
+
+[compression.log]
+tail = 30  # final lines always kept
+
 [pricing]
 # Relative list-price ratios (input = 1.0).
 input = 1.0

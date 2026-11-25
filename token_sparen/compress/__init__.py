@@ -22,6 +22,7 @@ from token_sparen.compress.reports import (
     CompilerCompressor,
     TestReportCompressor,
 )
+from token_sparen.compress.search import LogCompressor, PplxCompressor, SearchCompressor
 from token_sparen.compress.structured import DiffCompressor, JsonCompressor, StackTraceCompressor
 from token_sparen.compress.text import TextCompressor
 
@@ -33,6 +34,9 @@ for _builtin in (
     TestReportCompressor(),
     CompilerCompressor(),
     BuildLogCompressor(),
+    SearchCompressor(),
+    PplxCompressor(),
+    LogCompressor(),
 ):
     registry.register(_builtin)
 
@@ -47,6 +51,9 @@ __all__ = [
     "Compressor",
     "DiffCompressor",
     "JsonCompressor",
+    "LogCompressor",
+    "PplxCompressor",
+    "SearchCompressor",
     "ContentType",
     "Level",
     "Registry",
