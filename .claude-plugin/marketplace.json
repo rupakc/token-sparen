@@ -1,0 +1,13 @@
+{
+  "name": "token-sparen",
+  "owner": {
+    "name": "Rupak Chakraborty"
+  },
+  "plugins": [
+    {
+      "name": "token-sparen",
+      "source": "./",
+      "description": "Learned, recoverable token optimisation for coding agents"
+    }
+  ]
+}

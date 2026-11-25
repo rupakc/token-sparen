@@ -1,0 +1,17 @@
+{
+  "name": "token-sparen",
+  "version": "0.1.0.dev0",
+  "description": "Learned, recoverable token optimisation for coding agents",
+  "author": {
+    "name": "Rupak Chakraborty"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/rupakc/token-sparen",
+  "repository": "https://github.com/rupakc/token-sparen",
+  "keywords": [
+    "tokens",
+    "compression",
+    "hooks",
+    "context"
+  ]
+}

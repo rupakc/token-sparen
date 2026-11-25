@@ -20,7 +20,13 @@ dev = ["pytest", "pytest-cov", "hypothesis", "ruff", "mypy"]
 token-sparen = "token_sparen.cli:main"
 
 [tool.setuptools]
-packages = ["token_sparen", "token_sparen.store", "token_sparen.compress"]
+packages = [
+  "token_sparen",
+  "token_sparen.store",
+  "token_sparen.compress",
+  "token_sparen.adapters",
+  "token_sparen.adapters.claude",
+]
 
 [tool.setuptools.package-data]
 token_sparen = ["params/*.toml"]

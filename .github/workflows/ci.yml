@@ -65,3 +65,16 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: python evals/e2/run.py --strict
+
+  plugin-validate:
+    runs-on: ubuntu-latest
+    continue-on-error: true  # optional: runs only where the `claude` CLI is available
+    steps:
+      - uses: actions/checkout@v4
+      - name: claude plugin validate
+        run: |
+          if command -v claude >/dev/null 2>&1; then
+            claude plugin validate .
+          else
+            echo "claude CLI not available; skipping plugin validation"
+          fi

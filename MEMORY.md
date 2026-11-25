@@ -64,3 +64,23 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   snippet would defeat compression.
 - Node/JS traces (`XxxError: msg` then an `at ...:line:col` frame within 3 lines) are sniffed as
   stacktrace.
+
+## 2026-11-26 Claude Code adapter (Task 12)
+- Hook entry fails open on everything (bad payload, unknown event, exception, StoreBusy, unwritable
+  home, unserialisable action): stdout is exactly one JSON object line, exit 0. `{}` is the no-op.
+- Latency cap `[adapter] latency_budget_ms = 400`: a watchdog timer writes `{}`, flushes, logs and
+  `os._exit(0)`s on expiry; a lock + flag guarantees a single write. A hook that times out returns
+  the no-op. Durations are sampled (10 %) to `logs/latency.jsonl`.
+- Project keys are cached in `~/.token-sparen/project_keys.json` keyed by sha256(realpath), not the
+  raw path (shared-store invariant); an entry is recomputed when `<dir>/.git/config` mtime changes.
+- Project dir = `CLAUDE_PROJECT_DIR`, else payload `cwd`.
+- Render rules: on PreToolUse a block wins over a rewrite (never both); a rewrite never sets
+  `permissionDecision`. `additionalContext` is emitted only on SessionStart, UserPromptSubmit and
+  PostToolUse; unsupported Action fields for an event are dropped. Output replacement only for
+  Bash (non-image), text Read and plain-string responses; any other shape is left untouched.
+- Emit gate: dedupe keys (`emitted_keys`) and the `injected_tokens` ledger live in the session
+  overlay; items are taken by ascending `priority` and skipped when they would exceed the budget.
+  If the overlay cannot be updated (StoreBusy/OSError) nothing is injected, so dedupe and accounting
+  are never bypassed.
+- hooks.json invokes `python3`. On Windows the interpreter may only be `py` or `python`;
+  `token-sparen doctor` (Task 17) must check this and advise.
