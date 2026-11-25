@@ -75,7 +75,7 @@ def _neighbour_equal(raw: bytes) -> bytearray:
     return eq
 
 
-def _fold_runs(raw: bytes, errors: list[int]) -> tuple[list[int], list[int]]:
+def fold_runs(raw: bytes, errors: list[int]) -> tuple[list[int], list[int]]:
     """Return (starts, ends) of runs of >= FOLD_MIN lines equal after digit normalisation.
 
     Error lines never take part in a run. Equality flags are packed into bytes so run
@@ -150,7 +150,7 @@ class TextCompressor:
             # Error-dense output: almost everything is pinned, so trimming would not pay off.
             return CompressResult(text=text, kept_lines=total, total_lines=total, lossless=True)
 
-        starts, ends = _fold_runs(raw, errors)
+        starts, ends = fold_runs(raw, errors)
         covered = bytearray(total)  # 1 = folded into a run whose first line represents it
         for s, e in zip(starts, ends, strict=True):
             covered[s + 1 : e] = b"\x01" * (e - s - 1)
@@ -169,7 +169,7 @@ class TextCompressor:
         kept_count = kept_units.count(1)
         if kept_count == total:
             return CompressResult(text=text, kept_lines=total, total_lines=total, lossless=True)
-        out = _assemble(lines, kept_units, starts, ends)
+        out = assemble(lines, kept_units, starts, ends)
         return CompressResult(
             text="\n".join(out) + trailer,
             kept_lines=kept_count,
@@ -214,7 +214,7 @@ class TextCompressor:
             keep[first:] = b"\x01" * (len(keep) - first)
 
 
-def _assemble(lines: list[str], kept: bytes, starts: list[int], ends: list[int]) -> list[str]:
+def assemble(lines: list[str], kept: bytes, starts: list[int], ends: list[int]) -> list[str]:
     """Kept units in order; folded runs annotated; each elided gap becomes one marker line."""
     total = len(lines)
     shown = bytearray(kept)  # 1 = line represented in the output (kept, or folded into a kept run)

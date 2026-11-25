@@ -27,7 +27,7 @@ from token_sparen.compress.base import (
     encode_lossless,
     error_line_indices,
 )
-from token_sparen.compress.text import SCORE_CAP, _assemble, _fold_runs
+from token_sparen.compress.text import SCORE_CAP, assemble, fold_runs
 
 # ---------------------------------------------------------------- search
 
@@ -171,7 +171,7 @@ class SearchCompressor:
 
 _WORD = re.compile(r"\w+")
 NEAR_DUPLICATE = 0.8
-_RESULT_KEYS = ("results", "web_results")
+_RESULT_KEYS = ("hits", "results", "web_results")
 
 
 def _clean(value: Any) -> str:
@@ -200,15 +200,22 @@ def _near_duplicate(a: str, b: str) -> bool:
     return len(sa & sb) / len(sa | sb) >= NEAR_DUPLICATE
 
 
-def _pplx_results(doc: Any) -> list[dict[str, Any]] | None:
-    found: Any = doc
+def _pplx_results(doc: Any) -> tuple[str, list[dict[str, Any]]] | None:
+    """The result list and the key it came from ("" for a top-level list)."""
+    key, found = "", doc
     if isinstance(doc, dict):
-        found = next((doc[k] for k in _RESULT_KEYS if isinstance(doc.get(k), list)), None)
+        key, found = next(
+            ((k, doc[k]) for k in _RESULT_KEYS if isinstance(doc.get(k), list)), ("", None)
+        )
     if not isinstance(found, list) or not found:
         return None
     if not all(isinstance(r, dict) for r in found):
         return None
-    return found
+    return key, found
+
+
+def _scalar(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
 class PplxCompressor:
@@ -223,39 +230,70 @@ class PplxCompressor:
             doc = json.loads(text)
         except ValueError:
             return _FALLBACK.compress(text, level, ctx)
-        results = _pplx_results(doc)
-        if results is None:
+        found = _pplx_results(doc)
+        if found is None:
             return _FALLBACK.compress(text, level, ctx)
-        shown = setting(f"pplx.results.{arm(level)}", ctx)
+        key, results = found
+        k = setting(f"pplx.results.{arm(level)}", ctx)
+        # The first k results plus every per-result error entry are shown in full.
+        show = [i for i, r in enumerate(results) if i < k or "error" in r]
         out: list[str] = []
-        for i, res in enumerate(results[:shown], 1):
-            out.extend(self._render(i, res))
-        rest = results[shown:]
-        if rest:
-            refs = [_clean(r.get("url")) or _clean(r.get("title")) for r in rest]
-            out.append(f"… {len(rest)} more results: {', '.join(r for r in refs if r)}")
+        if key == "hits":
+            total = doc.get("total")
+            of = total if isinstance(total, int) and not isinstance(total, bool) else len(results)
+            out.append(f"pplx: showing {len(show)} of {of} hits")
+        if isinstance(doc, dict):
+            out.extend(
+                f"{name}: {_scalar(v)}"
+                for name, v in doc.items()
+                if name != "total" and (v is None or isinstance(v, str | int | float | bool))
+            )
+        for i in show:
+            out.extend(self._render(i + 1, results[i], level, ctx))
+        shown = set(show)
+        refs = [
+            _clean(r.get("url")) or _clean(r.get("title")) or f"#{i + 1}"
+            for i, r in enumerate(results)
+            if i not in shown
+        ]
+        if refs:
+            out.append(f"… {len(refs)} more results: {', '.join(refs)}")
         body, trailer = split_lines(text)
-        total = len(body)
+        total_lines = len(body)
         result = "\n".join(out) + trailer
         if len(result) >= len(text):
-            return unchanged(text, total)
-        return CompressResult(text=result, kept_lines=len(out), total_lines=total, lossless=False)
+            return unchanged(text, total_lines)
+        return CompressResult(
+            text=result, kept_lines=len(out), total_lines=total_lines, lossless=False
+        )
 
     @staticmethod
-    def _render(i: int, res: dict[str, Any]) -> list[str]:
+    def _render(i: int, res: dict[str, Any], level: Level, ctx: CompressContext) -> list[str]:
         title, url = _clean(res.get("title")), _clean(res.get("url"))
         date, source = _clean(res.get("date")), _clean(res.get("source"))
         head = " — ".join(p for p in (title, url) if p) or "(untitled)"
         if date:
             head += f" ({date})"
+        if res.get("tokens_count") is not None:
+            head += f" ({_clean(res['tokens_count'])} tok)"
         if source:
             head += f" · {source}"
+        trust = res.get("trust")
+        trust_level = _clean(trust.get("level")) if isinstance(trust, dict) else ""
+        if trust_level:
+            head += f" · trust: {trust_level}"
         lines = [f"[{i}] {head}"]
+        if res.get("error") is not None:
+            lines[0] += f" — error: {_clean(res['error'])}"
         summary, snippet = _clean(res.get("summary")), _clean(res.get("snippet"))
         if summary:
             lines.append(f"    {summary}")
         if snippet and not (summary and _near_duplicate(snippet, summary)):
             lines.append(f"    {snippet}")
+        page = res.get("text")
+        if isinstance(page, str) and page:
+            squeezed = _FALLBACK.compress(page, level, ctx).text
+            lines.extend(f"    {ln}" for ln in squeezed.rstrip("\n").split("\n"))
         return lines
 
 
@@ -309,7 +347,7 @@ class LogCompressor:
         body = text[: len(text) - len(trailer)]
         errors = error_line_indices(body)
         raw = encode_lossless(_TIMESTAMP.sub("<ts>", body))
-        starts, ends = _fold_runs(raw, errors)
+        starts, ends = fold_runs(raw, errors)
         keep = bytearray(total)
         for i in errors:
             keep[i] = 1
@@ -327,7 +365,7 @@ class LogCompressor:
             pinned = keep.find(1, s, e) != -1
             keep[s:e] = b"\x00" * (e - s)
             keep[s] = 1 if pinned else 0
-        shown = _assemble(lines, bytes(keep), runs_s, runs_e)
+        shown = assemble(lines, bytes(keep), runs_s, runs_e)
         result = "\n".join(shown) + trailer
         if len(result) >= len(text):
             return unchanged(text, total)

@@ -393,3 +393,79 @@ def test_log_budget_1mb(unit: str) -> None:
     best, res = best_of(lambda: LogCompressor().compress(text, STANDARD, NO_CTX), 3)
     assert res.text != text
     assert best < 0.1 * perf_factor(), f"{best * 1000:.0f} ms"
+
+
+# ------------------------------------------------- pplx real CLI schemas
+
+
+def _hit(i: int, **extra: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "url": f"https://example.com/{i}",
+        "title": f"Hit {i}",
+        "domain": "example.com",
+        "snippet": f"Snippet {i} about widgets",
+        "summary": f"Summary {i} about gadgets and unrelated things",
+        "date": "2026-03-04",
+        "last_updated": "2026-05-06",
+        "trust": {"level": "high", "name": "Trusted", "description": "LONG-TRUST-DESC"},
+    }
+    base.update(extra)
+    return base
+
+
+def test_pplx_search_hits_schema() -> None:
+    doc = {"total": 40, "hits": [_hit(i) for i in range(1, 9)], "answer": "forty-two"}
+    res = PplxCompressor().compress(json.dumps(doc, indent=2), STANDARD, NO_CTX)
+    out = res.text.split("\n")
+    assert out[0] == "pplx: showing 5 of 40 hits"
+    assert "answer: forty-two" in out
+    assert "[1] Hit 1 — https://example.com/1 (2026-03-04) · trust: high" in out
+    assert "[6]" not in res.text
+    assert "… 3 more results: " + ", ".join(f"https://example.com/{i}" for i in (6, 7, 8)) in out
+    for dropped in ("domain", "last_updated", "2026-05-06", "LONG-TRUST-DESC", "Trusted"):
+        assert dropped not in res.text
+
+
+def _snippets_doc() -> dict[str, object]:
+    return {
+        "results": [
+            {"url": f"https://p.example/{i}", "text": f"line {i}\n" * 3, "tokens_count": 10 + i}
+            for i in range(1, 8)
+        ]
+        + [{"url": "https://p.example/bad", "error": "HTTP 503 fetch failed"}],
+        "saved_to": "/tmp/out/full.json",
+        "truncated": True,
+    }
+
+
+def test_pplx_snippets_schema_keeps_errors_and_headers() -> None:
+    res = PplxCompressor().compress(json.dumps(_snippets_doc(), indent=2), AGGRESSIVE, NO_CTX)
+    out = res.text.split("\n")
+    assert "saved_to: /tmp/out/full.json" in out
+    assert "truncated: true" in out
+    assert "[1] https://p.example/1 (11 tok)" in out
+    assert "    line 1" in out
+    assert "[8] https://p.example/bad — error: HTTP 503 fetch failed" in out
+    assert "[4]" not in res.text
+    tail = next(ln for ln in out if ln.startswith("… 4 more results:"))
+    assert "bad" not in tail and "https://p.example/7" in tail
+
+
+def test_pplx_snippet_text_goes_through_text_compressor() -> None:
+    body = "\n".join(f"page {chr(97 + i % 26)}{chr(97 + i // 26 % 26)} row" for i in range(400))
+    doc = {"results": [{"url": "https://p.example/1", "text": body, "tokens_count": 900}]}
+    out = PplxCompressor().compress(json.dumps(doc), AGGRESSIVE, NO_CTX).text
+    assert "lines elided]" in out and len(out) < len(body)
+
+
+def test_pplx_tail_placeholder_without_url_or_title() -> None:
+    doc = [_result(i) for i in range(4)] + [{"summary": "no id"}, {"summary": "no id either"}]
+    out = PplxCompressor().compress(json.dumps(doc, indent=2), AGGRESSIVE, NO_CTX).text
+    assert "… 3 more results: https://example.com/3, #5, #6" in out
+
+
+def test_pplx_keeps_unknown_scalar_keys_verbatim() -> None:
+    doc = {"model": "sonar", "cost": 0.5, "flag": False, "nest": {"a": 1}, "hits": [_hit(1)]}
+    out = PplxCompressor().compress(json.dumps(doc, indent=2), LIGHT, NO_CTX).text
+    assert "model: sonar" in out and "cost: 0.5" in out and "flag: false" in out
+    assert "nest" not in out
