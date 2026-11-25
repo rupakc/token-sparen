@@ -1,0 +1,9 @@
+token-sparen
+Copyright (c) 2026 Rupak Chakraborty
+Licensed under the MIT License (see LICENSE).
+
+Acknowledgements
+
+The cross-session ideas in token-sparen were inspired by TokenEconomizer
+(MIT License; Microsoft Research and UC Berkeley; arXiv 2610.22732).
+No code from TokenEconomizer has been copied into this project.
