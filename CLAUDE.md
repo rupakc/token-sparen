@@ -66,6 +66,6 @@ Agents: `goldfish-reviewer`, `drift-checker`, `compressor-author`, `eval-hillcli
 ## Conventions
 - Conventional commits (`feat:`, `fix:`, `docs:`, `chore:`, `test:`); push to `main` after each task
   once checks pass locally.
-- Commit trailer: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- End commit messages with the Co-Authored-By trailer your agent harness specifies (if any).
 - Typed, small modules; `main(argv: list[str] | None = None) -> int` style entry points.
 - Record any design decision or owner call in `MEMORY.md` with a date.
