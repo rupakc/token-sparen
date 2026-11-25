@@ -42,7 +42,9 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+preview = true
+explicit-preview-rules = true
+select = ["E", "F", "I", "UP", "B", "PLW1514"]
 
 [tool.mypy]
 python_version = "3.11"

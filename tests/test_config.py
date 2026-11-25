@@ -23,9 +23,9 @@ def test_config_precedence(tmp_path: Path) -> None:
     home, proj = tmp_path / "home", tmp_path / "proj"
     home.mkdir()
     proj.mkdir()
-    (home / "config.toml").write_text("[compression]\nmin_tokens = 3000\n")
+    (home / "config.toml").write_text("[compression]\nmin_tokens = 3000\n", encoding="utf-8")
     assert load_config(proj, _env(home)).get("compression.min_tokens") == 3000
-    (proj / "token-sparen.toml").write_text("[compression]\nmin_tokens = 4000\n")
+    (proj / "token-sparen.toml").write_text("[compression]\nmin_tokens = 4000\n", encoding="utf-8")
     env = _env(home, TOKEN_SPAREN_COMPRESSION__MIN_TOKENS="5000")
     assert load_config(proj, env).get("compression.min_tokens") == 5000
     assert load_config(proj, _env(home)).get("compression.min_tokens") == 4000
@@ -44,10 +44,10 @@ def test_kill_switch(tmp_path: Path) -> None:
 def test_bad_toml_falls_back(tmp_path: Path) -> None:
     home, proj = tmp_path / "home", tmp_path / "proj"
     proj.mkdir()
-    (proj / "token-sparen.toml").write_text("[compression\nmin_tokens = =")
+    (proj / "token-sparen.toml").write_text("[compression\nmin_tokens = =", encoding="utf-8")
     cfg = load_config(proj, _env(home))
     assert cfg.get("compression.min_tokens") == 2000
-    lines = (home / "logs" / "errors.jsonl").read_text().splitlines()
+    lines = (home / "logs" / "errors.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     rec = json.loads(lines[0])
     assert rec["where"] == "config"
@@ -82,10 +82,10 @@ def test_env_overrides_non_table(tmp_path: Path) -> None:
 
 def test_logging_failure_swallowed(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.write_text("a file, not a dir")
+    home.write_text("a file, not a dir", encoding="utf-8")
     proj = tmp_path / "proj"
     proj.mkdir()
-    (proj / "token-sparen.toml").write_text("= bad")
+    (proj / "token-sparen.toml").write_text("= bad", encoding="utf-8")
     cfg = load_config(proj, _env(home))
     assert cfg.get("compression.min_tokens") == 2000
 

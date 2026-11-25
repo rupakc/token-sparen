@@ -96,7 +96,7 @@ def test_update_creates_with_default(tmp_path: Path) -> None:
     p = tmp_path / "sub" / "x.json"
     out = jsonstore.update(p, _incr, {"n": 10})
     assert out == {"n": 11}
-    assert json.loads(p.read_text()) == {"n": 11}
+    assert json.loads(p.read_text(encoding="utf-8")) == {"n": 11}
     assert not [f for f in p.parent.iterdir() if ".tmp-" in f.name]
 
 
@@ -106,21 +106,21 @@ def test_read_missing_returns_default(tmp_path: Path) -> None:
 
 def test_corrupt_file_recovers_to_default(tmp_path: Path) -> None:
     p = tmp_path / "s.json"
-    p.write_text("{not json")
+    p.write_text("{not json", encoding="utf-8")
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
     out = jsonstore.update(p, _incr, {"n": 5}, env=env)
     assert out == {"n": 6}
-    assert json.loads(p.read_text()) == {"n": 6}
+    assert json.loads(p.read_text(encoding="utf-8")) == {"n": 6}
     assert len(list(tmp_path.glob("s.json.corrupt-*"))) == 1
     assert (tmp_path / "home" / "logs" / "errors.jsonl").exists()
 
 
 def test_read_never_renames(tmp_path: Path) -> None:
     p = tmp_path / "s.json"
-    p.write_text("{not json")
+    p.write_text("{not json", encoding="utf-8")
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
     assert jsonstore.read(p, {"ok": True}, env=env) == {"ok": True}
-    assert p.read_text() == "{not json"
+    assert p.read_text(encoding="utf-8") == "{not json"
     assert not list(tmp_path.glob("*.corrupt-*"))
     assert (tmp_path / "home" / "logs" / "errors.jsonl").exists()
 
@@ -131,7 +131,7 @@ def test_quarantines_same_second_do_not_collide(
     monkeypatch.setattr(jsonstore.time, "time", lambda: 1000.0)
     p = tmp_path / "s.json"
     for _ in range(3):
-        p.write_text("garbage")
+        p.write_text("garbage", encoding="utf-8")
         jsonstore.update(p, _incr, {})
     assert len(list(tmp_path.glob("s.json.corrupt-*"))) == 3
 
@@ -158,19 +158,19 @@ def test_jsonl_rotation_failure_is_skipped(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(jsonstore.os, "replace", deny)
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
     jsonl.append(p, {"pad": "y" * 50}, 60, env=env)
-    assert len(p.read_text().splitlines()) == 2
+    assert len(p.read_text(encoding="utf-8").splitlines()) == 2
     assert (tmp_path / "home" / "logs" / "errors.jsonl").exists()
 
 
 def test_non_dict_json_is_corrupt(tmp_path: Path) -> None:
     p = tmp_path / "l.json"
-    p.write_text("[1]")
+    p.write_text("[1]", encoding="utf-8")
     assert jsonstore.read(p, {}) == {}
 
 
 def test_update_on_corrupt_uses_default(tmp_path: Path) -> None:
     p = tmp_path / "c.json"
-    p.write_text("garbage")
+    p.write_text("garbage", encoding="utf-8")
     assert jsonstore.update(p, _incr, {"n": 0}) == {"n": 1}
 
 
@@ -214,13 +214,13 @@ def test_jsonl_rotation(tmp_path: Path) -> None:
     rotated = tmp_path / "log.jsonl.1"
     assert rotated.exists()
     assert p.stat().st_size < 500
-    assert json.loads(p.read_text().splitlines()[-1])["i"] == 39
+    assert json.loads(p.read_text(encoding="utf-8").splitlines()[-1])["i"] == 39
 
 
 def test_jsonl_append_creates_dirs(tmp_path: Path) -> None:
     p = tmp_path / "a" / "b.jsonl"
     jsonl.append(p, {"k": 1}, 1000)
-    assert json.loads(p.read_text()) == {"k": 1}
+    assert json.loads(p.read_text(encoding="utf-8")) == {"k": 1}
 
 
 def test_session_path_sanitises_traversal(tmp_path: Path) -> None:

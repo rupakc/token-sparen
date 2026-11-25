@@ -30,7 +30,9 @@ NO_CTX = CompressContext(prompt=None, recent_paths=())
 
 
 def _golden(name: str) -> tuple[str, str]:
-    return (GOLDEN / f"{name}.in").read_text(), (GOLDEN / f"{name}.out").read_text()
+    return (GOLDEN / f"{name}.in").read_text(encoding="utf-8"), (GOLDEN / f"{name}.out").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_registered() -> None:
