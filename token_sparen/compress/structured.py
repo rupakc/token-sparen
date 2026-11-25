@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from token_sparen import config as _config
@@ -18,16 +20,16 @@ from token_sparen.compress.base import (
     CompressResult,
     ContentType,
     Level,
+    error_line_indices,
     is_error_line,
 )
 from token_sparen.compress.text import TextCompressor
+from token_sparen.config import Config
 
 _TEXT = TextCompressor()
 
 MAX_JSON_KEYS = 50
 MAX_JSON_STRING = 500
-_FALLBACKS = {"items": (10, 5, 2), "context": (3, 1, 1), "edge_frames": (5, 3, 3)}
-_ARMS = ("light", "standard", "aggressive")
 _SECTION = {"items": "json", "context": "diff", "edge_frames": "stacktrace"}
 
 
@@ -36,23 +38,66 @@ def _defaults() -> dict[str, Any]:
     return _config.packaged_defaults()
 
 
+@lru_cache(maxsize=8)
+def _load(cwd: str, files: tuple[tuple[str, int], ...], env: tuple[tuple[str, str], ...]) -> Config:
+    return _config.load_config(Path(cwd), dict(env))
+
+
+def _current_config() -> Config:
+    """Packaged defaults overlaid by user/project files and env, re-read when they change."""
+    env = os.environ
+    cwd = Path.cwd()
+    sig: list[tuple[str, int]] = []
+    for path in (_config.state_home(env) / "config.toml", cwd / "token-sparen.toml"):
+        try:
+            sig.append((str(path), path.stat().st_mtime_ns))
+        except OSError:
+            sig.append((str(path), -1))
+    pairs = tuple(sorted((k, v) for k, v in env.items() if k.startswith(_config.ENV_PREFIX)))
+    return _load(str(cwd), tuple(sig), pairs)
+
+
 def _arm(level: Level) -> str:
     if level.keep_ratio >= 0.5:
         return "light"
     return "standard" if level.keep_ratio >= 0.25 else "aggressive"
 
 
+def _valid(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _setting(dotted: str) -> int:
+    """Non-negative int at `compression.<dotted>`: user/project/env value, else the packaged one."""
+    value = _current_config().get(f"compression.{dotted}")
+    if _valid(value):
+        return int(value)
+    node: Any = _defaults().get("compression", {})
+    for part in dotted.split("."):
+        node = node[part]
+    if not _valid(node):
+        raise ValueError(f"no valid packaged default for compression.{dotted}")
+    return int(node)
+
+
 def _knob(key: str, level: Level) -> int:
     """Per-type knob for the arm nearest to `level` (see `[compression.<type>]` defaults)."""
-    arm = _arm(level)
-    fallback = _FALLBACKS[key][_ARMS.index(arm)]
+    return _setting(f"{_SECTION[key]}.{key}.{_arm(level)}")
+
+
+def _guarded(
+    where: str,
+    run: Callable[[str, Level, CompressContext], CompressResult],
+    text: str,
+    level: Level,
+    ctx: CompressContext,
+) -> CompressResult:
+    """Never raise: any failure is logged and the text compressor handles the output."""
     try:
-        value = _defaults()["compression"][_SECTION[key]][key][arm]
-    except (KeyError, TypeError):
-        return fallback
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        return fallback
-    return value
+        return run(text, level, ctx)
+    except Exception as exc:  # noqa: BLE001 - compression must never break a hook
+        _config.log_error(os.environ, f"compress.{where}", f"{type(exc).__name__}: {exc}")
+        return _TEXT.compress(text, level, ctx)
 
 
 def _split(text: str) -> tuple[list[str], str]:
@@ -197,6 +242,12 @@ class JsonCompressor:
     handles: frozenset[ContentType] = frozenset({"json"})
 
     def compress(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
+        return _guarded("json", self._run, text, level, ctx)
+
+    def _run(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
+        cap = _setting("json.max_bytes")
+        if len(text) * 4 > cap and len(text.encode("utf-8", "surrogatepass")) > cap:
+            return _TEXT.compress(text, level, ctx)
         try:
             doc = json.loads(text)
             if not isinstance(doc, dict | list):
@@ -220,11 +271,20 @@ class JsonCompressor:
 
 # ------------------------------------------------------------------ diff
 
-_HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+_HUNK = re.compile(r"@@ -\d{1,9}(?:,(\d{1,9}))? \+\d{1,9}(?:,(\d{1,9}))? @@")
 
 
 def unchanged_line(n: int) -> str:
     return f" … [{n} unchanged lines]"
+
+
+def _gap(out: list[str], lines: list[str], a: int, b: int) -> int:
+    """Append lines[a:b], or one marker when at least two are unchanged; returns markers added."""
+    if b - a >= 2:
+        out.append(unchanged_line(b - a))
+        return 1
+    out.extend(lines[a:b])
+    return 0
 
 
 class DiffCompressor:
@@ -232,6 +292,9 @@ class DiffCompressor:
     handles: frozenset[ContentType] = frozenset({"diff"})
 
     def compress(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
+        return _guarded("diff", self._run, text, level, ctx)
+
+    def _run(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
         lines, trailer = _split(text)
         total = len(lines)
         hid = [0] * total  # hunk id of context-capable body lines, 0 elsewhere
@@ -268,6 +331,7 @@ class DiffCompressor:
             return _TEXT.compress(text, level, ctx)
 
         c = _knob("context", level)
+        errors = set(error_line_indices(text)) if any(is_ctx) else set()
         out: list[str] = []
         markers = 0
         i = 0
@@ -283,14 +347,19 @@ class DiffCompressor:
             trail = j == total or hid[j] != hid[i]
             first = 0 if lead else c
             last = 0 if trail else c
-            gone = (j - i) - first - last
-            if gone >= 2:
-                out.extend(lines[i : i + first])
-                out.append(unchanged_line(gone))
-                markers += 1
-                out.extend(lines[j - last : j])
-            else:
+            if j - i <= first + last:
                 out.extend(lines[i:j])
+            else:
+                lo, hi = i + first, j - last
+                out.extend(lines[i:lo])
+                pos = lo
+                for e in range(lo, hi):
+                    if e in errors:
+                        markers += _gap(out, lines, pos, e)
+                        out.append(lines[e])
+                        pos = e + 1
+                markers += _gap(out, lines, pos, hi)
+                out.extend(lines[hi:j])
             i = j
         if markers == 0:
             return _unchanged(text, total)
@@ -309,7 +378,7 @@ _PY_FRAME = re.compile(r'\s+File "[^"]*", line \d+')
 _JVM_EXTRA = re.compile(r"\s*(?:Caused by:|Suppressed:|\.\.\. \d+ (?:more|common frames omitted))")
 _LIBRARY = re.compile(
     r"site-packages|dist-packages|node_modules|<frozen"
-    r"|(?:^\s*at\s+|/)(?:java|jdk\.internal)\."
+    r"|^\s*at\s+(?:java\.|javax\.|jdk\.internal\.|sun\.)"
 )
 _AT_POSITION = re.compile(r".+:\d+(?::\d+)?")
 
@@ -335,6 +404,9 @@ class StackTraceCompressor:
     handles: frozenset[ContentType] = frozenset({"stacktrace"})
 
     def compress(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
+        return _guarded("stacktrace", self._run, text, level, ctx)
+
+    def _run(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
         lines, trailer = _split(text)
         total = len(lines)
         # segments: ("T", text lines) | ("K", [line]) kept verbatim | ("F", frame units)
@@ -414,6 +486,7 @@ class StackTraceCompressor:
                 or idx >= m - edge
                 or _LIBRARY.search(head) is None
                 or any(nm in head for nm in names)
+                or any(is_error_line(ln) for ln in unit)
             )
             if keep:
                 if dropped:

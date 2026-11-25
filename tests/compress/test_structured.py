@@ -289,3 +289,123 @@ def test_stacktrace_surrounding_text_goes_through_text_compressor() -> None:
 
 def test_error_matcher_sanity() -> None:
     assert is_error_line("ValueError: boom")
+
+
+# ---------------------------------------------------------------- fix round 1
+
+
+def _py_trace(middle: str) -> str:
+    frames = [f'  File "/venv/site-packages/l{i}.py", line {i}, in f\n    x()\n' for i in range(5)]
+    frames.append(f'  File "{middle}", line 7, in mid\n    y()\n')
+    frames += [f'  File "/venv/site-packages/m{i}.py", line {i}, in f\n    x()\n' for i in range(5)]
+    return "Traceback (most recent call last):\n" + "".join(frames) + "ValueError: boom\n"
+
+
+@pytest.mark.parametrize("path", ["/srv/app/java.py", "/srv/app/jdk.internal.py"])
+def test_stacktrace_project_path_named_java_is_kept(path: str) -> None:
+    out = StackTraceCompressor().compress(_py_trace(path), STANDARD, NO_CTX).text
+    assert path in out
+
+
+def test_stacktrace_node_project_file_named_java_is_kept() -> None:
+    lines = ["Error: x", "    at a (/app/node_modules/a.js:1:1)"] * 1
+    lines += [f"    at f{i} (/app/node_modules/m{i}.js:1:1)" for i in range(5)]
+    lines.append("    at mid (/app/java.js:3:4)")
+    lines += [f"    at g{i} (/app/node_modules/n{i}.js:1:1)" for i in range(5)]
+    out = StackTraceCompressor().compress("\n".join(lines), STANDARD, NO_CTX).text
+    assert "/app/java.js:3:4" in out
+
+
+def test_stacktrace_jvm_library_still_collapsed() -> None:
+    src = (
+        "java.lang.IllegalStateException: x\n"
+        + "\tat com.a.B.c(B.java:1)\n" * 1
+        + "".join(f"\tat java.base/java.util.X{i}.m(X.java:{i})\n" for i in range(4))
+        + "".join(f"\tat sun.reflect.S{i}.m(S.java:{i})\n" for i in range(4))
+        + "".join(f"\tat javax.swing.J{i}.m(J.java:{i})\n" for i in range(4))
+        + "\tat com.a.D.e(D.java:2)\n" * 3
+    )
+    out = StackTraceCompressor().compress(src, STANDARD, NO_CTX).text
+    assert "library frames]" in out
+
+
+def test_json_size_cap_delegates_to_text() -> None:
+    doc = json.dumps([{"id": i, "v": "x" * 20} for i in range(60000)])
+    assert len(doc) > 2_000_000
+    assert JsonCompressor().compress(doc, STANDARD, NO_CTX) == TextCompressor().compress(
+        doc, STANDARD, NO_CTX
+    )
+
+
+@pytest.mark.perf
+def test_json_2mb_budget() -> None:
+    import os
+    import time
+
+    factor = float(os.environ.get("TOKEN_SPAREN_PERF_FACTOR", "1.0"))
+    doc = json.dumps([{"id": i, "v": "x" * 20} for i in range(45000)])
+    assert 1_500_000 < len(doc) <= 2_000_000
+    best = float("inf")
+    for _ in range(3):
+        t0 = time.perf_counter()
+        JsonCompressor().compress(doc, STANDARD, NO_CTX)
+        best = min(best, time.perf_counter() - t0)
+    assert best < 0.25 * factor, f"{best * 1000:.0f} ms"
+
+
+def test_diff_error_context_lines_kept() -> None:
+    body = [f" ctx{i}" for i in range(10)]
+    body[5] = " ERROR: something failed"
+    src = "@@ -1,12 +1,12 @@\n" + "\n".join(body) + "\n-a\n+b\n ctx\n"
+    out = DiffCompressor().compress(src, AGGRESSIVE, NO_CTX).text
+    assert " ERROR: something failed" in out
+    assert "unchanged lines]" in out
+
+
+def test_stacktrace_error_library_frames_kept() -> None:
+    lines = ["Traceback (most recent call last):"]
+    for i in range(12):
+        lines.append(f'  File "/venv/site-packages/l{i}.py", line 1, in f')
+        lines.append("    raise RuntimeError('inner')" if i == 6 else "    x()")
+    lines.append("ValueError: boom")
+    out = StackTraceCompressor().compress("\n".join(lines), STANDARD, NO_CTX).text
+    assert "RuntimeError('inner')" in out
+    js = ["Error: x"] + [f"    at f{i} (/app/node_modules/m{i}.js:1:1)" for i in range(6)]
+    js.insert(4, "    at onError (/app/node_modules/e.js:9:9)")
+    js += [f"    at g{i} (/app/node_modules/n{i}.js:1:1)" for i in range(6)]
+    assert "onError" in StackTraceCompressor().compress("\n".join(js), STANDARD, NO_CTX).text
+
+
+def test_diff_huge_hunk_header_does_not_raise() -> None:
+    src = "@@ -1," + "9" * 5000 + " +1,1 @@\n ctx\n-a\n+b\n" * 3
+    res = DiffCompressor().compress(src, STANDARD, NO_CTX)
+    assert "-a" in res.text and "+b" in res.text
+
+
+@pytest.mark.parametrize("cls", [DiffCompressor, StackTraceCompressor])
+def test_never_raises(cls: type, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from token_sparen.compress import structured
+
+    monkeypatch.setenv("TOKEN_SPAREN_HOME", str(tmp_path))
+
+    def boom(*_a: object, **_k: object) -> int:
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(structured, "_knob", boom)
+    src = "diff --git a/a b/a\n@@ -1,1 +1,1 @@\n-a\n+b\n"
+    res = cls().compress(src, STANDARD, NO_CTX)
+    assert res == TextCompressor().compress(src, STANDARD, NO_CTX)
+
+
+def test_project_override_changes_json_items(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("TOKEN_SPAREN_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    doc = json.dumps([{"i": i} for i in range(30)])
+    base = JsonCompressor().compress(doc, STANDARD, NO_CTX).text
+    assert "… 25 more items" in base
+    (tmp_path / "token-sparen.toml").write_text(
+        "[compression.json]\nitems = { standard = 8 }\n", encoding="utf-8"
+    )
+    assert "… 22 more items" in JsonCompressor().compress(doc, STANDARD, NO_CTX).text

@@ -23,6 +23,7 @@ keep_ratio = 0.15
 # Per-type knobs for the structured compressors, selected by nearest arm (keep_ratio >= 0.5
 # light, >= 0.25 standard, else aggressive).
 [compression.json]
+max_bytes = 2000000  # larger documents go to the text compressor (latency cap)
 items = { light = 10, standard = 5, aggressive = 2 }  # array items shown in full
 
 [compression.diff]
