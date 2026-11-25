@@ -12,7 +12,9 @@ cache_read = 0.1
 output = 5.0
 
 [recovery]
-# filled by later tasks
+ttl_days = 14
+max_files = 200
+max_bytes = 100000000
 
 [guards]
 # filled by later tasks
