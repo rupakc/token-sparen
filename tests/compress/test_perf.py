@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import random
-import time
 from collections.abc import Callable
 
 import pytest
+from perfutil import best_of, perf_factor
 
 from token_sparen.compress import CompressContext, Level, TextCompressor
 
@@ -50,11 +49,7 @@ def one_in_five(i: int, w: str) -> str:
 
 
 def _best(text: str, runs: int) -> float:
-    best = float("inf")
-    for _ in range(runs):
-        start = time.perf_counter()
-        res = TextCompressor().compress(text, STANDARD, CTX)
-        best = min(best, time.perf_counter() - start)
+    best, res = best_of(lambda: TextCompressor().compress(text, STANDARD, CTX), runs)
     assert isinstance(res.text, str)
     return best
 
@@ -66,7 +61,7 @@ def test_huge_and_binary_output() -> None:
     assert "FATAL: disk on fire" in res.text
     assert res.total_lines == big.count("\n") + 1
     t_small, t_big = _best(small, 3), _best(big, 2)
-    factor = float(os.environ.get("TOKEN_SPAREN_PERF_FACTOR", "3"))
+    factor = perf_factor(3.0)
     assert t_big < 0.2 * factor, f"took {t_big * 1000:.0f} ms"
     assert t_big / t_small <= 15, f"1 MB {t_small * 1000:.0f} ms, 10 MB {t_big * 1000:.0f} ms"
 
@@ -75,6 +70,6 @@ def test_huge_and_binary_output() -> None:
 @pytest.mark.parametrize("line", [sparse, all_errors, false_positives, one_in_five])
 def test_strict_budget_10mb(line: Callable[[int, str], str]) -> None:
     """200 ms is the dev-machine reference; CI sets TOKEN_SPAREN_PERF_FACTOR for slower runners."""
-    factor = float(os.environ.get("TOKEN_SPAREN_PERF_FACTOR", "1.0"))
+    factor = perf_factor()
     best = _best(_build(10 * MB, line), 5)
     assert best < 0.2 * factor, f"{line.__name__}: {best * 1000:.0f} ms (factor {factor})"

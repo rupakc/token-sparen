@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import random
 import re
-import time
 from pathlib import Path
 
 import pytest
+from perfutil import best_of, perf_factor
 
 from token_sparen.compress import CompressContext, Level, TextCompressor, is_error_line, registry
 from token_sparen.compress.reports import (
@@ -406,13 +406,10 @@ def _big(unit: str, size: int = 1024 * 1024) -> str:
 )
 def test_one_megabyte_under_100ms(cls: type, unit: str) -> None:
     text = "=== test session starts ===\n" + _big(unit) + "\n=== 1 failed, 5 passed in 1s ===\n"
-    best = float("inf")
-    for _ in range(3):
-        start = time.perf_counter()
-        res = cls().compress(text, STANDARD, NO_CTX)
-        best = min(best, time.perf_counter() - start)
+    best, res = best_of(lambda: cls().compress(text, STANDARD, NO_CTX), 3)
     assert isinstance(res.text, str)
-    assert best < 0.1, f"{cls.__name__}: {best * 1000:.0f} ms"
+    budget = 0.1 * perf_factor()
+    assert best < budget, f"{cls.__name__}: {best * 1000:.0f} ms (budget {budget * 1000:.0f})"
 
 
 # ------------------------------------------------------------- fix round 1
