@@ -36,6 +36,7 @@ _CATEGORIES: dict[str, ToolCategory] = {
     "Task": "agent",
     "Agent": "agent",
 }
+_BASH_KEEP = ("persistedOutputPath", "persistedOutputSize")
 _INJECT_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "PostToolUse"})
 _EXTRA_KEYS = (
     "hook_event_name",
@@ -92,17 +93,32 @@ def render_tool_output(tool_name: str, original: Any, new_text: str) -> Any | No
     if isinstance(original, str):
         return new_text
     if tool_name == "Bash" and _is_bash(original):
-        return {
+        out: dict[str, Any] = {
             "stdout": new_text,
             "stderr": "",
             "interrupted": bool(original.get("interrupted", False)),
             "isImage": False,
         }
-    if tool_name == "Read" and _read_file(original) is not None:
-        out = copy.deepcopy(original)
-        out["file"]["content"] = new_text
+        for key in _BASH_KEEP:  # the full output Claude Code saved stays reachable
+            if key in original:
+                out[key] = original[key]
         return out
+    if tool_name == "Read" and _read_file(original) is not None:
+        read = copy.deepcopy(original)
+        read["file"]["content"] = new_text
+        return read
     return None
+
+
+def replaceable(event: Event) -> bool:
+    """Whether Claude Code can replace this event's tool output (PostToolUse only).
+
+    PostToolUseFailure supports only ``additionalContext``, so a failure result cannot be
+    replaced there; mechanisms must not do (or account for) work the host would discard.
+    """
+    if event.kind != "post_tool" or event.tool is None:
+        return False
+    return render_tool_output(event.tool.name, event.raw_response, "") is not None
 
 
 def _str(value: Any) -> str | None:

@@ -12,11 +12,15 @@ import random
 import threading
 import time
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from typing import Any, TextIO
 
+from token_sparen.adapters.claude import translate
 from token_sparen.adapters.claude.translate import EVENT_KINDS, ClaudeAdapter
 from token_sparen.config import Config, load_config, log_error, state_home
 from token_sparen.events import Action, Event, EventKind
+from token_sparen.learn.policy import StaticPolicy
+from token_sparen.mechanisms import compression, tracking
 from token_sparen.store import jsonl
 
 Handler = Callable[[Event, Config], Action]
@@ -38,8 +42,27 @@ def _noop(event: Event, cfg: Config) -> Action:
     return Action()
 
 
+# The environment of the running hook (``main``'s ``env``), for handlers that touch state.
+HOOK_ENV: ContextVar[Mapping[str, str]] = ContextVar("HOOK_ENV", default=os.environ)
+POLICY = StaticPolicy({})
+
+
+def _on_prompt(event: Event, cfg: Config) -> Action:
+    return tracking.handle_prompt(event, cfg, env=HOOK_ENV.get())
+
+
+def _on_post_tool(event: Event, cfg: Config) -> Action:
+    env = HOOK_ENV.get()
+    tracking.record_paths(event, env=env)
+    return compression.handle_post_tool(
+        event, POLICY, cfg, env=env, replaceable=translate.replaceable
+    )
+
+
 register("pre_tool", _noop)
-register("post_tool", _noop)
+register("prompt", _on_prompt)
+register("post_tool", _on_post_tool)
+register("post_tool_failure", _on_post_tool)  # same handler; the host decides if it can replace
 
 
 def handle(event: Event, cfg: Config) -> Action:
@@ -153,7 +176,11 @@ def _respond(
         dog.arm(budget)
     if cfg.disabled:
         return NOOP, cfg, "disabled"
-    action = handle(event, cfg)
+    token = HOOK_ENV.set(env)
+    try:
+        action = handle(event, cfg)
+    finally:
+        HOOK_ENV.reset(token)
     if action.is_noop():
         return NOOP, cfg, "noop"
     rendered = ADAPTER.render(event, action)

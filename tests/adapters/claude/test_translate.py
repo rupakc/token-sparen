@@ -250,3 +250,27 @@ def test_render_ignores_unsupported_fields(tmp_path: Path) -> None:
     act = Action(inject_context="c", replace_output="r", block_reason="b", rewrite_input={})
     assert a.render(ev, act) == {}
     assert a.render(ev, Action(user_message="m")) == {"systemMessage": "m"}
+
+
+def test_render_bash_preserves_persisted_output_fields() -> None:
+    orig = {**BASH, "persistedOutputPath": "/t/out.txt", "persistedOutputSize": 123456}
+    out = render_tool_output("Bash", orig, "new")
+    assert out == {
+        "stdout": "new",
+        "stderr": "",
+        "interrupted": True,
+        "isImage": False,
+        "persistedOutputPath": "/t/out.txt",
+        "persistedOutputSize": 123456,
+    }
+
+
+def test_replaceable(tmp_path: Path) -> None:
+    ok = _ev(tmp_path, "PostToolUse", tool_name="Bash", tool_input={}, tool_response=BASH)
+    assert translate.replaceable(ok)
+    img = {**BASH, "isImage": True}
+    bad = _ev(tmp_path, "PostToolUse", tool_name="Bash", tool_input={}, tool_response=img)
+    assert not translate.replaceable(bad)
+    fail = _ev(tmp_path, "PostToolUseFailure", tool_name="Bash", tool_input={}, error="boom")
+    assert not translate.replaceable(fail)  # Claude Code only adds context on failures
+    assert not translate.replaceable(_ev(tmp_path, "SessionEnd"))

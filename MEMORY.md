@@ -84,3 +84,32 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   are never bypassed.
 - hooks.json invokes `python3`. On Windows the interpreter may only be `py` or `python`;
   `token-sparen doctor` (Task 17) must check this and advise.
+
+## 2026-11-26 Compression decision point (Task 13)
+- `learn/policy.py` holds the stable engine contract (`DecisionPoint`, `Policy`, `Decision`,
+  `DecisionRecord`, `StaticPolicy`, `COMPRESSION`). `StaticPolicy` uses propensity 1.0, bucket
+  `"static"`, uuid4-hex ids; an unknown point or an arm not in `point.arms` falls back to the safe
+  arm. `DecisionRecord` adds `ctype` and `tool_name` after the eleven contract fields.
+- Every policy decision is logged to `projects/<key>/decisions.jsonl`, including those that end as
+  a no-op (arm `off`, lossless result, saving < `min_saving_ratio`): then `tokens_after ==
+  tokens_before` and `recovery_id` is null. Gates before the decision (deny-set, unreplaceable
+  shape, < `min_tokens`) log nothing. The size gate uses the text ratio (conservative); ledger and
+  log use the content-type ratio. `command_sig` = raw Bash command[:500] (Task 21 normalises).
+- **PostToolUseFailure cannot replace the result on Claude Code** (docs: only `additionalContext`).
+  The failure event routes to the same handler, but the Claude predicate
+  `translate.replaceable` returns False for it, so no work, recovery file or decision happens and no
+  fake savings are booked. The mechanism itself supports failures (host-neutral default predicate)
+  for hosts that can replace them. Consequence: failing Bash commands are not compressed on Claude
+  Code today; revisit if the host adds failure replacement.
+- Bash: if `persistedOutputPath` is readable and <= 20 MB its full content is compressed (plus
+  stderr) and `tokens_before` is measured on that full text; the replacement keeps
+  `persistedOutputPath`/`persistedOutputSize`. Read: `file.content` is compressed; `numLines` and
+  `totalLines` stay as the host reported them, the marker states kept/total lines of the content.
+- `[compression] skip_tools` (env override: comma-separated) plus every `edit`-category tool are
+  never compressed; an invalid value falls back to the packaged deny-set.
+- Session overlay (local per-session file, not a shared store) keeps `turn`, `last_prompt`
+  (<= 2000 chars, from UserPromptSubmit), `recent_paths` (last 20 `file_path`s of read/edit tools,
+  recorded on PostToolUse/Failure) and the statusline counters `trims`, `tokens_removed`. Ledger
+  write failures are logged and do not undo a trim.
+- Handlers get the hook env through `entry.HOOK_ENV` (a ContextVar set around `handle`), so the
+  `Handler(event, cfg)` signature stays unchanged. Outputs are pruned after each save.

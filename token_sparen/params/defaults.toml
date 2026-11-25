@@ -3,6 +3,9 @@
 [compression]
 min_tokens = 2000
 min_saving_ratio = 0.15
+# Tools whose output is never compressed (tiny confirmations or user interaction); every tool
+# in the edit category is skipped as well.
+skip_tools = ["Edit", "Write", "MultiEdit", "NotebookEdit", "TodoWrite", "AskUserQuestion", "ExitPlanMode"]
 
 # Arms for the text compressor: keep head + tail lines and ceil(keep_ratio * total) overall.
 [compression.levels.light]
@@ -72,7 +75,7 @@ max_bytes = 100000000
 # filled by later tasks
 
 [learn]
-# filled by later tasks
+decision_log_max_bytes = 20000000  # projects/<key>/decisions.jsonl rotates past this size
 
 [facts]
 # filled by later tasks
