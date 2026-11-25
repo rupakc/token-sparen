@@ -11,7 +11,6 @@ import os
 import re
 from collections.abc import Callable
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from token_sparen import config as _config
@@ -24,7 +23,6 @@ from token_sparen.compress.base import (
     is_error_line,
 )
 from token_sparen.compress.text import TextCompressor
-from token_sparen.config import Config
 
 _TEXT = TextCompressor()
 
@@ -38,25 +36,6 @@ def _defaults() -> dict[str, Any]:
     return _config.packaged_defaults()
 
 
-@lru_cache(maxsize=8)
-def _load(cwd: str, files: tuple[tuple[str, int], ...], env: tuple[tuple[str, str], ...]) -> Config:
-    return _config.load_config(Path(cwd), dict(env))
-
-
-def _current_config() -> Config:
-    """Packaged defaults overlaid by user/project files and env, re-read when they change."""
-    env = os.environ
-    cwd = Path.cwd()
-    sig: list[tuple[str, int]] = []
-    for path in (_config.state_home(env) / "config.toml", cwd / "token-sparen.toml"):
-        try:
-            sig.append((str(path), path.stat().st_mtime_ns))
-        except OSError:
-            sig.append((str(path), -1))
-    pairs = tuple(sorted((k, v) for k, v in env.items() if k.startswith(_config.ENV_PREFIX)))
-    return _load(str(cwd), tuple(sig), pairs)
-
-
 def _arm(level: Level) -> str:
     if level.keep_ratio >= 0.5:
         return "light"
@@ -67,22 +46,22 @@ def _valid(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
-def _setting(dotted: str) -> int:
-    """Non-negative int at `compression.<dotted>`: user/project/env value, else the packaged one."""
-    value = _current_config().get(f"compression.{dotted}")
-    if _valid(value):
-        return int(value)
+def _setting(dotted: str, ctx: CompressContext) -> int:
+    """Non-negative int at `compression.<dotted>`: `ctx.config` value, else the packaged one."""
+    value = ctx.config.get(f"compression.{dotted}") if ctx.config is not None else None
+    if isinstance(value, int) and _valid(value):
+        return value
     node: Any = _defaults().get("compression", {})
     for part in dotted.split("."):
         node = node[part]
-    if not _valid(node):
+    if not isinstance(node, int) or not _valid(node):
         raise ValueError(f"no valid packaged default for compression.{dotted}")
-    return int(node)
+    return node
 
 
-def _knob(key: str, level: Level) -> int:
+def _knob(key: str, level: Level, ctx: CompressContext) -> int:
     """Per-type knob for the arm nearest to `level` (see `[compression.<type>]` defaults)."""
-    return _setting(f"{_SECTION[key]}.{key}.{_arm(level)}")
+    return _setting(f"{_SECTION[key]}.{key}.{_arm(level)}", ctx)
 
 
 def _guarded(
@@ -245,7 +224,7 @@ class JsonCompressor:
         return _guarded("json", self._run, text, level, ctx)
 
     def _run(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
-        cap = _setting("json.max_bytes")
+        cap = _setting("json.max_bytes", ctx)
         if len(text) * 4 > cap and len(text.encode("utf-8", "surrogatepass")) > cap:
             return _TEXT.compress(text, level, ctx)
         try:
@@ -253,7 +232,7 @@ class JsonCompressor:
             if not isinstance(doc, dict | list):
                 return _TEXT.compress(text, level, ctx)
             errs, lines = _survey(doc)
-            render = _JsonRender(_knob("items", level), errs, lines)
+            render = _JsonRender(_knob("items", level, ctx), errs, lines)
             render.emit(doc, 0, "", "")
         except (ValueError, RecursionError, MemoryError):
             return _TEXT.compress(text, level, ctx)
@@ -330,7 +309,7 @@ class DiffCompressor:
         if hunks == 0 and not any(ln.startswith("diff --git") for ln in lines):
             return _TEXT.compress(text, level, ctx)
 
-        c = _knob("context", level)
+        c = _knob("context", level, ctx)
         errors = set(error_line_indices(text)) if any(is_ctx) else set()
         out: list[str] = []
         markers = 0
@@ -455,7 +434,7 @@ class StackTraceCompressor:
         if not any(kind == "F" for kind, _ in segs):
             return _TEXT.compress(text, level, ctx)
 
-        edge = _knob("edge_frames", level)
+        edge = _knob("edge_frames", level, ctx)
         names = _basenames(ctx.recent_paths)
         out: list[str] = []
         kept = 0

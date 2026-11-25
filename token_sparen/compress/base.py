@@ -165,6 +165,7 @@ def load_level(config: Config, arm: str) -> Level:
 class CompressContext:
     prompt: str | None
     recent_paths: Sequence[str]
+    config: Config | None = None
 
 
 @dataclass(frozen=True)

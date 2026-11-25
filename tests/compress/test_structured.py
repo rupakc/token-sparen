@@ -382,7 +382,7 @@ def test_diff_huge_hunk_header_does_not_raise() -> None:
     assert "-a" in res.text and "+b" in res.text
 
 
-@pytest.mark.parametrize("cls", [DiffCompressor, StackTraceCompressor])
+@pytest.mark.parametrize("cls", [JsonCompressor, DiffCompressor, StackTraceCompressor])
 def test_never_raises(cls: type, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from token_sparen.compress import structured
 
@@ -392,20 +392,28 @@ def test_never_raises(cls: type, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
         raise RuntimeError("x")
 
     monkeypatch.setattr(structured, "_knob", boom)
-    src = "diff --git a/a b/a\n@@ -1,1 +1,1 @@\n-a\n+b\n"
+    src = (
+        '{"a": [1, 2, 3]}'
+        if cls is JsonCompressor
+        else "diff --git a/a b/a\n@@ -1,1 +1,1 @@\n-a\n+b\n"
+    )
     res = cls().compress(src, STANDARD, NO_CTX)
     assert res == TextCompressor().compress(src, STANDARD, NO_CTX)
 
 
-def test_project_override_changes_json_items(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("TOKEN_SPAREN_HOME", str(tmp_path / "home"))
-    monkeypatch.chdir(tmp_path)
+def test_project_override_changes_json_items(tmp_path: Path) -> None:
+    from token_sparen.config import load_config
+
+    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
+    proj = tmp_path / "proj"
+    proj.mkdir()
     doc = json.dumps([{"i": i} for i in range(30)])
-    base = JsonCompressor().compress(doc, STANDARD, NO_CTX).text
-    assert "… 25 more items" in base
-    (tmp_path / "token-sparen.toml").write_text(
+    base = CompressContext(prompt=None, recent_paths=(), config=load_config(proj, env))
+    assert "… 25 more items" in JsonCompressor().compress(doc, STANDARD, base).text
+    (proj / "token-sparen.toml").write_text(
         "[compression.json]\nitems = { standard = 8 }\n", encoding="utf-8"
     )
-    assert "… 22 more items" in JsonCompressor().compress(doc, STANDARD, NO_CTX).text
+    over = CompressContext(prompt=None, recent_paths=(), config=load_config(proj, env))
+    assert "… 22 more items" in JsonCompressor().compress(doc, STANDARD, over).text
+    # no config on the context: packaged defaults, regardless of cwd
+    assert "… 25 more items" in JsonCompressor().compress(doc, STANDARD, NO_CTX).text
