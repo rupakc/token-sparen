@@ -1,0 +1,20 @@
+starting job
+Traceback (most recent call last):
+  File "/srv/app/main.py", line 10, in <module>
+    run()
+  File "/venv/lib/site-packages/lib/a.py", line 1, in a1
+    x()
+  File "/venv/lib/site-packages/lib/b.py", line 2, in b1
+    x()
+  … [4 library frames]
+  File "/srv/app/handler.py", line 20, in handle
+    do()
+  … [1 library frames]
+  File "/venv/lib/site-packages/lib/h.py", line 8, in h1
+    x()
+  File "/venv/lib/site-packages/lib/i.py", line 9, in i1
+    x()
+  File "/venv/lib/site-packages/lib/j.py", line 10, in j1
+    raise ValueError("boom")
+ValueError: boom
+job done

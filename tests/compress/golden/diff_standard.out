@@ -1,0 +1,14 @@
+diff --git a/app.py b/app.py
+index 1111111..2222222 100644
+--- a/app.py
++++ b/app.py
+@@ -1,12 +1,12 @@
+ … [3 unchanged lines]
+ import json
+-OLD = 1
++NEW = 2
+ def a():
+ … [4 unchanged lines]
+     pass
+-x = 1
++x = 2

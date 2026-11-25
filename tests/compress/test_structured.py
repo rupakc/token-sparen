@@ -1,0 +1,291 @@
+"""JSON, diff and stack-trace compressors."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from token_sparen.compress import (
+    CompressContext,
+    Level,
+    TextCompressor,
+    is_error_line,
+    registry,
+)
+from token_sparen.compress.structured import (
+    DiffCompressor,
+    JsonCompressor,
+    StackTraceCompressor,
+)
+
+GOLDEN = Path(__file__).parent / "golden"
+LIGHT = Level(head=80, tail=40, keep_ratio=0.6)
+STANDARD = Level(head=40, tail=20, keep_ratio=0.35)
+AGGRESSIVE = Level(head=15, tail=10, keep_ratio=0.15)
+NO_CTX = CompressContext(prompt=None, recent_paths=())
+
+
+def _golden(name: str) -> tuple[str, str]:
+    return (GOLDEN / f"{name}.in").read_text(), (GOLDEN / f"{name}.out").read_text()
+
+
+def test_registered() -> None:
+    assert isinstance(registry.for_type("json"), JsonCompressor)
+    assert isinstance(registry.for_type("diff"), DiffCompressor)
+    assert isinstance(registry.for_type("stacktrace"), StackTraceCompressor)
+
+
+# ---------------------------------------------------------------- json
+
+
+def test_json_schema_and_counts() -> None:
+    src, want = _golden("json_standard")
+    res = JsonCompressor().compress(src, STANDARD, NO_CTX)
+    assert res.text == want
+    assert res.total_lines == len(json.dumps(json.loads(src), indent=2).split("\n"))
+    assert res.kept_lines == len(want.rstrip("\n").split("\n")) - 1  # marker not counted
+    assert not res.lossless
+
+
+def test_json_levels_use_different_k() -> None:
+    doc = json.dumps([{"i": i} for i in range(30)])
+    comp = JsonCompressor()
+    light = comp.compress(doc, LIGHT, NO_CTX).text
+    aggr = comp.compress(doc, AGGRESSIVE, NO_CTX).text
+    assert "… 20 more items with same keys" in light
+    assert "… 28 more items with same keys" in aggr
+
+
+def test_json_differing_keys_marker() -> None:
+    doc = json.dumps([{"a": 1}, {"a": 2}, {"b": 3}, {"c": 4}])
+    out = JsonCompressor().compress(doc, AGGRESSIVE, NO_CTX).text
+    assert "… 2 more items\n" in out + "\n"
+    assert "same keys" not in out
+
+
+def test_json_small_is_lossless_and_unchanged() -> None:
+    doc = '{"a": [1, 2]}'
+    res = JsonCompressor().compress(doc, STANDARD, NO_CTX)
+    assert res.lossless and res.text == doc
+
+
+def test_json_many_keys_and_long_strings() -> None:
+    doc = json.dumps({f"k{i:03d}": i for i in range(80)} | {"long": "x" * 900})
+    out = JsonCompressor().compress(doc, STANDARD, NO_CTX).text
+    assert '"k049": 49' in out and '"k050"' not in out
+    assert "… 31 more keys" in out  # 81 keys, 50 kept
+    doc2 = json.dumps({"s": "y" * 600})
+    out2 = JsonCompressor().compress(doc2, STANDARD, NO_CTX).text
+    assert "y" * 500 + "…(+100 chars)" in out2
+
+
+def test_json_never_drops_error_strings() -> None:
+    items = [{"id": i, "msg": "fine"} for i in range(20)]
+    items[13]["msg"] = "ValueError: bad thing happened"
+    items[17]["note"] = "build failed"
+    out = JsonCompressor().compress(json.dumps(items), AGGRESSIVE, NO_CTX).text
+    assert "ValueError: bad thing happened" in out
+    assert "build failed" in out
+    keys = {f"k{i}": "ok" for i in range(70)}
+    keys["k69"] = "Traceback here"
+    out = JsonCompressor().compress(json.dumps(keys), STANDARD, NO_CTX).text
+    assert "Traceback here" in out
+    long_err = "fatal: " + "z" * 700
+    out = JsonCompressor().compress(json.dumps({"e": long_err}), STANDARD, NO_CTX).text
+    assert long_err in out
+
+
+@pytest.mark.parametrize("bad", ['{"a": ', "[1, 2,", "not json at all\n" * 100, ""])
+def test_json_invalid_falls_back(bad: str) -> None:
+    want = TextCompressor().compress(bad, STANDARD, NO_CTX)
+    assert JsonCompressor().compress(bad, STANDARD, NO_CTX) == want
+
+
+def test_json_deep_nesting_does_not_raise() -> None:
+    doc = "[" * 5000 + "]" * 5000
+    res = JsonCompressor().compress(doc, STANDARD, NO_CTX)
+    assert isinstance(res.text, str)
+
+
+def test_json_trailing_newline_preserved() -> None:
+    doc = json.dumps([{"i": i} for i in range(9)]) + "\n"
+    assert JsonCompressor().compress(doc, AGGRESSIVE, NO_CTX).text.endswith("\n")
+
+
+# ---------------------------------------------------------------- diff
+
+
+def test_diff_golden() -> None:
+    src, want = _golden("diff_standard")
+    res = DiffCompressor().compress(src, STANDARD, NO_CTX)
+    assert res.text == want
+    assert res.total_lines == 19
+    assert not res.lossless
+
+
+def test_diff_light_keeps_more_context() -> None:
+    src, _ = _golden("diff_standard")
+    out = DiffCompressor().compress(src, LIGHT, NO_CTX).text
+    assert " … [1 unchanged lines]" not in out
+    assert " import sys" in out
+
+
+def test_diff_binary_rename_mode_lines_kept() -> None:
+    src = (
+        "diff --git a/old.txt b/new.txt\nsimilarity index 90%\nrename from old.txt\n"
+        "rename to new.txt\nold mode 100644\nnew mode 100755\n"
+        "diff --git a/i.png b/i.png\nBinary files a/i.png and b/i.png differ\n"
+    )
+    res = DiffCompressor().compress(src, STANDARD, NO_CTX)
+    assert res.text == src and res.lossless
+
+
+def test_diff_malformed_falls_back() -> None:
+    bad = "this is not a diff\n" * 200
+    assert DiffCompressor().compress(bad, STANDARD, NO_CTX) == TextCompressor().compress(
+        bad, STANDARD, NO_CTX
+    )
+
+
+def test_diff_removed_dashes_line_not_mistaken_for_header() -> None:
+    src = "@@ -1,3 +1,2 @@\n ctx\n--- removed text\n+added\n ctx\n"
+    out = DiffCompressor().compress(src, STANDARD, NO_CTX).text
+    assert "--- removed text" in out and "+added" in out
+
+
+_TEXT = st.text(alphabet="abc xyz-+@", max_size=8)
+_LINE = st.tuples(st.sampled_from([" ", "+", "-"]), _TEXT)
+_HUNK = st.lists(_LINE, min_size=1, max_size=40)
+
+
+def _render(files: list[list[list[tuple[str, str]]]]) -> str:
+    out: list[str] = []
+    for fi, hunks in enumerate(files):
+        out += [f"diff --git a/f{fi} b/f{fi}", f"--- a/f{fi}", f"+++ b/f{fi}"]
+        for hunk in hunks:
+            old = sum(1 for k, _ in hunk if k != "+")
+            new = sum(1 for k, _ in hunk if k != "-")
+            out.append(f"@@ -1,{old} +1,{new} @@ ctx")
+            out += [k + t for k, t in hunk]
+    return "\n".join(out) + "\n"
+
+
+@settings(max_examples=150, deadline=None)
+@given(
+    files=st.lists(st.lists(_HUNK, min_size=1, max_size=4), min_size=1, max_size=3),
+    level=st.sampled_from([LIGHT, STANDARD, AGGRESSIVE]),
+)
+def test_diff_keeps_all_changes(files: list[list[list[tuple[str, str]]]], level: Level) -> None:
+    src = _render(files)
+    out = DiffCompressor().compress(src, level, NO_CTX).text
+    out_lines = out.split("\n")
+    keep = ("+", "-", "diff --git", "@@")
+    want = [ln for ln in src.split("\n") if ln.startswith(keep)]
+    got = [ln for ln in out_lines if ln.startswith(keep)]
+    assert got == want
+
+
+# ---------------------------------------------------------------- stacktrace
+
+
+def test_stacktrace_python_golden() -> None:
+    src, want = _golden("stack_python")
+    res = StackTraceCompressor().compress(src, STANDARD, NO_CTX)
+    assert res.text == want
+    assert not res.lossless
+
+
+def test_stacktrace_keeps_exception_and_project_frames() -> None:
+    src, _ = _golden("stack_python")
+    out = StackTraceCompressor().compress(src, AGGRESSIVE, NO_CTX).text
+    assert "ValueError: boom" in out
+    assert "/srv/app/handler.py" in out and "/srv/app/main.py" in out
+    assert "  … [4 library frames]" in out
+
+
+def test_stacktrace_light_keeps_five_edge_frames() -> None:
+    src, _ = _golden("stack_python")
+    out = StackTraceCompressor().compress(src, LIGHT, NO_CTX).text
+    assert "  … [2 library frames]" in out  # 12 frames, edge 5: only e, f collapse
+    assert "[4 library frames]" not in out
+
+
+def test_stacktrace_recent_paths_keep_library_frame() -> None:
+    src, _ = _golden("stack_python")
+    ctx = CompressContext(prompt=None, recent_paths=("/venv/lib/site-packages/lib/d.py",))
+    out = StackTraceCompressor().compress(src, STANDARD, ctx).text
+    assert "lib/d.py" in out
+    assert "  … [1 library frames]" in out  # c collapsed, d kept, e,f collapsed (2)
+    assert "  … [2 library frames]" in out
+
+
+JAVA = (
+    'Exception in thread "main" java.lang.RuntimeException: wrapper\n'
+    "\tat com.acme.App.run(App.java:10)\n"
+    "\tat java.base/java.util.ArrayList.forEach(ArrayList.java:1)\n"
+    "\tat java.base/jdk.internal.reflect.A.invoke(A.java:2)\n"
+    "\tat java.base/java.lang.reflect.Method.invoke(Method.java:3)\n"
+    "\tat java.base/java.lang.Thread.run(Thread.java:4)\n"
+    "\tat com.acme.Main.main(Main.java:5)\n"
+    "\tat java.base/java.util.Z.z(Z.java:6)\n"
+    "\tat java.base/java.util.Y.y(Y.java:7)\n"
+    "\tat java.base/java.util.X.x(X.java:8)\n"
+    "Caused by: java.io.IOException: disk\n"
+    "\tat com.acme.Io.read(Io.java:20)\n"
+    "\t... 3 more\n"
+)
+
+
+def test_stacktrace_java() -> None:
+    out = StackTraceCompressor().compress(JAVA, AGGRESSIVE, NO_CTX).text
+    assert "Caused by: java.io.IOException: disk" in out
+    assert "com.acme.Main.main" in out and "com.acme.Io.read" in out
+    assert "\t... 3 more" in out
+    assert "  … [2 library frames]" in out  # Method.invoke and Thread.run
+    assert "Method.invoke" not in out
+
+
+JS = (
+    "Error: nope\n"
+    "    at handler (/app/src/server.js:12:5)\n"
+    "    at Layer.handle (/app/node_modules/express/lib/router/layer.js:95:5)\n"
+    "    at next (/app/node_modules/express/lib/router/route.js:137:13)\n"
+    "    at Route.dispatch (/app/node_modules/express/lib/router/route.js:112:3)\n"
+    "    at Layer.handle2 (/app/node_modules/express/lib/router/layer.js:96:5)\n"
+    "    at trim (/app/node_modules/express/lib/router/index.js:1:1)\n"
+    "    at process (/app/node_modules/express/lib/router/index.js:2:1)\n"
+    "    at main (/app/src/main.js:3:1)\n"
+    "    at last (/app/node_modules/x/y.js:3:1)\n"
+)
+
+
+def test_stacktrace_js_and_multiple_traces() -> None:
+    src = "intro line\n" + JS + "between\n" + JS
+    out = StackTraceCompressor().compress(src, STANDARD, NO_CTX).text
+    assert out.count("Error: nope") == 2
+    assert out.count("/app/src/main.js") == 2
+    assert out.count("library frames]") == 2
+    assert "intro line" in out and "between" in out
+
+
+def test_stacktrace_without_trace_delegates() -> None:
+    bad = "just some output\n" * 300
+    assert StackTraceCompressor().compress(bad, STANDARD, NO_CTX) == TextCompressor().compress(
+        bad, STANDARD, NO_CTX
+    )
+
+
+def test_stacktrace_surrounding_text_goes_through_text_compressor() -> None:
+    noise = "".join(f"line {i} unique{'x' * i}\n" for i in range(300))
+    src = noise + JS
+    out = StackTraceCompressor().compress(src, AGGRESSIVE, NO_CTX).text
+    assert "lines elided]" in out
+    assert "Error: nope" in out
+
+
+def test_error_matcher_sanity() -> None:
+    assert is_error_line("ValueError: boom")

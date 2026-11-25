@@ -17,7 +17,11 @@ from token_sparen.compress.base import (
     registry,
 )
 from token_sparen.compress.detect import detect
+from token_sparen.compress.structured import DiffCompressor, JsonCompressor, StackTraceCompressor
 from token_sparen.compress.text import TextCompressor
+
+for _builtin in (TextCompressor(), JsonCompressor(), DiffCompressor(), StackTraceCompressor()):
+    registry.register(_builtin)
 
 __all__ = [
     "ENTRY_POINT_GROUP",
@@ -25,9 +29,12 @@ __all__ = [
     "CompressContext",
     "CompressResult",
     "Compressor",
+    "DiffCompressor",
+    "JsonCompressor",
     "ContentType",
     "Level",
     "Registry",
+    "StackTraceCompressor",
     "TextCompressor",
     "detect",
     "is_error_line",
