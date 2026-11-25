@@ -58,8 +58,8 @@ def _unlock(fh: IO[bytes]) -> None:
 
 @contextlib.contextmanager
 def locked(path: Path) -> Iterator[None]:
-    """Exclusive lock on ``path.with_suffix('.lock')``; StoreBusy after 2 s."""
-    lock_path = path.with_suffix(".lock")
+    """Exclusive lock on ``<name>.lock``; StoreBusy after 2 s."""
+    lock_path = path.with_name(path.name + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as fh:
         deadline = time.monotonic() + LOCK_TIMEOUT_S
@@ -73,43 +73,56 @@ def locked(path: Path) -> Iterator[None]:
             _unlock(fh)
 
 
-def read(
-    path: Path, default: dict[str, Any], env: Mapping[str, str] | None = None
-) -> dict[str, Any]:
-    """Read a JSON object; corrupt content is quarantined and ``default`` returned."""
+def _load(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """Return (data, None), (None, None) when missing, or (None, reason) when corrupt."""
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return dict(default)
+        return None, None
     try:
         data = json.loads(text)
-        if not isinstance(data, dict):
-            raise ValueError("top-level JSON value is not an object")
     except ValueError as exc:
-        _quarantine(path, str(exc), env)
-        return dict(default)
-    return data
+        return None, str(exc)
+    if not isinstance(data, dict):
+        return None, "top-level JSON value is not an object"
+    return data, None
+
+
+def read(
+    path: Path, default: dict[str, Any], env: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    """Lock-free read. Corrupt content yields ``default`` and a log line, never a rename."""
+    data, bad = _load(path)
+    if bad is not None:
+        log_error(os.environ if env is None else env, "jsonstore", f"{path}: corrupt ({bad})")
+    return dict(default) if data is None else data
 
 
 def _quarantine(path: Path, reason: str, env: Mapping[str, str] | None) -> None:
-    dest = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+    """Move a corrupt file aside under a unique name; call only while holding the lock."""
+    dest = path.with_name(f"{path.name}.corrupt-{time.time_ns()}-{os.getpid()}")
     with contextlib.suppress(OSError):
         os.replace(path, dest)
     log_error(os.environ if env is None else env, "jsonstore", f"{path}: corrupt ({reason})")
+
+
+def replace_with_retry(src: Path, dst: Path) -> None:
+    """os.replace, retrying transient Windows PermissionError."""
+    for attempt in range(_REPLACE_TRIES):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:  # Windows: a reader may briefly hold the target
+            if attempt == _REPLACE_TRIES - 1:
+                raise
+            time.sleep(0.01 * (attempt + 1))
 
 
 def _write_atomic(path: Path, data: dict[str, Any]) -> None:
     tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}")
     try:
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        for attempt in range(_REPLACE_TRIES):
-            try:
-                os.replace(tmp, path)
-                return
-            except PermissionError:  # Windows: a reader may briefly hold the target
-                if attempt == _REPLACE_TRIES - 1:
-                    raise
-                time.sleep(0.01 * (attempt + 1))
+        replace_with_retry(tmp, path)
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink()
@@ -124,6 +137,9 @@ def update(
     """Read-modify-write under an exclusive cross-process lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with locked(path):
-        new = fn(read(path, default, env))
+        data, bad = _load(path)
+        if bad is not None:
+            _quarantine(path, bad, env)
+        new = fn(dict(default) if data is None else data)
         _write_atomic(path, new)
         return new

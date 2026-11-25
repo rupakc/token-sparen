@@ -12,6 +12,7 @@ from pathlib import Path
 from token_sparen.config import state_home
 
 _SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_KEY = re.compile(r"[0-9a-f]{16}")
 _SCP = re.compile(r"^(?:[^@/:]+@)?([^/:]+):(?!//)(.*)$")
 
 
@@ -20,6 +21,8 @@ def home(env: Mapping[str, str] | None = None) -> Path:
 
 
 def project_dir_for(home_dir: Path, key: str) -> Path:
+    if not _KEY.fullmatch(key):
+        raise ValueError(f"invalid project key: {key!r}")
     return home_dir / "projects" / key
 
 

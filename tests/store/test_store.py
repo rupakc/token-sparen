@@ -10,6 +10,8 @@ import pytest
 
 from token_sparen.store import jsonl, jsonstore, paths, session
 
+KEY = "0123456789abcdef"
+
 
 def _incr(d: dict) -> dict:
     d["n"] = d.get("n", 0) + 1
@@ -30,7 +32,7 @@ def test_home_honours_env(tmp_path: Path) -> None:
 
 
 def test_project_dir_for(tmp_path: Path) -> None:
-    assert paths.project_dir_for(tmp_path, "abc") == tmp_path / "projects" / "abc"
+    assert paths.project_dir_for(tmp_path, "a" * 16) == tmp_path / "projects" / ("a" * 16)
 
 
 @pytest.mark.parametrize(
@@ -106,9 +108,57 @@ def test_corrupt_file_recovers_to_default(tmp_path: Path) -> None:
     p = tmp_path / "s.json"
     p.write_text("{not json")
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
+    out = jsonstore.update(p, _incr, {"n": 5}, env=env)
+    assert out == {"n": 6}
+    assert json.loads(p.read_text()) == {"n": 6}
+    assert len(list(tmp_path.glob("s.json.corrupt-*"))) == 1
+    assert (tmp_path / "home" / "logs" / "errors.jsonl").exists()
+
+
+def test_read_never_renames(tmp_path: Path) -> None:
+    p = tmp_path / "s.json"
+    p.write_text("{not json")
+    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
     assert jsonstore.read(p, {"ok": True}, env=env) == {"ok": True}
-    assert not p.exists()
-    assert list(tmp_path.glob("s.json.corrupt-*")) or list(tmp_path.glob("s.corrupt-*"))
+    assert p.read_text() == "{not json"
+    assert not list(tmp_path.glob("*.corrupt-*"))
+    assert (tmp_path / "home" / "logs" / "errors.jsonl").exists()
+
+
+def test_quarantines_same_second_do_not_collide(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(jsonstore.time, "time", lambda: 1000.0)
+    p = tmp_path / "s.json"
+    for _ in range(3):
+        p.write_text("garbage")
+        jsonstore.update(p, _incr, {})
+    assert len(list(tmp_path.glob("s.json.corrupt-*"))) == 3
+
+
+def test_lock_files_are_per_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(jsonstore, "LOCK_TIMEOUT_S", 0.2)
+    with jsonstore.locked(tmp_path / "a.jsonl"), jsonstore.locked(tmp_path / "a.json"):
+        pass
+
+
+def test_project_dir_for_rejects_bad_key(tmp_path: Path) -> None:
+    for bad in ("../x", "abc", "G" * 16, "A" * 16, ""):
+        with pytest.raises(ValueError):
+            paths.project_dir_for(tmp_path, bad)
+
+
+def test_jsonl_rotation_failure_is_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    p = tmp_path / "log.jsonl"
+    jsonl.append(p, {"pad": "x" * 50}, 60)
+
+    def deny(src: object, dst: object) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr(jsonstore.os, "replace", deny)
+    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
+    jsonl.append(p, {"pad": "y" * 50}, 60, env=env)
+    assert len(p.read_text().splitlines()) == 2
     assert (tmp_path / "home" / "logs" / "errors.jsonl").exists()
 
 
@@ -174,16 +224,16 @@ def test_jsonl_append_creates_dirs(tmp_path: Path) -> None:
 
 
 def test_session_path_sanitises_traversal(tmp_path: Path) -> None:
-    sp = session.session_path(tmp_path, "key", "../../etc/passwd")
-    assert sp.parent == tmp_path / "projects" / "key" / "sessions"
+    sp = session.session_path(tmp_path, KEY, "../../etc/passwd")
+    assert sp.parent == tmp_path / "projects" / KEY / "sessions"
     assert sp.name == ".._.._etc_passwd.json"
-    assert session.session_path(tmp_path, "key", "ok-1.2_x").name == "ok-1.2_x.json"
-    assert session.session_path(tmp_path, "key", "..").parent == sp.parent
-    assert session.session_path(tmp_path, "key", "..").name != "...json"
+    assert session.session_path(tmp_path, KEY, "ok-1.2_x").name == "ok-1.2_x.json"
+    assert session.session_path(tmp_path, KEY, "..").parent == sp.parent
+    assert session.session_path(tmp_path, KEY, "..").name != "...json"
 
 
 def test_session_roundtrip(tmp_path: Path) -> None:
-    sp = session.session_path(tmp_path, "k", "s1")
+    sp = session.session_path(tmp_path, KEY, "s1")
     assert session.read_session(sp) == {}
     assert session.update_session(sp, _incr) == {"n": 1}
     assert session.read_session(sp) == {"n": 1}
