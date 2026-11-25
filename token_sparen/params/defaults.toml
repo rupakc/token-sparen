@@ -65,14 +65,18 @@ max_files = 200
 max_bytes = 100000000
 
 [guards]
-enabled = true  # false: no PreToolUse blocks and no pre-trim rewrites
-max_read_bytes = 5000000  # cat/Read of a larger file without a range is blocked
-pretrim_lines = 120  # K in `<cmd> 2>&1 | tail -n K` when a candidate names no K
+enabled = true  # false: no PreToolUse blocks
+max_read_bytes = 5000000  # cat/Read of a larger text file without a range is blocked
+# Pre-trim arm (PostToolUse): a learned candidate command's output is compressed with a
+# tail-biased level (head = pretrim_head, tail = K, standard keep_ratio); never a shell rewrite.
+pretrim_lines = 120  # K when a candidate names none
+pretrim_head = 10
 
 [read_dedupe]
 enabled = true
 min_tokens = 2000  # never below 2000 (invariant: smaller outputs are never modified)
 max_entries = 200  # reads remembered per session (oldest dropped first)
+max_turn_gap = 8  # pointer only if the earlier read is at most this many turns old
 
 [governor]
 # filled by later tasks

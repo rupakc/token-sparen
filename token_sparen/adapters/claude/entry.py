@@ -23,7 +23,7 @@ from token_sparen.config import Config, load_config, log_error, state_home
 from token_sparen.events import Action, Event, EventKind
 from token_sparen.learn.policy import StaticPolicy
 from token_sparen.mechanisms import compression, guards, read_dedupe, tracking
-from token_sparen.store import jsonl, paths
+from token_sparen.store import jsonl
 
 Handler = Callable[[Event, Config], Action]
 # Ordered handler chain per event kind; see ``handle`` for how the actions are composed.
@@ -102,12 +102,6 @@ def _on_guard(event: Event, cfg: Config) -> Action:
     return guards.check(event, cfg)
 
 
-def _on_pretrim(event: Event, cfg: Config) -> Action:
-    env = HOOK_ENV.get()
-    store = paths.project_dir_for(state_home(env), event.project_key)
-    return guards.pretrim(event, POLICY, store, cfg, env=env)
-
-
 def _on_pre_compact(event: Event, cfg: Config) -> Action:
     return read_dedupe.on_pre_compact(event, env=HOOK_ENV.get())
 
@@ -120,7 +114,6 @@ for _kind, _fn in (
     ("prompt", _on_prompt),
     ("pre_tool", _on_pre_invalidate),
     ("pre_tool", _on_guard),
-    ("pre_tool", _on_pretrim),
     ("post_tool", _on_track),
     ("post_tool", _on_read_dedupe),
     ("post_tool", _on_compress),

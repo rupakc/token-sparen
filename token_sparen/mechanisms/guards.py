@@ -7,36 +7,44 @@ directory (``node_modules``, ``.git``, ``dist``, ``build``, ``.venv``) without a
 ``/`` or ``~``. A command that does not parse never blocks. Every simple command of a pipeline or
 ``&&``/``||``/``;`` chain is checked separately.
 
-Pre-trims rewrite a Bash ``command`` to ``<cmd> 2>&1 | tail -n K`` only when the project store
-lists the (normalised) command as a candidate and the policy picks ``bounded``. Compound,
-redirected, substituted or interactive commands are never rewritten.
+Commands are split on unquoted newlines (backslash-newline joins lines) and heredoc bodies are
+skipped, so text fed to another program is never mistaken for a command.
+
+Pre-trims (decision ``pretrim``) never touch the command: a shell rewrite would mask the exit
+status and drop unrecoverable output. Instead, a learned candidate command's *output* gets a
+tail-biased compression level on PostToolUse (``pretrim_lines`` / ``pretrim_level``, used by
+``mechanisms.compression``), with the usual recovery marker and error pinning.
 """
 
 from __future__ import annotations
 
 import os
 import shlex
-import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from token_sparen.compress.base import Level, load_level
 from token_sparen.config import Config
 from token_sparen.events import Action, Event
-from token_sparen.learn import decisions
-from token_sparen.learn.policy import PRETRIM, DecisionRecord, Policy
-from token_sparen.mechanisms import tracking
-from token_sparen.store import jsonstore, session
+from token_sparen.learn.policy import PRETRIM
+from token_sparen.store import jsonstore
 
-__all__ = ["PRETRIM", "check", "pretrim"]
+__all__ = ["PRETRIM", "check", "pretrim_level", "pretrim_lines"]
 
 MAX_READ_BYTES = 5_000_000
 PRETRIM_LINES = 120
-COMMAND_SIG_CHARS = 500
+PRETRIM_HEAD = 10
 PRETRIM_FILE = "pretrim.json"
 
-_SEPARATORS = frozenset({"|", "|&", "||", "&&", ";", "&", ";;", "\n"})
-_REDIRECTS = frozenset({">", ">>", "&>", ">&", "&>>", ">|"})
+_SEPARATORS = frozenset({"|", "|&", "||", "&&", ";", "&", ";;", ";&", ";;&"})
+_REDIR_OPS = frozenset(
+    {">", ">>", ">|", "&>", "&>>", ">&", "<", "<<", "<<-", "<<<", "<>", "<&", "&>|"}
+)
+_STDOUT_OPS = frozenset({">", ">>", ">|", "&>", "&>>", ">&", "&>|"})
+_NON_TEXT = frozenset(
+    {".pdf", ".ipynb", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".ico"}
+)
 _PREFIXES = frozenset({"sudo", "time", "command", "nohup", "exec"})
 _ROOTS = frozenset({"/", "~", "~/"})
 _VENDORED = frozenset({"node_modules", ".git", "dist", "build", ".venv"})
@@ -85,7 +93,7 @@ def _int(cfg: Config, key: str, default: int) -> int:
 
 
 def _tokens(command: str) -> list[str] | None:
-    """Shell tokens with operators split out; None if the command does not parse."""
+    """Shell tokens of one line with operators split out; None if the line does not parse."""
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
@@ -95,14 +103,90 @@ def _tokens(command: str) -> list[str] | None:
         return None
 
 
+def _line_end(command: str, pos: int) -> int | None:
+    """Index of the next unquoted newline (or the end); None if a quote is left open."""
+    quote: str | None = None
+    i = pos
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            quote = None if ch == "'" else quote
+        elif ch == "\\":
+            i += 1  # escaped char (a backslash-newline is a line continuation)
+        elif quote == '"':
+            quote = None if ch == '"' else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "\n":
+            return i
+        i += 1
+    return None if quote is not None else len(command)
+
+
+def _heredocs(tokens: list[str]) -> list[tuple[str, bool]]:
+    """(delimiter, strip leading tabs) for each heredoc a line opens."""
+    out: list[tuple[str, bool]] = []
+    for i, tok in enumerate(tokens[:-1]):
+        if tok not in ("<<", "<<-"):
+            continue
+        delim, strip = tokens[i + 1], tok == "<<-"
+        if delim.startswith("-"):  # `<<-EOF` lexes as `<<` + `-EOF`
+            delim, strip = delim[1:], True
+        out.append((delim, strip))
+    return out
+
+
+def _lines(command: str) -> list[list[str]] | None:
+    """Tokens per logical line, heredoc bodies dropped; None if any line does not parse."""
+    result: list[list[str]] = []
+    pos, n = 0, len(command)
+    while pos <= n:
+        end = _line_end(command, pos)
+        if end is None:
+            return None
+        tokens = _tokens(command[pos:end].replace("\\\n", ""))
+        if tokens is None:
+            return None
+        result.append(tokens)
+        pos = end + 1
+        for delim, strip in _heredocs(tokens):
+            while pos <= n:
+                nl = command.find("\n", pos)
+                stop = n if nl == -1 else nl
+                body = command[pos:stop]
+                pos = stop + 1
+                if (body.lstrip("\t") if strip else body) == delim:
+                    break
+    return result
+
+
+def _split_redirects(words: list[str]) -> tuple[list[str], bool]:
+    """(words without redirection operators and targets, stdout is redirected)."""
+    out: list[str] = []
+    stdout = False
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if word in _REDIR_OPS:
+            fd = out[-1] if out and out[-1].isdigit() else None
+            if word in _STDOUT_OPS and (word.startswith("&") or fd in (None, "1")):
+                stdout = True
+            i += 2
+            continue
+        out.append(word)
+        i += 1
+    return out, stdout
+
+
 def _segments(tokens: list[str]) -> list[tuple[list[str], bool]]:
-    """Simple commands as (words, output reaches the tool result)."""
+    """Simple commands as (words, stdout reaches the tool result)."""
     out: list[tuple[list[str], bool]] = []
     cur: list[str] = []
     for tok in [*tokens, ";"]:
         if tok in _SEPARATORS:
             if cur:
-                out.append((cur, tok not in {"|", "|&"}))
+                words, redirected = _split_redirects(cur)
+                out.append((words, tok not in {"|", "|&"} and not redirected))
             cur = []
         else:
             cur.append(tok)
@@ -123,9 +207,17 @@ def _strip_prefix(words: list[str]) -> list[str]:
     return words[i:]
 
 
+def _base_dir(event: Event) -> Path:
+    """The Bash working directory from the payload ``cwd`` if absolute, else the project dir."""
+    cwd = event.extra.get("cwd")
+    if isinstance(cwd, str) and cwd and Path(cwd).is_absolute():
+        return Path(cwd)
+    return event.project_dir
+
+
 def _resolve(event: Event, arg: str) -> Path:
     path = Path(arg)
-    return path if path.is_absolute() else event.project_dir / path
+    return path if path.is_absolute() else _base_dir(event) / path
 
 
 def _check_find(words: list[str]) -> str | None:
@@ -237,16 +329,18 @@ def _check_segment(event: Event, words: list[str], to_context: bool, limit: int)
         return _check_grep(event, words, rg=name == "rg")
     if name == "ls":
         return _check_ls(words)
-    if name == "cat" and to_context and not any(w in _REDIRECTS for w in words):
+    if name == "cat" and to_context:
         return _check_cat(event, words, limit)
     return None
 
 
 def _check_read(tool_input: Mapping[str, Any], limit: int) -> str | None:
-    if tool_input.get("offset") is not None or tool_input.get("limit") is not None:
+    if any(tool_input.get(k) is not None for k in ("offset", "limit", "pages")):
         return None
     file_path = tool_input.get("file_path")
     if not isinstance(file_path, str) or not file_path:
+        return None
+    if Path(file_path).suffix.lower() in _NON_TEXT:  # read natively; Read pages them itself
         return None
     try:
         path = Path(file_path)
@@ -270,44 +364,23 @@ def check(event: Event, cfg: Config) -> Action:
     command = tool.input.get("command")
     if not isinstance(command, str):
         return Action()
-    tokens = _tokens(command)
-    if tokens is None:
+    lines = _lines(command)
+    if lines is None:
         return Action()
-    for words, to_context in _segments(tokens):
-        reason = _check_segment(event, words, to_context, limit)
-        if reason is not None:
-            return Action(block_reason=reason)
+    for tokens in lines:
+        for words, to_context in _segments(tokens):
+            reason = _check_segment(event, words, to_context, limit)
+            if reason is not None:
+                return Action(block_reason=reason)
     return Action()
 
 
-# --- learned pre-trims ------------------------------------------------------------------
-
-_NEVER_REWRITE = ("|", ">", "<", "&", ";", "`", "$(", "\n", "\r")
-_INTERACTIVE = frozenset(
-    {"vim", "vi", "nvim", "nano", "emacs", "less", "more", "most", "top", "htop", "watch", "ssh"}
-)
-_REPLS = frozenset({"python", "python3", "node", "irb", "ipython", "bash", "sh", "zsh"})
+# --- learned pre-trims (applied on PostToolUse by mechanisms.compression) -------------
 
 
 def _normalise(cmd: str) -> str:
     """Candidate lookup key; exact match until the command normaliser lands (swap here)."""
     return cmd
-
-
-def _rewritable(command: str) -> bool:
-    if not command.strip() or any(s in command for s in _NEVER_REWRITE):
-        return False
-    try:
-        words = shlex.split(command, posix=True)
-    except ValueError:
-        return False
-    words = _strip_prefix(words)
-    if not words:
-        return False
-    name = os.path.basename(words[0])
-    if name in _INTERACTIVE:
-        return False
-    return not (name in _REPLS and len(words) == 1)
 
 
 def _candidate(store: Path, key: str, env: Mapping[str, str]) -> dict[str, Any] | None:
@@ -320,58 +393,31 @@ def _candidate(store: Path, key: str, env: Mapping[str, str]) -> dict[str, Any] 
     return entry if isinstance(entry, dict) else None
 
 
-def pretrim(
-    event: Event,
-    policy: Policy,
-    store: Path,
-    cfg: Config | None = None,
-    *,
-    env: Mapping[str, str] | None = None,
-) -> Action:
-    """Rewrite a learned-noisy Bash command to a bounded form when the policy says ``bounded``.
+def pretrim_lines(
+    event: Event, store: Path, cfg: Config, *, env: Mapping[str, str] | None = None
+) -> int | None:
+    """K (tail lines) if this Bash command is a learned pre-trim candidate, else None.
 
     ``store`` is the project state directory (``projects/<key>/``) holding ``pretrim.json``.
+    A candidate's own positive ``lines`` wins over ``[guards] pretrim_lines``.
     """
-    cfg = cfg or Config()
     env = os.environ if env is None else env
     tool = event.tool
-    if event.kind != "pre_tool" or tool is None or tool.name != "Bash" or not _enabled(cfg):
-        return Action()
+    if tool is None or tool.name != "Bash":
+        return None
     command = tool.input.get("command")
-    if not isinstance(command, str) or tool.input.get("run_in_background"):
-        return Action()
-    if not _rewritable(command):
-        return Action()
+    if not isinstance(command, str):
+        return None
     cand = _candidate(store, _normalise(command), env)
     if cand is None:
-        return Action()
+        return None
     lines = cand.get("lines")
     if isinstance(lines, bool) or not isinstance(lines, int) or lines <= 0:
-        lines = _int(cfg, "guards.pretrim_lines", PRETRIM_LINES)
-    overlay_file = tracking.overlay_path(event, env)
-    overlay = session.read_session(overlay_file)
-    decision = policy.decide(
-        PRETRIM,
-        {"tool_category": tool.category},
-        tracking.session_ctx(event, overlay, overlay_file),
-    )
-    rec = DecisionRecord(
-        decision_id=decision.decision_id,
-        point=decision.point,
-        arm=decision.arm,
-        propensity=decision.propensity,
-        bucket=decision.bucket,
-        tokens_before=0,  # unknown before the tool runs; joined with PostToolUse later
-        tokens_after=0,
-        recovery_id=None,
-        tool_use_id=tool.use_id,
-        command_sig=command[:COMMAND_SIG_CHARS],
-        ts=time.time(),
-        tool_name=tool.name,
-    )
-    decisions.append(event.project_key, rec, cfg, env, "guards")
-    if decision.arm != "bounded":
-        return Action()
-    new_input = dict(tool.input)
-    new_input["command"] = f"{command} 2>&1 | tail -n {lines}"
-    return Action(rewrite_input=new_input)
+        return _int(cfg, "guards.pretrim_lines", PRETRIM_LINES)
+    return lines
+
+
+def pretrim_level(cfg: Config, lines: int) -> Level:
+    """Tail-biased level: short head, ``lines`` tail, the standard arm's keep ratio."""
+    head = _int(cfg, "guards.pretrim_head", PRETRIM_HEAD)
+    return Level(head=head, tail=lines, keep_ratio=load_level(cfg, "standard").keep_ratio)

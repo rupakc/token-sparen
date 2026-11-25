@@ -157,3 +157,27 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   Edit/Write/MultiEdit/NotebookEdit drops entries of that path; a Read output that compression
   replaced is forgotten (the model never saw it in full). The pointer keeps the original turn.
   Static default arms: `pretrim = bounded`, `read_dedupe = pointer`.
+
+## 2026-11-26 Task 14 fix round 1 (controller rulings)
+- **Pre-trim is a PostToolUse compression arm, never a shell rewrite** (spec deviation from §6.2
+  "`| tail -n K`"; the §2 anti-goal "never silently drop information" wins). The rewrite
+  masked the exit status, lost lines before the tail unrecoverably and gave no partial output on
+  timeout. Now PreToolUse never rewrites Bash. When the normalised command is a candidate in
+  `projects/<key>/pretrim.json`, compression asks the policy for `pretrim`. If the arm is
+  `bounded`, the output is compressed with `Level(head=[guards] pretrim_head=10,
+  tail=K=[guards] pretrim_lines=120 or the candidate's lines, keep_ratio=standard)`, still with
+  the recovery marker, error pinning and the preview bound, and the decision is logged as point
+  `pretrim`. If the arm is `off`, a no-op `pretrim` record is logged and the normal `compression`
+  decision follows. Static default `pretrim = off`. `[guards] enabled` no longer affects pre-trims.
+  Structured compressors still pick their knobs from keep_ratio, so the tail bias applies fully
+  only to the text compressor.
+- **Guards split commands on unquoted newlines** (backslash-newline continues a line) and skip
+  heredoc bodies (`<<`, `<<-`; delimiter matched per line). Redirection operators and their targets
+  are removed from the words. Stdout counts as redirected for `>`/`>>`/`>|`/`>&` with no fd or fd 1,
+  and for `&>`/`&>>`. `2>/dev/null` and `2>&1` do not count. Relative paths resolve against the
+  payload `cwd` (passed through as an adapter extra) when it is absolute, else the project dir.
+  The Read guard treats `pages` as a range and skips non-text files (.pdf, .ipynb, images).
+- **Read de-dupe recency bound** `[read_dedupe] max_turn_gap = 8`: a pointer is used only if the
+  earlier read is at most 8 turns old; an older one is re-sent in full and its entry refreshed. The
+  pointer text itself leaves the agent a way out ("re-read with a different range or after edits"),
+  so a mistaken pointer costs one extra ranged read, not lost information.

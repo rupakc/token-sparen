@@ -221,6 +221,21 @@ def test_stale_entry_before_compact_turn_ignored(tmp_path: Path) -> None:
     assert _read(tmp_path, path).is_noop()
 
 
+def test_pointer_only_within_turn_gap(tmp_path: Path) -> None:
+    path = _file(tmp_path)
+    _prompt(tmp_path)  # turn 1
+    _read(tmp_path, path)
+    for _ in range(8):
+        _prompt(tmp_path)  # turn 9: gap 8
+    assert _read(tmp_path, path).replace_output == POINTER.format(n=1)
+    _prompt(tmp_path)  # turn 10: gap 9, too old to trust; full content, entry refreshed
+    assert _read(tmp_path, path).is_noop()
+    assert _read(tmp_path, path).replace_output == POINTER.format(n=10)
+    cfg = _cfg(tmp_path, READ_DEDUPE__MAX_TURN_GAP="0")
+    _prompt(tmp_path)
+    assert _read(tmp_path, path, cfg=cfg).is_noop()
+
+
 def test_range_is_part_of_the_key(tmp_path: Path) -> None:
     path = _file(tmp_path)
     _read(tmp_path, path)

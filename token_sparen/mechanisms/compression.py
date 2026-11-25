@@ -23,12 +23,19 @@ from typing import Any
 
 from token_sparen import recovery
 from token_sparen.adapters.claude.translate import render_tool_output
-from token_sparen.compress import CompressContext, CompressResult, detect, load_level, registry
+from token_sparen.compress import (
+    CompressContext,
+    CompressResult,
+    Level,
+    detect,
+    load_level,
+    registry,
+)
 from token_sparen.config import Config, log_error, state_home
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event
-from token_sparen.learn.policy import COMPRESSION, Decision, DecisionRecord, Policy
-from token_sparen.mechanisms import tracking
+from token_sparen.learn.policy import COMPRESSION, PRETRIM, Decision, DecisionRecord, Policy
+from token_sparen.mechanisms import guards, tracking
 from token_sparen.store import jsonl, jsonstore, paths, session
 
 PERSISTED_MAX_BYTES = 5_000_000
@@ -215,22 +222,34 @@ def handle_post_tool(
         "content_type": ctype,
         "size_band": _size_band(before),
     }
-    decision = policy.decide(
-        COMPRESSION, features, tracking.session_ctx(event, overlay, overlay_file)
-    )
+    sctx = tracking.session_ctx(event, overlay, overlay_file)
+    level: Level | None = None
+    decision: Decision | None = None
+    store = paths.project_dir_for(state_home(env), event.project_key)
+    pretrim_k = guards.pretrim_lines(event, store, cfg, env=env)
+    if pretrim_k is not None:  # learned noisy command: maybe a tail-biased level
+        pre = policy.decide(PRETRIM, features, sctx)
+        if pre.arm == "bounded":
+            decision, level = pre, guards.pretrim_level(cfg, pretrim_k)
+        else:
+            _log_decision(event, cfg, env, pre, ctype, before, before, None, tokens_full)
+    if decision is None:
+        decision = policy.decide(COMPRESSION, features, sctx)
+    chosen_decision = decision
 
     def no_op() -> Action:
-        _log_decision(event, cfg, env, decision, ctype, before, before, None, tokens_full)
+        _log_decision(event, cfg, env, chosen_decision, ctype, before, before, None, tokens_full)
         return Action()
 
-    if decision.arm == COMPRESSION.safe_arm:
-        return no_op()
+    if level is None:
+        if decision.arm == COMPRESSION.safe_arm:
+            return no_op()
+        level = load_level(cfg, decision.arm)
     ctx = CompressContext(
         prompt=tracking.last_prompt(overlay),
         recent_paths=tuple(tracking.recent_paths(overlay)),
         config=cfg,
     )
-    level = load_level(cfg, decision.arm)
     compressor = registry.for_type(ctype)
     max_after = before * (1 - _num(cfg, "compression.min_saving_ratio", 0.15))
     stand_in = _marker_len_ref(event.project_dir)

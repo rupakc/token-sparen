@@ -64,14 +64,14 @@ class Policy(Protocol):
 COMPRESSION = DecisionPoint(
     "compression", ("off", "light", "standard", "aggressive"), safe_arm="off", tier="medium"
 )
-# PreToolUse: rewrite a learned-noisy Bash command to `<cmd> 2>&1 | tail -n K`. Only asked when the
-# project store lists the command as a candidate, so it is effectively off until candidates exist.
+# PostToolUse: a learned-noisy Bash command's output gets a tail-biased compression level. Only
+# asked when the project store lists the command as a candidate; the command is never rewritten.
 PRETRIM = DecisionPoint("pretrim", ("off", "bounded"), safe_arm="off", tier="medium")
 # PostToolUse(Read): replace a re-read of unchanged, still-in-context content with a pointer.
 READ_DEDUPE = DecisionPoint("read_dedupe", ("off", "pointer"), safe_arm="off", tier="low")
 _DEFAULT_ARMS = {
     COMPRESSION.name: "standard",
-    PRETRIM.name: "bounded",
+    PRETRIM.name: "off",
     READ_DEDUPE.name: "pointer",
 }
 

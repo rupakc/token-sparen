@@ -122,7 +122,7 @@ def test_other_kinds_merge_all(tmp_path: Path) -> None:
 
 def test_builtin_order() -> None:
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["pre_tool"]]
-    assert names == ["_on_pre_invalidate", "_on_guard", "_on_pretrim"]
+    assert names == ["_on_pre_invalidate", "_on_guard"]  # pretrim is post-tool only
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["post_tool"]]
     assert names == ["_on_track", "_on_read_dedupe", "_on_compress"]
     assert {"pre_compact", "session_start"} <= set(entry.HANDLERS)

@@ -11,6 +11,7 @@ short pointer. Conservative by construction:
 - PreCompact and SessionStart(compact|clear) clear the table, and an entry older than
   ``last_compact_turn`` is never used;
 - an Edit/Write/MultiEdit/NotebookEdit of the path (PreToolUse) drops its entries;
+- the earlier read is at most ``[read_dedupe] max_turn_gap`` turns old;
 - outputs below 2000 estimated tokens are never replaced.
 """
 
@@ -38,6 +39,7 @@ POINTER = (
 )
 MIN_TOKENS = 2000  # invariant floor: smaller outputs are never modified
 MAX_ENTRIES = 200
+MAX_TURN_GAP = 8  # older reads may have scrolled out of the model's attention; re-send them
 _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 _RESET_SOURCES = frozenset({"compact", "clear"})
 
@@ -132,6 +134,8 @@ def handle_post_tool(
     digest = hashlib.sha1(content.encode("utf-8", "surrogatepass"), usedforsecurity=False)
     sha1 = digest.hexdigest()
     max_entries = _cfg_int(cfg, "read_dedupe.max_entries", MAX_ENTRIES)
+    gap = _int_or_none(cfg.get("read_dedupe.max_turn_gap", MAX_TURN_GAP))
+    max_gap = MAX_TURN_GAP if gap is None or gap < 0 else gap
     found: dict[str, int] = {}
 
     def apply(state: dict[str, Any]) -> None:
@@ -144,6 +148,7 @@ def handle_post_tool(
             and prior.get("size") == st.st_size
             and prior.get("sha1") == sha1
             and _turn(prior, "turn") >= _turn(state, "last_compact_turn")
+            and turn - _turn(prior, "turn") <= max_gap
         ):
             found["turn"] = _turn(prior, "turn")
             found["now"] = turn

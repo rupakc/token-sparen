@@ -1,10 +1,11 @@
-"""Pre-tool guards (block unbounded scans) and the learned pre-trim decision point."""
+"""Pre-tool guards (block unbounded scans) and the learned pre-trim decision point (post-tool)."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -232,7 +233,95 @@ def test_guards_ignore_other_tools_and_bad_input(tmp_path: Path) -> None:
     assert guards.check(no_tool, cfg).is_noop()
 
 
-# --- pretrim ----------------------------------------------------------------------------
+# --- multi-line commands, heredocs, redirects, cwd -------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "grep -rn TODO src\nls node_modules",
+        "cat notes.txt\nwc -l big.log",
+        "echo 'a\nfind / -name x'",
+        "cat <<EOF\nfind / -name x\ncat big.log\nEOF",
+        "cat <<-'END'\n\tfind / -name x\n\tEND\nls",
+        "python - <<EOF\nls -R /\nEOF",
+        "cat > notes.md <<'EOF'\ngrep -r foo node_modules\nEOF",
+    ],
+)
+def test_multiline_no_false_blocks(tmp_path: Path, vendored: Path, command: str) -> None:
+    _big_file(tmp_path)
+    (vendored / "notes.txt").write_text("n", encoding="utf-8")
+    assert _check(tmp_path, command) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd src\nfind / -name x",
+        "ls\nls -R /",
+        "find \\\n  / -name x",
+        "cat <<EOF\nx\nEOF\nfind / -name y",
+        "grep -rn TODO src\ngrep -r foo node_modules",
+        "echo 'multi\nline'\ncat big.log",
+    ],
+)
+def test_multiline_checks_every_line(tmp_path: Path, vendored: Path, command: str) -> None:
+    _big_file(tmp_path)
+    assert _check(tmp_path, command) is not None
+
+
+def test_cat_stderr_redirect_is_not_stdout(tmp_path: Path) -> None:
+    _big_file(tmp_path)
+    assert _check(tmp_path, "cat big.log 2>/dev/null") is not None
+    assert _check(tmp_path, "cat big.log 2>&1") is not None
+    assert _check(tmp_path, "cat big.log 2> err.txt") is not None
+    for command in (
+        "cat big.log >/dev/null",
+        "cat big.log 1>out",
+        "cat big.log &>out",
+        "cat big.log >> out",
+        "cat big.log >&2",
+    ):
+        assert _check(tmp_path, command) is None, command
+
+
+def test_relative_paths_use_payload_cwd(tmp_path: Path) -> None:
+    other = tmp_path / "other"
+    (other / "node_modules").mkdir(parents=True)
+    _big_file(tmp_path, "../other/huge.log")
+    cfg = _cfg(tmp_path)
+
+    def ev(command: str, cwd: str | None) -> Event:
+        base = _bash(tmp_path, command)
+        extra = {} if cwd is None else {"cwd": cwd}
+        return Event(**{**base.__dict__, "extra": MappingProxyType(extra)})
+
+    assert guards.check(ev("grep -r foo node_modules", str(other)), cfg).block_reason
+    assert guards.check(ev("grep -r foo node_modules", None), cfg).is_noop()
+    assert guards.check(ev("cat huge.log", str(other)), cfg).block_reason
+    assert guards.check(ev("cat huge.log", None), cfg).is_noop()
+    assert guards.check(ev("grep -r foo node_modules", "relative/dir"), cfg).is_noop()
+
+
+def test_read_guard_ranges_and_non_text(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+
+    def read(name: str, **inp: Any) -> str | None:
+        path = _big_file(tmp_path, name, 6_000_000)
+        return guards.check(
+            _event(tmp_path, "Read", {"file_path": str(path), **inp}), cfg
+        ).block_reason
+
+    assert read("doc.pdf", pages="1-3") is None
+    assert read("doc.pdf") is None
+    assert read("shot.PNG") is None
+    assert read("img.jpeg") is None
+    assert read("nb.ipynb") is None
+    assert read("data.csv", pages="1") is None
+    assert read("data.csv") is not None
+
+
+# --- pretrim (PostToolUse compression arm) ------------------------------------------------
 
 
 def _store(tmp_path: Path, candidates: Mapping[str, Any] | str) -> Path:
@@ -243,12 +332,8 @@ def _store(tmp_path: Path, candidates: Mapping[str, Any] | str) -> Path:
     return store
 
 
-def _pretrim(
-    tmp_path: Path, ev: Event, store: Path, arms: dict[str, str] | None = None, **over: str
-) -> Any:
-    return guards.pretrim(
-        ev, StaticPolicy(arms or {}), store, _cfg(tmp_path, **over), env=_env(tmp_path)
-    )
+def _lines(tmp_path: Path, ev: Event, store: Path, **over: str) -> int | None:
+    return guards.pretrim_lines(ev, store, _cfg(tmp_path, **over), env=_env(tmp_path))
 
 
 def _decisions(tmp_path: Path) -> list[dict[str, Any]]:
@@ -258,131 +343,140 @@ def _decisions(tmp_path: Path) -> list[dict[str, Any]]:
     return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()]
 
 
-def test_pretrim_point_contract() -> None:
+def test_pretrim_point_contract(tmp_path: Path) -> None:
+    from token_sparen.events import SessionCtx
+
     assert guards.PRETRIM is PRETRIM
     assert PRETRIM.name == "pretrim" and PRETRIM.arms == ("off", "bounded")
     assert PRETRIM.safe_arm == "off" and PRETRIM.tier == "medium"
     assert guards._normalise("pytest -q") == "pytest -q"
+    sctx = SessionCtx("s", KEY, 0, None, None, tmp_path / "o.json")
+    assert StaticPolicy({}).decide(PRETRIM, {}, sctx).arm == "off"  # static default
 
 
-def test_pretrim_rewrites_learned_command(tmp_path: Path) -> None:
-    store = _store(tmp_path, {"pytest -q": {"lines": 80}})
-    act = _pretrim(tmp_path, _bash(tmp_path, "pytest -q"), store)
-    assert act.rewrite_input == {"command": "pytest -q 2>&1 | tail -n 80"}
-    assert act.block_reason is None
-    (rec,) = _decisions(tmp_path)
-    assert rec["point"] == "pretrim" and rec["arm"] == "bounded" and rec["propensity"] == 1.0
-    assert rec["command_sig"] == "pytest -q" and rec["tool_name"] == "Bash"
-
-
-def test_pretrim_preserves_other_input_fields(tmp_path: Path) -> None:
-    store = _store(tmp_path, {"make test": {}})
-    ev = _bash(tmp_path, "make test", description="run tests", timeout=60000, extra={"a": [1]})
-    act = _pretrim(tmp_path, ev, store)
-    assert act.rewrite_input == {
-        "command": "make test 2>&1 | tail -n 120",
-        "description": "run tests",
-        "timeout": 60000,
-        "extra": {"a": [1]},
-    }
-    act = _pretrim(tmp_path, ev, store, GUARDS__PRETRIM_LINES="40")
-    assert act.rewrite_input["command"] == "make test 2>&1 | tail -n 40"
-    assert ev.tool is not None and ev.tool.input["command"] == "make test"  # not mutated
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        "pytest | tee out",
-        "pytest > out.txt",
-        "pytest < in.txt",
-        "make && make test",
-        "make || true",
-        "make; make test",
-        "echo `date`",
-        "echo $(date)",
-        "cat <<EOF\nx\nEOF",
-        "sleep 10 &",
-        "pytest\nls",
-        "make 2>err.txt",
-    ],
-)
-def test_pretrim_never_rewrites_pipelines(tmp_path: Path, command: str) -> None:
-    store = _store(tmp_path, {command: {"lines": 50}})
-    assert _pretrim(tmp_path, _bash(tmp_path, command), store).is_noop()
-    assert _decisions(tmp_path) == []
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
-        "vim x.py",
-        "less log",
-        "more log",
-        "top",
-        "watch ls",
-        "ssh host",
-        "python",
-        "node",
-        "python3",
-    ],
-)
-def test_pretrim_never_rewrites_interactive(tmp_path: Path, command: str) -> None:
-    store = _store(tmp_path, {command: {}})
-    assert _pretrim(tmp_path, _bash(tmp_path, command), store).is_noop()
-
-
-def test_pretrim_allows_scripts(tmp_path: Path) -> None:
-    store = _store(tmp_path, {"python run.py": {}, "node build.js": {}})
-    for command in ("python run.py", "node build.js"):
-        act = _pretrim(tmp_path, _bash(tmp_path, command), store)
-        assert act.rewrite_input == {"command": f"{command} 2>&1 | tail -n 120"}
-
-
-def test_pretrim_noop_cases(tmp_path: Path) -> None:
-    store = _store(tmp_path, {"pytest": {"lines": 10}})
-    # not a candidate: nothing decided, nothing logged
-    assert _pretrim(tmp_path, _bash(tmp_path, "pytest -x"), store).is_noop()
-    assert _decisions(tmp_path) == []
-    # arm off: logged, not rewritten
-    assert _pretrim(tmp_path, _bash(tmp_path, "pytest"), store, {"pretrim": "off"}).is_noop()
-    assert [r["arm"] for r in _decisions(tmp_path)] == ["off"]
-    # background, other tools, shlex error, guards disabled
-    bg = _bash(tmp_path, "pytest", run_in_background=True)
-    assert _pretrim(tmp_path, bg, store).is_noop()
-    assert _pretrim(tmp_path, _event(tmp_path, "Read", {"command": "pytest"}), store).is_noop()
-    store = _store(tmp_path, {"echo 'x": {}})
-    assert _pretrim(tmp_path, _bash(tmp_path, "echo 'x"), store).is_noop()
-    store = _store(tmp_path, {"pytest": {}})
-    off = _pretrim(tmp_path, _bash(tmp_path, "pytest"), store, GUARDS__ENABLED="false")
-    assert off.is_noop()
+def test_pretrim_lines_lookup(tmp_path: Path) -> None:
+    store = _store(tmp_path, {"pytest -q": {"lines": 80}, "make test": {}})
+    assert _lines(tmp_path, _bash(tmp_path, "pytest -q"), store) == 80
+    assert _lines(tmp_path, _bash(tmp_path, "make test"), store) == 120
+    assert _lines(tmp_path, _bash(tmp_path, "make test"), store, GUARDS__PRETRIM_LINES="40") == 40
+    assert _lines(tmp_path, _bash(tmp_path, "pytest -x"), store) is None
+    assert _lines(tmp_path, _event(tmp_path, "Read", {"command": "pytest -q"}), store) is None
+    assert _lines(tmp_path, _bash(tmp_path, 3), store) is None  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
     "body",
-    [
-        "not json",
-        "[]",
-        '{"candidates": []}',
-        '{"candidates": {"pytest": 3}}',
-    ],
+    ["not json", "[]", '{"candidates": []}', '{"candidates": {"pytest": 3}}'],
 )
-def test_pretrim_bad_store_is_noop_or_default(tmp_path: Path, body: str) -> None:
+def test_pretrim_bad_store_is_not_a_candidate(tmp_path: Path, body: str) -> None:
     store = _store(tmp_path, body)
-    act = _pretrim(tmp_path, _bash(tmp_path, "pytest"), store)
-    assert act.is_noop() or act.rewrite_input == {"command": "pytest 2>&1 | tail -n 120"}
+    assert _lines(tmp_path, _bash(tmp_path, "pytest"), store) is None
 
 
-def test_pretrim_bad_lines_falls_back(tmp_path: Path) -> None:
-    for lines in (0, -5, "12", True, 10.5):
-        store = _store(tmp_path, {"pytest": {"lines": lines}})
-        act = _pretrim(tmp_path, _bash(tmp_path, "pytest"), store)
-        assert act.rewrite_input == {"command": "pytest 2>&1 | tail -n 120"}
+@pytest.mark.parametrize("lines", [0, -5, "12", True, 10.5])
+def test_pretrim_bad_lines_falls_back(tmp_path: Path, lines: Any) -> None:
+    store = _store(tmp_path, {"pytest": {"lines": lines}})
+    assert _lines(tmp_path, _bash(tmp_path, "pytest"), store) == 120
 
 
 def test_pretrim_missing_store(tmp_path: Path) -> None:
     store = tmp_path / "home" / "projects" / KEY
-    assert _pretrim(tmp_path, _bash(tmp_path, "pytest"), store).is_noop()
+    assert _lines(tmp_path, _bash(tmp_path, "pytest"), store) is None
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest -q",
+        "pytest | tee out",
+        "pytest > out.txt",
+        "make && make test",
+        "make; make test",
+        "echo $(date)",
+        "cat <<EOF\nx\nEOF",
+        "sleep 10 &",
+        "vim x.py",
+        "less log",
+        "python",
+        "python run.py",
+    ],
+)
+def test_pretool_never_rewrites_bash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    from token_sparen.adapters.claude import entry
+
+    _store(tmp_path, {command: {"lines": 50}})
+    monkeypatch.setattr(entry, "POLICY", StaticPolicy({"pretrim": "bounded"}))
+    token = entry.HOOK_ENV.set(_env(tmp_path))
+    try:
+        act = entry.handle(_bash(tmp_path, command, description="d"), _cfg(tmp_path))
+    finally:
+        entry.HOOK_ENV.reset(token)
+    assert act.rewrite_input is None and act.block_reason is None
+
+
+def _noisy(n: int = 3000) -> str:
+    verbs = ("compiling", "linking", "scanning", "packing", "hashing", "copying", "checking")
+    nouns = ("alpha", "beta", "gamma", "delta", "omega", "sigma", "kappa", "theta", "zeta")
+    body = [f"{verbs[i % 7]} {nouns[i % 9]} unit {i} of the bundle" for i in range(n)]
+    body[3] = "ERROR: failed to resolve dependency module_x (code 7)"
+    return "\n".join(body)
+
+
+def _post(tmp_path: Path, command: str, stdout: str) -> Event:
+    base = _bash(tmp_path, command)
+    resp = {"stdout": stdout, "stderr": "", "interrupted": False, "isImage": False}
+    return Event(
+        **{**base.__dict__, "kind": "post_tool", "output_text": stdout, "raw_response": resp}
+    )
+
+
+def _compress(tmp_path: Path, ev: Event, arms: dict[str, str], **over: str) -> Any:
+    from token_sparen.mechanisms import compression
+
+    cfg = _cfg(tmp_path, **over)
+    return compression.handle_post_tool(ev, StaticPolicy(arms), cfg, env=_env(tmp_path))
+
+
+def test_pretrim_bounded_is_tail_biased_compression(tmp_path: Path) -> None:
+    _store(tmp_path, {"make build": {}})
+    out = _noisy()
+    act = _compress(tmp_path, _post(tmp_path, "make build", out), {"pretrim": "bounded"})
+    body = act.replace_output
+    assert body is not None and "[token-sparen: kept " in body
+    assert "ERROR: failed to resolve dependency module_x (code 7)" in body  # early error kept
+    lines = out.splitlines()
+    assert all(line in body for line in lines[-120:])  # tail K kept
+    assert lines[0] in body and lines[9] in body  # head 10 kept
+    (rec,) = _decisions(tmp_path)
+    assert rec["point"] == "pretrim" and rec["arm"] == "bounded" and rec["recovery_id"]
+    assert rec["command_sig"] == "make build"
+    saved = tmp_path / "proj" / ".token-sparen" / "outputs" / f"{rec['recovery_id']}.txt"
+    assert saved.read_text(encoding="utf-8") == out  # fully recoverable
+
+
+def test_pretrim_off_or_not_candidate_uses_compression_point(tmp_path: Path) -> None:
+    _store(tmp_path, {"make build": {}})
+    out = _noisy()
+    _compress(tmp_path, _post(tmp_path, "make build", out), {})  # static pretrim = off
+    _compress(tmp_path, _post(tmp_path, "make other", out), {"pretrim": "bounded"})
+    recs = _decisions(tmp_path)
+    assert [(r["point"], r["arm"]) for r in recs] == [
+        ("pretrim", "off"),  # logged no-op (propensity kept for off-policy evaluation)
+        ("compression", "standard"),
+        ("compression", "standard"),
+    ]
+    assert recs[0]["tokens_after"] == recs[0]["tokens_before"]
+
+
+def test_pretrim_respects_compression_gates(tmp_path: Path) -> None:
+    _store(tmp_path, {"make build": {}})
+    small = "\n".join(f"line {i}" for i in range(50))
+    assert _compress(
+        tmp_path, _post(tmp_path, "make build", small), {"pretrim": "bounded"}
+    ).is_noop()
+    assert _decisions(tmp_path) == []
 
 
 @pytest.mark.perf
