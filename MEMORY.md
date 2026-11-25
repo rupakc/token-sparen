@@ -38,3 +38,6 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
 - The case-insensitive error regex folds ASCII case only; whole-text scanning uses literal byte
   anchors plus per-line regex verification (exactly equivalent, several times faster).
 - `CompressResult.text` excludes the recovery marker; elided gaps show as `… [N lines elided]`.
+- Output with >= 90 % of lines pinned (head, tail, errors with context) is returned unchanged
+  (lossless); invalid `[compression.levels.*]` values are logged and fall back to the packaged
+  defaults. Strict wall-clock budgets run only under `pytest -m perf` (CI job `perf`).

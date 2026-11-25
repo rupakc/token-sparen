@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import Counter
 
+from token_sparen import config as _config
 from token_sparen.compress.base import ContentType
 from token_sparen.events import ToolCall
 
@@ -23,7 +25,7 @@ _M = re.MULTILINE
 _TEST_SNIFF = re.compile(
     r"^=+ test session starts"
     r"|^=+ [^=\n]*\b\d+ (?:passed|failed|errors?)\b"
-    r"|^(?:PASS|FAIL)\s\S"
+    r"|^(?:PASS|FAIL)[ \t]\S"
     r"|^--- (?:FAIL|PASS): "
     r"|^test result: "
     r"|^running \d+ tests?$",
@@ -52,7 +54,7 @@ _BUILD_SNIFF = re.compile(
 _STACK_SNIFF = re.compile(
     r"Traceback \(most recent call last\)"
     r"|Exception in thread "
-    r"|^\s+at [\w$.<>/]+\([\w$]+\.(?:java|kt|scala|groovy):\d+\)"
+    r"|^[ \t]+at [\w$.<>/]+\([\w$]+\.(?:java|kt|scala|groovy):\d+\)"
     r"|^goroutine \d+ \[",
     _M,
 )
@@ -146,7 +148,7 @@ def _is_json(text: str, head: str) -> bool:
         return False
     try:
         json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):  # deep nesting overflows the decoder's stack
         return False
     return True
 
@@ -179,7 +181,18 @@ def sniff(text: str) -> ContentType:
 
 
 def detect(text: str, tool: ToolCall | None = None) -> ContentType:
-    """Classify tool output; a recognised tool/command hint wins over content sniffing."""
+    """Classify tool output; a recognised tool/command hint wins over content sniffing.
+
+    Never raises: any failure is logged and the output is treated as plain text.
+    """
+    try:
+        return _detect(text, tool)
+    except Exception as exc:  # noqa: BLE001 - detection must never break a hook
+        _config.log_error(os.environ, "compress.detect", f"{type(exc).__name__}: {exc}")
+        return "text"
+
+
+def _detect(text: str, tool: ToolCall | None) -> ContentType:
     if tool is not None:
         hint = _tool_hint(tool)
         if hint is not None:

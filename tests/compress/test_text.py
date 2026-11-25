@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import random
 import re
-import time
 from pathlib import Path
 from typing import Any
 
@@ -253,35 +252,6 @@ def test_relevance_score_function() -> None:
     assert "lexer" in relevance.query_terms(ctx)
 
 
-# --- robustness / performance ---------------------------------------------------------------
-
-
-def test_huge_and_binary_output() -> None:
-    rng = random.Random(17)
-    base = _filler(rng, 400)
-    chunks: list[str] = []
-    size = 0
-    i = 0
-    while size < 10 * 1024 * 1024:
-        ln = f"{i} {base[i % 400]} \x00 bin\udcff\ud800 data"
-        if i % 50_000 == 25_000:
-            ln = "FATAL: disk on fire"
-        chunks.append(ln)
-        size += len(ln) + 1
-        i += 1
-    text = "\n".join(chunks)
-    ctx = CompressContext(prompt="disk lorem", recent_paths=("x/kappa.log",))
-    best = float("inf")
-    for _ in range(2):
-        start = time.perf_counter()
-        res = _compress(text, "standard", ctx)
-        best = min(best, time.perf_counter() - start)
-    assert isinstance(res.text, str)
-    assert "FATAL: disk on fire" in res.text
-    assert res.total_lines == len(chunks)
-    assert best < 0.2, f"took {best * 1000:.0f} ms"
-
-
 # --- registry -------------------------------------------------------------------------------
 
 
@@ -447,12 +417,60 @@ def test_budget_larger_than_units_keeps_everything_folded() -> None:
     assert res.kept_lines == 51 and not res.lossless
 
 
-def test_invalid_level_values(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "body",
+    [
+        'head = "x"',
+        "keep_ratio = nan",
+        "keep_ratio = inf",
+        "keep_ratio = -0.1",
+        "keep_ratio = 1.5",
+        "head = -1",
+        "tail = -3",
+        "head = 2.5",
+        "head = true",
+        'keep_ratio = "0.5"',
+    ],
+)
+def test_invalid_level_falls_back_to_defaults(
+    tmp_path: Path, body: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logged: list[str] = []
+    monkeypatch.setattr(config_mod, "log_error", lambda env, where, msg: logged.append(where))
     proj = tmp_path / "p"
     proj.mkdir()
-    (proj / "token-sparen.toml").write_text('[compression.levels.light]\nhead = "x"\n')
-    with pytest.raises(ValueError):
-        load_level(load_config(proj, {"TOKEN_SPAREN_HOME": str(tmp_path / "h")}), "light")
+    (proj / "token-sparen.toml").write_text(f"[compression.levels.light]\n{body}\n")
+    cfg = load_config(proj, {"TOKEN_SPAREN_HOME": str(tmp_path / "h")})
+    assert load_level(cfg, "light") == LEVELS["light"]
+    assert logged == ["compress.level"]
+
+
+def test_valid_level_edge_values(tmp_path: Path) -> None:
+    proj = tmp_path / "p"
+    proj.mkdir()
+    (proj / "token-sparen.toml").write_text(
+        "[compression.levels.light]\nhead = 0\ntail = 0\nkeep_ratio = 1.0\n"
+    )
+    cfg = load_config(proj, {"TOKEN_SPAREN_HOME": str(tmp_path / "h")})
+    assert load_level(cfg, "light") == Level(0, 0, 1.0)
+
+
+def test_error_dense_output_returned_unchanged() -> None:
+    text = "\n".join(f"ERROR: failure {i} in unit" for i in range(5000))
+    assert _compress(text, "aggressive") == CompressResult(text, 5000, 5000, True)
+    rng = random.Random(31)
+    lines = _filler(rng, 5000)
+    for i in range(0, 5000, 5):
+        lines[i] = f"ERROR {i} here"
+    text = "\n".join(lines)
+    assert _compress(text, "aggressive").text == text
+
+
+def test_anchor_false_positives_still_compress() -> None:
+    rng = random.Random(37)
+    lines = [f"terror {w} terrorism failover" for w in _filler(rng, 3000)]
+    res = _compress("\n".join(lines), "aggressive")
+    assert res.kept_lines == 450 and not res.lossless
 
 
 def test_relevance_can_spend_whole_budget() -> None:
@@ -461,3 +479,9 @@ def test_relevance_can_spend_whole_budget() -> None:
     ctx = CompressContext(prompt="frob", recent_paths=())
     res = _compress("\n".join(lines), "aggressive", ctx)
     assert res.kept_lines == 150
+
+
+def test_keep_ratio_one_is_lossless() -> None:
+    rng = random.Random(41)
+    text = "\n".join(f"{i} {w}" for i, w in enumerate(_filler(rng, 300)))
+    assert TextCompressor().compress(text, Level(1, 1, 1.0), NO_CTX).lossless

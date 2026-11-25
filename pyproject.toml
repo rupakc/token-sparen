@@ -27,6 +27,8 @@ token_sparen = ["params/*.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = '-m "not perf"'
+markers = ["perf: strict wall-clock budgets; run with `pytest -m perf --no-cov` (CI job perf)"]
 
 [tool.coverage.run]
 source = ["token_sparen"]

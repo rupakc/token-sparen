@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections.abc import Callable, Iterable, Sequence
@@ -39,15 +40,38 @@ ERROR_PATTERNS: tuple[re.Pattern[str], ...] = (
         # which can only pin more lines, never fewer.
         re.IGNORECASE | re.ASCII,
     ),
-    re.compile(r"(?:Error|Exception)\b"),  # CamelCase names: ValueError, IOException
+    re.compile(r"(?:Error|Exception)\b", re.ASCII),  # CamelCase names: ValueError, IOException
     re.compile("✗"),
 )
-# Literal (lower-case, UTF-8) anchors: every ERROR_PATTERNS match contains one of them. Whole-text
-# scanning uses C-level `bytes.find` on these, then verifies the candidate line with the regexes;
-# this is several times faster than running the regexes over megabytes of output.
-_ANCHORS: tuple[bytes, ...] = tuple(
-    k.encode("utf-8")
-    for k in ("error", "exception", "traceback", "fail", "fatal", "panic", "assert", "✗")
+
+
+def _anchored(literal: str, suffix: str = "") -> re.Pattern[bytes]:
+    """Byte twin of one ERROR_PATTERNS[0] alternative, for lower-cased UTF-8 text.
+
+    The pattern starts with a literal so the regex engine uses its fast literal-prefix
+    search; the word boundary before the literal is checked by a look-behind placed after
+    it. Non-word false positives (e.g. "terror") are rejected inside the engine, never in
+    Python.
+    """
+    lit = re.escape(literal)
+    return re.compile(rf"{lit}(?<![a-z0-9_]{lit}){suffix}(?![a-z0-9_])".encode())
+
+
+# Byte-level scanners whose union matches exactly the lines ERROR_PATTERNS matches (ASCII
+# word semantics on both sides; property-tested). First group runs on lower-cased bytes.
+_LOWER_SCANNERS: tuple[re.Pattern[bytes], ...] = (
+    _anchored("error", "s?"),
+    _anchored("exception", "s?"),
+    _anchored("traceback"),
+    _anchored("fail", "(?:s|ed|ure|ures|ing)?"),
+    _anchored("fatal"),
+    _anchored("panic", "(?:ked)?"),
+    _anchored("assert", "(?:ion)?"),
+)
+_RAW_SCANNERS: tuple[re.Pattern[bytes], ...] = (
+    re.compile(rb"Error(?![A-Za-z0-9_])"),
+    re.compile(rb"Exception(?![A-Za-z0-9_])"),
+    re.compile("✗".encode()),
 )
 
 
@@ -61,27 +85,33 @@ def encode_lossless(text: str) -> bytes:
 
 
 def error_line_indices(
-    text: str, lines: Sequence[str] | None = None, raw: bytes | None = None
+    text: str, raw: bytes | None = None, stop_at: int | None = None
 ) -> list[int]:
-    """Sorted 0-based indices of lines (split on newline) matching ERROR_PATTERNS."""
-    if lines is None:
-        lines = text.split("\n")
-    low = (raw if raw is not None else encode_lossless(text)).lower()  # ASCII-only, same length
+    """Sorted 0-based indices of lines (split on newline) matching ERROR_PATTERNS.
+
+    With `stop_at`, scanning stops as soon as that many error lines are known; the result is
+    then incomplete (callers use it to detect error-dense output cheaply). `raw` may pass the
+    already encoded text to avoid a second encode.
+    """
+    data = raw if raw is not None else encode_lossless(text)
+    low = data.lower()  # ASCII-only lower-casing: same length, same newline offsets
     found: set[int] = set()
-    rejected: set[int] = set()
-    for anchor in _ANCHORS:
-        pos = low.find(anchor)
-        idx = 0
-        last = 0
-        while pos != -1:
-            idx += low.count(b"\n", last, pos)
-            last = pos
-            if idx not in found and idx not in rejected:
-                (found if is_error_line(lines[idx]) else rejected).add(idx)
-            nxt = low.find(b"\n", pos)
-            if nxt == -1:
-                break
-            pos = low.find(anchor, nxt)
+    for scanners, hay in ((_LOWER_SCANNERS, low), (_RAW_SCANNERS, data)):
+        for pat in scanners:
+            m = pat.search(hay)
+            idx = 0
+            last = 0
+            while m is not None:
+                pos = m.start()
+                idx += hay.count(b"\n", last, pos)
+                last = pos
+                found.add(idx)
+                if stop_at is not None and len(found) >= stop_at:
+                    return sorted(found)
+                nxt = hay.find(b"\n", pos)
+                if nxt == -1:
+                    break
+                m = pat.search(hay, nxt)
     return sorted(found)
 
 
@@ -92,17 +122,43 @@ class Level:
     keep_ratio: float
 
 
-def load_level(config: Config, arm: str) -> Level:
-    """Read `[compression.levels.<arm>]`; raises ValueError for unknown/invalid arms."""
-    raw = config.get(f"compression.levels.{arm}")
+def _parse_level(raw: Any) -> Level:
+    """Strict validation: integer head, tail >= 0 and finite 0 <= keep_ratio <= 1."""
     if not isinstance(raw, dict):
-        raise ValueError(f"no compression level for arm {arm!r}")
+        raise ValueError("not a table")
+    head: Any = raw.get("head")
+    tail: Any = raw.get("tail")
+    ratio: Any = raw.get("keep_ratio")
+    for key, val in (("head", head), ("tail", tail)):
+        if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+            raise ValueError(f"{key} must be an integer >= 0, got {val!r}")
+    if (
+        not isinstance(ratio, int | float)
+        or isinstance(ratio, bool)
+        or not math.isfinite(ratio)
+        or not 0.0 <= ratio <= 1.0
+    ):
+        raise ValueError(f"keep_ratio must be a finite number in [0, 1], got {ratio!r}")
+    return Level(head=head, tail=tail, keep_ratio=float(ratio))
+
+
+def load_level(config: Config, arm: str) -> Level:
+    """Read `[compression.levels.<arm>]`.
+
+    An invalid user value is logged and replaced by the packaged default for that arm (fail
+    open). Only an arm with no valid packaged default (e.g. `off`) raises ValueError.
+    """
+    raw = config.get(f"compression.levels.{arm}")
     try:
-        return Level(
-            head=int(raw["head"]), tail=int(raw["tail"]), keep_ratio=float(raw["keep_ratio"])
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"invalid compression level {arm!r}: {exc}") from exc
+        return _parse_level(raw)
+    except ValueError as exc:
+        if raw is not None:
+            _config.log_error(os.environ, "compress.level", f"{arm}: {exc}")
+    defaults = _config.packaged_defaults().get("compression", {}).get("levels", {})
+    try:
+        return _parse_level(defaults.get(arm))
+    except ValueError as exc:
+        raise ValueError(f"no compression level for arm {arm!r}") from exc
 
 
 @dataclass(frozen=True)

@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 import operator
 import re
-from bisect import bisect_right
 from itertools import compress, islice
 
 from token_sparen.compress import relevance
@@ -21,6 +20,7 @@ from token_sparen.compress.base import (
 FOLD_MIN = 3
 PIN_CONTEXT = 2
 SCORE_CAP = 20_000
+DENSE_RATIO = 0.9  # pinned share of lines at which output is returned unchanged
 _DIGITS = b"0123456789"
 # Digit runs normalise to 0xFF, a byte that never occurs in UTF-8, so a literal `#` in the
 # output is never confused with a number.
@@ -104,6 +104,28 @@ def _free_units(keep: bytearray, covered: bytearray) -> list[int]:
     return list(compress(range(len(keep)), _or(keep, covered).translate(_FLIP)))
 
 
+def _pin_mask(total: int, errors: list[int], level: Level) -> bytearray:
+    """1 for head, tail and every error line with PIN_CONTEXT lines either side.
+
+    Context is added by shifting the error mask as one big integer (C speed), so even
+    error-dense output costs one Python step per error line at most.
+    """
+    marks = bytearray(total)
+    for e in errors:
+        marks[e] = 1
+    value = int.from_bytes(marks, "big")  # byte i is line i; shifting by 8 bits moves a line
+    spread = value
+    for k in range(1, PIN_CONTEXT + 1):
+        spread |= (value << (8 * k)) | (value >> (8 * k))
+    spread &= (1 << (8 * total)) - 1
+    pinned = bytearray(spread.to_bytes(total, "big"))
+    head = min(level.head, total)
+    pinned[:head] = b"\x01" * head
+    tail_start = max(total - level.tail, 0)
+    pinned[tail_start:] = b"\x01" * (total - tail_start)
+    return pinned
+
+
 class TextCompressor:
     name = "text"
     handles: frozenset[ContentType] = frozenset({"text"})
@@ -119,26 +141,25 @@ class TextCompressor:
         budget = max(level.head + level.tail, math.ceil(round(level.keep_ratio * total, 9)))
 
         raw = encode_lossless(body)
-        errors = error_line_indices(body, lines, raw)
+        dense = math.ceil(DENSE_RATIO * total)
+        errors = error_line_indices(body, raw, stop_at=dense)
+        if len(errors) >= dense:
+            return CompressResult(text=text, kept_lines=total, total_lines=total, lossless=True)
+        pinned = _pin_mask(total, errors, level)
+        if pinned.count(1) >= dense:
+            # Error-dense output: almost everything is pinned, so trimming would not pay off.
+            return CompressResult(text=text, kept_lines=total, total_lines=total, lossless=True)
+
         starts, ends = _fold_runs(raw, errors)
         covered = bytearray(total)  # 1 = folded into a run whose first line represents it
         for s, e in zip(starts, ends, strict=True):
             covered[s + 1 : e] = b"\x01" * (e - s - 1)
-
         # keep[i] = 1 marks unit i (a single line or a run's first line) as kept. Covered
         # positions may also be set by range fills; they are masked out at the end.
-        keep = bytearray(total)
-
-        def pin(i: int) -> None:
-            keep[i if not covered[i] else starts[bisect_right(starts, i) - 1]] = 1
-
-        for i in range(min(level.head, total)):
-            pin(i)
-        for i in range(max(total - level.tail, 0), total):
-            pin(i)
-        for e in errors:
-            for i in range(max(e - PIN_CONTEXT, 0), min(e + PIN_CONTEXT + 1, total)):
-                pin(i)
+        keep = bytearray(_and_not(pinned, covered))
+        for s, e in zip(starts, ends, strict=True):
+            if pinned.find(1, s, e) != -1:  # any pinned line inside a run keeps the run
+                keep[s] = 1
 
         kept_units = _and_not(keep, covered)
         remaining = budget - kept_units.count(1)

@@ -108,6 +108,11 @@ def _load_defaults(env: Mapping[str, str]) -> dict[str, Any]:
     return _load_toml(text, Path("defaults.toml"), env)
 
 
+def packaged_defaults() -> dict[str, Any]:
+    """The packaged `params/defaults.toml`, parsed (the single source of default values)."""
+    return _load_defaults({})
+
+
 def load_config(project_dir: Path, env: Mapping[str, str]) -> Config:
     data: dict[str, Any] = {}
     _merge(data, _load_defaults(env))

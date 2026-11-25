@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import time
 from typing import get_args
 
 import pytest
 
+from token_sparen import config as config_mod
 from token_sparen.compress import ContentType, detect
 from token_sparen.compress.detect import command_hint
 from token_sparen.events import ToolCall
@@ -50,6 +52,8 @@ FIXTURES: dict[ContentType, str] = {
     "table": "name,age,city\nann,30,rome\nbob,41,oslo\ncid,22,lima\n",
     "text": PLAIN,
 }
+detect_mod = importlib.import_module("token_sparen.compress.detect")
+
 HINTS: dict[ContentType, ToolCall | None] = {"pplx": _shell("pplx 'what is x'")}
 
 
@@ -158,3 +162,50 @@ def test_detect_fast_on_huge_input() -> None:
     start = time.perf_counter()
     assert detect(text, None) == "log"
     assert time.perf_counter() - start < 0.05
+
+
+@pytest.mark.parametrize("text", ["[" * 200_000, '{"a":' * 100_000, "[" * 5000 + "]" * 5000])
+def test_deeply_nested_json_does_not_raise(text: str) -> None:
+    assert detect(text, None) in ("json", "text")
+
+
+def test_detect_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    logged: list[str] = []
+    monkeypatch.setattr(config_mod, "log_error", lambda env, where, msg: logged.append(where))
+
+    def boom(text: str) -> ContentType:
+        raise RuntimeError("sniff exploded")
+
+    monkeypatch.setattr(detect_mod, "sniff", boom)
+    assert detect("anything", None) == "text"
+    assert detect("anything", _shell("pytest")) == "test_report"
+    bad = ToolCall("Bash", "shell", {"command": "x"}, None)
+    monkeypatch.setattr(detect_mod, "command_hint", lambda c: 1 / 0)
+    assert detect("anything", bad) == "text"
+    assert logged == ["compress.detect", "compress.detect"]
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        "\n" * 4096,
+        " \n" * 2048,
+        "\t\n" * 2048,
+        "\r\n" * 2048,
+        " " * 4096,
+        "=" * 4096,
+        "= " * 2048,
+        "a" * 4096,
+        "a:" * 2048,
+        "  at " * 800,
+        "\n" * 2048 + " " * 2048,
+        " \t\n\r\f\v" * 700,
+    ],
+)
+def test_sniff_linear_on_whitespace_heavy_heads(head: str) -> None:
+    best = float("inf")
+    for _ in range(3):
+        start = time.perf_counter()
+        detect(head, None)
+        best = min(best, time.perf_counter() - start)
+    assert best < 0.005, f"{best * 1000:.1f} ms"
