@@ -1,0 +1,10 @@
+{"type": "user", "message": {"role": "user", "content": "hello"}}
+{"type": "assistant", "isSidechain": false, "message": {"id": "msg_1", "model": "model-a", "content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 10, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 100, "output_tokens": 1, "service_tier": "standard"}}}
+{"type": "assistant", "isSidechain": false, "message": {"id": "msg_1", "model": "model-a", "content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 10, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 100, "output_tokens": 40, "service_tier": "standard"}}}
+{"type": "assistant", "isSidechain": false, "message": {"id": "msg_2", "model": "model-a", "content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 20, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 200, "output_tokens": 7, "service_tier": "standard"}}}
+{"type": "assistant", "isSidechain": true, "message": {"id": "msg_s", "model": "model-a", "content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 1000, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 1, "service_tier": "standard"}}}
+{"type": "assistant", "isSidechain": false, "message": {"id": "msg_syn", "model": "<synthetic>", "content": [{"type": "text", "text": "ok"}], "usage": {"input_tokens": 999, "cache_creation_input_tokens": 999, "cache_read_input_tokens": 999, "output_tokens": 9, "service_tier": "standard"}}}
+{"type": "file-history-snapshot", "snapshot": {}}
+{"type": "queue-operation"}
+not json{
+[1,2]
