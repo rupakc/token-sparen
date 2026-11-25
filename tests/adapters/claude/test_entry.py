@@ -336,8 +336,6 @@ def test_plugin_manifest_valid() -> None:
 def test_pipeline_wiring_uses_entry_env(tmp_path: Path) -> None:
     from sampleoutputs import big_pytest
 
-    from token_sparen.adapters.claude import translate
-
     assert {"prompt", "pre_tool", "post_tool", "post_tool_failure"} <= set(entry.HANDLERS)
     env = _env(tmp_path)
     rc, out = _run("PostToolUse", _bash_payload(big_pytest()).replace('"ls"', '"pytest"'), env)
@@ -345,4 +343,21 @@ def test_pipeline_wiring_uses_entry_env(tmp_path: Path) -> None:
     stdout = json.loads(out)["hookSpecificOutput"]["updatedToolOutput"]["stdout"]
     assert "[token-sparen: kept " in stdout
     assert list((tmp_path / "home" / "projects").glob("*/decisions.jsonl"))
-    assert translate.replaceable  # the Claude predicate is what the wiring passes
+
+
+def test_pipeline_wiring_vetoes_failure_events(tmp_path: Path) -> None:
+    from sampleoutputs import big_pytest
+
+    payload = json.dumps(
+        {
+            "session_id": "s-1",
+            "hook_event_name": "PostToolUseFailure",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest"},
+            "tool_use_id": "tu-f",
+            "error": big_pytest(),
+        }
+    )
+    assert _run("PostToolUseFailure", payload, _env(tmp_path)) == (0, "{}\n")
+    assert not (tmp_path / ".token-sparen").exists()
+    assert not list((tmp_path / "home").glob("projects/*/decisions.jsonl"))

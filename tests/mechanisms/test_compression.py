@@ -15,6 +15,7 @@ from sampleoutputs import big_pytest
 
 from token_sparen.compress import CompressContext, CompressResult, Level, registry
 from token_sparen.config import Config, load_config
+from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Event, EventKind, SessionCtx, ToolCall
 from token_sparen.learn import policy as policy_mod
 from token_sparen.learn.policy import (
@@ -151,7 +152,7 @@ def test_decision_record_fields() -> None:
         "command_sig",
         "ts",
     ]
-    assert {"ctype", "tool_name"} <= set(names)
+    assert names[11:] == ["ctype", "tool_name", "tokens_full"]
     assert policy_mod.STATIC_BUCKET == "static"
 
 
@@ -230,20 +231,111 @@ def test_persisted_output_used(tmp_path: Path) -> None:
     assert rec_file.read_text(encoding="utf-8") == full
 
 
-def test_persisted_output_missing_or_too_big_falls_back(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_persisted_output_missing_or_too_big_falls_back(tmp_path: Path) -> None:
     text = big_pytest()
     ev = _bash(tmp_path, text, persistedOutputPath=str(tmp_path / "gone.txt"))
     assert _handle(tmp_path, ev).replace_output is not None
     assert _outputs(tmp_path)[0].read_text(encoding="utf-8") == text
     big = tmp_path / "big.txt"
     big.write_text(big_pytest(60_000), encoding="utf-8")
-    monkeypatch.setattr(compression, "PERSISTED_MAX_BYTES", 1000)
+    cfg = _cfg(tmp_path, COMPRESSION__PERSISTED_MAX_BYTES="1000")
     other = text.replace("[  0%]", "[  1%]")
     ev2 = _bash(tmp_path, other, persistedOutputPath=str(big))
-    assert _handle(tmp_path, ev2).replace_output is not None
+    assert _handle(tmp_path, ev2, cfg).replace_output is not None
     assert other in [p.read_text(encoding="utf-8") for p in _outputs(tmp_path)]
+    assert _decisions(tmp_path)[-1]["tokens_full"] is None
+
+
+def test_persisted_max_bytes_default() -> None:
+    from token_sparen.config import packaged_defaults
+
+    assert packaged_defaults()["compression"]["persisted_max_bytes"] == 5_000_000
+
+
+def _generic(target: int, seed: int = 3) -> str:
+    import random
+
+    rng = random.Random(seed)
+    words = ["alpha", "beta", "gamma", "delta", "omega", "lorem", "ipsum", "kappa", "zeta"]
+    out: list[str] = []
+    size = 0
+    i = 0
+    while size < target:
+        ln = f"{i} " + " ".join(rng.choice(words) for _ in range(rng.randint(3, 12)))
+        out.append(ln)
+        size += len(ln) + 1
+        i += 1
+    return "\n".join(out)
+
+
+def test_persisted_generic_never_exceeds_preview(tmp_path: Path) -> None:
+    full = _generic(439_000)
+    saved = tmp_path / "persisted.txt"
+    saved.write_text(full, encoding="utf-8")
+    preview = full[:30_000]
+    ev = _event(
+        tmp_path,
+        tool_input={"command": "cat big.txt"},
+        response={"stdout": preview, "stderr": "", "persistedOutputPath": str(saved)},
+        text=preview,
+    )
+    act = _handle(tmp_path, ev)
+    if act.replace_output is not None:
+        assert len(act.replace_output) <= len(preview)
+    rec = _decisions(tmp_path)[-1]
+    assert rec["tokens_before"] == estimate_tokens(preview)
+    assert rec["tokens_after"] <= rec["tokens_before"]
+    assert rec["tokens_full"] == estimate_tokens(full)
+
+
+def test_persisted_falls_back_to_compressing_preview(tmp_path: Path) -> None:
+    preview = big_pytest(30_000)
+    full = preview + "\n" + _generic(400_000)
+    saved = tmp_path / "persisted.txt"
+    saved.write_text(full, encoding="utf-8")
+    ev = _bash(tmp_path, preview, persistedOutputPath=str(saved))
+    act = _handle(tmp_path, ev)
+    assert act.replace_output is not None
+    assert len(act.replace_output) <= len(preview) * 0.85
+    assert MARKER.fullmatch(act.replace_output.splitlines()[-1])
+    (saved_copy,) = _outputs(tmp_path)
+    assert saved_copy.read_text(encoding="utf-8") == full  # recovery still has everything
+    rec = _decisions(tmp_path)[-1]
+    assert rec["tokens_before"] == estimate_tokens(preview, "text")
+    assert _overlay(tmp_path)["tokens_removed"] == rec["tokens_before"] - rec["tokens_after"]
+
+
+def test_persisted_log_compresses_with_preview_accounting(tmp_path: Path) -> None:
+    full = big_pytest(80_000)
+    saved = tmp_path / "persisted.txt"
+    saved.write_text(full, encoding="utf-8")
+    preview = full[:30_000]
+    act = _handle(tmp_path, _bash(tmp_path, preview, persistedOutputPath=str(saved)))
+    assert act.replace_output is not None and len(act.replace_output) < len(preview) // 4
+    assert "2 failed, 140 passed" in act.replace_output
+    rec = _decisions(tmp_path)[-1]
+    assert rec["tokens_before"] == estimate_tokens(preview)
+    assert rec["tokens_full"] == estimate_tokens(full) > rec["tokens_before"]
+
+
+def test_persisted_file_not_doubled_with_stderr(tmp_path: Path) -> None:
+    full = big_pytest(60_000)
+    saved = tmp_path / "persisted.txt"
+    saved.write_text(full, encoding="utf-8")
+    preview = full[:30_000] + "\nWARN-ON-STDERR"
+    ev = _bash(tmp_path, preview, persistedOutputPath=str(saved), stderr="WARN-ON-STDERR")
+    assert _handle(tmp_path, ev).replace_output is not None
+    (saved_copy,) = _outputs(tmp_path)
+    assert saved_copy.read_text(encoding="utf-8") == full
+
+
+def test_slow_hook_skips_replacement(tmp_path: Path) -> None:
+    import time as _time
+
+    ev = _bash(tmp_path, big_pytest())
+    act = _handle(tmp_path, ev, started=_time.monotonic() - 1.0)
+    assert act.is_noop() and _outputs(tmp_path) == []
+    assert _decisions(tmp_path)[-1]["recovery_id"] is None
 
 
 def test_failure_event_compressed(tmp_path: Path) -> None:
@@ -284,6 +376,10 @@ def test_skip_tools_configurable(tmp_path: Path) -> None:
     text = big_pytest()
     todo = _event(tmp_path, tool="TodoWrite", tool_input={}, response=text, text=text)
     assert _handle(tmp_path, todo, Config()).is_noop()  # no config value -> packaged deny-set
+    for tool in ("TodoWrite", "AskUserQuestion", "ExitPlanMode", "Edit"):  # hard floor
+        ev = _event(tmp_path, tool=tool, tool_input={}, response=text, text=text)
+        assert _handle(tmp_path, ev, cfg).is_noop()
+    assert _outputs(tmp_path) == []
 
 
 def test_read_content_compressed(tmp_path: Path) -> None:

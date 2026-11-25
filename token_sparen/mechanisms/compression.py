@@ -4,6 +4,12 @@ Flow: cheap gates (tool deny-set, replaceable shape, size) -> detect content typ
 policy for an arm -> compress -> keep only if it saves at least ``min_saving_ratio`` -> save the
 full text, append the recovery marker, update the session ledger. Every decision the policy made
 is logged with its propensity, including the ones that ended as a no-op.
+
+Baseline is always the *preview*: the text the host would show the model (``output_text``). When
+Claude Code persisted a longer Bash output, the full file is compressed first (it recovers lines
+past the truncation) and the preview second; a candidate is used only if it is no longer than the
+preview and saves at least ``min_saving_ratio`` of the preview's tokens. The hook therefore never
+returns more than the model would have seen, and savings are booked against the preview.
 """
 
 from __future__ import annotations
@@ -17,7 +23,7 @@ from typing import Any
 
 from token_sparen import recovery
 from token_sparen.adapters.claude.translate import render_tool_output
-from token_sparen.compress import CompressContext, detect, load_level, registry
+from token_sparen.compress import CompressContext, CompressResult, detect, load_level, registry
 from token_sparen.config import Config, log_error, state_home
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event
@@ -25,7 +31,8 @@ from token_sparen.learn.policy import COMPRESSION, Decision, DecisionRecord, Pol
 from token_sparen.mechanisms import tracking
 from token_sparen.store import jsonl, jsonstore, paths, session
 
-PERSISTED_MAX_BYTES = 20 * 1024 * 1024
+PERSISTED_MAX_BYTES = 5_000_000
+SAVE_DEADLINE_MS = 250
 COMMAND_SIG_CHARS = 500
 DEFAULT_SKIP_TOOLS = (
     "Edit",
@@ -36,6 +43,8 @@ DEFAULT_SKIP_TOOLS = (
     "AskUserQuestion",
     "ExitPlanMode",
 )
+# Never compressed, whatever `skip_tools` says: interaction tools whose result the user answers.
+HARD_SKIP_TOOLS = frozenset({"TodoWrite", "AskUserQuestion", "ExitPlanMode"})
 _EST_TYPE = {"json": "json", "pplx": "json", "log": "log", "build_log": "log"}
 _POST_KINDS = frozenset({"post_tool", "post_tool_failure"})
 
@@ -74,11 +83,15 @@ def _skipped(event: Event, cfg: Config) -> bool:
         names = {x for x in raw if isinstance(x, str)}
     else:
         names = set(DEFAULT_SKIP_TOOLS)
-    return tool.name in names
+    return tool.name in names or tool.name in HARD_SKIP_TOOLS
 
 
-def _persisted_text(event: Event) -> str | None:
-    """Bash: the full output Claude Code saved before truncating stdout, when readable."""
+def _persisted_text(event: Event, cfg: Config) -> str | None:
+    """Bash: the full output Claude Code saved before truncating stdout, when readable.
+
+    Whether that file also holds stderr is not documented, so stderr is never appended to it
+    (avoids duplicating it); the preview still carries stderr as the host showed it.
+    """
     resp = event.raw_response
     if event.tool is None or event.tool.name != "Bash" or not isinstance(resp, dict):
         return None
@@ -87,13 +100,11 @@ def _persisted_text(event: Event) -> str | None:
         return None
     try:
         path = Path(where)
-        if path.stat().st_size > PERSISTED_MAX_BYTES:
+        if path.stat().st_size > _num(cfg, "compression.persisted_max_bytes", PERSISTED_MAX_BYTES):
             return None
-        text = path.read_text(encoding="utf-8", errors="replace")
+        return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    stderr = resp.get("stderr")
-    return f"{text}\n{stderr}" if isinstance(stderr, str) and stderr else text
 
 
 def _size_band(tokens: int) -> str:
@@ -120,6 +131,7 @@ def _log_decision(
     before: int,
     after: int,
     recovery_id: str | None,
+    tokens_full: int | None,
 ) -> None:
     assert event.tool is not None
     rec = DecisionRecord(
@@ -136,6 +148,7 @@ def _log_decision(
         ts=time.time(),
         ctype=ctype,
         tool_name=event.tool.name,
+        tokens_full=tokens_full,
     )
     limit = int(_num(cfg, "learn.decision_log_max_bytes", 20_000_000))
     path = paths.project_dir_for(state_home(env), event.project_key) / "decisions.jsonl"
@@ -172,19 +185,29 @@ def handle_post_tool(
     *,
     env: Mapping[str, str] | None = None,
     replaceable: Replaceable | None = None,
+    started: float | None = None,
 ) -> Action:
-    """Compress a large tool output recoverably; any non-qualifying output is left untouched."""
+    """Compress a large tool output recoverably; any non-qualifying output is left untouched.
+
+    ``started`` is the hook's ``time.monotonic()`` start; past ``save_deadline_ms`` no recovery
+    file is written and nothing is replaced (the watchdog would discard the answer anyway).
+    """
+    t0 = time.monotonic() if started is None else started
     env = os.environ if env is None else env
     if event.tool is None or event.output_text is None or _skipped(event, cfg):
         return Action()
     if not (replaceable or shape_replaceable)(event):
         return Action()  # checked before any work: nothing to save or log if we cannot replace
-    text = _persisted_text(event) or event.output_text
-    if estimate_tokens(text) < _num(cfg, "compression.min_tokens", 2000):
+    preview = event.output_text
+    if estimate_tokens(preview) < _num(cfg, "compression.min_tokens", 2000):
         return Action()
-    ctype = detect(text, event.tool)
+    full = _persisted_text(event, cfg)
+    if full == preview:
+        full = None
+    ctype = detect(preview, event.tool)
     est_type = _EST_TYPE.get(ctype, "text")
-    before = estimate_tokens(text, est_type)
+    before = estimate_tokens(preview, est_type)
+    tokens_full = None if full is None else estimate_tokens(full, est_type)
     overlay_file = tracking.overlay_path(event, env)
     overlay = session.read_session(overlay_file)
     features = {
@@ -197,7 +220,7 @@ def handle_post_tool(
     )
 
     def no_op() -> Action:
-        _log_decision(event, cfg, env, decision, ctype, before, before, None)
+        _log_decision(event, cfg, env, decision, ctype, before, before, None, tokens_full)
         return Action()
 
     if decision.arm == COMPRESSION.safe_arm:
@@ -207,17 +230,32 @@ def handle_post_tool(
         recent_paths=tuple(tracking.recent_paths(overlay)),
         config=cfg,
     )
-    result = registry.for_type(ctype).compress(text, load_level(cfg, decision.arm), ctx)
-    if result.lossless or result.kept_lines >= result.total_lines:
+    level = load_level(cfg, decision.arm)
+    compressor = registry.for_type(ctype)
+    max_after = before * (1 - _num(cfg, "compression.min_saving_ratio", 0.15))
+    stand_in = _marker_len_ref(event.project_dir)
+    chosen: CompressResult | None = None
+    for source in (full, preview):
+        if source is None:
+            continue
+        result = compressor.compress(source, level, ctx)
+        if result.lossless or result.kept_lines >= result.total_lines:
+            continue
+        probe = f"{result.text}\n{recovery.marker(result.kept_lines, result.total_lines, stand_in)}"
+        if len(probe) <= len(preview) and estimate_tokens(probe, est_type) <= max_after:
+            chosen = result
+            break
+    if chosen is None:
         return no_op()
-    probe = recovery.marker(
-        result.kept_lines, result.total_lines, _marker_len_ref(event.project_dir)
-    )
-    after = estimate_tokens(f"{result.text}\n{probe}", est_type)
-    if before <= 0 or (before - after) / before < _num(cfg, "compression.min_saving_ratio", 0.15):
+    deadline = _num(cfg, "compression.save_deadline_ms", SAVE_DEADLINE_MS) / 1000
+    if time.monotonic() - t0 > deadline:
+        log_error(env, "compression", "save deadline exceeded; output left untouched")
         return no_op()
-    ref = recovery.save_full(event.project_dir, text)
-    body = f"{result.text}\n{recovery.marker(result.kept_lines, result.total_lines, ref)}"
+    ref = recovery.save_full(event.project_dir, full if full is not None else preview)
+    body = f"{chosen.text}\n{recovery.marker(chosen.kept_lines, chosen.total_lines, ref)}"
+    if len(body) > len(preview):  # hard invariant: never more than the model would have seen
+        log_error(env, "compression", "replacement longer than preview; output left untouched")
+        return no_op()
     recovery.prune_outputs(
         event.project_dir,
         ttl_days=_num(cfg, "recovery.ttl_days", 14),
@@ -226,5 +264,5 @@ def handle_post_tool(
     )
     after = estimate_tokens(body, est_type)
     _count_trim(overlay_file, before - after, env)
-    _log_decision(event, cfg, env, decision, ctype, before, after, ref.id)
+    _log_decision(event, cfg, env, decision, ctype, before, after, ref.id, tokens_full)
     return Action(replace_output=body)

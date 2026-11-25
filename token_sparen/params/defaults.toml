@@ -6,6 +6,8 @@ min_saving_ratio = 0.15
 # Tools whose output is never compressed (tiny confirmations or user interaction); every tool
 # in the edit category is skipped as well.
 skip_tools = ["Edit", "Write", "MultiEdit", "NotebookEdit", "TodoWrite", "AskUserQuestion", "ExitPlanMode"]
+persisted_max_bytes = 5000000  # larger persisted Bash outputs are not read (preview only)
+save_deadline_ms = 250  # past this hook time no recovery file is written, output left as is
 
 # Arms for the text compressor: keep head + tail lines and ceil(keep_ratio * total) overall.
 [compression.levels.light]

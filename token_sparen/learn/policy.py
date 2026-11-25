@@ -52,6 +52,7 @@ class DecisionRecord:
     ts: float
     ctype: str | None = None
     tool_name: str | None = None
+    tokens_full: int | None = None  # persisted full output size, when it differed from preview
 
 
 class Policy(Protocol):

@@ -101,10 +101,9 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   fake savings are booked. The mechanism itself supports failures (host-neutral default predicate)
   for hosts that can replace them. Consequence: failing Bash commands are not compressed on Claude
   Code today; revisit if the host adds failure replacement.
-- Bash: if `persistedOutputPath` is readable and <= 20 MB its full content is compressed (plus
-  stderr) and `tokens_before` is measured on that full text; the replacement keeps
-  `persistedOutputPath`/`persistedOutputSize`. Read: `file.content` is compressed; `numLines` and
-  `totalLines` stay as the host reported them, the marker states kept/total lines of the content.
+- Bash: the replacement keeps `persistedOutputPath`/`persistedOutputSize`. Read: `file.content` is
+  compressed; `numLines`/`totalLines` stay as the host reported them, the marker states kept/total
+  lines of the compressed text.
 - `[compression] skip_tools` (env override: comma-separated) plus every `edit`-category tool are
   never compressed; an invalid value falls back to the packaged deny-set.
 - Session overlay (local per-session file, not a shared store) keeps `turn`, `last_prompt`
@@ -113,3 +112,19 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   write failures are logged and do not undo a trim.
 - Handlers get the hook env through `entry.HOOK_ENV` (a ContextVar set around `handle`), so the
   `Handler(event, cfg)` signature stays unchanged. Outputs are pruned after each save.
+
+## 2026-11-26 Preview-bounded compression (Task 13 fix round 1)
+- **The hook never returns more than the model would have seen.** Baseline = the preview
+  (`output_text`, stdout+stderr as the host shows it); `min_tokens`, size features, `tokens_before`
+  and the ledger all use the preview. With a persisted Bash output (<= `[compression]
+  persisted_max_bytes = 5000000`) the full file is compressed first, then the preview; a candidate
+  is used only if `len <= len(preview)` and `tokens_after <= tokens_before * (1 - min_saving_ratio)`.
+  A final explicit check refuses a body longer than the preview. The recovery file always holds the
+  full text when available. `DecisionRecord.tokens_full` (appended, default None) records the
+  persisted size.
+- Persisted file: whether it includes stderr is undocumented, so stderr is not appended to it.
+- `[compression] save_deadline_ms = 250`: past this hook time (entry passes the watchdog start via
+  `HOOK_STARTED`) no recovery file is written and nothing is replaced, so the watchdog never leaves
+  orphan recovery files.
+- `TodoWrite`, `AskUserQuestion`, `ExitPlanMode` and the edit category are a hard skip floor that a
+  `skip_tools` override cannot remove.
