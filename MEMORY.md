@@ -128,3 +128,32 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   orphan recovery files.
 - `TodoWrite`, `AskUserQuestion`, `ExitPlanMode` and the edit category are a hard skip floor that a
   `skip_tools` override cannot remove.
+
+## 2026-11-26 Guards, pre-trim point, read de-dupe (Task 14)
+- **Handler chains.** `entry.register` appends to an ordered per-kind list (a new list each time,
+  so snapshots stay valid). PreToolUse: first block wins (rewrite dropped); else the first rewrite
+  wins and later handlers see the rewritten input. PostToolUse(+Failure): the first replacement
+  ends the chain; order is track -> read_dedupe -> compression, so a pointer skips compression.
+  `inject_context`/`user_message` of every handler that ran are joined. Built-in mechanisms are
+  wrapped: an exception is logged and that mechanism is a no-op; the rest of the chain still runs.
+- **Guards** parse with `shlex` (posix, operators split); a parse error never blocks; every simple
+  command of a pipeline/chain is checked (leading `VAR=x`, `sudo`, `time`, `command`, `nohup`,
+  `exec` skipped). Roots are `/`, `~`, `~/`. grep/rg block only when a path argument (not the
+  pattern) has a `node_modules|.git|dist|build|.venv` component and is an existing directory;
+  includes are `--include`, rg `-g/--glob/--iglob/-t/--type/--type-add`. **`cat` blocks only when its
+  stdout reaches the tool result** (last command of its pipeline, no `>` redirect): `cat big | head`
+  is bounded and stays allowed. `[guards] enabled = false` also disables pre-trims.
+- **Pre-trim**: asked only when `projects/<key>/pretrim.json` lists the command (exact match via
+  `guards._normalise` until Task 21); then a decision is logged (tokens 0/0, unknown pre-tool).
+  Candidate `lines` (positive int) beats `[guards] pretrim_lines`. Never rewritten: any of
+  `| > < & ; \` $( newline`, `run_in_background`, editors/pagers/top/watch/ssh, bare REPLs/shells.
+  The rewrite masks the command's exit status (pipeline exit = tail's); accepted for now because
+  the format is fixed by the plan and the command prefix must stay intact for allow-rules.
+- **Read de-dupe**: overlay `reads` keyed by sha256(realpath)[:16] + offset + limit + `agent_id`
+  (subagents have their own context; `agent_id`/`agent_type` added to the adapter extras). No raw
+  paths stored. A pointer needs equal mtime_ns, size and sha1 of the returned content, entry turn
+  >= `last_compact_turn`, and >= 2000 estimated tokens (config floor clamped). PreCompact sets
+  `last_compact_turn` and clears the table; SessionStart(compact|clear) clears it; PreToolUse of
+  Edit/Write/MultiEdit/NotebookEdit drops entries of that path; a Read output that compression
+  replaced is forgotten (the model never saw it in full). The pointer keeps the original turn.
+  Static default arms: `pretrim = bounded`, `read_dedupe = pointer`.

@@ -6,6 +6,8 @@ Any exception, bad payload, kill switch or budget overrun yields the no-op ``{}`
 
 from __future__ import annotations
 
+import dataclasses
+import functools
 import json
 import os
 import random
@@ -13,33 +15,31 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
-from typing import Any, TextIO
+from typing import Any, TextIO, cast
 
 from token_sparen.adapters.claude import translate
 from token_sparen.adapters.claude.translate import EVENT_KINDS, ClaudeAdapter
 from token_sparen.config import Config, load_config, log_error, state_home
 from token_sparen.events import Action, Event, EventKind
 from token_sparen.learn.policy import StaticPolicy
-from token_sparen.mechanisms import compression, tracking
-from token_sparen.store import jsonl
+from token_sparen.mechanisms import compression, guards, read_dedupe, tracking
+from token_sparen.store import jsonl, paths
 
 Handler = Callable[[Event, Config], Action]
-HANDLERS: dict[EventKind, Handler] = {}
+# Ordered handler chain per event kind; see ``handle`` for how the actions are composed.
+HANDLERS: dict[EventKind, list[Handler]] = {}
 ADAPTER = ClaudeAdapter()
 DEFAULT_BUDGET_MS = 400
 DEFAULT_SAMPLE_RATE = 0.1
 DEFAULT_LATENCY_LOG_BYTES = 1_000_000
 NOOP = "{}"
 _TRUE = {"1", "true"}
+_POST_KINDS = frozenset({"post_tool", "post_tool_failure"})
 
 
 def register(kind: EventKind, fn: Handler) -> None:
-    """Install the pipeline handler for ``kind`` (later registrations replace earlier ones)."""
-    HANDLERS[kind] = fn
-
-
-def _noop(event: Event, cfg: Config) -> Action:
-    return Action()
+    """Append ``fn`` to the handler chain for ``kind`` (a new list, so snapshots stay valid)."""
+    HANDLERS[kind] = [*HANDLERS.get(kind, []), fn]
 
 
 # The environment of the running hook (``main``'s ``env``), for handlers that touch state.
@@ -49,14 +49,39 @@ HOOK_STARTED: ContextVar[float | None] = ContextVar("HOOK_STARTED", default=None
 POLICY = StaticPolicy({})
 
 
+def _contained(fn: Handler) -> Handler:
+    """A built-in mechanism never raises: an error is logged and the mechanism is a no-op."""
+
+    @functools.wraps(fn)
+    def run(event: Event, cfg: Config) -> Action:
+        try:
+            return fn(event, cfg)
+        except Exception as exc:  # noqa: BLE001 - fail open per mechanism
+            where = f"claude.{getattr(fn, '__name__', 'handler')}"
+            log_error(HOOK_ENV.get(), where, f"{type(exc).__name__}: {exc}")
+            return Action()
+
+    return run
+
+
 def _on_prompt(event: Event, cfg: Config) -> Action:
     return tracking.handle_prompt(event, cfg, env=HOOK_ENV.get())
 
 
-def _on_post_tool(event: Event, cfg: Config) -> Action:
+def _on_track(event: Event, cfg: Config) -> Action:
+    tracking.record_paths(event, env=HOOK_ENV.get())
+    return Action()
+
+
+def _on_read_dedupe(event: Event, cfg: Config) -> Action:
+    return read_dedupe.handle_post_tool(
+        event, POLICY, cfg, env=HOOK_ENV.get(), replaceable=translate.replaceable
+    )
+
+
+def _on_compress(event: Event, cfg: Config) -> Action:
     env = HOOK_ENV.get()
-    tracking.record_paths(event, env=env)
-    return compression.handle_post_tool(
+    action = compression.handle_post_tool(
         event,
         POLICY,
         cfg,
@@ -64,18 +89,94 @@ def _on_post_tool(event: Event, cfg: Config) -> Action:
         replaceable=translate.replaceable,
         started=HOOK_STARTED.get(),
     )
+    if action.replace_output is not None and event.tool is not None and event.tool.name == "Read":
+        read_dedupe.forget(event, env=env)  # the model never saw this read in full
+    return action
 
 
-register("pre_tool", _noop)
-register("prompt", _on_prompt)
-register("post_tool", _on_post_tool)
-register("post_tool_failure", _on_post_tool)  # same handler; the host decides if it can replace
+def _on_pre_invalidate(event: Event, cfg: Config) -> Action:
+    return read_dedupe.invalidate(event, env=HOOK_ENV.get())
+
+
+def _on_guard(event: Event, cfg: Config) -> Action:
+    return guards.check(event, cfg)
+
+
+def _on_pretrim(event: Event, cfg: Config) -> Action:
+    env = HOOK_ENV.get()
+    store = paths.project_dir_for(state_home(env), event.project_key)
+    return guards.pretrim(event, POLICY, store, cfg, env=env)
+
+
+def _on_pre_compact(event: Event, cfg: Config) -> Action:
+    return read_dedupe.on_pre_compact(event, env=HOOK_ENV.get())
+
+
+def _on_session_start(event: Event, cfg: Config) -> Action:
+    return read_dedupe.on_session_start(event, env=HOOK_ENV.get())
+
+
+for _kind, _fn in (
+    ("prompt", _on_prompt),
+    ("pre_tool", _on_pre_invalidate),
+    ("pre_tool", _on_guard),
+    ("pre_tool", _on_pretrim),
+    ("post_tool", _on_track),
+    ("post_tool", _on_read_dedupe),
+    ("post_tool", _on_compress),
+    # same chain minus de-dupe; the host decides whether a failure result can be replaced
+    ("post_tool_failure", _on_track),
+    ("post_tool_failure", _on_compress),
+    ("pre_compact", _on_pre_compact),
+    ("session_start", _on_session_start),
+):
+    register(cast(EventKind, _kind), _contained(cast(Handler, _fn)))
+
+
+def _join(a: str | None, b: str | None, sep: str) -> str | None:
+    return b if a is None else a if b is None else f"{a}{sep}{b}"
+
+
+def _merge_side(into: Action, add: Action) -> None:
+    into.inject_context = _join(into.inject_context, add.inject_context, "\n\n")
+    into.user_message = _join(into.user_message, add.user_message, "\n")
 
 
 def handle(event: Event, cfg: Config) -> Action:
-    """The core pipeline: dispatch to the handler registered for the event kind."""
-    fn = HANDLERS.get(event.kind)
-    return Action() if fn is None else fn(event, cfg)
+    """Run the chain for ``event.kind`` and compose the actions.
+
+    PreToolUse: the first block wins (any rewrite is dropped); otherwise the first rewrite wins and
+    later handlers see the rewritten input. PostToolUse(+Failure): the first output replacement
+    ends the chain (read de-dupe runs before compression, so a pointer skips compression).
+    ``inject_context`` and ``user_message`` of all handlers that ran are joined in order.
+    """
+    result = Action()
+    current = event
+    for fn in HANDLERS.get(event.kind, []):
+        action = fn(current, cfg)
+        _merge_side(result, action)
+        if event.kind == "pre_tool":
+            if action.block_reason is not None:
+                result.block_reason = action.block_reason
+                result.rewrite_input = None
+                return result
+            if action.rewrite_input is not None and result.rewrite_input is None:
+                result.rewrite_input = action.rewrite_input
+                if current.tool is not None:
+                    tool = dataclasses.replace(current.tool, input=dict(action.rewrite_input))
+                    current = dataclasses.replace(current, tool=tool)
+        elif event.kind in _POST_KINDS:
+            if action.replace_output is not None:
+                result.replace_output = action.replace_output
+                return result
+        else:
+            if result.replace_output is None:
+                result.replace_output = action.replace_output
+            if result.block_reason is None:
+                result.block_reason = action.block_reason
+            if result.rewrite_input is None:
+                result.rewrite_input = action.rewrite_input
+    return result
 
 
 class _Output:

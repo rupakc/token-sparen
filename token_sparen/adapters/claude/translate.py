@@ -47,6 +47,8 @@ _EXTRA_KEYS = (
     "reason",
     "error",
     "is_interrupt",
+    "agent_id",  # set inside a subagent: its context is separate from the main agent's
+    "agent_type",
 )
 
 

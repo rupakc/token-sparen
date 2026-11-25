@@ -65,10 +65,14 @@ max_files = 200
 max_bytes = 100000000
 
 [guards]
-# filled by later tasks
+enabled = true  # false: no PreToolUse blocks and no pre-trim rewrites
+max_read_bytes = 5000000  # cat/Read of a larger file without a range is blocked
+pretrim_lines = 120  # K in `<cmd> 2>&1 | tail -n K` when a candidate names no K
 
 [read_dedupe]
-# filled by later tasks
+enabled = true
+min_tokens = 2000  # never below 2000 (invariant: smaller outputs are never modified)
+max_entries = 200  # reads remembered per session (oldest dropped first)
 
 [governor]
 # filled by later tasks
