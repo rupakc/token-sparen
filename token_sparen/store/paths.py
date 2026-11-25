@@ -1,0 +1,63 @@
+"""State locations and stable project keys."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import subprocess
+from collections.abc import Mapping
+from pathlib import Path
+
+from token_sparen.config import state_home
+
+_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_SCP = re.compile(r"^(?:[^@/:]+@)?([^/:]+):(?!//)(.*)$")
+
+
+def home(env: Mapping[str, str] | None = None) -> Path:
+    return state_home(os.environ if env is None else env)
+
+
+def project_dir_for(home_dir: Path, key: str) -> Path:
+    return home_dir / "projects" / key
+
+
+def normalise_remote(url: str) -> str:
+    """Reduce ssh/https remote spellings to ``host/path`` (lowercase host, no .git)."""
+    text = url.strip()
+    if _SCHEME.match(text):
+        text = _SCHEME.sub("", text, count=1)
+        if "@" in text.split("/", 1)[0]:
+            text = text.split("@", 1)[1]
+        host, _, rest = text.partition("/")
+        host = host.split(":", 1)[0]
+    else:
+        m = _SCP.match(text)
+        if m is None:
+            return text.rstrip("/").removesuffix(".git")
+        host, rest = m.group(1), m.group(2)
+    rest = rest.strip("/").removesuffix(".git").rstrip("/")
+    return f"{host.lower()}/{rest}"
+
+
+def _origin(project_dir: Path) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_dir), "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    url = proc.stdout.strip()
+    return url if proc.returncode == 0 and url else None
+
+
+def project_key(project_dir: Path) -> str:
+    """First 16 hex of sha256(normalised origin remote), else of the realpath."""
+    remote = _origin(project_dir)
+    basis = normalise_remote(remote) if remote else os.path.realpath(project_dir)
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]

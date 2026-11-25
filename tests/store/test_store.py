@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import json
+import multiprocessing as mp
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from token_sparen.store import jsonl, jsonstore, paths, session
+
+
+def _incr(d: dict) -> dict:
+    d["n"] = d.get("n", 0) + 1
+    return d
+
+
+def worker(path: str, count: int) -> None:
+    for _ in range(count):
+        jsonstore.update(Path(path), _incr, {"n": 0})
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
+
+
+def test_home_honours_env(tmp_path: Path) -> None:
+    assert paths.home({"TOKEN_SPAREN_HOME": str(tmp_path)}) == tmp_path
+
+
+def test_project_dir_for(tmp_path: Path) -> None:
+    assert paths.project_dir_for(tmp_path, "abc") == tmp_path / "projects" / "abc"
+
+
+@pytest.mark.parametrize(
+    ("a", "b"),
+    [
+        ("git@github.com:a/b.git", "https://github.com/a/b"),
+        ("https://user@GitHub.com/a/b.git/", "ssh://git@github.com/a/b"),
+    ],
+)
+def test_normalise_remote(a: str, b: str) -> None:
+    assert paths.normalise_remote(a) == paths.normalise_remote(b) == "github.com/a/b"
+
+
+def test_project_key_same_for_ssh_and_https(tmp_path: Path) -> None:
+    keys = []
+    for i, url in enumerate(["git@github.com:a/b.git", "https://github.com/a/b"]):
+        d = tmp_path / f"r{i}"
+        d.mkdir()
+        _git(d, "init", "-q")
+        _git(d, "remote", "add", "origin", url)
+        keys.append(paths.project_key(d))
+    assert keys[0] == keys[1]
+    assert len(keys[0]) == 16
+    int(keys[0], 16)
+
+
+def test_project_key_fallback_realpath(tmp_path: Path) -> None:
+    key = paths.project_key(tmp_path)
+    assert len(key) == 16
+    assert key == paths.project_key(tmp_path / ".")
+    assert str(tmp_path) not in key
+
+
+def test_project_key_git_without_origin_falls_back(tmp_path: Path) -> None:
+    plain = paths.project_key(tmp_path)
+    _git(tmp_path, "init", "-q")
+    assert paths.project_key(tmp_path) == plain
+
+
+def test_project_key_git_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*a: object, **k: object) -> None:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(paths.subprocess, "run", boom)
+    assert len(paths.project_key(tmp_path)) == 16
+
+
+def test_parallel_writers_no_lost_update(tmp_path: Path) -> None:
+    target = tmp_path / "counter.json"
+    ctx = mp.get_context("spawn")
+    procs = [ctx.Process(target=worker, args=(str(target), 50)) for _ in range(8)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(120)
+        assert p.exitcode == 0
+    assert jsonstore.read(target, {})["n"] == 400
+
+
+def test_update_creates_with_default(tmp_path: Path) -> None:
+    p = tmp_path / "sub" / "x.json"
+    out = jsonstore.update(p, _incr, {"n": 10})
+    assert out == {"n": 11}
+    assert json.loads(p.read_text()) == {"n": 11}
+    assert not [f for f in p.parent.iterdir() if ".tmp-" in f.name]
+
+
+def test_read_missing_returns_default(tmp_path: Path) -> None:
+    assert jsonstore.read(tmp_path / "nope.json", {"a": 1}) == {"a": 1}
+
+
+def test_corrupt_file_recovers_to_default(tmp_path: Path) -> None:
+    p = tmp_path / "s.json"
+    p.write_text("{not json")
+    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
+    assert jsonstore.read(p, {"ok": True}, env=env) == {"ok": True}
+    assert not p.exists()
+    assert list(tmp_path.glob("s.json.corrupt-*")) or list(tmp_path.glob("s.corrupt-*"))
+    assert (tmp_path / "home" / "logs" / "errors.jsonl").exists()
+
+
+def test_non_dict_json_is_corrupt(tmp_path: Path) -> None:
+    p = tmp_path / "l.json"
+    p.write_text("[1]")
+    assert jsonstore.read(p, {}) == {}
+
+
+def test_update_on_corrupt_uses_default(tmp_path: Path) -> None:
+    p = tmp_path / "c.json"
+    p.write_text("garbage")
+    assert jsonstore.update(p, _incr, {"n": 0}) == {"n": 1}
+
+
+def test_lock_timeout_raises_store_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    p = tmp_path / "b.json"
+    monkeypatch.setattr(jsonstore, "LOCK_TIMEOUT_S", 0.2)
+    with jsonstore.locked(p):
+        with pytest.raises(jsonstore.StoreBusy):
+            jsonstore.update(p, _incr, {})
+
+
+def test_replace_retries_permission_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = os.replace
+    calls = {"n": 0}
+
+    def flaky(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError
+        real(src, dst)
+
+    monkeypatch.setattr(jsonstore.os, "replace", flaky)
+    assert jsonstore.update(tmp_path / "r.json", _incr, {}) == {"n": 1}
+    assert calls["n"] == 3
+
+
+def test_replace_gives_up_and_cleans_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def always(src: object, dst: object) -> None:
+        raise PermissionError
+
+    monkeypatch.setattr(jsonstore.os, "replace", always)
+    with pytest.raises(PermissionError):
+        jsonstore.update(tmp_path / "r.json", _incr, {})
+    assert not [f for f in tmp_path.iterdir() if ".tmp-" in f.name]
+
+
+def test_jsonl_rotation(tmp_path: Path) -> None:
+    p = tmp_path / "log.jsonl"
+    for i in range(40):
+        jsonl.append(p, {"i": i, "pad": "x" * 20}, 500)
+    rotated = tmp_path / "log.jsonl.1"
+    assert rotated.exists()
+    assert p.stat().st_size < 500
+    assert json.loads(p.read_text().splitlines()[-1])["i"] == 39
+
+
+def test_jsonl_append_creates_dirs(tmp_path: Path) -> None:
+    p = tmp_path / "a" / "b.jsonl"
+    jsonl.append(p, {"k": 1}, 1000)
+    assert json.loads(p.read_text()) == {"k": 1}
+
+
+def test_session_path_sanitises_traversal(tmp_path: Path) -> None:
+    sp = session.session_path(tmp_path, "key", "../../etc/passwd")
+    assert sp.parent == tmp_path / "projects" / "key" / "sessions"
+    assert sp.name == ".._.._etc_passwd.json"
+    assert session.session_path(tmp_path, "key", "ok-1.2_x").name == "ok-1.2_x.json"
+    assert session.session_path(tmp_path, "key", "..").parent == sp.parent
+    assert session.session_path(tmp_path, "key", "..").name != "...json"
+
+
+def test_session_roundtrip(tmp_path: Path) -> None:
+    sp = session.session_path(tmp_path, "k", "s1")
+    assert session.read_session(sp) == {}
+    assert session.update_session(sp, _incr) == {"n": 1}
+    assert session.read_session(sp) == {"n": 1}
