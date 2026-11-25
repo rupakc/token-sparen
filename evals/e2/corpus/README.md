@@ -17,3 +17,7 @@ Cases are declared in `../needles.toml`:
 Adversarial cases: error line buried mid-output, needle inside a folded repetitive run, javac
 snippet at column 0, project frame at `/srv/app/java.py`, `pplx` error result beyond top-k, grep
 match in the 50th file, JSON value matching the error patterns deep in an array.
+
+Reproducibility: `python evals/e2/make_corpus.py` regenerates every corpus file and `needles.toml`
+deterministically (fixed `random.Random` seeds, no clock or network). Edit the generator, not the
+generated files.

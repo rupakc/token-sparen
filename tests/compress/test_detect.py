@@ -127,6 +127,12 @@ def test_no_hint_falls_back_to_sniffing() -> None:
     [
         ("@@ -1,2 +1,2 @@\n-a\n+b\n", "diff"),
         ('Exception in thread "main" java.lang.NullPointerException\n', "stacktrace"),
+        (
+            "TypeError: x is undefined\n    at f (/srv/a.js:4:11)\n    at /srv/b.js:9:3\n",
+            "stacktrace",
+        ),
+        ("Error: boom\n\n    at Object.<anonymous> (/srv/a.js:1:7)\n", "stacktrace"),
+        ("TypeError: x\nn\nn\nn\nn\n    at f (/a.js:4:11)\n", "text"),
         ("java.lang.IllegalStateException: x\n\tat com.x.Foo.bar(Foo.java:12)\n", "stacktrace"),
         ("PASS src/a.test.js\nFAIL src/b.test.js\n  ● renders\n", "test_report"),
         ("--- FAIL: TestFoo (0.00s)\nFAIL\nFAIL\tpkg/x\t0.01s\n", "test_report"),

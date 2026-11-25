@@ -56,3 +56,11 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   first `at` run is kept as the exception header. Library = site-packages, dist-packages,
   node_modules, java.*, jdk.internal, `<frozen`. Non-trace text goes through TextCompressor.
 - Built-ins are registered in `compress/__init__.py`; entry-point plugins registered later override.
+
+## 2026-11-26 E2 pplx needle policy (Task 11)
+- A web-search result whose snippet merely mentions an error is search content, not a tool failure:
+  its URL must stay inline but the snippet text only needs to be recoverable via the marker.
+  Per-result `error` keys (real fetch failures) are must_inline. Pinning every error-mentioning
+  snippet would defeat compression.
+- Node/JS traces (`XxxError: msg` then an `at ...:line:col` frame within 3 lines) are sniffed as
+  stacktrace.

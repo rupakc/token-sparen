@@ -47,6 +47,9 @@ preview = true
 explicit-preview-rules = true
 select = ["E", "F", "I", "UP", "B", "PLW1514"]
 
+[tool.ruff.lint.per-file-ignores]
+"evals/e2/make_corpus.py" = ["E501", "F841", "B007"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

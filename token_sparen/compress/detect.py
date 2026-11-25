@@ -58,6 +58,11 @@ _STACK_SNIFF = re.compile(
     r"|^goroutine \d+ \[",
     _M,
 )
+# Node/JS: "XxxError: msg" then, within 3 lines, an "at ... :line:col" frame.
+_NODE_STACK_SNIFF = re.compile(
+    r"^[A-Za-z]*Error: [^\n]*(?:\n[^\n]*){0,3}?\n[ \t]+at [^\n]*:\d+:\d+\)?$",
+    _M,
+)
 _LOG_LINE = re.compile(
     r"\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"  # ISO 8601
     r"|[A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2}"  # syslog
@@ -168,7 +173,7 @@ def sniff(text: str) -> ContentType:
         return "compiler"
     if _BUILD_SNIFF.search(head):
         return "build_log"
-    if _STACK_SNIFF.search(head):
+    if _STACK_SNIFF.search(head) or _NODE_STACK_SNIFF.search(head):
         return "stacktrace"
     lines = [ln for ln in head.split("\n") if ln.strip()]
     if _ratio(lines, _LOG_LINE) >= 0.5:
