@@ -1,0 +1,27 @@
+   Compiling demo v0.1.0 (/srv/demo)
+warning: unused variable: `idx`
+ --> src/main.rs:3:9
+  |
+3 |     let idx = 0;
+  |         ^^^ help: if this is intentional, prefix it with an underscore: `_idx`
+  |
+  = note: `#[warn(unused_variables)]` on by default
+
+error[E0382]: borrow of moved value: `v`
+ --> src/main.rs:8:20
+  |
+6 |     let v = vec![1];
+  |         - move occurs because `v` has type `Vec<i32>`
+7 |     drop(v);
+8 |     println!("{:?}", v);
+  |                    ^ value borrowed here after move
+  |
+  = note: this error originates in a macro
+
+error[E0308]: mismatched types
+ --> src/lib.rs:20:5
+  |
+20 |     "x"
+   |     ^^^ expected `u32`, found `&str`
+
+error: aborting due to 2 previous errors; 1 warning emitted

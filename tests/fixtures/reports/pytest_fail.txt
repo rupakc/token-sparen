@@ -1,0 +1,88 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.1, pytest-8.1.0, pluggy-1.4.0
+rootdir: /srv/demo
+collected 142 items
+
+tests/test_api.py .................                                   [ 12%]
+tests/test_models.py ......F.....                                     [ 24%]
+tests/test_views.py .................                                 [ 36%]
+tests/test_utils.py .................                                 [ 48%]
+tests/test_cache.py ......F....                                       [ 60%]
+tests/test_auth.py .................                                  [ 72%]
+tests/test_forms.py .................                                 [ 84%]
+tests/test_tasks.py .................                                 [ 96%]
+
+=================================== FAILURES ===================================
+____________________ test_model_roundtrip[json-utf8] ____________________
+
+    @pytest.mark.parametrize('fmt', ['json'])
+    def test_model_roundtrip(fmt, model):
+        step_1 = prepare(model, 1)
+        step_2 = prepare(model, 2)
+        step_3 = prepare(model, 3)
+        step_4 = prepare(model, 4)
+        step_5 = prepare(model, 5)
+        step_6 = prepare(model, 6)
+        step_7 = prepare(model, 7)
+        data = model.dump(fmt)
+        again = Model.load(data)
+>       assert again == model
+E       AssertionError: assert Model(id=3) == Model(id=4)
+E         Differing attributes:
+E         ['id']
+
+tests/test_models.py:48: AssertionError
+________________________ test_cache_eviction ________________________
+
+    def test_cache_eviction(cache):
+        cache.put('k1', 1)
+        cache.put('k2', 2)
+        cache.put('k3', 3)
+        cache.put('k4', 4)
+        cache.put('k5', 5)
+        cache.put('k6', 6)
+        cache.put('k7', 7)
+        cache.put('k8', 8)
+        cache.put('k9', 9)
+        cache.put('k10', 10)
+        cache.put('k11', 11)
+        cache.put('k12', 12)
+        cache.put('k13', 13)
+        cache.put('k14', 14)
+        cache.put('k15', 15)
+        cache.put('k16', 16)
+        cache.put('k17', 17)
+        cache.put('k18', 18)
+        cache.put('k19', 19)
+        cache.put('k20', 20)
+        cache.put('k21', 21)
+        cache.put('k22', 22)
+        cache.put('k23', 23)
+        cache.put('k24', 24)
+        cache.put('k25', 25)
+        for k in range(30):
+>           cache.get(f'k{k}')
+E           KeyError: 'k0'
+
+tests/test_cache.py:77: KeyError
+------------------------------ Captured log call -------------------------------
+DEBUG    cache:store.py:1 evicting entry 1
+DEBUG    cache:store.py:2 evicting entry 2
+DEBUG    cache:store.py:3 evicting entry 3
+DEBUG    cache:store.py:4 evicting entry 4
+DEBUG    cache:store.py:5 evicting entry 5
+DEBUG    cache:store.py:6 evicting entry 6
+DEBUG    cache:store.py:7 evicting entry 7
+DEBUG    cache:store.py:8 evicting entry 8
+DEBUG    cache:store.py:9 evicting entry 9
+DEBUG    cache:store.py:10 evicting entry 10
+DEBUG    cache:store.py:11 evicting entry 11
+DEBUG    cache:store.py:12 evicting entry 12
+========== warnings summary ==========
+tests/test_utils.py::test_old
+  DeprecationWarning: use new_helper instead
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+============ short test summary info ============
+FAILED tests/test_models.py::test_model_roundtrip[json-utf8] - AssertionError: assert Model(id=3) == Model(id=4)
+FAILED tests/test_cache.py::test_cache_eviction - KeyError: 'k0'
+========== 2 failed, 140 passed, 1 warning in 4.82s ==========

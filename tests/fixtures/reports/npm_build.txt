@@ -1,0 +1,82 @@
+npm WARN deprecated left-pad@1.0.0: use String.prototype.padStart
+npm http fetch GET 200 https://registry.example/a 120ms
+npm http fetch GET 200 https://registry.example/pkg0 0ms
+npm http fetch GET 200 https://registry.example/pkg1 1ms
+npm http fetch GET 200 https://registry.example/pkg2 2ms
+npm http fetch GET 200 https://registry.example/pkg3 3ms
+npm http fetch GET 200 https://registry.example/pkg4 4ms
+npm http fetch GET 200 https://registry.example/pkg5 5ms
+npm http fetch GET 200 https://registry.example/pkg6 6ms
+npm http fetch GET 200 https://registry.example/pkg7 7ms
+npm http fetch GET 200 https://registry.example/pkg8 8ms
+npm http fetch GET 200 https://registry.example/pkg9 9ms
+npm http fetch GET 200 https://registry.example/pkg10 10ms
+npm http fetch GET 200 https://registry.example/pkg11 11ms
+npm http fetch GET 200 https://registry.example/pkg12 12ms
+npm http fetch GET 200 https://registry.example/pkg13 13ms
+npm http fetch GET 200 https://registry.example/pkg14 14ms
+npm http fetch GET 200 https://registry.example/pkg15 15ms
+npm http fetch GET 200 https://registry.example/pkg16 16ms
+npm http fetch GET 200 https://registry.example/pkg17 17ms
+npm http fetch GET 200 https://registry.example/pkg18 18ms
+npm http fetch GET 200 https://registry.example/pkg19 19ms
+npm http fetch GET 200 https://registry.example/pkg20 20ms
+npm http fetch GET 200 https://registry.example/pkg21 21ms
+npm http fetch GET 200 https://registry.example/pkg22 22ms
+npm http fetch GET 200 https://registry.example/pkg23 23ms
+npm http fetch GET 200 https://registry.example/pkg24 24ms
+npm http fetch GET 200 https://registry.example/pkg25 25ms
+npm http fetch GET 200 https://registry.example/pkg26 26ms
+npm http fetch GET 200 https://registry.example/pkg27 27ms
+npm http fetch GET 200 https://registry.example/pkg28 28ms
+npm http fetch GET 200 https://registry.example/pkg29 29ms
+npm http fetch GET 200 https://registry.example/pkg30 30ms
+npm http fetch GET 200 https://registry.example/pkg31 31ms
+npm http fetch GET 200 https://registry.example/pkg32 32ms
+npm http fetch GET 200 https://registry.example/pkg33 33ms
+npm http fetch GET 200 https://registry.example/pkg34 34ms
+npm http fetch GET 200 https://registry.example/pkg35 35ms
+npm http fetch GET 200 https://registry.example/pkg36 36ms
+npm http fetch GET 200 https://registry.example/pkg37 37ms
+npm http fetch GET 200 https://registry.example/pkg38 38ms
+npm http fetch GET 200 https://registry.example/pkg39 39ms
+[>                    ] 0% fetching
+[=>                   ] 2% fetching
+[==>                  ] 4% fetching
+[===>                 ] 6% fetching
+[====>                ] 8% fetching
+[=====>               ] 10% fetching
+[======>              ] 12% fetching
+[=======>             ] 14% fetching
+[========>            ] 16% fetching
+[=========>           ] 18% fetching
+[==========>          ] 20% fetching
+[===========>         ] 22% fetching
+[============>        ] 24% fetching
+[=============>       ] 26% fetching
+[==============>      ] 28% fetching
+[===============>     ] 30% fetching
+[================>    ] 32% fetching
+[=================>   ] 34% fetching
+[==================>  ] 36% fetching
+[===================> ] 38% fetching
+[>                    ] 40% fetching
+[=>                   ] 42% fetching
+[==>                  ] 44% fetching
+[===>                 ] 46% fetching
+[====>                ] 48% fetching
+[=====>               ] 50% fetching
+[======>              ] 52% fetching
+[=======>             ] 54% fetching
+[========>            ] 56% fetching
+[=========>           ] 58% fetching
+npm WARN deprecated request@2.88.2: request has been deprecated
+added 312 packages in 9s
+> demo@1.0.0 build
+> tsc -p .
+src/index.ts(3,1): error TS2304: Cannot find name 'foo'.
+npm ERR! code ELIFECYCLE
+npm ERR! errno 2
+npm ERR! detail line 0
+npm ERR! detail line 1
+npm ERR! detail line 2

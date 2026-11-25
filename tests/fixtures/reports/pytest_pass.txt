@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.1, pytest-8.1.0
+collected 142 items
+
+tests/test_api.py .................                                   [ 12%]
+tests/test_models.py .................                                [ 24%]
+tests/test_views.py .................                                 [ 36%]
+tests/test_utils.py .................                                 [ 48%]
+tests/test_cache.py .................                                 [ 60%]
+tests/test_auth.py .................                                  [ 72%]
+tests/test_forms.py .................                                 [ 84%]
+tests/test_tasks.py .................                                 [ 96%]
+
+============================== 142 passed in 3.10s ==============================

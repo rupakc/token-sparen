@@ -1,0 +1,50 @@
+> Task :compileJava
+Note: Some input files use unchecked operations.
+Downloading https://repo.example/lib0.pom
+Download https://repo.example/lib1.jar
+Downloading https://repo.example/lib2.pom
+Download https://repo.example/lib3.jar
+Downloading https://repo.example/lib4.pom
+Download https://repo.example/lib5.jar
+Downloading https://repo.example/lib6.pom
+Download https://repo.example/lib7.jar
+Downloading https://repo.example/lib8.pom
+Download https://repo.example/lib9.jar
+Downloading https://repo.example/lib10.pom
+Download https://repo.example/lib11.jar
+Downloading https://repo.example/lib12.pom
+Download https://repo.example/lib13.jar
+Downloading https://repo.example/lib14.pom
+Download https://repo.example/lib15.jar
+Downloading https://repo.example/lib16.pom
+Download https://repo.example/lib17.jar
+Downloading https://repo.example/lib18.pom
+Download https://repo.example/lib19.jar
+Downloading https://repo.example/lib20.pom
+Download https://repo.example/lib21.jar
+Downloading https://repo.example/lib22.pom
+Download https://repo.example/lib23.jar
+Downloading https://repo.example/lib24.pom
+Download https://repo.example/lib25.jar
+Downloading https://repo.example/lib26.pom
+Download https://repo.example/lib27.jar
+Downloading https://repo.example/lib28.pom
+Download https://repo.example/lib29.jar
+> Task :compileTestJava
+warning: [options] bootstrap class path not set
+> Task :test
+Fetched artifact 0 100%
+Fetched artifact 1 100%
+Fetched artifact 2 100%
+Fetched artifact 3 100%
+Fetched artifact 4 100%
+Fetched artifact 5 100%
+Fetched artifact 6 100%
+Fetched artifact 7 100%
+Fetched artifact 8 100%
+Fetched artifact 9 100%
+
+FAILED: DemoTest > checks()
+  org.opentest4j.AssertionFailedError at DemoTest.java:22
+BUILD FAILED in 14s
+5 actionable tasks: 5 executed

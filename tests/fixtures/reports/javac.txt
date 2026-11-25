@@ -1,0 +1,13 @@
+Main.java:5: error: cannot find symbol
+        int n = count;
+                ^
+  symbol:   variable count
+  location: class Main
+Util.java:12: warning: [deprecation] old() in Helper has been deprecated
+        Helper.old();
+              ^
+Main.java:9: error: incompatible types: String cannot be converted to int
+        int x = "a";
+                ^
+2 errors
+1 warning

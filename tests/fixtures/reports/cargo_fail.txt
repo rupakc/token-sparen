@@ -1,0 +1,71 @@
+   Compiling demo v0.1.0 (/srv/demo)
+    Finished test [unoptimized + debuginfo] target(s) in 1.20s
+     Running unittests src/lib.rs (target/debug/deps/demo-abc123)
+
+running 25 tests
+test mod_a::case_0 ... ok
+test mod_a::case_1 ... ok
+test mod_a::case_2 ... ok
+test mod_a::case_3 ... ok
+test mod_a::case_4 ... ok
+test mod_a::case_5 ... ok
+test mod_a::case_6 ... ok
+test mod_a::case_7 ... ok
+test mod_a::case_8 ... ok
+test mod_a::case_9 ... ok
+test mod_a::case_10 ... ok
+test mod_a::case_11 ... ok
+test mod_a::case_12 ... ok
+test mod_a::case_13 ... ok
+test mod_a::case_14 ... ok
+test mod_a::case_15 ... ok
+test mod_a::case_16 ... ok
+test mod_a::case_17 ... ok
+test mod_a::case_18 ... ok
+test mod_a::case_19 ... ok
+test mod_a::case_20 ... ok
+test mod_a::case_21 ... ok
+test mod_b::bad_sum ... FAILED
+test mod_b::bad_parse ... FAILED
+test mod_b::skipped ... ignored
+
+failures:
+
+---- mod_b::bad_sum stdout ----
+computing step 0
+computing step 1
+computing step 2
+computing step 3
+computing step 4
+computing step 5
+computing step 6
+computing step 7
+computing step 8
+computing step 9
+computing step 10
+computing step 11
+computing step 12
+computing step 13
+computing step 14
+computing step 15
+computing step 16
+computing step 17
+computing step 18
+computing step 19
+thread 'mod_b::bad_sum' panicked at src/b.rs:30:9:
+assertion `left == right` failed
+  left: 3
+ right: 4
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- mod_b::bad_parse stdout ----
+thread 'mod_b::bad_parse' panicked at src/b.rs:44:14:
+called `Result::unwrap()` on an `Err` value: ParseIntError { kind: InvalidDigit }
+
+failures:
+    mod_b::bad_parse
+    mod_b::bad_sum
+
+test result: FAILED. 22 passed; 2 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `--lib`

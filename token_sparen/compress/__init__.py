@@ -17,13 +17,29 @@ from token_sparen.compress.base import (
     registry,
 )
 from token_sparen.compress.detect import detect
+from token_sparen.compress.reports import (
+    BuildLogCompressor,
+    CompilerCompressor,
+    TestReportCompressor,
+)
 from token_sparen.compress.structured import DiffCompressor, JsonCompressor, StackTraceCompressor
 from token_sparen.compress.text import TextCompressor
 
-for _builtin in (TextCompressor(), JsonCompressor(), DiffCompressor(), StackTraceCompressor()):
+for _builtin in (
+    TextCompressor(),
+    JsonCompressor(),
+    DiffCompressor(),
+    StackTraceCompressor(),
+    TestReportCompressor(),
+    CompilerCompressor(),
+    BuildLogCompressor(),
+):
     registry.register(_builtin)
 
 __all__ = [
+    "BuildLogCompressor",
+    "CompilerCompressor",
+    "TestReportCompressor",
     "ENTRY_POINT_GROUP",
     "ERROR_PATTERNS",
     "CompressContext",

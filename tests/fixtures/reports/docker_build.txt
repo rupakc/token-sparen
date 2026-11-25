@@ -1,0 +1,52 @@
+#1 [internal] load build definition from Dockerfile
+#1 DONE 0.0s
+#2 [internal] load metadata for docker.io/library/python:3.12
+Step 1/4 : FROM python:3.12-slim
+#5 [2/4] RUN pip install -r requirements.txt
+#5 0.1 Collecting pkg1
+#5 0.2 Collecting pkg2
+#5 0.3 Collecting pkg3
+#5 0.4 Collecting pkg4
+#5 0.5 Collecting pkg5
+#5 0.6 Collecting pkg6
+#5 0.7 Collecting pkg7
+#5 0.8 Collecting pkg8
+#5 0.9 Collecting pkg9
+#5 1.0 Collecting pkg10
+#5 1.1 Collecting pkg11
+#5 1.2 Collecting pkg12
+#5 1.3 Collecting pkg13
+#5 1.4 Collecting pkg14
+#5 1.5 Collecting pkg15
+#5 1.6 Collecting pkg16
+#5 1.7 Collecting pkg17
+#5 1.8 Collecting pkg18
+#5 1.9 Collecting pkg19
+#5 2.0 Collecting pkg20
+#5 2.1 Collecting pkg21
+#5 2.2 Collecting pkg22
+#5 2.3 Collecting pkg23
+#5 2.4 Collecting pkg24
+#5 2.5 Collecting pkg25
+#5 2.6 Collecting pkg26
+#5 2.7 Collecting pkg27
+#5 2.8 Collecting pkg28
+#5 2.9 Collecting pkg29
+abc0: Pulling fs layer
+abc1: Pulling fs layer
+abc2: Pulling fs layer
+abc3: Pulling fs layer
+abc4: Pulling fs layer
+abc5: Pulling fs layer
+abc0: Download complete
+abc1: Download complete
+abc2: Download complete
+abc3: Download complete
+abc4: Download complete
+abc5: Download complete
+#5 12.0 Downloading numpy-1.26.0.whl
+#5 12.1 spinner ⠋ working
+#5 ERROR: process "/bin/sh -c pip install" did not complete successfully: exit code: 1
+Step 2/4 : COPY . /app
+#6 [3/4] COPY . /app
+#6 DONE 0.1s

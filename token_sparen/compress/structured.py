@@ -9,11 +9,15 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Callable
-from functools import lru_cache
 from typing import Any
 
-from token_sparen import config as _config
+from token_sparen.compress._shared import (
+    arm,
+    guarded,
+    setting,
+    split_lines,
+    unchanged,
+)
 from token_sparen.compress.base import (
     CompressContext,
     CompressResult,
@@ -31,61 +35,9 @@ MAX_JSON_STRING = 500
 _SECTION = {"items": "json", "context": "diff", "edge_frames": "stacktrace"}
 
 
-@lru_cache(maxsize=1)
-def _defaults() -> dict[str, Any]:
-    return _config.packaged_defaults()
-
-
-def _arm(level: Level) -> str:
-    if level.keep_ratio >= 0.5:
-        return "light"
-    return "standard" if level.keep_ratio >= 0.25 else "aggressive"
-
-
-def _valid(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-
-
-def _setting(dotted: str, ctx: CompressContext) -> int:
-    """Non-negative int at `compression.<dotted>`: `ctx.config` value, else the packaged one."""
-    value = ctx.config.get(f"compression.{dotted}") if ctx.config is not None else None
-    if isinstance(value, int) and _valid(value):
-        return value
-    node: Any = _defaults().get("compression", {})
-    for part in dotted.split("."):
-        node = node[part]
-    if not isinstance(node, int) or not _valid(node):
-        raise ValueError(f"no valid packaged default for compression.{dotted}")
-    return node
-
-
 def _knob(key: str, level: Level, ctx: CompressContext) -> int:
     """Per-type knob for the arm nearest to `level` (see `[compression.<type>]` defaults)."""
-    return _setting(f"{_SECTION[key]}.{key}.{_arm(level)}", ctx)
-
-
-def _guarded(
-    where: str,
-    run: Callable[[str, Level, CompressContext], CompressResult],
-    text: str,
-    level: Level,
-    ctx: CompressContext,
-) -> CompressResult:
-    """Never raise: any failure is logged and the text compressor handles the output."""
-    try:
-        return run(text, level, ctx)
-    except Exception as exc:  # noqa: BLE001 - compression must never break a hook
-        _config.log_error(os.environ, f"compress.{where}", f"{type(exc).__name__}: {exc}")
-        return _TEXT.compress(text, level, ctx)
-
-
-def _split(text: str) -> tuple[list[str], str]:
-    body, trailer = (text[:-1], "\n") if text.endswith("\n") else (text, "")
-    return body.split("\n"), trailer
-
-
-def _unchanged(text: str, total: int) -> CompressResult:
-    return CompressResult(text=text, kept_lines=total, total_lines=total, lossless=True)
+    return setting(f"{_SECTION[key]}.{key}.{arm(level)}", ctx)
 
 
 # ------------------------------------------------------------------ JSON
@@ -221,10 +173,10 @@ class JsonCompressor:
     handles: frozenset[ContentType] = frozenset({"json"})
 
     def compress(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
-        return _guarded("json", self._run, text, level, ctx)
+        return guarded("json", self._run, text, level, ctx)
 
     def _run(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
-        cap = _setting("json.max_bytes", ctx)
+        cap = setting("json.max_bytes", ctx)
         if len(text) * 4 > cap and len(text.encode("utf-8", "surrogatepass")) > cap:
             return _TEXT.compress(text, level, ctx)
         try:
@@ -238,7 +190,7 @@ class JsonCompressor:
             return _TEXT.compress(text, level, ctx)
         total = lines[id(doc)]
         if not render.changed:
-            return _unchanged(text, total)
+            return unchanged(text, total)
         trailer = "\n" if text.endswith("\n") else ""
         return CompressResult(
             text="\n".join(render.out) + trailer,
@@ -271,10 +223,10 @@ class DiffCompressor:
     handles: frozenset[ContentType] = frozenset({"diff"})
 
     def compress(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
-        return _guarded("diff", self._run, text, level, ctx)
+        return guarded("diff", self._run, text, level, ctx)
 
     def _run(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
-        lines, trailer = _split(text)
+        lines, trailer = split_lines(text)
         total = len(lines)
         hid = [0] * total  # hunk id of context-capable body lines, 0 elsewhere
         is_ctx = [False] * total
@@ -341,7 +293,7 @@ class DiffCompressor:
                 out.extend(lines[hi:j])
             i = j
         if markers == 0:
-            return _unchanged(text, total)
+            return unchanged(text, total)
         return CompressResult(
             text="\n".join(out) + trailer,
             kept_lines=len(out) - markers,
@@ -383,10 +335,10 @@ class StackTraceCompressor:
     handles: frozenset[ContentType] = frozenset({"stacktrace"})
 
     def compress(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
-        return _guarded("stacktrace", self._run, text, level, ctx)
+        return guarded("stacktrace", self._run, text, level, ctx)
 
     def _run(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
-        lines, trailer = _split(text)
+        lines, trailer = split_lines(text)
         total = len(lines)
         # segments: ("T", text lines) | ("K", [line]) kept verbatim | ("F", frame units)
         segs: list[tuple[str, list[Any]]] = []
@@ -450,7 +402,7 @@ class StackTraceCompressor:
                 kept += self._frames(body, edge, names, out)
         result = "\n".join(out) + trailer
         if result == text:
-            return _unchanged(text, total)
+            return unchanged(text, total)
         return CompressResult(text=result, kept_lines=kept, total_lines=total, lossless=False)
 
     @staticmethod
