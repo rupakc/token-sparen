@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
@@ -167,7 +168,9 @@ def test_blocks_cat_huge_file(tmp_path: Path) -> None:
     (tmp_path / "proj" / "small.txt").write_text("hi", encoding="utf-8")
     reason = _check(tmp_path, "cat big.log")
     assert reason is not None and ("head" in reason or "tail" in reason)
-    assert _check(tmp_path, f"cat -n {big}") is not None
+    # shells (and posix shlex) treat unquoted backslashes as escapes: use the posix spelling,
+    # which on Windows is the drive-letter form `C:/...`
+    assert _check(tmp_path, f"cat -n {big.as_posix()}") is not None
     assert _check(tmp_path, "cat small.txt big.log") is not None
     assert _check(tmp_path, "cat small.txt") is None
     assert _check(tmp_path, "cat missing.txt") is None
@@ -178,6 +181,16 @@ def test_blocks_cat_huge_file(tmp_path: Path) -> None:
     _big_file(tmp_path, "edge.log", 5_000_000)
     assert _check(tmp_path, "cat edge.log") is None
     assert _check(tmp_path, "cat big.log", GUARDS__MAX_READ_BYTES="9000000") is None
+
+
+def test_drive_letter_posix_path_resolves(tmp_path: Path) -> None:
+    big = _big_file(tmp_path)
+    ev = _bash(tmp_path, "cat x")
+    assert guards._resolve(ev, big.as_posix()) == big
+    assert guards._resolve(ev, big.as_posix()).is_file()
+    if sys.platform == "win32":  # pragma: no cover - exercised on Windows CI
+        assert big.as_posix()[1:3] == ":/"
+        assert _check(tmp_path, f"cat {big.as_posix()}") is not None
 
 
 def test_blocks_read_tool_huge_file_without_range(tmp_path: Path) -> None:
