@@ -342,9 +342,14 @@ _GCC = re.compile(
 _TSC = re.compile(r"^(?P<file>[^\s(][^(]*)\(\d+,\d+\): (?P<sev>error|warning) TS\d+")
 _TSC_PRETTY = re.compile(r"^(?P<file>[^\s:][^:]*):\d+:\d+ - (?P<sev>error|warning) TS\d+")
 _STOP = re.compile(
-    r"^(?:\d+ (?:errors?|warnings?)\b|Found \d+ errors?|make[:\[]|compilation terminated"
-    r"|In file included from|\S+: In (?:\w+ )*(?:function|constructor|destructor|lambda)"
-    r"|error: (?:aborting|could not compile|build failed)|warning: \d+ warnings? emitted)"
+    r"^(?:\d+ (?:errors?|warnings?)(?: generated)?\.?$"
+    r"|Found \d+ errors?(?: in .*)?\.?$"
+    r"|make(?:\[\d+\])?: "
+    r"|compilation terminated\.?$"
+    r"|In file included from .+[:,]$"
+    r"|\S+: In (?:\w+ )*(?:function|constructor|destructor|lambda) .+:$"
+    r"|error: (?:aborting due to|could not compile|build failed)"
+    r"|warning: \d+ warnings? emitted$)"
 )
 _RUST = re.compile(r"^(?P<sev>error|warning)(?:\[\w+\])?: ")
 _RUST_FILE = re.compile(r"^\s*--> (?P<file>.+?):\d+:\d+")

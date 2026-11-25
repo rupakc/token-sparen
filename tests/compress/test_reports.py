@@ -471,3 +471,38 @@ def test_pytest_section_headers_not_reemitted(level: Level) -> None:
     )
     short = next(i for i, ln in enumerate(lines) if ln.startswith("FAILED tests/test_cache.py"))
     assert summary < block < short
+
+
+# ------------------------------------------------------------- fix round 2
+
+
+@pytest.mark.parametrize("level", [LIGHT, STANDARD, AGGRESSIVE])
+@pytest.mark.parametrize(
+    "src_line", ["make[i] = 3;", "3 warnings = x;", "Found 2 errors = y;", "1 error = z;"]
+)
+def test_source_lines_that_look_like_chatter_keep_snippet(level: Level, src_line: str) -> None:
+    text = NOISE + (
+        f"Foo.java:3: error: cannot find symbol\n{src_line}\n^\n  symbol: variable make\n"
+        "  location: class Foo\n"
+    )
+    out = CompilerCompressor().compress(text, level, NO_CTX).text.split("\n")
+    for needle in (src_line, "^", "  symbol: variable make", "  location: class Foo"):
+        assert needle in out
+
+
+@pytest.mark.parametrize(
+    "chatter",
+    [
+        "make[2]: *** [all] Error 2",
+        "make: *** [Makefile:7: main.o] Error 1",
+        "2 errors",
+        "1 warning",
+        "3 errors generated.",
+        "Found 3 errors in 2 files.",
+        "compilation terminated.",
+    ],
+)
+def test_real_chatter_still_ends_diagnostic(chatter: str) -> None:
+    text = NOISE + f"a.c:3:1: warning: odd\n   3 | x\n{chatter}\nsrc after\n"
+    out = CompilerCompressor().compress(text, AGGRESSIVE, NO_CTX).text
+    assert "src after" not in out
