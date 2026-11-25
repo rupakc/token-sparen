@@ -28,8 +28,13 @@ def _fx(name: str) -> str:
     return (FIX / name).read_text(encoding="utf-8")
 
 
+NOISE = "".join(f"  CC obj/unit{i}.o\n" for i in range(60))  # dropped build chatter
+
+
 def _run(comp: object, name: str, level: Level = STANDARD, ctx: CompressContext = NO_CTX) -> str:
     text = _fx(name)
+    if isinstance(comp, CompilerCompressor):
+        text = NOISE + text
     res = comp.compress(text, level, ctx)  # type: ignore[attr-defined]
     return str(res.text)
 
@@ -37,7 +42,7 @@ def _run(comp: object, name: str, level: Level = STANDARD, ctx: CompressContext 
 def _errors_survive(src: str, out: str) -> None:
     out_lines = set(out.split("\n"))
     for line in src.split("\n"):
-        if is_error_line(line):
+        if is_error_line(line) and not re.fullmatch(r"=+ (?:FAILURES|ERRORS) =+", line):
             assert line in out_lines, f"error line lost: {line!r}"
 
 
@@ -242,7 +247,7 @@ def test_compiler_aggressive_counts_warnings_but_keeps_errors() -> None:
 
 
 def test_compiler_warning_with_error_word_survives_aggressive() -> None:
-    text = "a.c:1:1: warning: handler for Exception is unused\n   1 | x\n" + _fx("gcc.txt")
+    text = NOISE + "a.c:1:1: warning: handler for Exception is unused\n   1 | x\n" + _fx("gcc.txt")
     out = CompilerCompressor().compress(text, AGGRESSIVE, NO_CTX).text
     assert "a.c:1:1: warning: handler for Exception is unused" in out
 
@@ -255,7 +260,7 @@ def test_compiler_warnings_knob_override() -> None:
 
 def test_compiler_snippet_cap_keeps_error_lines() -> None:
     body = "\n".join(f"   {i} | code" for i in range(12))
-    text = f"a.c:3:1: error: boom\n{body}\n      | ^ ValueError here\n"
+    text = NOISE + f"a.c:3:1: error: boom\n{body}\n      | ^ ValueError here\n"
     out = CompilerCompressor().compress(text, STANDARD, NO_CTX).text
     assert "a.c:3:1: error: boom" in out
     assert "ValueError here" in out
@@ -408,3 +413,61 @@ def test_one_megabyte_under_100ms(cls: type, unit: str) -> None:
         best = min(best, time.perf_counter() - start)
     assert isinstance(res.text, str)
     assert best < 0.1, f"{cls.__name__}: {best * 1000:.0f} ms"
+
+
+# ------------------------------------------------------------- fix round 1
+
+
+@pytest.mark.parametrize("level", [LIGHT, STANDARD, AGGRESSIVE])
+def test_javac_column_zero_snippet_kept(level: Level) -> None:
+    text = NOISE + (
+        "Foo.java:3: error: cannot find symbol\nclass Foo extends Missing {\n"
+        "^\n  symbol: class Missing\n  location: package demo\n"
+        "Bar.java:7: warning: [unchecked] unchecked call\nList x = new ArrayList();\n^\n"
+        "1 error\n1 warning\n"
+    )
+    out = CompilerCompressor().compress(text, level, NO_CTX).text
+    for needle in (
+        "class Foo extends Missing {",
+        "^",
+        "  symbol: class Missing",
+        "  location: package demo",
+        "1 error",
+    ):
+        assert needle in out.split("\n")
+    assert "[token-sparen: 1 errors, 1 warnings in 2 files]" in out
+
+
+def test_compiler_no_growth_returns_input_unchanged() -> None:
+    text = "a.c:3:1: error: boom\n   3 | x\n      | ^\n"
+    res = CompilerCompressor().compress(text, STANDARD, NO_CTX)
+    assert res.text == text
+    assert res.lossless
+
+
+def test_tsc_pretty_format() -> None:
+    text = NOISE + (
+        "src/a.ts:12:5 - error TS2322: Type 'string' is not assignable to type 'number'.\n\n"
+        "12     const n: number = 'x';\n       ~\n\n"
+        "src/b.ts:4:1 - warning TS6133: 'y' is declared but never used.\n\n"
+        "4 const y = 1;\n  ~\n\nFound 1 error in src/a.ts:12\n"
+    )
+    out = CompilerCompressor().compress(text, STANDARD, NO_CTX).text
+    assert "src/a.ts:12:5 - error TS2322" in out
+    assert "12     const n: number = 'x';" in out
+    assert "src/b.ts:4:1 - warning TS6133" in out
+    assert "[token-sparen: 1 errors, 1 warnings in 2 files]" in out
+
+
+@pytest.mark.parametrize("level", [LIGHT, STANDARD, AGGRESSIVE])
+def test_pytest_section_headers_not_reemitted(level: Level) -> None:
+    out = _run(TestReportCompressor(), "pytest_fail.txt", level)
+    assert "= FAILURES =" not in out
+    assert "short test summary info" not in out
+    lines = out.split("\n")
+    summary = next(i for i, ln in enumerate(lines) if "2 failed, 140 passed" in ln)
+    block = next(
+        i for i, ln in enumerate(lines) if ln.startswith("_") and "test_cache_eviction" in ln
+    )
+    short = next(i for i, ln in enumerate(lines) if ln.startswith("FAILED tests/test_cache.py"))
+    assert summary < block < short

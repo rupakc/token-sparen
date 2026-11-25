@@ -32,11 +32,9 @@ _TEXT = TextCompressor()
 _M = re.MULTILINE
 
 
-def _finish(
-    text: str, out: list[str], trailer: str, kept: int, total: int, force: bool = False
-) -> CompressResult:
+def _finish(text: str, out: list[str], trailer: str, kept: int, total: int) -> CompressResult:
     result = "\n".join(out) + trailer
-    if not force and len(result) >= len(text):
+    if len(result) >= len(text):
         return unchanged(text, total)
     return CompressResult(text=result, kept_lines=kept, total_lines=total, lossless=False)
 
@@ -88,6 +86,7 @@ class _Parsed:
     blocks: list[tuple[int, list[int]]] = field(default_factory=list)
     passed: int = 0
     e_prefix: str | None = None
+    skip: set[int] = field(default_factory=set)
 
 
 def _trim(body: list[int], lines: list[str]) -> list[int]:
@@ -130,6 +129,7 @@ def _parse_pytest(lines: list[str]) -> _Parsed:
                     mode = ""
                 elif name in ("FAILURES", "ERRORS"):
                     mode = "blocks"
+                    p.skip.add(i)
                 elif name.startswith("short test summary"):
                     mode = "short"
                 else:
@@ -300,7 +300,7 @@ class TestReportCompressor:
             return _TEXT.compress(text, level, ctx)
         n = setting(f"test_report.block_lines.{arm(level)}", ctx)
         err = set(error_line_indices(text))
-        covered = set(p.summary) | set(p.keep)
+        covered = set(p.summary) | set(p.keep) | p.skip
         for h, body in p.blocks:
             covered.add(h)
             covered.update(body)
@@ -340,13 +340,17 @@ _GCC = re.compile(
     r"(?P<sev>error|warning)\b"
 )
 _TSC = re.compile(r"^(?P<file>[^\s(][^(]*)\(\d+,\d+\): (?P<sev>error|warning) TS\d+")
+_TSC_PRETTY = re.compile(r"^(?P<file>[^\s:][^:]*):\d+:\d+ - (?P<sev>error|warning) TS\d+")
+_STOP = re.compile(
+    r"^(?:\d+ (?:errors?|warnings?)\b|Found \d+ errors?|make[:\[]|compilation terminated"
+    r"|In file included from|\S+: In (?:\w+ )*(?:function|constructor|destructor|lambda)"
+    r"|error: (?:aborting|could not compile|build failed)|warning: \d+ warnings? emitted)"
+)
 _RUST = re.compile(r"^(?P<sev>error|warning)(?:\[\w+\])?: ")
 _RUST_FILE = re.compile(r"^\s*--> (?P<file>.+?):\d+:\d+")
 _RUST_TAIL = re.compile(
     r"^(?:error: (?:aborting|could not compile|build failed)|warning: \d+ warnings? emitted)"
 )
-_NOTE = re.compile(r"^(?:[^\s:][^:]*:\d+(?::\d+)?: (?:note|info)\b|(?:note|help)(?:\[\w+\])?: )")
-_GUTTER = re.compile(r"^\d+ *\|")
 SNIPPET_LINES = 6
 _WARN_MODES = frozenset({"keep", "count"})
 
@@ -362,7 +366,7 @@ class _Diag:
 def _header(line: str) -> tuple[str, str | None] | None:
     if "error" not in line and "warning" not in line:
         return None
-    m = _GCC.match(line) or _TSC.match(line)
+    m = _GCC.match(line) or _TSC.match(line) or _TSC_PRETTY.match(line)
     if m:
         return m.group("sev"), m.group("file")
     m2 = _RUST.match(line)
@@ -424,7 +428,7 @@ class CompilerCompressor:
         out.append(
             f"[token-sparen: {errors} errors, {len(diags) - errors} warnings in {files} files]"
         )
-        return _finish(text, out, trailer, kept, total, force=True)
+        return _finish(text, out, trailer, kept, total)
 
     @staticmethod
     def _scan(lines: list[str]) -> list[_Diag]:
@@ -436,12 +440,17 @@ class CompilerCompressor:
             if h is None:
                 i += 1
                 continue
+            pretty = _TSC_PRETTY.match(lines[i]) is not None
             j = i + 1
             while j < n:
                 ln = lines[j]
-                if ln[:1] in (" ", "\t") or _GUTTER.match(ln):
-                    pass
-                elif not ln or _header(ln) is not None or _NOTE.match(ln) is None:
+                if not ln.strip():
+                    nxt = lines[j + 1] if j + 1 < n else ""
+                    if pretty and (nxt[:1] in (" ", "\t") or nxt[:1].isdigit()):
+                        j += 1
+                        continue
+                    break
+                if _header(ln) is not None or _STOP.match(ln):
                     break
                 j += 1
             file = h[1]
