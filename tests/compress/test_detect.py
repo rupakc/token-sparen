@@ -1,0 +1,160 @@
+"""Content-type detection."""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import get_args
+
+import pytest
+
+from token_sparen.compress import ContentType, detect
+from token_sparen.compress.detect import command_hint
+from token_sparen.events import ToolCall
+
+
+def _shell(cmd: str) -> ToolCall:
+    return ToolCall(name="Bash", category="shell", input={"command": cmd}, use_id="u1")
+
+
+PLAIN = "just some words\nand more words here\nnothing special at all\n"
+
+FIXTURES: dict[ContentType, str] = {
+    "json": json.dumps({"items": [{"id": i, "name": f"n{i}"} for i in range(20)]}, indent=2),
+    "diff": (
+        "diff --git a/x.py b/x.py\nindex 1..2 100644\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n"
+    ),
+    "stacktrace": (
+        "Traceback (most recent call last):\n"
+        '  File "app.py", line 3, in <module>\n'
+        "    main()\n"
+        "ValueError: bad value\n"
+    ),
+    "test_report": (
+        "============================= test session starts ==============================\n"
+        "collected 3 items\n\ntests/test_a.py ..F\n"
+        "========================= 1 failed, 2 passed in 0.12s ==========================\n"
+    ),
+    "compiler": "src/app.ts(3,7): error TS2322: Type 'string' is not assignable to 'number'.\n",
+    "build_log": (
+        "Collecting requests\n  Downloading requests-2.0.tar.gz\nSuccessfully installed requests\n"
+    ),
+    "search": "src/a.py:10:def foo():\nsrc/b.py:22:    foo()\nsrc/c.py:5:import foo\n",
+    "pplx": "Some answer text\nwith citations\n",
+    "log": (
+        "2026-11-25T10:00:00Z INFO start\n"
+        "2026-11-25T10:00:01Z INFO step\n"
+        "2026-11-25 10:00:02,123 WARN slow\n"
+        "continuation line\n"
+    ),
+    "table": "name,age,city\nann,30,rome\nbob,41,oslo\ncid,22,lima\n",
+    "text": PLAIN,
+}
+HINTS: dict[ContentType, ToolCall | None] = {"pplx": _shell("pplx 'what is x'")}
+
+
+def test_detect_table() -> None:
+    """One fixture per ContentType, and every ContentType is covered."""
+    assert set(FIXTURES) == set(get_args(ContentType))
+    for ctype, text in FIXTURES.items():
+        assert detect(text, HINTS.get(ctype)) == ctype, ctype
+
+
+@pytest.mark.parametrize(
+    ("cmd", "expected"),
+    [
+        ("pytest -q", "test_report"),
+        ("FOO=1 BAR=2 pytest tests/", "test_report"),
+        ("cd sub && python -m pytest -x", "test_report"),
+        ("python3 -m pytest", "test_report"),
+        ("npm test", "test_report"),
+        ("npm run test", "test_report"),
+        ("npx jest --ci", "test_report"),
+        ("go test ./...", "test_report"),
+        ("cargo test", "test_report"),
+        ("tsc --noEmit", "compiler"),
+        ("rustc main.rs", "compiler"),
+        ("javac A.java", "compiler"),
+        ("gcc -O2 a.c", "compiler"),
+        ("/usr/bin/clang a.c", "compiler"),
+        ("cargo build --release", "compiler"),
+        ("mvn compile", "compiler"),
+        ("npm install", "build_log"),
+        ("npm ci", "build_log"),
+        ("pip install -e .", "build_log"),
+        ("python -m pip install x", "build_log"),
+        ("./gradlew build", "build_log"),
+        ("gradle assemble", "build_log"),
+        ("docker build -t x .", "build_log"),
+        ("rg foo", "search"),
+        ("grep -rn foo src", "search"),
+        ("pplx ask", "pplx"),
+        ("git diff HEAD~1", "diff"),
+        ("uv run pytest -q", "test_report"),
+        ("sudo time npm i", "build_log"),
+        ("npm run build", None),
+        ("pytest | tail -5", "test_report"),
+        ("ls -la", None),
+        ("", None),
+        ("cd only", None),
+        ("go build", None),
+        ("python script.py", None),
+        ("'unterminated", None),
+    ],
+)
+def test_command_hint(cmd: str, expected: ContentType | None) -> None:
+    assert command_hint(cmd) == expected
+
+
+def test_hint_wins_over_content() -> None:
+    assert detect(PLAIN, _shell("pytest")) == "test_report"
+    assert detect(PLAIN, _shell("rg x")) == "search"
+    assert detect(PLAIN, ToolCall("Grep", "search", {"pattern": "x"}, None)) == "search"
+
+
+def test_no_hint_falls_back_to_sniffing() -> None:
+    assert detect(FIXTURES["table"], _shell("ls")) == "table"
+    assert detect(FIXTURES["table"], ToolCall("Read", "read", {"file_path": "a"}, None)) == "table"
+    assert detect(FIXTURES["table"], ToolCall("Bash", "shell", {"command": 3}, None)) == "table"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("@@ -1,2 +1,2 @@\n-a\n+b\n", "diff"),
+        ('Exception in thread "main" java.lang.NullPointerException\n', "stacktrace"),
+        ("java.lang.IllegalStateException: x\n\tat com.x.Foo.bar(Foo.java:12)\n", "stacktrace"),
+        ("PASS src/a.test.js\nFAIL src/b.test.js\n  ● renders\n", "test_report"),
+        ("--- FAIL: TestFoo (0.00s)\nFAIL\nFAIL\tpkg/x\t0.01s\n", "test_report"),
+        ("running 3 tests\ntest a ... ok\n\ntest result: ok. 3 passed\n", "test_report"),
+        ("error[E0308]: mismatched types\n --> src/main.rs:2:5\n", "compiler"),
+        ("main.c:3:5: error: expected ';'\n", "compiler"),
+        ("npm ERR! code ENOENT\n", "build_log"),
+        ("Step 2/5 : RUN make\n ---> abc\n", "build_log"),
+        ("> Task :app:compileJava\nBUILD SUCCESSFUL in 3s\n", "build_log"),
+        ("Nov 25 10:00:00 host sshd[1]: ok\nNov 25 10:00:01 host sshd[1]: ok\n", "log"),
+        ("[2026-11-25 10:00:00] a\n[2026-11-25 10:00:01] b\n", "log"),
+        ("a\tb\tc\n1\t2\t3\n4\t5\t6\n", "table"),
+        ("| a | b |\n|---|---|\n| 1 | 2 |\n", "table"),
+        ("[1, 2, 3]", "json"),
+        ("{not json at all\nreally\n", "text"),
+        ("", "text"),
+        ("one line, with a comma", "text"),
+        ("\x00\udcff binary-ish \ud800 stuff\n", "text"),
+    ],
+)
+def test_content_sniffing(text: str, expected: ContentType) -> None:
+    assert detect(text, None) == expected
+
+
+def test_json_over_4mb_not_parsed() -> None:
+    big = "[" + ",".join(["1"] * 2_100_000) + "]"
+    assert len(big) > 4 * 1024 * 1024
+    assert detect(big, None) != "json"
+
+
+def test_detect_fast_on_huge_input() -> None:
+    text = ("2026-11-25T10:00:00Z INFO " + "x" * 80 + "\n") * 100_000
+    start = time.perf_counter()
+    assert detect(text, None) == "log"
+    assert time.perf_counter() - start < 0.05

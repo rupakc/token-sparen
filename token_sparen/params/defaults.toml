@@ -4,6 +4,22 @@
 min_tokens = 2000
 min_saving_ratio = 0.15
 
+# Arms for the text compressor: keep head + tail lines and ceil(keep_ratio * total) overall.
+[compression.levels.light]
+head = 80
+tail = 40
+keep_ratio = 0.6
+
+[compression.levels.standard]
+head = 40
+tail = 20
+keep_ratio = 0.35
+
+[compression.levels.aggressive]
+head = 15
+tail = 10
+keep_ratio = 0.15
+
 [pricing]
 # Relative list-price ratios (input = 1.0).
 input = 1.0

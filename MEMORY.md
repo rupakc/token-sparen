@@ -30,3 +30,11 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
 ## 2026-11-25 Process
 - Development follows Elephant-Goldfish (spec section 13); see `.claude/skills/egm-cycle`.
 - Private inputs (owner's local sessions, E1 results) stay outside the repo and are only referred to generically.
+
+## 2026-11-25 Text compressor (Task 7)
+- Error lines (ERROR_PATTERNS) never take part in a fold run, so folding can never hide one.
+- Digit-run normalisation for folding uses a marker byte that cannot occur in UTF-8, so a literal
+  `#` is not treated as a number.
+- The case-insensitive error regex folds ASCII case only; whole-text scanning uses literal byte
+  anchors plus per-line regex verification (exactly equivalent, several times faster).
+- `CompressResult.text` excludes the recovery marker; elided gaps show as `… [N lines elided]`.
