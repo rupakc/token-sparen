@@ -1,0 +1,32 @@
+# Every tunable lives here (hill-climbing surface). Sections are filled by later tasks.
+
+[compression]
+min_tokens = 2000
+min_saving_ratio = 0.15
+
+[recovery]
+# filled by later tasks
+
+[guards]
+# filled by later tasks
+
+[read_dedupe]
+# filled by later tasks
+
+[governor]
+# filled by later tasks
+
+[statusline]
+# filled by later tasks
+
+[learn]
+# filled by later tasks
+
+[facts]
+# filled by later tasks
+
+[prune]
+# filled by later tasks
+
+[loopguard]
+# filled by later tasks

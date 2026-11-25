@@ -22,6 +22,9 @@ token-sparen = "token_sparen.cli:main"
 [tool.setuptools]
 packages = ["token_sparen"]
 
+[tool.setuptools.package-data]
+token_sparen = ["params/*.toml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
