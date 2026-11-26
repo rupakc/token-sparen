@@ -495,6 +495,8 @@ class BuildLogCompressor:
         return guarded("build_log", self._run, text, level, ctx)
 
     def _run(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
+        if not text:
+            return unchanged(text, 0)  # 0 lines, as the text compressor counts
         lines, trailer = split_lines(text)
         total = len(lines)
         err = set(error_line_indices(text))

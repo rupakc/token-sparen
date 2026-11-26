@@ -200,24 +200,45 @@ def is_compressor(obj: Any) -> bool:
     )
 
 
+def line_count(text: str) -> int:
+    """Lines of ``text`` by the built-in rule: split on newline, one trailing newline ignored."""
+    if not text:
+        return 0
+    return text.count("\n") + (0 if text.endswith("\n") else 1)
+
+
+# Elision/summary marker lines the built-ins emit; they never count as kept input lines.
+_MARKER_LINE = re.compile(r"^\s*(?:…|\[\d+ (?:passed tests|warnings) elided)", re.ASCII)
+
+
+def content_lines(text: str) -> int:
+    """Output lines that can stand for kept input lines (elision markers excluded)."""
+    if not text:
+        return 0
+    body = text[:-1] if text.endswith("\n") else text
+    return sum(1 for line in body.split("\n") if not _MARKER_LINE.match(line))
+
+
 def missing_error_lines(source: str, output: str) -> list[str]:
-    """Input lines matching ERROR_PATTERNS that do not appear (stripped) in ``output``."""
+    """Input lines matching ERROR_PATTERNS that are not whole lines of ``output``.
+
+    Comparison ignores trailing whitespace only; a line merely contained in a longer output
+    line does not count as present.
+    """
     idx = error_line_indices(source)
     if not idx:
         return []
     lines = source.split("\n")
-    present = {x.strip() for x in output.split("\n")}
-    missing: list[str] = []
-    for i in idx:
-        wanted = lines[i].strip()
-        if wanted in present or wanted in output:
-            continue
-        missing.append(lines[i])
-    return missing
+    present = {x.rstrip() for x in output.split("\n")}
+    return [lines[i] for i in idx if lines[i].rstrip() not in present]
 
 
 def result_problems(source: str, result: Any) -> list[str]:
-    """Contract violations of one ``compress`` result: type, counts, dropped error lines."""
+    """Contract violations of one ``compress`` result: type, counts, dropped error lines.
+
+    ``total_lines`` must equal ``line_count(source)``; ``kept_lines`` may not exceed the output's
+    non-marker lines (``content_lines``) nor ``total_lines``.
+    """
     if not isinstance(result, CompressResult):
         return [f"returned {type(result).__name__}, not a CompressResult"]
     if not isinstance(result.text, str):
@@ -232,6 +253,13 @@ def result_problems(source: str, result: Any) -> list[str]:
         or not 0 <= kept <= total
     ):
         problems.append(f"kept_lines/total_lines invalid: kept={kept!r} total={total!r}")
+    else:
+        expected = line_count(source)
+        if total != expected:
+            problems.append(f"total_lines={total} but the input has {expected} lines")
+        shown = content_lines(result.text)
+        if kept > shown:
+            problems.append(f"kept_lines={kept} but the output shows only {shown} content lines")
     missing = missing_error_lines(source, result.text)
     if missing:
         problems.append(f"dropped {len(missing)} error line(s), e.g. {missing[0][:120]!r}")

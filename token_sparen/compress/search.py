@@ -77,6 +77,8 @@ class SearchCompressor:
         return guarded("search", self._run, text, level, ctx)
 
     def _run(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
+        if not text:
+            return unchanged(text, 0)  # 0 lines, as the text compressor counts
         lines, trailer = split_lines(text)
         total = len(lines)
         quota = setting(f"search.per_file.{arm(level)}", ctx)
@@ -338,6 +340,8 @@ class LogCompressor:
         return guarded("log", self._run, text, level, ctx)
 
     def _run(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
+        if not text:
+            return unchanged(text, 0)  # 0 lines, as the text compressor counts
         lines, trailer = split_lines(text)
         total = len(lines)
         tail = setting("log.tail", ctx)

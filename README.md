@@ -32,3 +32,11 @@ and world-writable files are skipped. `token-sparen extensions list` shows each 
 `[extensions] allow_override = true` in `~/.token-sparen/config.toml`. A failing extension, or one
 that drops an error line, is disabled for the session and the built-in is used instead. Check your
 compressor with `token_sparen.testing.conformance.check_compressor(c) == []`.
+
+**What trust means.** Trusting a drop-in lets it run arbitrary Python code as you, with your files
+and credentials, every time a hook uses it. Only trust code you have read or whose author you
+trust. The runtime checks (error lines kept, line counts consistent, failures disabled) protect you
+from *buggy* extensions, not *malicious* ones: hostile code can do harm the moment it is imported.
+Trust follows content, not location: an identical copy of a trusted file in any other project's
+`.token-sparen/extensions/` also loads. Use `extensions list` to see what would run, and
+`extensions untrust` to revoke.

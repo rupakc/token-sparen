@@ -419,20 +419,31 @@ class LoadedExtensions:
         return dict(self._adapters)
 
 
+def _truthy(value: Any) -> bool:
+    """One rule for every source: true, 1 (int) and "1"/"true" (any case) enable."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true"}
+    return False
+
+
 def _user_allows_override(home: Path, env: Mapping[str, str]) -> bool:
-    if env.get(OVERRIDE_ENV, "").strip().lower() in {"1", "true"}:
+    if _truthy(env.get(OVERRIDE_ENV)):
         return True
     try:
         user = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
     section = user.get("extensions")
-    return isinstance(section, dict) and section.get("allow_override") is True
+    return isinstance(section, dict) and _truthy(section.get("allow_override"))
 
 
 def _allow_override(cfg: Config, home: Path, env: Mapping[str, str]) -> bool:
     """True only if the merged config says so *and* the user (not a project) set it."""
-    if cfg.get("extensions.allow_override") is not True:
+    if not _truthy(cfg.get("extensions.allow_override")):
         return False
     if _user_allows_override(home, env):
         return True

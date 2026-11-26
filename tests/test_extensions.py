@@ -47,9 +47,10 @@ class FirstLine:
     handles = frozenset({handles!r})
 
     def compress(self, text, level, ctx):
-        lines = text.split("\\n")
+        body = text[:-1] if text.endswith("\\n") else text
+        lines = body.split("\\n")
         return CompressResult(
-            text={body}, kept_lines=1, total_lines=len(lines), lossless=False
+            text={body}, kept_lines=1, total_lines=len(lines) if text else 0, lossless=False
         )
 
 
@@ -354,9 +355,7 @@ def test_extension_prints_never_reach_stdout(
 ) -> None:
     src = _DROPIN.format(sentinel=str(_home(env) / "s"), handles={"table"}, body="lines[0]")
     src = src.replace("class FirstLine:", "print('noise at import')\n\n\nclass FirstLine:")
-    src = src.replace(
-        "lines = text.split", "print('noise in compress')\n        lines = text.split"
-    )
+    src = src.replace("body = text[:-1]", "print('noise in compress')\n        body = text[:-1]")
     path, _ = _dropin(_home(env) / "extensions", source=src)
     extensions.trust(path, _home(env), env)
     _load(env).compressor_for("table").compress("a\nb", LEVEL, CTX)
@@ -434,6 +433,94 @@ def test_registry_builtins_win_over_entry_points(monkeypatch: pytest.MonkeyPatch
     assert extensions.unwrap(reg.for_type("json", allow_override=True)).name == "ep-json"
     assert reg.for_type("text", allow_override=True) is builtin_text  # ep lacks "text"
     assert reg.builtins() == [builtin_text, builtin_json]
+
+
+def _count_dropin(env: dict[str, str], name: str, result_expr: str) -> None:
+    src = (
+        "from token_sparen.compress import CompressResult\n"
+        "class C:\n"
+        "    name = 'counts'\n"
+        "    handles = frozenset({'table'})\n"
+        "    def compress(self, text, level, ctx):\n"
+        f"        return {result_expr}\n"
+        "TOKEN_SPAREN_EXTENSION = {'compressors': [C]}\n"
+    )
+    path, _ = _dropin(_home(env) / "extensions", name, source=src)
+    extensions.trust(path, _home(env), env)
+
+
+@pytest.mark.parametrize(
+    "result_expr",
+    [
+        "CompressResult(text=text.split('\\n')[0], kept_lines=1, total_lines=10**9,"
+        " lossless=False)",
+        "CompressResult(text=text.split('\\n')[0], kept_lines=0, total_lines=1, lossless=False)",
+        "CompressResult(text=text.split('\\n')[0], kept_lines=3, total_lines=3, lossless=False)",
+        "CompressResult(text='… [3 lines elided]', kept_lines=1, total_lines=3, lossless=False)",
+    ],
+    ids=["inflated-total", "deflated-total", "kept-beyond-output", "kept-only-marker"],
+)
+def test_runtime_rejects_inconsistent_counts(env: dict[str, str], result_expr: str) -> None:
+    _count_dropin(env, "counts.py", result_expr)
+    loaded = _load(env)
+    text = "alpha\nbeta\ngamma\n"
+    assert loaded.compressor_for("table").compress(text, LEVEL, CTX) == TextCompressor().compress(
+        text, LEVEL, CTX
+    )
+    assert isinstance(loaded.compressor_for("table"), TextCompressor)  # disabled
+    assert any("lines" in e["error"] for e in _logged(env) if e["where"].startswith("ext"))
+
+
+def test_runtime_accepts_consistent_counts(env: dict[str, str]) -> None:
+    expr = (
+        "CompressResult(text='alpha\\n… [2 lines elided]', kept_lines=1, total_lines=3,"
+        " lossless=False)"
+    )
+    _count_dropin(env, "ok.py", expr)
+    loaded = _load(env)
+    out = loaded.compressor_for("table").compress("alpha\nbeta\ngamma\n", LEVEL, CTX)
+    assert out.text == "alpha\n… [2 lines elided]"
+    assert not isinstance(loaded.compressor_for("table"), TextCompressor)
+
+
+def test_error_line_check_matches_whole_lines() -> None:
+    from token_sparen.compress import missing_error_lines
+
+    src = "start\nFAIL\nend\nERROR x   \n"
+    assert missing_error_lines(src, "start\nFAIL: not the same line\nERROR x") == ["FAIL"]
+    assert missing_error_lines(src, "FAIL  \nERROR x\n") == []  # trailing whitespace ignored
+    assert missing_error_lines(src, "  FAIL\nERROR x") == ["FAIL"]  # leading is significant
+
+
+def test_runtime_rejects_error_line_only_inside_longer_line(env: dict[str, str]) -> None:
+    expr = "CompressResult(text='x FAIL y', kept_lines=1, total_lines=3, lossless=False)"
+    _count_dropin(env, "sub.py", expr)
+    loaded = _load(env)
+    text = "ok\nFAIL\nok2"
+    assert "FAIL" in loaded.compressor_for("table").compress(text, LEVEL, CTX).text.split("\n")
+    assert isinstance(loaded.compressor_for("table"), TextCompressor)
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE"])
+def test_override_env_values(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE", value)
+    assert _load({**env, "TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE": value}).allow_override is True
+
+
+def test_override_user_file_int_one(env: dict[str, str]) -> None:
+    _home(env).mkdir(parents=True, exist_ok=True)
+    (_home(env) / "config.toml").write_text("[extensions]\nallow_override = 1\n", encoding="utf-8")
+    assert _load(env).allow_override is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "yes"])
+def test_override_env_false_values(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE", value)
+    assert _load({**env, "TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE": value}).allow_override is False
 
 
 # --- other entry-point groups -------------------------------------------------------------
@@ -694,6 +781,18 @@ class _BadShape:
         return {"text": text}
 
 
+class _HugeTotal(_Base):
+    def compress(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
+        r = TextCompressor().compress(text, level, ctx)
+        return CompressResult(r.text, r.kept_lines, 10**9, r.lossless)
+
+
+class _InflatedKept(_Base):
+    def compress(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
+        r = TextCompressor().compress(text, level, ctx)
+        return CompressResult(r.text, r.total_lines, r.total_lines, False)
+
+
 class _WithMarker(_Base):
     def compress(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
         r = TextCompressor().compress(text, level, ctx)
@@ -711,6 +810,8 @@ class _WithMarker(_Base):
         (_BadShape(), "CompressResult"),
         (_BadShape(), "handles"),
         (_WithMarker(), "marker"),
+        (_HugeTotal(), "total_lines"),
+        (_InflatedKept(), "kept_lines"),
     ],
 )
 def test_conformance_catches_bad_compressors(comp: Any, needle: str) -> None:

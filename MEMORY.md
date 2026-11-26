@@ -297,3 +297,17 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   override on). Extension decision points cannot reuse a built-in point name.
 - `extensions trust` without `--yes` previews only and exits 1; control characters in the preview
   are escaped.
+
+## 2026-11-26 Extensions fix round 1 (Task 17a review)
+- Trust semantics (documented in README and skill): trusting a drop-in grants full code execution
+  as the user. The runtime checks guard against buggy extensions, not malicious ones (hostile code
+  acts at import). Trust follows content: an identical copy in any location also loads.
+- Count validation for extension results: `total_lines` must equal `line_count(input)` (the
+  built-in rule: split on newline, one trailing newline ignored, empty input = 0), and
+  `kept_lines` may not exceed the output's non-marker lines (`content_lines`; marker lines start
+  with `…` or `[N passed tests|warnings elided`). Violations discard the result and disable the
+  extension. The conformance kit applies the same rule; it found that `search`, `log` and
+  `build_log` reported 1 line for empty input, now 0.
+- Error-line survival is whole-line membership after stripping trailing whitespace (leading
+  whitespace is significant); a substring of a longer output line no longer counts.
+- `allow_override` accepts true, int 1 and "1"/"true" (any case) from every source alike.

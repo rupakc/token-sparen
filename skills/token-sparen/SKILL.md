@@ -23,6 +23,8 @@ A trimmed output ends with:
 - `token-sparen statusline install|uninstall`: opt-in live statusline (backs up settings).
 - `token-sparen extensions list`: installed and drop-in extensions with their trust status.
   Trusting a drop-in (`extensions trust <path> --yes`) is the user's decision: never run it for them.
+  Trust grants that file full code execution as the user (runtime checks stop buggy extensions, not
+  malicious ones), and an identical copy anywhere else loads too.
 - `python3 -m token_sparen ...` works when the console script is not on PATH.
 
 ## Switching it off
