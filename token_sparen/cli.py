@@ -61,6 +61,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="session id (default: $CLAUDE_SESSION_ID, else this project's last active session)",
     )
     _project_opt(ses)
+    conf = sub.add_parser("config", help="per-session config overrides (highest precedence)")
+    conf_sub = conf.add_subparsers(dest="action", required=True)
+    cs = conf_sub.add_parser("set", help="set <dotted.key> <value> for one session")
+    cs.add_argument("key", help="e.g. guards.enabled or compression.min_tokens")
+    cs.add_argument("value", help="true/false, a number or text")
+    cs.add_argument(
+        "--session",
+        help="session id (default: $CLAUDE_SESSION_ID, else this project's last active session)",
+    )
+    _project_opt(cs)
     ext = sub.add_parser("extensions", help="list, trust or untrust extensions")
     ext_sub = ext.add_subparsers(dest="action", required=True)
     _project_opt(ext_sub.add_parser("list", help="drop-ins with trust status, and entry points"))
@@ -273,25 +283,31 @@ def _stats(args: argparse.Namespace) -> int:
 LAST_ACTIVE_MAX_AGE_S = 6 * 3600
 
 
-def _session_cmd(args: argparse.Namespace) -> int:
+def _resolve_session(args: argparse.Namespace, key: str, env: Mapping[str, str]) -> str:
+    """--session (non-empty) > $CLAUDE_SESSION_ID > this project's last active session (< 6 h)."""
     from token_sparen.mechanisms import tracking
 
+    sid = _session_id(args, required=False)
+    if sid is not None:
+        return sid
+    last, fresh = tracking.last_active(state_home(env), key, LAST_ACTIVE_MAX_AGE_S)
+    if last is None:
+        raise CliError(
+            "no session id: pass --session ID or set CLAUDE_SESSION_ID "
+            "(no recently active session recorded for this project)"
+        )
+    if not fresh:
+        raise CliError(
+            f"no session id: the last active session {last} is more than 6 h old; "
+            "pass --session ID (inside Claude Code: /token-sparen disable)"
+        )
+    return last
+
+
+def _session_cmd(args: argparse.Namespace) -> int:
     env = os.environ
     key = keycache.cached_project_key(_project_dir(args).resolve(), env)
-    sid = _session_id(args, required=False)
-    if sid is None:
-        last, fresh = tracking.last_active(state_home(env), key, LAST_ACTIVE_MAX_AGE_S)
-        if last is None:
-            raise CliError(
-                "no session id: pass --session ID or set CLAUDE_SESSION_ID "
-                "(no recently active session recorded for this project)"
-            )
-        if not fresh:
-            raise CliError(
-                f"no session id: the last active session {last} is more than 6 h old; "
-                "pass --session ID (inside Claude Code: /token-sparen disable)"
-            )
-        sid = last
+    sid = _resolve_session(args, key, env)
     overlay = session.session_path(state_home(env), key, sid)
     off = args.action == "disable"
 
@@ -304,6 +320,39 @@ def _session_cmd(args: argparse.Namespace) -> int:
 
     session.update_session(overlay, apply)
     print(f"token-sparen: {'disabled' if off else 'enabled'} for session {sid}")
+    return 0
+
+
+def _config_set(args: argparse.Namespace) -> int:
+    from token_sparen.config import SESSION_KEY, packaged_defaults, parse_value
+
+    parts = str(args.key).split(".")
+    node: object = packaged_defaults()
+    for part in parts:
+        node = node.get(part) if isinstance(node, dict) and part else None
+    if node is None or isinstance(node, dict) or len(parts) < 2:
+        raise CliError(f"unknown config key {args.key!r} (see params/defaults.toml)")
+    env = os.environ
+    key = keycache.cached_project_key(_project_dir(args).resolve(), env)
+    sid = _resolve_session(args, key, env)
+    value = parse_value(args.value)
+
+    def apply(state: dict[str, Any]) -> dict[str, Any]:
+        over = state.get(SESSION_KEY)
+        tree: dict[str, Any] = over if isinstance(over, dict) else {}
+        cur = tree
+        for part in parts[:-1]:
+            nxt = cur.get(part)
+            if not isinstance(nxt, dict):
+                nxt = {}
+                cur[part] = nxt
+            cur = nxt
+        cur[parts[-1]] = value
+        state[SESSION_KEY] = tree
+        return state
+
+    session.update_session(session.session_path(state_home(env), key, sid), apply)
+    print(f"token-sparen: {args.key} = {value!r} for session {sid}")
     return 0
 
 
@@ -606,6 +655,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         "doctor": _doctor,
         "session": _session_cmd,
         "extensions": _extensions,
+        "config": _config_set,
     }
     return handlers[args.command](args)
 

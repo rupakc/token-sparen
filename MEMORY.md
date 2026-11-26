@@ -365,3 +365,10 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   (package data, read via `importlib.resources`), not a top-level `params/`, so wheels and plugin
   installs carry them. Docs that say `params/defaults.toml` mean this file.
 - `uv.lock` is ignored: the project uses pip with the `dev` extra; no lock file is committed.
+- **Session config layer** (spec §9 precedence, minimal): overlay key `config_overrides` (nested
+  dict) is merged last by `load_config(..., session=overlay)`, after env. The hook entry reads the
+  overlay once per hook (it already did for the kill switch). `token-sparen config set
+  <section.key> <value> [--session ID]` writes it; the key must exist as a leaf in the packaged
+  defaults (typos refused); values parse like env values; the session resolves like `session
+  disable`. `extensions.allow_override` still needs the user file or env (a session value alone
+  is ignored). The CLI `run`, statusline and other CLI commands do not apply the session layer.

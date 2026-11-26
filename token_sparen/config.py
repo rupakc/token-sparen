@@ -1,4 +1,4 @@
-"""Layered configuration: defaults < user file < project file < env."""
+"""Layered configuration: defaults < user file < project file < env < session command."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def _merge(base: dict[str, Any], over: Mapping[str, Any]) -> None:
             base[key] = val
 
 
-def _parse_value(raw: str) -> Any:
+def parse_value(raw: str) -> Any:
     low = raw.strip().lower()
     if low in _TRUE and low != "1":
         return True
@@ -90,7 +90,7 @@ def _env_overrides(env: Mapping[str, str]) -> dict[str, Any]:
                 nxt = {}
                 node[part] = nxt
             node = nxt
-        node[parts[-1]] = _parse_value(raw)
+        node[parts[-1]] = parse_value(raw)
     return out
 
 
@@ -113,12 +113,22 @@ def packaged_defaults() -> dict[str, Any]:
     return _load_defaults({})
 
 
-def load_config(project_dir: Path, env: Mapping[str, str]) -> Config:
+SESSION_KEY = "config_overrides"
+
+
+def load_config(
+    project_dir: Path, env: Mapping[str, str], *, session: Mapping[str, Any] | None = None
+) -> Config:
+    """Merged config. ``session`` is the session overlay when the session is known: its
+    ``config_overrides`` (written by ``token-sparen config set``) are merged last."""
     data: dict[str, Any] = {}
     _merge(data, _load_defaults(env))
     for path in (state_home(env) / "config.toml", project_dir / "token-sparen.toml"):
         if path.is_file():
             _merge(data, _load_toml(None, path, env))
     _merge(data, _env_overrides(env))
+    overrides = None if session is None else session.get(SESSION_KEY)
+    if isinstance(overrides, Mapping):
+        _merge(data, overrides)
     disabled = env.get("TOKEN_SPAREN_DISABLE", "").strip().lower() in _TRUE
     return Config(data=data, disabled=disabled)

@@ -94,3 +94,17 @@ def test_default_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     cfg = load_config(tmp_path / "p", {})
     assert cfg.get("compression.min_tokens") == 2000
+
+
+def test_session_overrides_are_merged_last(tmp_path: Path) -> None:
+    home, proj = tmp_path / "home", tmp_path / "proj"
+    proj.mkdir()
+    (proj / "token-sparen.toml").write_text("[compression]\nmin_tokens = 4000\n", encoding="utf-8")
+    env = _env(home, TOKEN_SPAREN_COMPRESSION__MIN_TOKENS="5000")
+    overlay = {"config_overrides": {"compression": {"min_tokens": 6000}}}
+    cfg = load_config(proj, env, session=overlay)
+    assert cfg.get("compression.min_tokens") == 6000  # session command beats env
+    assert cfg.get("compression.min_saving_ratio") == 0.15
+    assert load_config(proj, env).get("compression.min_tokens") == 5000
+    for junk in ({"config_overrides": "x"}, {"config_overrides": None}, {}):
+        assert load_config(proj, env, session=junk).get("compression.min_tokens") == 5000

@@ -310,12 +310,6 @@ def _log_latency(
         log_error(env, "claude.entry", f"latency log: {type(exc).__name__}: {exc}")
 
 
-def _session_disabled(event: Event, env: Mapping[str, str]) -> bool:
-    """The per-session kill switch (``token-sparen session disable``) lives in the overlay."""
-    overlay = session.read_session(tracking.overlay_path(event, env))
-    return overlay.get("disabled") is True
-
-
 def _respond(
     event_name: str, stdin: TextIO, env: Mapping[str, str], dog: _Watchdog
 ) -> tuple[str, Config | None, str]:
@@ -328,11 +322,14 @@ def _respond(
     if not isinstance(payload, dict):
         raise ValueError("payload is not a JSON object")
     event = ADAPTER.parse(event_name, payload, env)
-    cfg = load_config(event.project_dir, env)
+    # The session overlay holds the per-session kill switch (`token-sparen session disable`)
+    # and the session config layer (`token-sparen config set`), merged last.
+    overlay = session.read_session(tracking.overlay_path(event, env))
+    cfg = load_config(event.project_dir, env, session=overlay)
     budget = _budget_ms(cfg)
     if budget != dog.budget_ms:
         dog.arm(budget)
-    if cfg.disabled or _session_disabled(event, env):
+    if cfg.disabled or overlay.get("disabled") is True:
         return NOOP, cfg, "disabled"
     token = HOOK_ENV.set(env)
     started = HOOK_STARTED.set(dog.started)

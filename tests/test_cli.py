@@ -449,3 +449,41 @@ def test_doctor_windows_hint(
     main(["doctor"])
     captured = capsys.readouterr()
     assert "py -3 -m token_sparen" in captured.out, captured.err
+
+
+def test_config_set_session_layer_reaches_hooks(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    cwd = Path.cwd().as_posix()
+    find = {
+        "session_id": "cfg-1",
+        "cwd": cwd,
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "find / -name x"},
+        "tool_use_id": "t1",
+    }
+    assert "deny" in _hook("PreToolUse", find, env)  # guards on by default
+    assert main(["config", "set", "guards.enabled", "false", "--session", "cfg-1"]) == 0
+    assert "cfg-1" in capsys.readouterr().out
+    assert _overlay(env, "cfg-1")["config_overrides"] == {"guards": {"enabled": False}}
+    assert _hook("PreToolUse", find, env) == "{}"
+    other = {**find, "session_id": "cfg-2"}
+    assert "deny" in _hook("PreToolUse", other, env)  # other sessions unaffected
+
+
+def test_config_set_rejects_unknown_keys(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["config", "set", "guards.enabeld", "false", "--session", "s"]) == 2
+    assert "unknown config key" in capsys.readouterr().err
+    assert main(["config", "set", "guards", "false", "--session", "s"]) == 2
+    assert main(["config", "set", "compression.min_tokens", "3000", "--session", "s"]) == 0
+    assert _overlay(env, "s")["config_overrides"] == {"compression": {"min_tokens": 3000}}
+
+
+def test_config_set_uses_last_active_session(env: dict[str, str]) -> None:
+    cwd = Path.cwd().as_posix()
+    _hook("UserPromptSubmit", {"session_id": "live-9", "cwd": cwd, "prompt": "hi"}, env)
+    assert main(["config", "set", "governor.hard_stop", "true"]) == 0
+    assert _overlay(env, "live-9")["config_overrides"] == {"governor": {"hard_stop": True}}
