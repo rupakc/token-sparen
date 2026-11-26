@@ -16,8 +16,10 @@ in global scope. The first parent with ``n >= min_parent_obs`` real observations
 with ``kappa0 = kappa_default`` pseudo-counts; no recursion up the chain). The prior is
 ``Beta(m * kappa, (1 - m) * kappa, n=0)`` with the point's estimated ``kappa``. Without a
 qualifying parent the designed default ``[learn.defaults.<point>.<arm>]`` (hand-set; to be refit
-in M4) is used with strength ``kappa_default``. The session scope is not part of the chain: the
-session evidence is the child this prior is for.
+in M4) is used with strength ``kappa_default``. Regret priors (designed default and parent
+derived alike) use the fixed, stronger ``kappa_regret`` (default 20) instead: a cold trimming
+arm must not look plausibly safe after a handful of pseudo-counts. The session scope is not
+part of the chain: the session evidence is the child this prior is for.
 
 A mean of exactly 0 (the safe arm's designed default) is represented as ``Beta(EPS, kappa)``
 because a Beta needs ``a > 0``; the engine treats safe-arm savings and regret as 0 by definition.
@@ -51,6 +53,7 @@ POSTERIORS_FILE = "posteriors.json"
 SESSION_KEY = "evidence"
 EPS = 1e-3
 DEFAULT_KAPPA = 6.0
+DEFAULT_KAPPA_REGRET = 20.0
 _SCOPES: tuple[Scope, ...] = ("session", "project", "global")
 _CHAIN: tuple[Scope, ...] = ("project", "global")
 _FALLBACK_MEAN: dict[str, float] = {"savings": 0.0, "regret": 0.5}
@@ -240,6 +243,7 @@ def prior_for(
     d = designed_default(point.name, arm, kind, stores.params)
     k0 = max(EPS, stores.learn_param("kappa_default", DEFAULT_KAPPA))
     min_obs = stores.learn_param("min_parent_obs", 5.0)
+    k_reg = max(EPS, stores.learn_param("kappa_regret", DEFAULT_KAPPA_REGRET))
     for scope in _CHAIN:
         for bucket in backoff_keys(point.name, features, stores.params):
             if scope == "project" and bucket == child_bucket:
@@ -247,5 +251,5 @@ def prior_for(
             ev = stores.get(point.name, bucket, arm, kind, scope)
             if ev is not None and ev.n >= min_obs:
                 m = (ev.ea + k0 * d) / (ev.ea + ev.eb + k0)
-                return _from_mean(m, kappa(point, arm, kind, stores))
-    return _from_mean(d, k0)
+                return _from_mean(m, k_reg if kind == "regret" else kappa(point, arm, kind, stores))
+    return _from_mean(d, k_reg if kind == "regret" else k0)

@@ -461,3 +461,10 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   logged and the decision still stands); reward does a lock-free pending pre-check, then one locked
   update of session evidence and `StoreChain.invalidate("session")`. Errors -> safe arm,
   propensity 1.0, bucket `error`; NaN/non-numeric rewards ignored + logged, others clamped.
+
+## 2026-11-26 Task 20 review round 1 (controller design rulings)
+Cold-start simulations: aggressive chosen 44 % of cold decisions, ~7 regret events per fresh
+bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
+- **Regret priors use `kappa_regret = 20`** (designed default and parent derived; savings keep the
+  estimated kappa). Cold P(R~ <= .05) at kappa 6 -> 20: light (.02) .884 -> .879, standard (.04)
+  .768 -> .712, aggressive (.08) .554 -> .374. It mostly slows aggressive; the ladder does the rest.

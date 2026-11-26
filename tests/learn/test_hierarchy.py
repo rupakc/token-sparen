@@ -252,6 +252,7 @@ def test_designed_defaults(tmp_path: Path, point: Any, arm: str, sav: float, reg
     r = prior_for(point, {}, arm, "regret", st)
     assert s.mean == pytest.approx(sav) and r.mean == pytest.approx(reg)
     assert s.a + s.b == pytest.approx(6.0) and s.n == 0.0
+    assert r.a + r.b == pytest.approx(hierarchy.DEFAULT_KAPPA_REGRET) and r.n == 0.0
 
 
 def test_safe_arm_epsilon_prior(tmp_path: Path) -> None:
@@ -260,7 +261,8 @@ def test_safe_arm_epsilon_prior(tmp_path: Path) -> None:
     for point in (COMPRESSION, PRETRIM, READ_DEDUPE, SUBAGENT_BRIEF):
         for kind in ("savings", "regret"):
             p = prior_for(point, {}, point.safe_arm, kind, st)  # type: ignore[arg-type]
-            assert p == Beta(hierarchy.EPS, K0, 0.0)
+            k = K0 if kind == "savings" else hierarchy.DEFAULT_KAPPA_REGRET
+            assert p == Beta(hierarchy.EPS, k, 0.0)
 
 
 def test_unknown_point_or_arm_default(tmp_path: Path) -> None:
@@ -455,3 +457,22 @@ def test_invalidate_rereads_scope(tmp_path: Path) -> None:
     assert stores.get("compression", "*", "light", "savings", "session") is None  # cached
     stores.invalidate("session")
     assert stores.get("compression", "*", "light", "savings", "session") == Evidence(1, 0, 1)
+
+
+def test_regret_priors_use_kappa_regret(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    assert hierarchy.DEFAULT_KAPPA_REGRET == 20.0
+    # a qualifying parent at the coarse level lends its shrunk mean with strength kappa_regret
+    parent = _ev(0.1, 10)
+    _project(home, {"compression": {"ctype=log": {"light": _entry(parent, parent)}}})
+    st = StoreChain(KEY, home)
+    r = prior_for(COMPRESSION, FULL, "light", "regret", st)
+    s = prior_for(COMPRESSION, FULL, "light", "savings", st)
+    assert r.a + r.b == pytest.approx(20.0)
+    assert r.mean == pytest.approx(_shrunk(parent, 0.02))
+    assert s.a + s.b == pytest.approx(hierarchy.kappa(COMPRESSION, "light", "savings", st))
+    cfg = load_config(tmp_path / "p", {"TOKEN_SPAREN_HOME": str(home)})
+    cfg.data["learn"]["kappa_regret"] = 30
+    st2 = StoreChain(KEY, home, params=cfg.data)
+    r2 = prior_for(COMPRESSION, {}, "standard", "regret", st2)
+    assert r2.a + r2.b == pytest.approx(30.0) and r2.mean == pytest.approx(0.04)

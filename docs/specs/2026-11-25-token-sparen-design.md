@@ -30,6 +30,12 @@ moment `es2` (stored `[ea, eb, n, es2]`; a 3-element list means es2 = ea, the Be
 the κ noise term is `mean(v_i/(w_i+1))` with the within-bucket variance
 `v_i = es2/w − (ea/w)²`, so fractional savings rewards no longer pin κ at `kappa_max`.
 
+**2026-11-26 (M2, Task 20 review round 1).** Cold-start simulations showed the plain constrained
+Thompson rule trims aggressively in fresh buckets (aggressive 44 % of cold decisions, ~7 regret
+events per fresh bucket) and the Monte-Carlo propensity is unusable for IPS on rare arms.
+- §7.4: every regret prior (designed default and parent derived) has the fixed strength
+  `kappa_regret = 20`; savings keep the estimated κ.
+
 ---
 
 ## 1. Intent and why
