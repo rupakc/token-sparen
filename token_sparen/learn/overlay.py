@@ -101,6 +101,7 @@ PENDING_PER_START = 3
 PENDING_SCAN_MAX = 50  # overlay files read per SessionStart at most
 INPROCESS_MAX_BYTES = 256 * 1024  # bigger -> SessionStart spawns the fold instead
 INPROCESS_BUDGET_S = 0.1
+_monotonic = time.monotonic  # the in-process fold budget's clock (tests inject one)
 INPROCESS_LOCK_S = 0.05
 COLD_OBS = 20
 EXPLOIT_WINDOW = 50
@@ -832,9 +833,9 @@ def fold_pending(
             spawn_fold(spawn_args, env)
             return []
         out: list[FoldReport] = []
-        start = time.monotonic()
+        start = _monotonic()
         for sid in sids:
-            if time.monotonic() - start > INPROCESS_BUDGET_S:
+            if _monotonic() - start > INPROCESS_BUDGET_S:
                 break  # the rest waits for the next SessionStart
             try:
                 out.append(

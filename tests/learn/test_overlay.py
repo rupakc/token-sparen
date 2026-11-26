@@ -709,7 +709,10 @@ def test_breaker_notice_runs_after_pending_fold() -> None:
     assert names.index("_on_fold_pending") < names.index("_on_breaker_notice")
 
 
-def test_session_start_folds_old_unfolded_sessions(tmp_path: Path, popen: type[_Popen]) -> None:
+def test_session_start_folds_old_unfolded_sessions(
+    tmp_path: Path, popen: type[_Popen], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(overlay, "_monotonic", lambda: 0.0)  # a slow runner never hits the budget
     home = _home(tmp_path)
     for i in range(5):
         _age(_session(home, f"old-{i}", evidence=ONE), 7200 + i)
@@ -937,3 +940,22 @@ def test_secret_is_installed_atomically(tmp_path: Path, monkeypatch: pytest.Monk
     overlay.project_tag(home, KEY)
     assert len(seen) == 1 and len(seen[0]) == 32
     assert (home / "secret").read_text(encoding="utf-8") == seen[0]
+
+
+def test_session_start_fold_stops_at_its_time_budget(
+    tmp_path: Path, popen: type[_Popen], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each in-process fold is charged against the 100 ms budget; the rest waits."""
+    clock = iter([0.0, 0.0, overlay.INPROCESS_BUDGET_S / 2, overlay.INPROCESS_BUDGET_S * 2])
+    monkeypatch.setattr(overlay, "_monotonic", lambda: next(clock))
+    home = _home(tmp_path)
+    for i in range(3):
+        _age(_session(home, f"old-{i}", evidence=ONE), 7200 + i)
+    _index(home, *[f"old-{i}" for i in range(3)])
+    token = entry.HOOK_ENV.set({"TOKEN_SPAREN_HOME": str(home)})
+    try:
+        entry._on_fold_pending(_hook_event(tmp_path, "SessionStart"), Config())
+    finally:
+        entry.HOOK_ENV.reset(token)
+    folded = [s for s in [f"old-{i}" for i in range(3)] if "folded_at" in _read(_ov(home, s))]
+    assert len(folded) == 2 and popen.calls == []
