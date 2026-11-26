@@ -129,7 +129,7 @@ def _track(
     did: str = "d1",
     *,
     turn: int = 1,
-    command: str = "cd /x && pytest -q tests",
+    command: str = "pytest -q tests 2>&1",
     recovery_id: str | None = "abcdef012345",
     ctype: str = "test_report",
     point: str = "compression",
@@ -146,7 +146,7 @@ def _track(
         bucket="b1",
         arm="standard",
         recovery_id=recovery_id,
-        command_sig=normalize_command(command),
+        command_sig=normalize_command(command, project_dir=_proj(tmp_path)),
         full=full,
         kept=kept,
         ctype=ctype,
@@ -169,17 +169,20 @@ def _bash(tmp_path: Path, command: str, text: str = "ok") -> Event:
 
 # --------------------------------------------------------------------------- normalize_command
 def test_normalize_strips_cd_and_env() -> None:
-    assert normalize_command("cd /srv/app && pytest -x tests") == "pytest -x tests"
-    assert normalize_command("cd a && cd 'b c' && FOO=1 BAR='x y' make  build") == "make build"
+    app = "/srv/app"
+    assert normalize_command("cd /srv/app && pytest -x tests", project_dir=app) == "pytest -x tests"
+    assert normalize_command("cd /srv/app && pytest -x tests", cwd=app) == "pytest -x tests"
+    got = normalize_command("cd a && cd 'b c' && FOO=1 BAR='x y' make  build")
+    assert got == "cd a/b c && make build"  # chained cds collapse to one resolved target
     assert normalize_command("env A=b B=c npm   test") == "npm test"
     assert normalize_command("A=1 env B=2 cargo test -p core") == "cargo test -p core"
-    assert normalize_command("cd x; go test ./...") == "go test ./..."
+    assert normalize_command("cd x; go test ./...") == "cd x && go test ./..."
 
 
 def test_normalize_keeps_args() -> None:
     # the reference flaw: everything collapsed to "cd"
-    a = normalize_command("cd /p && pytest tests/test_a.py -k fast")
-    b = normalize_command("cd /p && pytest tests/test_b.py -k fast")
+    a = normalize_command("cd /p && pytest tests/test_a.py -k fast", project_dir="/p")
+    b = normalize_command("cd /p && pytest tests/test_b.py -k fast", project_dir="/p")
     assert a == "pytest tests/test_a.py -k fast"
     assert a != b
     assert normalize_command("sudo -n make install") == "sudo -n make install"
@@ -198,7 +201,7 @@ def test_normalize_drops_tail_and_redirect_and_caps_length() -> None:
 def test_signature_by_tool(tmp_path: Path) -> None:
     f = tmp_path / "a.py"
     f.write_text("x", encoding="utf-8")
-    assert regret.signature("Bash", {"command": "cd x && ls -la"}) == "ls -la"
+    assert regret.signature("Bash", {"command": "cd /w/x && ls -la"}, cwd="/w/x") == "ls -la"
     assert regret.signature("Read", {"file_path": str(f), "offset": 5}).startswith("Read:")
     assert regret.signature("Read", {"file_path": str(f)}) == regret.signature(
         "Read", {"file_path": str(f), "limit": 10}
@@ -613,7 +616,7 @@ def test_remaining_turns_from_governor_cache() -> None:
 
 
 # --------------------------------------------------------------------------- mechanisms
-def _bash_event(tmp_path: Path, stdout: str, command: str = "cd /w && pytest -v") -> Event:
+def _bash_event(tmp_path: Path, stdout: str, command: str = "pytest -v") -> Event:
     from token_sparen.adapters.claude.translate import tool_category
 
     response = {"stdout": stdout, "stderr": "", "interrupted": False, "isImage": False}
@@ -637,7 +640,7 @@ def _decisions(tmp_path: Path) -> list[dict[str, Any]]:
 
 def test_compression_with_engine_rewards_savings_and_tracks(tmp_path: Path) -> None:
     rec = Recorder()
-    ev = _bash_event(tmp_path, big_pytest())
+    ev = _bash_event(tmp_path, big_pytest(), command=f"cd {_proj(tmp_path)} && pytest -v")
     act = compression.handle_post_tool(ev, rec, _cfg(tmp_path), env=_env(tmp_path))
     assert act.replace_output is not None
     did = _decisions(tmp_path)[-1]["decision_id"]
@@ -727,7 +730,7 @@ def test_pretrim_lookup_uses_normalised_command(tmp_path: Path) -> None:
     (store / "pretrim.json").write_text(
         json.dumps({"candidates": {"npm test": {"lines": 40}}}), encoding="utf-8"
     )
-    ev = _bash_event(tmp_path, "x", command="cd /w && npm test 2>&1")
+    ev = _bash_event(tmp_path, "x", command=f"cd {_proj(tmp_path)} && npm test 2>&1")
     assert guards.pretrim_lines(ev, store, _cfg(tmp_path), env=_env(tmp_path)) == 40
 
 
@@ -761,3 +764,26 @@ def test_edit_matches_mentioned_file_by_basename(tmp_path: Path) -> None:
     _handle(tmp_path, edit, rec)
     _handle(tmp_path, _bash(tmp_path, "pytest -q tests"), rec)
     assert rec.regrets() == []
+
+
+def test_normalize_keeps_cd_target_relative_to_project() -> None:
+    repo = "/repo"
+    a = normalize_command("cd packages/a && npm test", project_dir=repo)
+    b = normalize_command("cd packages/b && npm test", project_dir=repo)
+    assert a == "cd packages/a && npm test" and a != b
+    assert normalize_command("cd /repo/packages/a && npm test", project_dir=repo) == a
+    assert normalize_command("cd a && npm test", project_dir=repo, cwd="/repo/packages") == a
+    assert normalize_command("cd /repo/packages/a && npm test", cwd="/repo/packages/a") == (
+        "npm test"
+    )
+    assert normalize_command("cd /tmp/x && ls", project_dir=repo) == "cd /tmp/x && ls"
+    assert normalize_command("cd .. && cd repo && make", project_dir=repo) == "make"
+
+
+def test_rerun_in_another_package_is_not_regret(tmp_path: Path) -> None:
+    _track(tmp_path, command="cd packages/a && npm test")
+    rec = Recorder()
+    _handle(tmp_path, _bash(tmp_path, "cd packages/b && npm test"), rec)
+    assert rec.regrets() == []
+    _handle(tmp_path, _bash(tmp_path, f"cd {_proj(tmp_path)}/packages/a && npm test"), rec)
+    assert rec.regrets() == [("d1", 1.0)]

@@ -159,7 +159,7 @@ def _command_sig(event: Event) -> str:
     assert tool is not None
     cmd = tool.input.get("command")
     if tool.name == "Bash" and isinstance(cmd, str):
-        return regret.normalize_command(cmd)[:COMMAND_SIG_CHARS]
+        return regret.event_signature(event)[:COMMAND_SIG_CHARS]
     return tool.name
 
 
@@ -368,7 +368,7 @@ def _learn(
         bucket=decision.bucket,
         arm=decision.arm,
         recovery_id=recovery_id,
-        command_sig=regret.signature(event.tool.name, event.tool.input),
+        command_sig=regret.event_signature(event),
         full=full,
         kept=kept,
         ctype=ctype,

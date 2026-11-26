@@ -379,9 +379,15 @@ def check(event: Event, cfg: Config) -> Action:
 # --- learned pre-trims (applied on PostToolUse by mechanisms.compression) -------------
 
 
-def _normalise(cmd: str) -> str:
-    """Candidate lookup key: the normalised command signature (``learn.regret``)."""
-    return normalize_command(cmd)
+def _normalise(cmd: str, event: Event | None = None) -> str:
+    """Candidate lookup key: the normalised command signature (``learn.regret``), with ``cd``
+    targets resolved against the event's project dir and cwd."""
+    if event is None:
+        return normalize_command(cmd)
+    cwd = event.extra.get("cwd")
+    return normalize_command(
+        cmd, project_dir=event.project_dir, cwd=cwd if isinstance(cwd, str) and cwd else None
+    )
 
 
 def _candidate(store: Path, key: str, env: Mapping[str, str]) -> dict[str, Any] | None:
@@ -409,7 +415,7 @@ def pretrim_lines(
     command = tool.input.get("command")
     if not isinstance(command, str):
         return None
-    cand = _candidate(store, _normalise(command), env)
+    cand = _candidate(store, _normalise(command, event), env)
     if cand is None:
         return None
     lines = cand.get("lines")

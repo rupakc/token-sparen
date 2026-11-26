@@ -69,7 +69,7 @@ Payout = tuple[str, float]
 # --------------------------------------------------------------------------- commands
 _WS = re.compile(r"\s+")
 _WORD = r"""(?:'[^']*'|"(?:[^"\\]|\\.)*"|[^\s;&|'"])+"""
-_LEAD_CD = re.compile(rf"^cd\s+{_WORD}\s*(?:&&|;)\s*")
+_LEAD_CD = re.compile(rf"^cd\s+({_WORD})\s*(?:&&|;)\s*")
 _LEAD_ENV = re.compile(r"^env\s+(?=[A-Za-z_][A-Za-z0-9_]*=)")
 _LEAD_ASSIGN = re.compile(rf"^[A-Za-z_][A-Za-z0-9_]*=(?:{_WORD})?\s+")
 _TRAIL_TAIL = re.compile(r"\s*\|\s*tail(?:\s+(?:-n\s*\d+|-\d+|--lines=\d+))?\s*$")
@@ -86,13 +86,60 @@ def _strip_all(text: str, patterns: Iterable[re.Pattern[str]]) -> str:
             return text
 
 
-def normalize_command(cmd: str) -> str:
-    """Signature of a shell command: whitespace collapsed, leading ``cd <p> &&`` (repeatedly),
-    ``A=b`` assignments and ``env A=b`` removed, a trailing ``| tail -n N`` and ``2>&1`` dropped;
-    every other argument is kept (``sudo`` too). At most 500 characters."""
+def _unquote(word: str) -> str:
+    if len(word) >= 2 and word[0] == word[-1] and word[0] in "'\"":
+        return word[1:-1]
+    return word
+
+
+def _resolve_cd(dirs: list[str], project_dir: str | None, cwd: str | None) -> str | None:
+    """The directory a chain of ``cd``s ends in, relative to the project when inside it; None
+    when it is the project dir or the hook's cwd (the command runs where it would anyway)."""
+    base = cwd or project_dir
+    cur = base
+    for d in dirs:
+        if cur is None or os.path.isabs(d) or d.startswith("~") or d == "-":
+            cur = d
+        else:
+            cur = os.path.join(cur, d)
+    if cur is None:
+        return None
+    cur = os.path.normpath(cur) if not cur.startswith(("~", "-")) else cur
+    for anchor in (project_dir, cwd):
+        if anchor and os.path.normpath(anchor) == cur:
+            return None
+    if project_dir and os.path.isabs(cur):
+        root = os.path.normpath(project_dir)
+        if cur.startswith(root.rstrip(os.sep) + os.sep):
+            return os.path.relpath(cur, root)
+    return cur
+
+
+def normalize_command(
+    cmd: str, *, project_dir: str | os.PathLike[str] | None = None, cwd: str | None = None
+) -> str:
+    """Signature of a shell command: whitespace collapsed; leading ``cd <p> &&`` (repeatedly)
+    collapsed to one resolved target (relative to ``project_dir``; dropped when it is the project
+    dir or ``cwd``); ``A=b`` assignments and ``env A=b`` removed; a trailing ``| tail -n N`` and
+    ``2>&1`` dropped; every other argument kept (``sudo`` too). At most 500 characters."""
     text = _WS.sub(" ", cmd).strip()
-    text = _strip_all(text, (_LEAD_CD, _LEAD_ENV, _LEAD_ASSIGN))
+    dirs: list[str] = []
+    while True:
+        m = _LEAD_CD.match(text)
+        if m is not None:
+            dirs.append(_unquote(m.group(1)))
+            text = text[m.end() :]
+            continue
+        stripped = _strip_all(text, (_LEAD_ENV, _LEAD_ASSIGN))
+        if stripped == text:
+            break
+        text = stripped
     text = _strip_all(text, (_TRAIL_TAIL, _TRAIL_REDIR))
+    if dirs:
+        root = None if project_dir is None else os.fspath(project_dir)
+        target = _resolve_cd(dirs, root, cwd)
+        if target is not None:
+            text = f"cd {target} && {text}"
     return text[:MAX_SIG_CHARS]
 
 
@@ -103,12 +150,20 @@ def _realpath(value: str) -> str:
         return value
 
 
-def signature(tool_name: str, tool_input: Mapping[str, Any]) -> str:
+def signature(
+    tool_name: str,
+    tool_input: Mapping[str, Any],
+    *,
+    project_dir: str | os.PathLike[str] | None = None,
+    cwd: str | None = None,
+) -> str:
     """Re-run key of a tool call: the normalised command for Bash, ``Read:<realpath>`` for a
     file read (any range), else the tool name and its input."""
     if tool_name == "Bash":
         cmd = tool_input.get("command")
-        return normalize_command(cmd) if isinstance(cmd, str) else tool_name
+        if not isinstance(cmd, str):
+            return tool_name
+        return normalize_command(cmd, project_dir=project_dir, cwd=cwd)
     if tool_name in _READ_TOOLS:
         path = tool_input.get("file_path")
         if isinstance(path, str) and path:
@@ -118,6 +173,18 @@ def signature(tool_name: str, tool_input: Mapping[str, Any]) -> str:
     except (TypeError, ValueError):
         body = ""
     return f"{tool_name}:{body}"[:MAX_SIG_CHARS]
+
+
+def event_signature(event: Event) -> str:
+    """``signature`` of the event's tool call, resolved against its project dir and cwd."""
+    assert event.tool is not None
+    cwd = event.extra.get("cwd")
+    return signature(
+        event.tool.name,
+        event.tool.input,
+        project_dir=event.project_dir,
+        cwd=cwd if isinstance(cwd, str) and cwd else None,
+    )
 
 
 # --------------------------------------------------------------------------- elided span
@@ -347,7 +414,7 @@ def _info(event: Event) -> _Info:
         if isinstance(path, str) and path:
             info.edit_path = path
         return info
-    info.sig = signature(tool.name, tool.input)
+    info.sig = event_signature(event)
     direct, shown = recovery_reads(event)
     info.recovery_ids = direct | shown
     if direct and event.output_text:  # `token-sparen show` counts its own tokens

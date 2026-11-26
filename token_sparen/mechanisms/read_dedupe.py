@@ -206,7 +206,7 @@ def handle_post_tool(
         bucket=decision.bucket,
         arm=decision.arm,
         recovery_id=None,
-        command_sig=regret.signature(tool.name, tool.input),
+        command_sig=regret.event_signature(event),
         full="",
         kept="",
         ctype=None,
