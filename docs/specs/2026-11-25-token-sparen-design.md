@@ -54,9 +54,13 @@ events per fresh bucket) and the Monte-Carlo propensity is unusable for IPS on r
   expires (silence is not evidence). `cold_obs` is removed (superseded by `ladder_obs`).
 
 **2026-11-26 (M2, Task 21).** §7.5 regret detection (`learn/regret.py`):
-- Re-run exemption: an edit since the decision to a file the output mentions, in the elided span
-  **or the kept text**, exempts a re-run (fixing a failure the agent could see and re-running is
-  normal; counting it would make every test-fix loop a regret).
+- Re-run exemption: an edit since the decision to a file the output mentions (kept text first,
+  then the elided span; matched by path or file name) exempts a re-run; any other edit or a
+  state-changing command since the decision lowers a quick re-run to 0.5. Signatures keep the
+  resolved `cd` target; re-runs also match with a trailing filter pipeline stripped; distinctive
+  tokens are stored hashed. Exempting only elided-span files was too narrow (fixing a failure
+  the agent could see and re-running is normal; counting it would make every test-fix loop a
+  regret). Read de-dupe serves a pointer once per stored read; a regret forgets the read.
 - A decision keeps the max of its signals: a full regret (1.0) is paid at once, a partial one
   (0.5) when the window (`regret_window_turns = 6`) expires, which is also when 0 is paid; at
   SessionEnd every open decision is settled. Distinctive tokens in *edit* tool inputs do not

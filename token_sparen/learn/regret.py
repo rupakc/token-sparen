@@ -3,17 +3,22 @@
 Regret signals are the only way the learner finds out that a trim hurt the agent. Every trimming
 decision is tracked in the session overlay under ``regret`` (bounded to the last 200 decisions)
 with what is needed to recognise regret later: the recovery id, the *normalised* command
-signature, up to 64 distinctive tokens of the elided span (8+ characters, absent from the kept
-text) and up to 32 file paths the output mentions (elided span first). Signals, per decision:
+signature (``cd`` target kept, resolved against the project) and its filter-free base, up to 64
+distinctive tokens of the elided span (8+ characters, absent from the kept text), stored only as
+8-byte blake2b digests, and up to 32 file paths the output mentions (kept text first). Signals:
 
 1. recovery read of its saved full output (``Read`` of the file, ``cat``/``head``/``tail``/
-   ``less``/``sed``/``grep`` of the path, ``token-sparen show <id>``) -> 1.0;
-2. re-run of the same normalised command within ``[learn] regret_window_turns`` turns -> 1.0 if
-   within 2 turns, else 0.5, unless a file the output mentions was edited since the decision
-   (fix-and-rerun is normal);
+   ``less``/``sed``/``grep`` of the path, any other tool input ending in the path,
+   ``token-sparen show <id>``) -> 1.0;
+2. re-run of the same normalised command (or the same command under another trailing filter
+   pipeline) within ``[learn] regret_window_turns`` turns -> 1.0 if within 2 turns and nothing
+   changed since (no edit elsewhere, no state-changing command), else 0.5; none if a file the
+   output mentions was edited since the decision (fix-and-rerun is normal);
 3. a prompt or a non-edit tool input holding >= 2 distinct elided distinctive tokens -> 0.5;
 4. a failure loop in the decision's turn after compressing an error-bearing output (``on_loop``,
    called by the loop guard) -> 0.5.
+
+A regret on a read de-dupe pointer also forgets the pointed-at read, so it is delivered in full.
 
 A decision keeps the max of its signals. A full (1.0) regret is paid at once; a partial one when
 the window expires, which is also when a decision without regret is paid an explicit 0 (silence
@@ -28,6 +33,7 @@ Savings at decision time: ``min(1, removed * expected_resends / p95)`` with the 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -268,6 +274,12 @@ _FILE_EXTS = frozenset(
 )
 
 
+def token_digest(token: str) -> str:
+    """8-byte blake2b hex digest of a distinctive token: the overlay never holds the token."""
+    data = token.encode("utf-8", "surrogatepass")
+    return hashlib.blake2b(data, digest_size=8).hexdigest()
+
+
 def _tokens(text: str) -> Iterator[str]:
     for m in _TOKEN.finditer(text):
         tok = m.group().strip("./-")
@@ -440,7 +452,9 @@ def _entry(
         "recovery_id": recovery_id,
         "command_sig": command_sig[:MAX_SIG_CHARS],
         "command_base": filter_base(command_sig[:MAX_SIG_CHARS]),
-        "elided_tokens": _span_tokens(span, kept, command_sig) if full else [],
+        "elided_tokens": [token_digest(t) for t in _span_tokens(span, kept, command_sig)]
+        if full
+        else [],
         "files_in_span": list(mentioned)[:MAX_FILES],
         "edited_paths_since": [],
         "decided_turn": 0,
@@ -487,7 +501,7 @@ def _info(event: Event) -> _Info:
     info = _Info()
     tool = event.tool
     if event.kind == "prompt" and event.prompt:
-        info.tokens = set(_tokens(event.prompt[:INPUT_SCAN_CHARS]))
+        info.tokens = {token_digest(t) for t in set(_tokens(event.prompt[:INPUT_SCAN_CHARS]))}
         return info
     if tool is None or event.kind not in ("post_tool", "post_tool_failure"):
         return info
@@ -504,7 +518,7 @@ def _info(event: Event) -> _Info:
     info.recovery_ids = direct | shown
     if direct and event.output_text:  # `token-sparen show` counts its own tokens
         info.read_tokens = estimate_tokens(event.output_text)
-    info.tokens = set(_tokens(_input_text(tool.input)))
+    info.tokens = {token_digest(t) for t in set(_tokens(_input_text(tool.input)))}
     return info
 
 

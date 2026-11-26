@@ -524,3 +524,28 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   `max(1, governor.remaining_turns)` (budget left / per-turn EWMA) else 10; p95 over the last 64
   values per (point, bucket) in `projects/<key>/savings_scale.json` (current value included);
   first observation 0.5, nothing removed 0. A trimming arm that ended as a no-op gets (0, 0).
+
+## 2026-11-26 Task 21 review round 1 (controller rulings)
+- `files_in_span`: kept text first, then the elided span (a 400 KB pytest run no longer drops
+  the failing file); an edit matches a mentioned file by path suffix **or basename**. A dotted
+  word counts as a file only with a path separator or a known source/config extension
+  (`cache.put`, `pytest.mark` are not files).
+- `normalize_command(cmd, *, project_dir, cwd)` keeps the **resolved `cd` target** (chained cds
+  collapsed; relative to the project dir when inside it; dropped when it is the project dir or
+  the payload cwd; kept as written without context). `regret.event_signature(event)` uses the
+  event's project dir and `extra["cwd"]`; decision log, tracking and the pretrim lookup use it.
+- Re-run matching also compares the commands with a trailing filter pipeline stripped
+  (`filter_base`: `| grep|egrep|fgrep|rg|head|tail|sed|awk|less|more …`, then `2>&1`).
+- Recovery read also when any non-edit tool input field *ends* in
+  `.token-sparen/outputs/<id>.txt` (Grep/Glob `path`, MCP tools).
+- Re-run within 2 turns is 1.0 only if nothing changed since the decision: an Edit/Write of a
+  file the output does not name, or a Bash command outside the read-only allowlist
+  (`regret.read_only`: ls cat head tail grep rg find(no actions) git status|diff|log|show pwd
+  echo which wc cd, no redirect to a file; unparsable = state-changing) makes it 0.5.
+- Elided tokens are stored as 8-byte blake2b hex digests (`token_digest`); prompts and inputs
+  are hashed to match. README updated.
+- Read de-dupe: a pointer is served once per stored read (entry flag `pointed`); the next
+  identical read is delivered in full and refreshes the entry. A regret on a read_dedupe decision
+  (`read_hash` in its regret entry) drops that file's `reads` entries.
+- Known limitation: regret state is per session, shared by the main agent and its subagents
+  (a subagent re-running the main agent's command counts as a re-run).

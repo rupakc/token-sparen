@@ -537,7 +537,7 @@ def test_entry_fields(tmp_path: Path) -> None:
     assert e["command_sig"] == "pytest -q tests"
     assert e["decided_turn"] == 2
     assert e["edited_paths_since"] == []
-    assert "frobnicate_widget_matrix" in e["elided_tokens"]
+    assert regret.token_digest("frobnicate_widget_matrix") in e["elided_tokens"]
     assert "src/app/handlers.py" in e["files_in_span"]
 
 
@@ -903,3 +903,12 @@ def test_read_only_classifier() -> None:
     assert not regret.read_only("cat 'unbalanced")
     assert not regret.read_only("ls >> listing.txt")
     assert regret.read_only("")
+
+
+def test_elided_tokens_are_stored_hashed(tmp_path: Path) -> None:
+    _track(tmp_path)
+    raw = _overlay(tmp_path).read_text(encoding="utf-8")
+    assert "frobnicate_widget_matrix" not in raw and "zanzibar_overflow_handler" not in raw
+    toks = _state(tmp_path)["regret"]["d1"]["elided_tokens"]
+    assert toks and all(len(t) == 16 and int(t, 16) >= 0 for t in toks)
+    assert regret.token_digest("abc") == regret.token_digest("abc") != regret.token_digest("abd")
