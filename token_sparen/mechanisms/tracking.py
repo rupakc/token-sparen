@@ -26,6 +26,18 @@ FAILED_SUFFIX = "!"  # a failed tool call is recorded as "<category>!"
 _PATH_CATEGORIES = frozenset({"read", "edit"})
 
 
+def _count(state: Mapping[str, Any], key: str) -> int:
+    value = state.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def ledger_savings(state: Mapping[str, Any]) -> tuple[int, int]:
+    """(gross, net) tokens saved by a session overlay's ledger: gross = ``tokens_removed``; net
+    = gross - ``recovery_read_tokens`` - ``injected_tokens`` (the statusline's ``saved``)."""
+    gross = _count(state, "tokens_removed")
+    return gross, gross - _count(state, "recovery_read_tokens") - _count(state, "injected_tokens")
+
+
 def overlay_path(event: Event, env: Mapping[str, str] | None = None) -> Path:
     home = state_home(os.environ if env is None else env)
     return session.session_path(home, event.project_key, event.session_id)

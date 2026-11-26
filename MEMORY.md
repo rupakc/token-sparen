@@ -1054,3 +1054,9 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   (the larger upper bound of IPS and DR regret; SNIPS is conditional on support, so not used)
   and `constraint_ok = regret_upper <= tau`. Promotion reads the constraint first, savings
   second; the combined scalar is kept for continuity, not for decisions.
+- C5: `stats` reports savings like the statusline: `tracking.ledger_savings(state)` = (gross
+  `tokens_removed`, net = gross - `recovery_read_tokens` - `injected_tokens`), used by both.
+  Project totals sum every session overlay of the project (the `run` CLI session included:
+  its trims are real); JSON adds `gross_saved`, `net_saved`, `recovery_read_tokens`,
+  `injected_tokens` and per-session `gross_saved`/`net_saved`; the old `tokens_before`,
+  `tokens_after`, `saved` stay (decision log, current generation; text labels them so).

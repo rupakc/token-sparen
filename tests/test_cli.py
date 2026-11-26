@@ -180,6 +180,10 @@ def test_stats_json_schema(env: dict[str, str], capsys: pytest.CaptureFixture[st
         "tokens_before",
         "tokens_after",
         "saved",
+        "gross_saved",
+        "net_saved",
+        "recovery_read_tokens",
+        "injected_tokens",
         "session",
     }
     assert data["project_key"] == key and data["sessions"] == 1
@@ -199,6 +203,39 @@ def test_stats_empty_and_text(env: dict[str, str], capsys: pytest.CaptureFixture
     assert main(["stats", "--session", "s1"]) == 0
     out = capsys.readouterr().out
     assert "saved" in out and "780" in out and "compression" in out
+
+
+def test_stats_net_matches_the_statusline(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    from token_sparen.mechanisms import tracking
+
+    key = _seed_decisions(env)
+    home = Path(env["TOKEN_SPAREN_HOME"])
+    ov2 = session.session_path(home, key, "s2")
+    session.update_session(
+        ov2,
+        lambda s: {
+            **s,
+            "tokens_removed": 100,
+            "recovery_read_tokens": 30,
+            "injected_tokens": 20,
+        },
+    )
+    assert main(["stats", "--json", "--session", "s2"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["gross_saved"] == 880  # tokens_removed over the project's sessions
+    assert data["recovery_read_tokens"] == 35 and data["injected_tokens"] == 20
+    assert data["net_saved"] == 880 - 35 - 20
+    assert data["saved"] == 780  # old key: the decision log's tokens_before - tokens_after
+    ledger = data["session"]
+    assert (ledger["gross_saved"], ledger["net_saved"]) == (100, 50)
+    # the statusline's `saved` segment uses the same helper
+    assert tracking.ledger_savings(session.read_session(ov2)) == (100, 50)
+    assert main(["stats", "--session", "s2"]) == 0
+    out = capsys.readouterr().out
+    assert "net 825" in out and "gross 880" in out
+    assert "net 50" in out  # the session line, as the statusline shows it
 
 
 def _doctor_env(env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:

@@ -276,6 +276,8 @@ def _session_id(args: argparse.Namespace, *, required: bool) -> str | None:
 
 
 def _stats_data(args: argparse.Namespace) -> dict[str, Any]:
+    from token_sparen.mechanisms import tracking
+
     env = os.environ
     home = state_home(env)
     key = keycache.cached_project_key(_project_dir(args).resolve(), env)
@@ -291,24 +293,35 @@ def _stats_data(args: argparse.Namespace) -> dict[str, Any]:
         before += _int(rec.get("tokens_before"))
         after += _int(rec.get("tokens_after"))
     try:
-        sessions = sum(  # the synthetic "cli" session (`run`) is not a real session
-            1 for f in (pdir / "sessions").glob("*.json") if f.stem != CLI_SESSION
-        )
+        overlays = sorted((pdir / "sessions").glob("*.json"))
     except OSError:
-        sessions = 0
+        overlays = []
+    # the synthetic "cli" session (`run`) is not a real session, but its trims count
+    sessions = sum(1 for f in overlays if f.stem != CLI_SESSION)
+    gross = recovered = injected = 0
+    for f in overlays:
+        state = session.read_session(f)
+        gross += tracking.ledger_savings(state)[0]
+        recovered += _int(state.get("recovery_read_tokens"))
+        injected += _int(state.get("injected_tokens"))
     sid = _session_id(args, required=False)
     ledger: dict[str, Any] | None = None
     if sid is not None:
         state = session.read_session(session.session_path(home, key, sid))
         ledger = {"id": sid, **{k: _int(state.get(k)) for k in _LEDGER_KEYS}}
         ledger["disabled"] = state.get("disabled") is True
+        ledger["gross_saved"], ledger["net_saved"] = tracking.ledger_savings(state)
     return {
         "project_key": key,
         "sessions": sessions,
         "decisions": decisions,
-        "tokens_before": before,
+        "tokens_before": before,  # decision log (current generation)
         "tokens_after": after,
         "saved": before - after,
+        "gross_saved": gross,  # session ledgers, as the statusline counts them
+        "net_saved": gross - recovered - injected,
+        "recovery_read_tokens": recovered,
+        "injected_tokens": injected,
         "session": ledger,
     }
 
@@ -320,14 +333,21 @@ def _stats(args: argparse.Namespace) -> int:
         return 0
     print(f"project {data['project_key']}: {data['sessions']} session(s)")
     print(
-        f"tokens before {data['tokens_before']}, after {data['tokens_after']}, "
+        f"saved net {data['net_saved']} (gross {data['gross_saved']} - recovery reads "
+        f"{data['recovery_read_tokens']} - injected {data['injected_tokens']})"
+    )
+    print(
+        f"decision log: tokens before {data['tokens_before']}, after {data['tokens_after']}, "
         f"saved {data['saved']}"
     )
     for point, arms in sorted(data["decisions"].items()):
         print(f"  {point}: " + ", ".join(f"{a}={n}" for a, n in sorted(arms.items())))
     ledger = data["session"]
     if ledger is not None:
-        print(f"session {ledger['id']}" + (" (disabled)" if ledger["disabled"] else ""))
+        print(
+            f"session {ledger['id']}: saved net {ledger['net_saved']} "
+            f"(gross {ledger['gross_saved']})" + (" (disabled)" if ledger["disabled"] else "")
+        )
         for k in _LEDGER_KEYS:
             print(f"  {k}: {ledger[k]}")
     return 0

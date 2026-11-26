@@ -27,7 +27,7 @@ from typing import Any, TextIO
 
 from token_sparen.config import Config, flag, load_config, log_error, state_home
 from token_sparen.events import SessionCtx
-from token_sparen.mechanisms import governor
+from token_sparen.mechanisms import governor, tracking
 from token_sparen.store import jsonstore, keycache, session
 
 GLYPH = "⛁ ts"
@@ -301,11 +301,7 @@ def _render(payload: Mapping[str, Any], env: Mapping[str, str]) -> tuple[str, bo
             if bits:
                 parts.append(" ".join(bits))
         elif name == "saved":
-            net = (
-                _ledger(overlay, "tokens_removed")
-                - _ledger(overlay, "recovery_read_tokens")
-                - _ledger(overlay, "injected_tokens")
-            )
+            net = tracking.ledger_savings(overlay)[1]
             text = f"saved {fmt_tokens(net)}"
             per_token = _usd_per_token(payload)
             if per_token is not None and net != 0:
