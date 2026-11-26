@@ -45,6 +45,8 @@ CHUNK = 4 << 20
 CACHE = "governor"
 ADVISED = "governor_advised"
 STOP_TOOLS = frozenset({"Read", "Bash", "WebFetch", "WebSearch", "Task", "Agent"})
+# The parse-budget clock (module level so tests can drive the deadline deterministically).
+_monotonic = time.monotonic
 _RANK: dict[Level, int] = {"ok": 0, "notice": 1, "advise": 2, "stop": 3}
 
 
@@ -198,7 +200,7 @@ def _scan(fh: BinaryIO, cache: dict[str, Any], size: int, deadline: float, max_l
                 _apply_line(cache, fh.read(newline - offset))
             offset = newline + 1
         cache["offset"] = offset
-        if time.monotonic() > deadline and offset < size:
+        if _monotonic() > deadline and offset < size:
             return False
     return True
 
@@ -387,7 +389,7 @@ def state(
     """
     cfg = cfg or Config()
     env = os.environ if env is None else env
-    started = time.monotonic()
+    started = _monotonic()
     overlay = session.read_session(session_ctx.overlay_path)
     prior = overlay.get(CACHE)
     if not turn_boundary and isinstance(prior, dict) and _unchanged(prior, transcript):

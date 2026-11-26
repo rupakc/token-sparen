@@ -19,6 +19,17 @@ from token_sparen.transcript import session_burn
 KEY = "0123456789abcdef"
 
 
+@pytest.fixture(autouse=True)
+def _frozen_clock(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Functional tests never depend on machine speed: the parse deadline cannot expire.
+
+    Perf tests keep the real clock (they measure it); tests that need a deadline to expire
+    install their own ticking clock.
+    """
+    if request.node.get_closest_marker("perf") is None:
+        monkeypatch.setattr(governor, "_monotonic", lambda: 0.0)
+
+
 def _env(tmp_path: Path, **over: str) -> dict[str, str]:
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
     env.update(over)
@@ -240,19 +251,25 @@ def test_huge_unparsed_transcript_marks_burn_unknown(tmp_path: Path) -> None:
 def test_catch_up_parse_continues_across_hooks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(governor, "CHUNK", 300)  # tiny chunks, zero budget: one chunk per hook
-    over = {"TOKEN_SPAREN_GOVERNOR__PARSE_BUDGET_MS": "0"}
+    # Deterministic deadline: every clock read is 1 s after the previous one, so the 150 ms
+    # parse budget expires after exactly one (tiny) chunk per hook on any machine.
+    monkeypatch.setattr(governor, "CHUNK", 300)
+    ticks = iter(range(10**6))
+    monkeypatch.setattr(governor, "_monotonic", lambda: float(next(ticks)))
     t = _transcript(tmp_path, [_assistant(f"m{i}", 170_000) for i in range(20)])
-    cfg = _cfg(tmp_path, **over)
-    first = _state(tmp_path, t, cfg, **over)
+    cfg = _cfg(tmp_path)
+    first = _state(tmp_path, t, cfg)
     assert first.catching_up is True and first.burn < 20 * 170_000
-    assert _prompt(tmp_path, t, cfg, **over) is None  # no advice from a partial view
+    assert _prompt(tmp_path, t, cfg) is None  # no advice from a partial view
+    hooks = 1
     for _ in range(100):
-        st = _state(tmp_path, t, cfg, **over)
+        hooks += 1
+        st = _state(tmp_path, t, cfg)
         if not st.catching_up:
             break
+    assert hooks > 3  # really spread over several hooks
     assert st.burn == session_burn(t) == 20 * 170_000
-    assert _prompt(tmp_path, t, cfg, **over) is not None
+    assert _prompt(tmp_path, t, cfg) is not None
 
 
 def _unique(n: int, start: int = 0) -> list[str]:
