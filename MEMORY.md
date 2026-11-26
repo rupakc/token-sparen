@@ -618,3 +618,29 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   busy lock) spawn `fold --all --older-than 3600 --max 3`. `tests/conftest.py` stubs the spawn.
 - CLI `fold [--session ID] [--all] [--older-than S] [--max N] [--project DIR]`; one line out;
   retries a busy lock 5 times.
+
+## 2026-11-26 Task 22 review round 1 (controller rulings)
+- **Pending-fold index** `projects/<key>/pending.json` `{overlay name: first_seen}`
+  (`learn/pending.py`): added on the engine's first reward of a session, on settled regret
+  outcomes, and at staging; removed when the fold clears (or finds no overlay). SessionStart reads
+  only the index (no directory scan: the old scan stopped finding unfolded sessions behind ~50
+  folded ones); `fold --all` = index + full directory scan. Lock order gains `pending.json` last
+  (taken alone by hooks; under the posteriors lock only, nothing else held, in the fold).
+- **Breaker judges learned decisions only**: outcome rows carry the bucket (6th field); buckets
+  `static` / `error` (and legacy 5-field rows) never enter the ring.
+- **Trip rule** (controller decision, calibrated by me): evaluate only after `breaker_every` (25)
+  new observations; over the last 50 (>= 20) trip iff k/n > 2 tau AND Beta(1+k, 1+n-k).lcb(q) >
+  tau. The ruled q = 0.05 failed the target (~64 % false trips at tau over 1000 trims), so q is
+  `breaker_lcb_q = 0.0005` (Bonferroni-style over ~40 evaluations): 2.1 % at tau, 39 % at 8 %,
+  97 % at 12 %, 100 % at 15 % (2000 runs). Re-entry scales trimming-arm project evidence x 0.25
+  (`breaker_reentry_scale`) instead of deleting.
+- Fold validates session evidence before writing project/global: known point, bucket `*` or
+  distinct `FEATURE_KEYS[point]` keys with values in `[A-Za-z0-9_.*-]`, arm in `point.arms`;
+  invalid entries skipped and logged once per fold (`FoldReport.skipped`).
+- Global `applied` = `{project tag: [fold ids, last 200]}`, tag = 16 hex of
+  sha256(`<home>/secret` : project key); the secret is 32 random hex, mode 0600, created on first
+  use. A legacy flat list is dropped.
+- `guards._normalise` truncates to 500 characters like the decision log's `command_sig`.
+- SessionStart order: `_on_fold_pending` before `_on_breaker_notice` (a trip found by the
+  pending fold is announced in the same start).
+

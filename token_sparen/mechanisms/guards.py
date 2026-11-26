@@ -28,7 +28,7 @@ from token_sparen.compress.base import Level, load_level
 from token_sparen.config import Config
 from token_sparen.events import Action, Event
 from token_sparen.learn.policy import PRETRIM
-from token_sparen.learn.regret import normalize_command
+from token_sparen.learn.regret import MAX_SIG_CHARS, normalize_command
 from token_sparen.store import jsonstore
 
 __all__ = ["PRETRIM", "check", "pretrim_level", "pretrim_lines"]
@@ -381,13 +381,15 @@ def check(event: Event, cfg: Config) -> Action:
 
 def _normalise(cmd: str, event: Event | None = None) -> str:
     """Candidate lookup key: the normalised command signature (``learn.regret``), with ``cd``
-    targets resolved against the event's project dir and cwd."""
+    targets resolved against the event's project dir and cwd, truncated to the decision log's
+    500 characters (candidates are learned from the log's ``command_sig``)."""
     if event is None:
-        return normalize_command(cmd)
+        return normalize_command(cmd)[:MAX_SIG_CHARS]
     cwd = event.extra.get("cwd")
-    return normalize_command(
+    sig = normalize_command(
         cmd, project_dir=event.project_dir, cwd=cwd if isinstance(cwd, str) and cwd else None
     )
+    return sig[:MAX_SIG_CHARS]
 
 
 def _candidate(store: Path, key: str, env: Mapping[str, str]) -> dict[str, Any] | None:

@@ -136,13 +136,15 @@ Everything stays on your machine, but some of it is plain text you should know a
     a trim hurt), `last_active.json`
     (the project's most recent session id), `savings_scale.json` (numbers only: recent savings
     sizes per bucket), `floor_warned.json`, `posteriors.json` and `breaker.json` (numbers only:
-    learned evidence per bucket and recent regret values per decision point) and `pretrim.json`
+    learned evidence per bucket and recent regret values per decision point), `pending.json`
+    (ids of sessions waiting to be folded) and `pretrim.json`
     (**normalised Bash commands** with per-command counts, and the learned pre-trim candidates).
     The session overlay also keeps the settled regret values of its trims, each with the
     normalised command, until the session is folded. Project folders are named by a hash, but the
     files inside hold the plain text above.
   - `global/posteriors.json`: numbers only (evidence pooled across projects, keyed by decision
-    point, feature bucket and arm); no paths, commands, project keys or session ids.
+    point, feature bucket and arm, plus recent fold ids per salted project tag); no paths,
+    commands, project keys or session ids. `secret` (random, mode 0600) salts those tags.
 - Claude Code `settings.json`: **only** if you run `token-sparen statusline install` (see below),
   with a backup and exact restore. Pruning tools from your settings is planned (M3) and will be
   opt-in too.
@@ -254,8 +256,8 @@ Until it ships, fixed conservative defaults apply and `learn` shows `cold`. Alre
 when a session ends, a background `token-sparen fold` merges what the session learned into the
 project (and, weighted 0.3, into a cross-project global store that forgets after 90 idle days);
 sessions it missed are folded at the next session start. A circuit breaker pauses a decision point
-for the project for 3 sessions when recent trims caused re-reads at more than twice the target
-rate, and tells you once. Repo-fact injection and tool pruning are planned for M3; `prune`, `facts`
+for the project for 3 sessions when the learner's recent trims clearly caused re-reads at more than
+twice the target rate, and tells you once. Repo-fact injection and tool pruning are planned for M3; `prune`, `facts`
 and `replay` CLI commands are placeholders.
 
 ## Credits and licence

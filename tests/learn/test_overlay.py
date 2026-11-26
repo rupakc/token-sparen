@@ -798,3 +798,76 @@ def test_cli_fold(
     assert len(out) == 1 and "1 session" in out[0]
     assert cli.main(["fold", "--project", str(proj)]) == 2  # neither --session nor --all
     assert "fold" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- review round 1
+def test_invalid_cells_are_skipped_and_logged(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    cell = _cell(SAV)
+    bad = {
+        "compression": {
+            "foo=bar": {"standard": cell},  # not a compression feature
+            "ctype=/etc/passwd": {"standard": cell},  # value outside the safe charset
+            "ctype=log|ctype=json": {"standard": cell},  # repeated key
+            "ctype": {"standard": cell},  # not k=v
+            FULL_KEY: {"evil": cell, "standard": cell},  # unknown arm / the one valid cell
+        }
+    }
+    _session(home, evidence=bad)
+    rep = _fold(home)
+    assert rep.cells == 1 and rep.skipped == 5
+    for path in (_pdir(home) / "posteriors.json", home / "global" / "posteriors.json"):
+        text = path.read_text(encoding="utf-8")
+        assert "foo" not in text and "passwd" not in text and "evil" not in text
+        assert "json" not in text
+    log = (home / "logs" / "errors.jsonl").read_text(encoding="utf-8")
+    assert "skipped 5 invalid" in log
+
+
+def test_global_applied_ids_are_per_salted_project_tag(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    tag = overlay.project_tag(home, KEY)
+    assert len(tag) == 16 and tag != KEY and tag == overlay.project_tag(home, KEY)
+    secret = home / "secret"
+    assert secret.exists()
+    if os.name == "posix":
+        assert secret.stat().st_mode & 0o777 == 0o600
+    other = "fedcba9876543210"
+    assert overlay.project_tag(home, other) != tag
+    _write(
+        home / "global" / "posteriors.json",
+        {"version": 2, "points": {}, "applied": {tag: [f"x{i}" for i in range(200)]}},
+    )
+    _session(home, evidence=ONE)
+    _fold(home)
+    applied = _read(home / "global" / "posteriors.json")["applied"]
+    assert set(applied) == {tag} and len(applied[tag]) == 200 and applied[tag][0] == "x1"
+    text = (home / "global" / "posteriors.json").read_text(encoding="utf-8")
+    assert KEY not in text
+
+
+def test_global_legacy_applied_list_is_replaced(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    _write(home / "global" / "posteriors.json", {"version": 2, "points": {}, "applied": ["a"]})
+    _session(home, evidence=ONE)
+    _fold(home)
+    applied = _read(home / "global" / "posteriors.json")["applied"]
+    assert isinstance(applied, dict) and list(applied) == [overlay.project_tag(home, KEY)]
+
+
+def test_pretrim_lookup_truncates_like_the_decision_log(tmp_path: Path) -> None:
+    from token_sparen.mechanisms import compression
+
+    home = _home(tmp_path)
+    ev = _bash_event(
+        tmp_path, "pytest " + " ".join(f"tests/test_mod_{i:03d}.py" for i in range(60))
+    )
+    sig = regret.event_signature(ev)[: compression.COMMAND_SIG_CHARS]
+    assert len(sig) == 500
+    _log(home, [_decision(f"d{i}", sig, 10_000, 1_000) for i in range(5)])
+    _session(home, evidence={})
+    _fold(home)
+    cfg = load_config(tmp_path / "proj", {"TOKEN_SPAREN_HOME": str(home)})
+    env = {"TOKEN_SPAREN_HOME": str(home)}
+    assert guards._normalise(ev.tool.input["command"], ev) == sig  # type: ignore[union-attr]
+    assert guards.pretrim_lines(ev, _pdir(home), cfg, env=env) == 120

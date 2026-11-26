@@ -42,11 +42,13 @@ import contextlib
 import hashlib
 import json
 import os
+import re
+import secrets
 import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
@@ -54,7 +56,7 @@ from typing import Any, Literal, NamedTuple
 from token_sparen.config import log_error, state_home
 from token_sparen.learn import breaker, pending
 from token_sparen.learn.beta import Beta, Evidence
-from token_sparen.learn.features import ANY_BUCKET, backoff_keys
+from token_sparen.learn.features import ANY_BUCKET, FEATURE_KEYS, backoff_keys
 from token_sparen.learn.hierarchy import (
     POSTERIORS_FILE,
     SCHEMA_VERSION,
@@ -76,6 +78,8 @@ LOCK_ORDER = (
     "overlay",
     "pending.json",
 )
+SECRET_FILE = "secret"
+_SAFE_VALUE = re.compile(r"[A-Za-z0-9_.*-]+")
 UNLEARNED_BUCKETS = frozenset({"static", "error"})  # StaticPolicy / engine-error decisions
 FOLDING_KEY = "folding"
 FOLDED_AT = "folded_at"
@@ -120,6 +124,7 @@ class FoldReport:
     outcomes: int = 0  # settled regret outcomes consumed
     candidates: int = 0  # pre-trim candidates after the fold
     aged: int = 0  # global entries halved for age
+    skipped: int = 0  # invalid session evidence entries (point / bucket / arm) not merged
     tripped: list[str] = field(default_factory=list)
     reentered: list[str] = field(default_factory=list)
 
@@ -185,18 +190,44 @@ def _get(node: Mapping[str, Any], kind: str) -> Evidence:
         return _EMPTY
 
 
-def _cells(doc: object) -> Iterator[tuple[str, str, str, Kind, Evidence]]:
-    """Well-formed (point, bucket, arm, kind, evidence) cells of a session evidence mapping."""
+Cell = tuple[str, str, str, Kind, Evidence]
+
+
+def valid_bucket(point: str, bucket: str) -> bool:
+    """``*`` or ``k=v|...`` with distinct keys of ``FEATURE_KEYS[point]`` and safe values."""
+    if bucket == ANY_BUCKET:
+        return True
+    keys = FEATURE_KEYS.get(point, ())
+    seen: set[str] = set()
+    for part in bucket.split("|"):
+        k, sep, v = part.partition("=")
+        if not sep or k not in keys or k in seen or not _SAFE_VALUE.fullmatch(v):
+            return False
+        seen.add(k)
+    return True
+
+
+def _cells(doc: object) -> tuple[list[Cell], int]:
+    """Well-formed (point, bucket, arm, kind, evidence) cells of a session evidence mapping,
+    and the number of (point / bucket / arm) entries skipped as invalid: unknown point, a bucket
+    key that is not the point's features with safe values, or an arm the point does not have.
+    Only validated keys ever reach the project or global store."""
+    cells: list[Cell] = []
+    skipped = 0
     if not isinstance(doc, dict):
-        return
+        return cells, 0
     for point, buckets in doc.items():
-        if not isinstance(buckets, dict) or get_point(point) is None:
+        known = get_point(point) if isinstance(point, str) else None
+        if not isinstance(buckets, dict) or known is None:
+            skipped += 1
             continue
         for bucket, arms in buckets.items():
-            if not isinstance(arms, dict):
+            if not isinstance(arms, dict) or not valid_bucket(point, bucket):
+                skipped += 1
                 continue
             for arm, kinds in arms.items():
-                if not isinstance(kinds, dict):
+                if not isinstance(kinds, dict) or arm not in known.arms:
+                    skipped += 1
                     continue
                 for kind in _KINDS:
                     raw = kinds.get(kind)
@@ -206,7 +237,8 @@ def _cells(doc: object) -> Iterator[tuple[str, str, str, Kind, Evidence]]:
                         ev = Evidence.from_list(raw)
                     except ValueError:
                         continue
-                    yield point, bucket, arm, kind, ev
+                    cells.append((point, bucket, arm, kind, ev))
+    return cells, skipped
 
 
 def features_of(bucket: str) -> dict[str, str] | None:
@@ -352,13 +384,15 @@ def _fold(
         pending.add(home, key, name, env, timeout=timeout)  # a crash from here on is resumed
         rep.staged = True
         fid = str(staged["id"])
-        cells = list(_cells(staged.get("evidence")))
+        cells, rep.skipped = _cells(staged.get("evidence"))
+        if rep.skipped:
+            log_error(env, "fold", f"fold: skipped {rep.skipped} invalid evidence entries")
         outcomes = _outcomes(staged.get("outcomes"))
         rep.outcomes = len(outcomes)
         cap = _param(params, "posterior_cap", 50.0)
         cap = cap if cap > 0.0 else 50.0
         _breaker_and_project(rep, fid, cells, outcomes, pdir, params, now, cap, env, timeout)
-        _global(rep, fid, cells, home, params, now, cap, env, timeout)
+        _global(rep, fid, cells, home, key, params, now, cap, env, timeout)
         _pretrim(rep, fid, outcomes, pdir, params, now, env, timeout)
 
         def clear(state: dict[str, Any]) -> dict[str, Any]:
@@ -375,7 +409,7 @@ def _fold(
 def _breaker_and_project(
     rep: FoldReport,
     fid: str,
-    cells: list[tuple[str, str, str, Kind, Evidence]],
+    cells: list[Cell],
     outcomes: list[Outcome],
     pdir: Path,
     params: Mapping[str, Any] | None,
@@ -440,8 +474,9 @@ def _reset(points: dict[str, Any], name: str, scale: float) -> None:
 def _global(
     rep: FoldReport,
     fid: str,
-    cells: list[tuple[str, str, str, Kind, Evidence]],
+    cells: list[Cell],
     home: Path,
+    key: str,
     params: Mapping[str, Any] | None,
     now: float,
     cap: float,
@@ -455,7 +490,13 @@ def _global(
         gdoc = _evidence_doc(jsonstore.read_locked(gpath, {}, env), env, "global")
         points: dict[str, Any] = gdoc["points"]
         rep.aged = _age(points, now, max_age)
-        if fid not in _applied(gdoc):
+        tag = project_tag(home, key)
+        applied = gdoc.get(APPLIED_KEY)
+        if not isinstance(applied, dict):
+            applied = gdoc[APPLIED_KEY] = {}  # (a legacy flat list is dropped)
+        mine = applied.get(tag)
+        mine = [x for x in mine if isinstance(x, str)] if isinstance(mine, list) else []
+        if fid not in mine:
             for point, bucket, arm, kind, ev in cells:
                 if weight <= 0.0:
                     break
@@ -465,8 +506,31 @@ def _global(
                     _add(node, kind, delta, cap)
                     node["t"] = now
                     rep.global_cells += 1
-            _mark(gdoc, fid)
+            applied[tag] = [*mine, fid][-APPLIED_MAX:]
         jsonstore.write_locked(gpath, gdoc)
+
+
+def project_tag(home: Path, project_key: str) -> str:
+    """A per-install salted tag of a project (16 hex of sha256(secret:key)): keys the global
+    store's applied fold ids without revealing the project key. The secret is 32 random hex in
+    ``<home>/secret`` (mode 0600), created on first use."""
+    path = home / SECRET_FILE
+    try:
+        secret = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        secret = ""
+    if not secret:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fresh = secrets.token_hex(16)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:  # a concurrent fold won the race
+            secret = path.read_text(encoding="utf-8").strip()
+        else:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(fresh)
+            secret = fresh
+    return hashlib.sha256(f"{secret}:{project_key}".encode()).hexdigest()[:16]
 
 
 def _age(points: dict[str, Any], now: float, max_age: float) -> int:

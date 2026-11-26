@@ -6,7 +6,8 @@ statusline, extensions. Planned (M2/M3): one learning engine (contextual Thompso
 with a quality constraint), repo-fact learning, tool pruning; today the hooks use `StaticPolicy`
 (the engine, regret detection, session fold and circuit breaker exist) and `replay`/`facts`/
 `prune` are CLI stubs. North star: maximise tokens saved subject to no measurable quality loss.
-Spec: `docs/specs/2026-11-25-token-sparen-design.md`. Plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`. Decisions: `MEMORY.md`.
+Spec: `docs/specs/2026-11-25-token-sparen-design.md`. Plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`.
+Decisions: `MEMORY.md`.
 
 ## Layout
 - `token_sparen/` core (stdlib only): `cli.py events.py config.py estimate.py transcript.py emit.py recovery.py extensions.py`

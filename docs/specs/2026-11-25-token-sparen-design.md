@@ -77,10 +77,14 @@ events per fresh bucket) and the Monte-Carlo propensity is unusable for IPS on r
   it twice; it is idempotent (per-document applied fold ids). Coarse back-off buckets in the
   project and global stores are aggregates of their children. Global receives the session delta
   x 0.3 (`global_weight`), and entries untouched for 90 days are halved.
-- Circuit breaker: rolling mean of the last 50 settled regret values of a point's trimming arms
-  (evaluated from 20) above 2 x tau pauses the point for the project (safe arm, propensity 1) for
-  3 folded sessions, with one user message; on re-entry its trimming-arm project evidence is
-  deleted so the designed priors apply again. Applies to every tier, not only high.
+- Circuit breaker (learned decisions only; static-policy trims never count): evaluated after
+  every 25 new settled regret values of a point's trimming arms, over the last 50 (at least 20);
+  with regret sum k of n it trips iff k/n > 2 tau and the `breaker_lcb_q` (0.0005) lower bound
+  of Beta(1+k, 1+n-k) exceeds tau. It pauses the point for the project (safe arm, propensity 1)
+  for 3 folded sessions with one user message; on re-entry its trimming-arm project evidence is
+  scaled by 0.25. Applies to every tier, not only high. Simulated (medium tier, 1000 trims at
+  10 per session): ~2 % of runs trip at a true regret rate equal to tau, 100 % at 3 tau; the
+  first-proposed q = 0.05 tripped ~64 % at tau.
 - Pre-trim candidates are learned at fold time from the decision log (>= 5 trimming
   compressions, mean kept ratio <= 0.4, never a regret).
 
