@@ -430,10 +430,13 @@ def test_off_arm_noop_but_logged(tmp_path: Path) -> None:
 
 
 def test_min_tokens_from_config(tmp_path: Path) -> None:
-    text = big_pytest(6_000)  # ~1500 tokens: below the default threshold
-    assert _handle(tmp_path, _bash(tmp_path, text)).is_noop()
-    cfg = _cfg(tmp_path, COMPRESSION__MIN_TOKENS="500")
-    assert _handle(tmp_path, _bash(tmp_path, text), cfg).replace_output is not None
+    small = big_pytest(6_000)  # ~1500 tokens: below the default threshold
+    assert _handle(tmp_path, _bash(tmp_path, small)).is_noop()
+    text = big_pytest(12_000)
+    assert 2000 < estimate_tokens(text) < 4000
+    assert _handle(tmp_path, _bash(tmp_path, text)).replace_output is not None
+    cfg = _cfg(tmp_path, COMPRESSION__MIN_TOKENS="4000")  # raising the threshold is honoured
+    assert _handle(tmp_path, _bash(tmp_path, text), cfg).is_noop()
 
 
 def test_lossless_result_is_noop(tmp_path: Path) -> None:
@@ -518,3 +521,20 @@ def test_handler_latency_50kb(tmp_path: Path) -> None:
     best, act = best_of(run, 7)
     assert act.replace_output is not None
     assert best < 0.050 * perf_factor()
+
+
+def test_min_tokens_floor_is_enforced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(compression, "_FLOOR_LOGGED", False)
+    lines = big_pytest().splitlines()
+    text = "\n".join(lines[: len(lines) // 8])
+    tokens = estimate_tokens(text)
+    assert 600 < tokens < 2000
+    cfg = _cfg(tmp_path, COMPRESSION__MIN_TOKENS="500")
+    for _ in range(2):
+        assert _handle(tmp_path, _bash(tmp_path, text), cfg).is_noop()
+    assert _outputs(tmp_path) == [] and _decisions(tmp_path) == []
+    log = tmp_path / "home" / "logs" / "errors.jsonl"
+    rows = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1 and "min_tokens" in rows[0]["error"] and "2000" in rows[0]["error"]
+    # at or above the floor the configured value is used as before
+    assert _handle(tmp_path, _bash(tmp_path, big_pytest()), cfg).replace_output is not None

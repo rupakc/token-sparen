@@ -44,6 +44,7 @@ from token_sparen.learn.policy import (
 from token_sparen.mechanisms import guards, tracking
 from token_sparen.store import jsonl, jsonstore, keycache, paths, session
 
+MIN_TOKENS = 2000  # invariant floor: smaller outputs are never modified, whatever the config says
 PERSISTED_MAX_BYTES = 5_000_000
 SAVE_DEADLINE_MS = 250
 COMMAND_SIG_CHARS = 500
@@ -75,6 +76,23 @@ def default_replaceable(event: Event) -> bool:
     """Host-neutral default: any tool result event. Hosts pass ``HostAdapter.replaceable``,
     which knows their result shapes (mechanisms never do)."""
     return event.tool is not None and event.kind in _POST_KINDS
+
+
+_FLOOR_LOGGED = False
+
+
+def _min_tokens(cfg: Config, env: Mapping[str, str]) -> float:
+    """``compression.min_tokens``, never below the 2000-token invariant (logged once a process)."""
+    global _FLOOR_LOGGED
+    configured = _num(cfg, "compression.min_tokens", MIN_TOKENS)
+    if configured < MIN_TOKENS and not _FLOOR_LOGGED:
+        _FLOOR_LOGGED = True
+        log_error(
+            env,
+            "compression",
+            f"min_tokens = {configured:g} is below the floor; using {MIN_TOKENS}",
+        )
+    return max(float(MIN_TOKENS), configured)
 
 
 def _skipped(event: Event, cfg: Config) -> bool:
@@ -205,7 +223,7 @@ def handle_post_tool(
     if not (replaceable or default_replaceable)(event):
         return Action()  # checked before any work: nothing to save or log if we cannot replace
     preview = event.output_text
-    if estimate_tokens(preview) < _num(cfg, "compression.min_tokens", 2000):
+    if estimate_tokens(preview) < _min_tokens(cfg, env):
         return Action()
     full = _persisted_text(event, cfg)
     if full == preview:

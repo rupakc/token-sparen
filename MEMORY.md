@@ -332,3 +332,6 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   `projects/<key>/last_active.json` `{session_id, ts}` (best effort). `token-sparen session
   disable|enable` resolves `--session` (non-empty) > `$CLAUDE_SESSION_ID` > that record if it is
   < 6 h old; otherwise it fails (exit 2) and says to pass `--session`.
+- **`compression.min_tokens` is floored at 2000** (CLAUDE.md invariant wins over the spec's
+  "default 2000"), like `read_dedupe.min_tokens`. A lower configured value is ignored and logged
+  once per process to `errors.jsonl`; a higher value is honoured.
