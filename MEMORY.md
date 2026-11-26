@@ -707,7 +707,7 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   and logged once per (project hash, key, value) via `~/.token-sparen/config_safety_warned.json`.
   Directions: `learn.hold.*` on; `learn.optin.*`, `learn.enabled`, `extensions.allow_override`
   off; `learn.tau.*` min; `learn.floor.*`, `ladder_obs`, `breaker_lcb_q`, `breaker_sessions`,
-  `breaker_reentry_scale` max (keeping more of the tripping evidence is safer);
+  `breaker_reentry_scale` max (WRONG, corrected in round 2: user/env/session only);
   `breaker_min_obs`, `breaker_every` min; `breaker_window` fixed (neither direction is uniformly
   safer). A switch only the project sets must be the safe side; a number with no trusted baseline
   passes through (readers validate it). Probe before the fix: a project `hold = false` turned the
@@ -721,3 +721,24 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - M4 items: savings reward as the fraction removed (`removed/before`, optionally x
   `min(1, resends/R)`) or counterfactual `removed/max_removed`, validated on E1 before changing;
   1M-window models without the statusline sensor are mis-banded (governor window table).
+
+## 2026-11-26 Task 23 review round 2 (controller ruling: allowlist)
+- Supersedes the round 1 denylist (`SAFETY`/`safety_param` removed). Re-review bypass: a project
+  `learn = 1` (or `[learn] tau = 0`, `floor = 0`, `hold = 0`) replaced tables with scalars, no
+  leaf was found to check, readers fell back to packaged defaults and the **user's** stricter
+  values were lost (user `enabled = false` -> enabled). Also the README promise covered keys that
+  were not protected (`regret_window_turns`, `learn.defaults.*`, `pretrim_*`, `gamma`, `kappa_*`).
+- Now `config.sanitise_project(project, trusted, defaults)` runs **before** merging: the project's
+  `learn` subtree and `extensions.allow_override` are stripped (a scalar `extensions` too), then
+  each leaf of the project's `learn` (a scalar replacing a table is a leaf) is re-added only if it
+  is in `PROJECT_LEARN_KEYS` and a scalar of the right type tighter than the trusted value
+  (number compares fall back to the packaged default when the trusted value is invalid; a hold
+  for a point with no trusted value compares against false). Allowlist: `learn.enabled` false,
+  `tau.<tier>` min, `floor.<tier>` max, `hold.<point>` true, `ladder_obs` max, `breaker_min_obs`
+  and `breaker_every` min, `breaker_lcb_q` and `breaker_sessions` max. Dropped leaves are logged
+  once per (project hash, key, value). Other sections keep normal precedence.
+- **`breaker_reentry_scale` correction**: round 1 called higher safer; wrong. It scales savings,
+  regret and n of the trimming arms alike, so a higher value also keeps more n for the ladder
+  (looser). It and `breaker_window` are user/env/session only.
+- Test change: `test_hierarchy::test_user_config_overrides_apply` now writes its learn overrides
+  to the user config (they were in a project file, which is no longer allowed).

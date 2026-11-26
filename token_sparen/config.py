@@ -22,8 +22,8 @@ _MISSING: Any = object()
 class Config:
     data: dict[str, Any] = field(default_factory=dict)
     disabled: bool = False
-    # Every layer except the project file (defaults, user file, env, session overrides): the
-    # base a project value of a safety parameter may only tighten (``safety_param``).
+    # Every layer except the project file (defaults, user file, env, session overrides): the base
+    # an allowlisted project learning setting may only tighten (``sanitise_project``).
     trusted: dict[str, Any] | None = None
 
     def get(self, dotted_key: str, default: Any = None) -> Any:
@@ -131,23 +131,22 @@ def flag_off(value: object) -> bool:
     return isinstance(value, str) and value.strip().lower() in _OFF
 
 
-# Learning safety parameters a project file (committed, so possibly someone else's) may only
-# tighten: "min" lower is safer, "max" higher is safer, "on" only true, "off" only off, "fixed"
-# unchanged. User file, env and session overrides are trusted and may set anything.
-SAFETY: dict[tuple[str, ...], str] = {
+# The project file is committed, so possibly someone else's: of the learning settings it may set
+# only these leaves, each only to a value tighter than every other layer's (defaults, user file,
+# env, session overrides). Everything else under [learn], and extensions.allow_override, is user,
+# env or session only. Directions: "min" lower is safer, "max" higher is safer, "on" only true,
+# "off" only false. Not settable: breaker_window (neither direction is uniformly safer) and
+# breaker_reentry_scale (it scales savings, regret and n alike, so neither direction is safer).
+PROJECT_LEARN_KEYS: dict[tuple[str, ...], str] = {
     ("learn", "tau", "*"): "min",  # a lower regret target trims less
     ("learn", "floor", "*"): "max",  # a higher floor keeps more outputs untouched
-    ("learn", "hold", "*"): "on",  # a held point never explores
-    ("learn", "optin", "*"): "off",  # high-tier opt-in is the user's call
     ("learn", "enabled"): "off",
+    ("learn", "hold", "*"): "on",  # a held point never explores
     ("learn", "ladder_obs"): "max",  # stronger arms unlock later
     ("learn", "breaker_min_obs"): "min",  # the breaker judges sooner
     ("learn", "breaker_every"): "min",  # ... and more often
     ("learn", "breaker_lcb_q"): "max",  # a higher quantile trips more readily
     ("learn", "breaker_sessions"): "max",  # paused longer
-    ("learn", "breaker_reentry_scale"): "max",  # keeps more of the evidence that tripped it
-    ("learn", "breaker_window"): "fixed",  # neither direction is uniformly safer
-    ("extensions", "allow_override"): "off",
 }
 SAFETY_WARNED_FILE = "config_safety_warned.json"
 
@@ -165,58 +164,32 @@ def _dig(data: Mapping[str, Any] | None, path: tuple[str, ...]) -> Any:
     return node
 
 
-def _not_looser(value: Any, base: Any, direction: str) -> bool:
-    """Is ``value`` at least as safe as ``base``?"""
-    if value == base and type(value) is type(base):
-        return True
+def _direction(path: tuple[str, ...]) -> str | None:
+    found = PROJECT_LEARN_KEYS.get(path)
+    if found is None and len(path) > 1:
+        found = PROJECT_LEARN_KEYS.get((*path[:-1], "*"))
+    return found
+
+
+def _tighter(value: Any, base: Any, direction: str) -> bool:
+    """Is the project ``value`` a scalar of the right type and at least as safe as ``base``
+    (the trusted value; for numbers, the packaged default when the trusted one is invalid)?"""
     if direction == "on":
         return value is True
     if direction == "off":
-        return flag_off(value)
-    if direction == "fixed" or not (_is_num(value) and _is_num(base)):
+        return value is False
+    if not _is_num(value) or not _is_num(base):
         return False
     return bool(value <= base) if direction == "min" else bool(value >= base)
 
 
-def _direction(path: tuple[str, ...]) -> str | None:
-    found = SAFETY.get(path)
-    if found is None and len(path) > 1:
-        found = SAFETY.get((*path[:-1], "*"))
-    return found
-
-
-def safety_param(cfg: Config, key: str) -> Any:
-    """The effective value of a safety parameter: the merged value unless it came from the
-    project file and is looser than every other layer's (``cfg.trusted``) value; then the
-    trusted value. Keys outside ``SAFETY`` (or a config without layers) read as merged."""
-    path = tuple(key.split("."))
-    value = _dig(cfg.data, path)
-    direction = _direction(path)
-    if direction is None or cfg.trusted is None:
-        return None if value is _MISSING else value
-    if value is _MISSING:
-        return None
-    base = _dig(cfg.trusted, path)
-    if base is _MISSING:  # only the project sets it: a switch must be the safe side
-        if direction in {"on", "off"}:
-            return value if _not_looser(value, None, direction) else None
-        return value  # a number with no baseline (e.g. a new tier): readers validate it
-    return value if _not_looser(value, base, direction) else base
-
-
-def _safety_keys(cfg: Config) -> list[tuple[str, ...]]:
-    out: list[tuple[str, ...]] = []
-    for pattern in SAFETY:
-        if pattern[-1] != "*":
-            out.append(pattern)
-            continue
-        names: set[str] = set()
-        for data in (cfg.data, cfg.trusted):
-            node = _dig(data, pattern[:-1])
-            if isinstance(node, Mapping):
-                names.update(k for k in node if isinstance(k, str))
-        out += [(*pattern[:-1], n) for n in sorted(names)]
-    return out
+def _leaves(node: Any, path: tuple[str, ...]) -> list[tuple[tuple[str, ...], Any]]:
+    if isinstance(node, Mapping) and node:
+        out: list[tuple[tuple[str, ...], Any]] = []
+        for key, val in node.items():
+            out += _leaves(val, (*path, str(key)))
+        return out
+    return [(path, node)]
 
 
 def _set(data: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
@@ -226,10 +199,43 @@ def _set(data: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
         if not isinstance(nxt, dict):
             nxt = node[key] = {}
         node = nxt
-    if value is _MISSING or value is None:
-        node.pop(path[-1], None)
-    else:
-        node[path[-1]] = value
+    node[path[-1]] = value
+
+
+def sanitise_project(
+    project: Mapping[str, Any], trusted: Mapping[str, Any], defaults: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[tuple[str, Any]]]:
+    """(the project layer with only allowlisted, tighter learning leaves, dropped (key, value)).
+
+    The whole ``learn`` subtree and ``extensions.allow_override`` are stripped; each leaf of the
+    project's ``learn`` (a scalar replacing a table counts as a leaf) is re-added only if it is an
+    allowlisted key with a tighter scalar of the right type. Other sections keep their normal
+    project precedence."""
+    clean = {k: v for k, v in project.items() if k != "learn"}
+    dropped: list[tuple[str, Any]] = []
+    ext = clean.get("extensions")
+    if isinstance(ext, Mapping) and "allow_override" in ext:
+        clean["extensions"] = {k: v for k, v in ext.items() if k != "allow_override"}
+        dropped.append(("extensions.allow_override", ext["allow_override"]))
+    elif "extensions" in clean and not isinstance(ext, Mapping):
+        dropped.append(("extensions", clean.pop("extensions")))  # would wipe the user's table
+    if "learn" not in project:
+        return clean, dropped
+    learn: dict[str, Any] = {}
+    for path, value in _leaves(project["learn"], ("learn",)):
+        direction = _direction(path)
+        base = _dig(trusted, path)
+        if direction in {"min", "max"} and not _is_num(base):
+            base = _dig(defaults, path)
+        if direction == "on" and base is _MISSING:
+            base = False
+        if direction is not None and base is not _MISSING and _tighter(value, base, direction):
+            _set(learn, path[1:], value)
+        else:
+            dropped.append((".".join(path), value))
+    if learn:
+        clean["learn"] = learn
+    return clean, dropped
 
 
 def _warn_once(env: Mapping[str, str], project_dir: Path, key: str, value: Any) -> None:
@@ -255,18 +261,9 @@ def _warn_once(env: Mapping[str, str], project_dir: Path, key: str, value: Any) 
             env,
             "config",
             f"{key} = {shown} in the project's token-sparen.toml ignored: a project file may only "
-            "tighten learning safety settings (set it in ~/.token-sparen/config.toml or the env)",
+            "tighten tau, floor, enabled, hold, ladder_obs and breaker thresholds; other learning "
+            "settings belong in ~/.token-sparen/config.toml, the env or `config set`",
         )
-
-
-def _enforce_safety(cfg: Config, project_dir: Path, env: Mapping[str, str]) -> None:
-    for path in _safety_keys(cfg):
-        key = ".".join(path)
-        merged = _dig(cfg.data, path)
-        value = safety_param(cfg, key)
-        if merged is not _MISSING and value != merged:
-            _warn_once(env, project_dir, key, merged)
-            _set(cfg.data, path, _MISSING if value is None else value)
 
 
 def load_config(
@@ -282,16 +279,15 @@ def load_config(
     env_layer = _env_overrides(env)
     overrides = None if session is None else session.get(SESSION_KEY)
     late = [env_layer, overrides] if isinstance(overrides, Mapping) else [env_layer]
-    data: dict[str, Any] = {}
     trusted: dict[str, Any] = {}
-    for target, layers in (
-        (data, [defaults, user, project, *late]),
-        (trusted, [defaults, user, *late]),
-    ):
-        for layer in layers:
-            _merge(target, layer)
-    disabled = env.get("TOKEN_SPAREN_DISABLE", "").strip().lower() in _TRUE
-    cfg = Config(data=data, disabled=disabled, trusted=trusted)
+    for layer in (defaults, user, *late):
+        _merge(trusted, layer)
     if project:
-        _enforce_safety(cfg, project_dir, env)
-    return cfg
+        project, dropped = sanitise_project(project, trusted, defaults)
+        for key, value in dropped:
+            _warn_once(env, project_dir, key, value)
+    data: dict[str, Any] = {}
+    for layer in (defaults, user, project, *late):
+        _merge(data, layer)
+    disabled = env.get("TOKEN_SPAREN_DISABLE", "").strip().lower() in _TRUE
+    return Config(data=data, disabled=disabled, trusted=trusted)

@@ -1,4 +1,4 @@
-"""A project file may only tighten learning safety parameters (Task 23 review round 1)."""
+"""A project file may only tighten a short allowlist of learning settings (Task 23 review)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from token_sparen.config import flag_off, load_config, safety_param
+from token_sparen.config import PROJECT_LEARN_KEYS, flag_off, load_config
 
 
 def _setup(tmp_path: Path, *, user: str = "", project: str = "") -> tuple[Path, dict[str, str]]:
@@ -68,7 +68,6 @@ def test_project_hold_true_on_a_new_point_is_honoured(tmp_path: Path) -> None:
         ("learn.breaker_min_obs", "[learn]\nbreaker_min_obs = {}\n", 10, 40),
         ("learn.breaker_every", "[learn]\nbreaker_every = {}\n", 10, 100),
         ("learn.breaker_sessions", "[learn]\nbreaker_sessions = {}\n", 5, 1),
-        ("learn.breaker_reentry_scale", "[learn]\nbreaker_reentry_scale = {}\n", 0.5, 0.1),
         ("learn.ladder_obs", "[learn]\nladder_obs = {}\n", 40, 2),
     ],
 )
@@ -118,11 +117,107 @@ def test_malformed_project_value_is_ignored(tmp_path: Path) -> None:
     assert load_config(proj, env).get("learn.tau.medium") == 0.05
 
 
-def test_safety_param_reads_the_resolved_value(tmp_path: Path) -> None:
-    proj, env = _setup(tmp_path, project="[learn.tau]\nmedium = 0.5\nlow = 0.01\n")
+def test_allowlist_is_the_documented_one() -> None:
+    assert set(PROJECT_LEARN_KEYS) == {
+        ("learn", "tau", "*"),
+        ("learn", "floor", "*"),
+        ("learn", "enabled"),
+        ("learn", "hold", "*"),
+        ("learn", "ladder_obs"),
+        ("learn", "breaker_min_obs"),
+        ("learn", "breaker_every"),
+        ("learn", "breaker_lcb_q"),
+        ("learn", "breaker_sessions"),
+    }
+
+
+STRICT_USER = """
+[learn]
+enabled = false
+ladder_obs = 40
+regret_window_turns = 9
+gamma = 0.9
+kappa_regret = 30
+pretrim_min_decisions = 9
+breaker_reentry_scale = 0.5
+[learn.tau]
+medium = 0.02
+[learn.floor]
+medium = 0.3
+[learn.hold]
+compression = true
+[learn.defaults.compression.light]
+regret = 0.2
+"""
+
+
+@pytest.mark.parametrize(
+    "project",
+    [
+        "learn = 1\n",
+        'learn = "x"\n',
+        "[learn]\ntau = 0\n",
+        "[learn]\nfloor = 0\n",
+        "[learn]\nhold = 0\n",
+        "[learn]\ndefaults = 0\n",
+        "[learn.defaults.compression.light]\nregret = 0.0\n",
+        "[learn.defaults]\ncompression = 1\n",
+        "[learn]\nregret_window_turns = 1\n",
+        "[learn]\ngamma = 0.5\n",
+        "[learn]\nkappa_regret = 2\nkappa_default = 1\n",
+        "[learn]\npretrim_min_decisions = 1\npretrim_max_ratio = 0.9\n",
+        "[learn]\nbreaker_reentry_scale = 1.0\nbreaker_window = 5\n",
+        "[learn]\nenabled = true\nladder_obs = 1\n",
+        '[learn]\nenabled = "false"\nladder_obs = "50"\n',
+        "[learn.tau]\nmedium = true\n",
+        "[learn.tau.medium]\nx = 0\n",
+        "[learn.hold]\ncompression = false\n",
+        "[learn.backoff.compression]\nlevels = [[]]\n",
+        "[learn.optin]\ncompression = true\n",
+    ],
+)
+def test_project_cannot_loosen_or_replace_user_learning(tmp_path: Path, project: str) -> None:
+    """Scalars replacing tables, unknown keys, wrong types: dropped; the user's values stand."""
+    proj, env = _setup(tmp_path, user=STRICT_USER)
+    want = load_config(proj, env).data["learn"]
+    (proj / "token-sparen.toml").write_text(project, encoding="utf-8")
+    got = load_config(proj, env).data["learn"]
+    assert got == want
+    assert _errors(tmp_path)  # logged
+    errors = len(_errors(tmp_path))
+    load_config(proj, env)
+    assert len(_errors(tmp_path)) == errors  # once
+
+
+def test_project_learn_scalar_keeps_other_sections(tmp_path: Path) -> None:
+    proj, env = _setup(tmp_path, project="learn = 1\n[guards]\nenabled = false\n")
     cfg = load_config(proj, env)
-    assert safety_param(cfg, "learn.tau.medium") == 0.05
-    assert safety_param(cfg, "learn.tau.low") == 0.01
+    assert cfg.get("guards.enabled") is False and cfg.get("learn.enabled") is True
+
+
+def test_project_tightening_still_applies_over_a_strict_user(tmp_path: Path) -> None:
+    proj, env = _setup(
+        tmp_path,
+        user=STRICT_USER,
+        project="[learn]\nladder_obs = 60\n[learn.tau]\nmedium = 0.01\n[learn.hold]\n"
+        "subagent_brief = true\nread_dedupe = true\n",
+    )
+    cfg = load_config(proj, env)
+    assert cfg.get("learn.ladder_obs") == 60 and cfg.get("learn.tau.medium") == 0.01
+    assert cfg.get("learn.hold.read_dedupe") is True and cfg.get("learn.enabled") is False
+
+
+def test_session_may_loosen_over_a_project(tmp_path: Path) -> None:
+    proj, env = _setup(tmp_path, project="[learn.tau]\nmedium = 0.01\n")
+    session = {"config_overrides": {"learn": {"tau": {"medium": 0.1}, "gamma": 0.9}}}
+    cfg = load_config(proj, env, session=session)
+    assert cfg.get("learn.tau.medium") == 0.1 and cfg.get("learn.gamma") == 0.9
+
+
+def test_project_cannot_allow_extension_overrides_even_as_a_scalar(tmp_path: Path) -> None:
+    for text in ("[extensions]\nallow_override = true\n", "extensions = 1\n"):
+        proj, env = _setup(tmp_path / str(len(text)), project=text)
+        assert load_config(proj, env).get("extensions.allow_override") is False
 
 
 @pytest.mark.parametrize("value", [False, 0, "0", "no", "false", "off", "FALSE", " No "])

@@ -301,7 +301,9 @@ def test_defaults_from_params(tmp_path: Path) -> None:
 def test_user_config_overrides_apply(tmp_path: Path) -> None:
     proj = tmp_path / "proj"
     proj.mkdir()
-    (proj / "token-sparen.toml").write_text(
+    (tmp_path / "h").mkdir()
+    # learning settings beyond the tighten-only allowlist are user/env/session only
+    (tmp_path / "h" / "config.toml").write_text(
         "[learn]\nmin_parent_obs = 50\n[learn.defaults.compression.light]\nsavings = 0.1\n",
         encoding="utf-8",
     )
