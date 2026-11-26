@@ -12,15 +12,17 @@ quality, so facts activate on solid evidence and retire fast.
 kind           relevant when the session...  waste (reward 0 when present)
 =============  ============================  ============================================
 command_alias  ran the subject or the alias  ``command not found`` for the subject
-test_command   ran any test-family command   the fact's own runner (program + subcommand,
-                                             run dir) did not succeed, another runner
-                                             failed before it did, or another runner was
-                                             the session's most-run successful one
+test_command   ran any test-family command   the fact's own runner (``runner``: the
+                                             normalised program) did not succeed (a red
+                                             phase is waste, never a contradiction),
+                                             another runner or a not-found spelling
+                                             failed before it did, or it was replaced
 requires_env   ran the subject program       an error naming the variable
 build_first    ran the subject (test) prog.  a subject failure fixed by running the build
 generated_dir  wrote under the directory     >= 2 writes under it, or a write followed by a
-                                             successful build (regenerated); a single
-                                             write is undetectable: reward 0.5
+                                             successful build that is not a lint/type
+                                             check (regenerated); a single write is
+                                             undetectable: reward 0.5
 =============  ============================  ============================================
 
 - injected & relevant: ``effect`` += 1 when the waste was absent, 0 when present;
@@ -33,14 +35,16 @@ generated_dir  wrote under the directory     >= 2 writes under it, or a write fo
   requires_env, build_first);
 - a **contradiction** (counted only when injected; reward 0): command_alias / test_command /
   build_first - the fact's value command fails with not-found or a usage error; test_command
-  also - a different runner was the session's most-run successful test command;
+  also - replaced: another normalised runner succeeded >= 2 times while the fact's own runner
+  never ran;
   requires_env - the subject ran successfully without the variable being set by the command
   or an earlier ``export``;
-- **unneeded** (counted when injected or withheld): command_alias - the subject itself ran
-  successfully; build_first - the tests passed before any build in the session;
+- **unneeded**: command_alias - the subject itself ran successfully (injected or withheld
+  sessions; retire at 2); build_first - the tests passed before any build, counted only in
+  withheld sessions and retiring once seen on 2 distinct UTC days;
 - **waste event** (counted for candidates too): test_command - another runner failed before
   the fact's own runner succeeded; generated_dir - a write under the directory was followed by
-  a successful build. Frequency-kind candidates with >= 2 sessions are observed for this;
+  a successful non-lint build. Frequency-kind candidates with >= 2 sessions are observed for this;
 - **staleness** (active test_command / generated_dir): a relevant injected or withheld session
   without new evidence adds 1 to ``stale``; new evidence resets it.
 
@@ -55,7 +59,7 @@ generated_dir  wrote under the directory     >= 2 writes under it, or a write fo
   confirming kinds both rules agree at 3 sessions;
 - one active test_command per subject: activating one retires the others;
 - active -> retired: contradictions >= 1 (requires_env, build_first: high stakes) / >= 2
-  (others); unneeded >= 2; ``effect.ucb(0.9) < [facts] retire_ucb`` (0.4); a baseline of >= 3
+  (others); unneeded as above; ``effect.ucb(0.9) < [facts] retire_ucb`` (0.4); a baseline of >= 3
   withheld relevant sessions with ``baseline.mean >= effect.mean - 0.1`` (it does not help);
   frequency kinds also after 10 stale sessions or 30 days since last mined. Retirement is
   final (``facts forget`` removes the fact; it is then never re-learned).
@@ -91,6 +95,8 @@ CONFIRMING = frozenset({"command_alias", "requires_env", "build_first"})
 HIGH_STAKES = frozenset({"requires_env", "build_first"})
 RETIRE_AFTER = {True: 1, False: 2}  # contradictions, by high stakes
 UNNEEDED_AFTER = 2  # sessions showing the fact was not needed (alias, build_first)
+UNNEEDED_DAYS = 2  # build_first: withheld unneeded sessions on this many distinct UTC days
+REPLACED_RUNS = 2  # test_command: another runner's successful runs that count as replacing it
 FREQUENCY = frozenset({"test_command", "generated_dir"})  # mined from counts, not from a fix
 FREQUENCY_SESSIONS = 5  # evidence sessions a frequency fact needs before activation
 FREQUENCY_WASTE = 1  # ... and observed waste events
@@ -176,6 +182,13 @@ def _count(entry: Mapping[str, Any], key: str) -> int:
     return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
 
 
+def _days(entry: Mapping[str, Any]) -> list[int]:
+    raw = entry.get("unneeded_days")
+    if not isinstance(raw, list):
+        return []
+    return [d for d in raw if isinstance(d, int) and not isinstance(d, bool)]
+
+
 def _evidence(entry: Mapping[str, Any]) -> int:
     raw = entry.get("sessions")
     return len({s for s in raw if isinstance(s, str)}) if isinstance(raw, list) else 0
@@ -234,7 +247,11 @@ def apply_session(
                 entry["baseline"] = _observe(baseline(entry), o.reward).to_list()
         elif st == "candidate" and fid in mined and kind in CONFIRMING:
             entry["effect"] = _observe(effect(entry), 1.0).to_list()
-        if in_play and o.unneeded:
+        if o.unneeded and kind == "build_first":
+            if fid in withheld and now is not None:  # injected sessions may owe it to the fact
+                days = _days(entry)
+                entry["unneeded_days"] = sorted({*days, int(now // 86400)})[-UNNEEDED_AFTER:]
+        elif in_play and o.unneeded:
             entry["unneeded"] = _count(entry, "unneeded") + 1
         if o.waste_event:
             entry["waste_events"] = _count(entry, "waste_events") + 1
@@ -277,7 +294,7 @@ def _transition(entry: Mapping[str, Any], st: Status, s: Settings, now: float | 
     post = effect(entry)
     if _count(entry, "contradictions") >= RETIRE_AFTER[kind in HIGH_STAKES]:
         return "retired"
-    if _count(entry, "unneeded") >= UNNEEDED_AFTER:
+    if _count(entry, "unneeded") >= UNNEEDED_AFTER or len(_days(entry)) >= UNNEEDED_DAYS:
         return "retired"
     if st == "active":
         if post.ucb(RETIRE_Q) < s.retire_ucb:
@@ -371,15 +388,65 @@ def _missing(text: str) -> bool:
 
 
 _CD = re.compile(r"cd (\S+) && (.+)")
+_INTERPRETER = re.compile(r"(?:.*/)?(?:python(?:3(?:\.\d+)?)?|py)")
+_LAUNCH_PREFIXES: tuple[tuple[str, ...], ...] = (
+    ("uv", "run"),
+    ("poetry", "run"),
+    ("pipenv", "run"),
+    ("pdm", "run"),
+    ("hatch", "run"),
+    ("pnpm", "exec"),
+    ("yarn", "exec"),
+    ("npm", "exec"),
+    ("npx",),
+    ("bunx",),
+    ("yarn",),
+)
+_SCRIPT_RUNNERS = frozenset({"npm", "pnpm", "yarn", "bun"})
+NPM_TEST = "npm-test-script"
+# Lint / type-check commands are build-family but never regenerate files.
+_CHECKERS = frozenset({"ruff", "mypy", "flake8", "eslint", "pyright", "pylint", "prettier"})
 
 
-def _runner(norm: str) -> tuple[str, str]:
-    """(run directory, program + subcommand) of a normalised command: what identifies a test
-    runner independently of its options and selected tests."""
+def runner(norm: str) -> str:
+    """The normalised program of a command, independent of how it was launched and of its
+    options, files and run directory: interpreter, ``python -m``, ``uv run``/``poetry run``/
+    ``pipenv run``, ``npx``/``pnpm exec``/``yarn`` and paths are stripped (``pytest`` for
+    ``.venv/bin/python -m pytest -q``); ``npm test``/``npm run test``/``pnpm test``/``yarn
+    test`` are one ``npm-test-script``."""
     m = _CD.fullmatch(norm)
-    if m is not None:
-        return m.group(1), miners.program_of(m.group(2))
-    return "", miners.program_of(norm)
+    words = _words(m.group(2) if m is not None else norm)
+    if len(words) >= 2 and words[0] in _SCRIPT_RUNNERS:
+        if words[1] == "test" or words[1:3] == ["run", "test"]:
+            return NPM_TEST
+    changed = True
+    while changed and words:
+        changed = False
+        if _INTERPRETER.fullmatch(words[0]):
+            words = words[2:] if words[1:2] == ["-m"] else words[1:]
+            changed = True
+            continue
+        for pre in _LAUNCH_PREFIXES:
+            if len(words) > len(pre) and tuple(words[: len(pre)]) == pre:
+                if pre == ("yarn",) and words[1] in {"run", "test"}:
+                    continue
+                words = words[len(pre) :]
+                changed = True
+                break
+    if not words:
+        return ""
+    if len(words) >= 2 and words[0] in _SCRIPT_RUNNERS and words[1:3] == ["run", "test"]:
+        return NPM_TEST
+    return posixpath.basename(words[0])
+
+
+def _checker(norm: str) -> bool:
+    """A lint or type-check run (``tsc --noEmit``, ``black --check``, ruff, mypy...)."""
+    prog = runner(norm)
+    words = _words(norm)
+    if prog in _CHECKERS:
+        return True
+    return (prog == "tsc" and "--noEmit" in words) or (prog == "black" and "--check" in words)
 
 
 @dataclass
@@ -393,9 +460,10 @@ class _State:
     built: bool = False  # build_first: the build ran after the failure
     seen: bool = False  # build_first: the subject or the build already ran
     own_ok: bool = False  # test_command: the fact's own runner succeeded
+    own_ran: bool = False  # test_command: the fact's own runner ran at all
     writes: int = 0  # generated_dir: writes under the directory
     edited: bool = False  # generated_dir: a write happened (a later build regenerates)
-    runs: dict[tuple[str, str], int] | None = None  # test_command: successful runs per runner
+    runs: dict[str, int] | None = None  # test_command: successful runs per normalised runner
 
 
 class Observer:
@@ -442,11 +510,11 @@ class Observer:
                 self._alias(st, fact, words, ok, text, missing)
             elif kind == "test_command":
                 if family == "test":
-                    self._test(st, fact, norm, ok)
+                    self._test(st, fact, norm, ok, missing)
                 if missing and _starts(words, _words(fact.value)):
                     st.contradicted = True
             elif kind == "generated_dir":
-                if family == "build" and ok and st.edited:
+                if family == "build" and ok and st.edited and not _checker(norm):
                     st.waste_event = True  # the edited files were regenerated
             elif kind == "requires_env":
                 self._env(st, fact, cmd, norm, program, ok, text)
@@ -456,20 +524,22 @@ class Observer:
             self._exported.update(miners.ASSIGN.findall(m.group(1)))
 
     @staticmethod
-    def _test(st: _State, fact: Fact, norm: str, ok: bool) -> None:
-        """Relevant: any test-family command. Waste event: another runner failed before the
-        fact's own runner succeeded."""
+    def _test(st: _State, fact: Fact, norm: str, ok: bool, missing: bool) -> None:
+        """Relevant: any test-family command. Waste event: another runner failed, or any
+        spelling failed with not-found / a usage error, before the fact's own runner
+        succeeded (a red test run of the own runner is not one)."""
         st.relevant = True
-        runner = _runner(norm)
-        own = runner == _runner(fact.value)
+        name = runner(norm)
+        own = name == runner(fact.value)
+        st.own_ran = st.own_ran or own
         if ok:
             st.runs = st.runs or {}
-            st.runs[runner] = st.runs.get(runner, 0) + 1
+            st.runs[name] = st.runs.get(name, 0) + 1
             if own:
                 st.own_ok = True
                 if st.pending:
                     st.waste_event = True
-        elif not own and not st.own_ok:
+        elif (missing or not own) and not st.own_ok:
             st.pending = True
 
     @staticmethod
@@ -528,11 +598,14 @@ class Observer:
             waste: bool | None = st.waste
             contradicted = st.contradicted
             if fact.kind == "test_command" and st.relevant:
-                runs = st.runs or {}
-                own = runs.get(_runner(fact.value), 0)
-                dominated = any(n > own for r, n in runs.items() if r != _runner(fact.value))
-                contradicted = contradicted or dominated
-                waste = st.waste_event or dominated or not st.own_ok
+                # Another runner replaced it: >= 2 successful runs while the fact's own runner
+                # never ran. Anything else (red phase, mixed runners) is never a contradiction.
+                mine = runner(fact.value)
+                replaced = not st.own_ran and any(
+                    n >= REPLACED_RUNS for r, n in (st.runs or {}).items() if r != mine
+                )
+                contradicted = contradicted or replaced
+                waste = st.waste_event or replaced or not st.own_ok
             elif fact.kind == "generated_dir" and st.relevant:
                 repeated = st.writes >= miners.GEN_MIN_PER_SESSION
                 waste = True if repeated or st.waste_event else None  # one write: unknown

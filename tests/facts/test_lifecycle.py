@@ -446,9 +446,9 @@ def _tox_session() -> Log:
 
 def test_test_command_reward_needs_its_own_command(tmp_path: Path) -> None:
     fid = fact_id(PYTEST)
-    other = Log().prompt().bash("make check", "ok").bash("pytest tests/unit", "ok")
+    other = Log().prompt().bash("make check", "ok").bash("tox -e py", "ok").bash("tox", "ok")
     o = _observe(other, tmp_path, PYTEST)[fid]
-    assert o.relevant and o.waste and o.contradicted  # a different runner dominated
+    assert o.relevant and o.waste and o.contradicted  # tox x2, own runner never ran
     own = Log().prompt().bash("python -m pytest -q tests/a.py", "1 passed")
     o = _observe(own, tmp_path, PYTEST)[fid]
     assert o.relevant and not o.waste and not o.contradicted
@@ -483,7 +483,7 @@ def test_activating_a_test_command_retires_the_old_one() -> None:
     assert [e["status"] for e in both.values()].count("active") == 1
 
 
-def test_build_first_unneeded_when_tests_pass_before_any_build(tmp_path: Path) -> None:
+def test_build_first_unneeded_needs_two_withheld_sessions_on_two_days(tmp_path: Path) -> None:
     fid = fact_id(BUILD)
     log = Log().prompt().bash("npm test", "ok").bash("npm run build").bash("npm test")
     assert _observe(log, tmp_path, BUILD)[fid].unneeded
@@ -491,9 +491,19 @@ def test_build_first_unneeded_when_tests_pass_before_any_build(tmp_path: Path) -
     assert not _observe(built, tmp_path, BUILD)[fid].unneeded
     table = _table(BUILD, status="active", effect=[9.0, 1.0, 8.0])
     obs = {fid: _observe(log, tmp_path, BUILD)[fid]}
-    lifecycle.apply_session(table, shown=(), withheld={fid: 0.1}, obs=obs, mined=set(), settings=S)
-    assert table[fid]["status"] == "active" and table[fid]["unneeded"] == 1  # withheld counts
-    lifecycle.apply_session(table, shown={fid}, withheld={}, obs=obs, mined=set(), settings=S)
+    day = 86400.0
+
+    def run(shown: set[str], withheld: dict[str, float], now: float) -> None:
+        lifecycle.apply_session(
+            table, shown=shown, withheld=withheld, obs=obs, mined=set(), settings=S, now=now
+        )
+
+    for _ in range(3):
+        run({fid}, {}, 10 * day)  # injected sessions never count (the fact may have helped)
+    run(set(), {fid: 0.1}, 10 * day)
+    run(set(), {fid: 0.1}, 10 * day + 3600)  # same day
+    assert table[fid]["status"] == "active"
+    run(set(), {fid: 0.1}, 11 * day + 60)
     assert table[fid]["status"] == "retired"
 
 
@@ -568,3 +578,81 @@ def test_fold_observes_frequency_candidates(tmp_path: Path) -> None:
     after = json.loads(_store(home).read_text(encoding="utf-8"))["facts"][fid]
     assert after["waste_events"] == 1 and len(after["sessions"]) == 5
     assert after["status"] == "active"
+
+
+# --------------------------------------------------------------------------- fix round 2
+@pytest.mark.parametrize(
+    "session",
+    [
+        [(".venv/bin/python -m pytest tests/a.py", True), ("uv run pytest -x", True)],
+        [("pytest -q", True), ("pytest tests/b.py", True), ("poetry run pytest", True)],
+        [("python3.12 -m pytest", False), ("python -m pytest -q", False), ("tox", True)],
+        [("make check", True), ("make check", True), ("pytest -q", False)],
+    ],
+)
+def test_spellings_of_the_same_runner_and_red_phase_never_retire(
+    tmp_path: Path, session: list[tuple[str, bool]]
+) -> None:
+    fid = fact_id(PYTEST)
+    log = Log().prompt()
+    for cmd, ok in session:
+        log.bash(cmd, "ok" if ok else "1 failed", err=not ok)
+    obs = _observe(log, tmp_path, PYTEST)
+    assert obs[fid].relevant and not obs[fid].contradicted
+    table = _table(PYTEST, status="active", effect=[9.0, 1.0, 8.0])
+    for _ in range(2):
+        lifecycle.apply_session(table, shown={fid}, withheld={}, obs=obs, mined=set(), settings=S)
+    assert table[fid]["status"] == "active"
+
+
+def test_npm_test_script_spellings_are_one_runner(tmp_path: Path) -> None:
+    fact = _fact("test_command", "tests", "npm test")
+    fid = fact_id(fact)
+    log = Log().prompt().bash("npm run test", "ok").bash("pnpm test", "ok").bash("yarn test")
+    o = _observe(log, tmp_path, fact)[fid]
+    assert not o.contradicted and not o.waste
+    npx = _fact("test_command", "tests", "npx jest")
+    log = Log().prompt().bash("jest --ci", "ok").bash("pnpm exec jest", "ok")
+    o = _observe(log, tmp_path, npx)[fact_id(npx)]
+    assert not o.contradicted and not o.waste
+
+
+def test_red_phase_is_waste_not_contradiction(tmp_path: Path) -> None:
+    fid = fact_id(PYTEST)
+    log = Log().prompt().bash("python -m pytest -q", "2 failed", err=True)
+    o = _observe(log, tmp_path, PYTEST)[fid]
+    assert o.relevant and o.waste and not o.contradicted
+
+
+def test_regenerated_ignores_lint_and_typecheck(tmp_path: Path) -> None:
+    fid = fact_id(GEN)
+    for check in ("ruff check .", "mypy src", "tsc --noEmit", "black --check .", "eslint ."):
+        log = Log().prompt().call("Edit", {"file_path": f"{PROJECT}/dist/a.js"}).bash(check)
+        assert not _observe(log, tmp_path, GEN)[fid].waste_event, check
+    log = Log().prompt().call("Edit", {"file_path": f"{PROJECT}/dist/a.js"}).bash("tsc -p .")
+    assert _observe(log, tmp_path, GEN)[fid].waste_event
+
+
+@pytest.mark.parametrize(
+    ("cmd", "name"),
+    [
+        ("python -m pytest -q", "pytest"),
+        (".venv/bin/python -m pytest tests/a.py", "pytest"),
+        ("python3.12 -m pytest", "pytest"),
+        ("uv run pytest -x", "pytest"),
+        ("poetry run python -m pytest", "pytest"),
+        (".venv/bin/pytest", "pytest"),
+        ("cd pkg && pytest", "pytest"),
+        ("npx jest --ci", "jest"),
+        ("pnpm exec vitest run", "vitest"),
+        ("yarn jest", "jest"),
+        ("npm test", lifecycle.NPM_TEST),
+        ("npm run test -- --watch=false", lifecycle.NPM_TEST),
+        ("yarn test", lifecycle.NPM_TEST),
+        ("pnpm test", lifecycle.NPM_TEST),
+        ("tox -e py", "tox"),
+        ("make check", "make"),
+    ],
+)
+def test_runner_identity(cmd: str, name: str) -> None:
+    assert lifecycle.runner(cmd) == name

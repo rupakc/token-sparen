@@ -85,6 +85,23 @@ _CRED_OPTION = re.compile(
     r"(?:[-_][a-z0-9]+)*",
     re.IGNORECASE,
 )
+# A credential-named option, glued spelling: the name (dashes and underscores dropped) ends with a
+# credential word or contains "bearer" (``--dbpassword``, ``--webhooksecret``, ``--sshkey``).
+# Conservative: ``--monkey x`` or ``--sortkey x`` are dropped too (a false drop only loses a fact).
+_CRED_SUFFIXES = (
+    "pass",
+    "passwd",
+    "pwd",
+    "password",
+    "passphrase",
+    "secret",
+    "token",
+    "key",
+    "apikey",
+    "cred",
+    "creds",
+    "credentials",
+)
 _AUTH_SCHEME = re.compile(r"(?:(?i:bearer)|Basic)[ :=]+[^ ]")
 _DRIVE = re.compile(r"^[A-Za-z]:")
 _SIDE_EFFECTS = re.compile(r"(?i:push|deploy|release|publish|upload|install)")
@@ -189,6 +206,13 @@ def _long_secret(text: str) -> bool:
     return False
 
 
+def _glued_credential(name: str) -> bool:
+    if not name.startswith("-"):
+        return False
+    bare = name.lower().replace("-", "").replace("_", "")
+    return bare.endswith(_CRED_SUFFIXES) or "bearer" in bare
+
+
 def _clean(text: object, project_dir: str | None) -> bool:
     if not isinstance(text, str) or not 0 < len(text) <= MAX_CHARS:
         return False
@@ -208,8 +232,8 @@ def _clean(text: object, project_dir: str | None) -> bool:
     for i, token in enumerate(tokens):
         name = token.split("=", 1)[0].split(":", 1)[0]
         has_value = name != token or i + 1 < len(tokens)
-        if has_value and _CRED_OPTION.fullmatch(name):
-            return False  # --token hunter2, --password=x, --auth-header Bearer ...
+        if has_value and (_CRED_OPTION.fullmatch(name) or _glued_credential(name)):
+            return False  # --token hunter2, --password=x, --dbpassword x, --auth-header ...
     if any(posixpath.basename(t) in _PW_CLIENTS for t in tokens):
         if any(_SHORT_PW.fullmatch(t) for t in tokens):
             return False  # mysql -pSECRET

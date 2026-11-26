@@ -363,6 +363,16 @@ def test_sanitize_option_names_use_word_boundaries(good: str) -> None:
         "app --encryptionkey abc",
         "app --api-token abc",
         "app --master_key abc",
+        "app --dbpassword hunter2",
+        "app --webhooksecret s",
+        "app --bearertoken t",
+        "app --adminpass p",
+        "app --userpwd p",
+        "app --signingkey k",
+        "app --sshkey k",
+        "app --idtoken t",
+        "app --npmtoken t",
+        "app --mybearerx t",
     ],
 )
 def test_sanitize_rejects_joined_credential_names(bad: str) -> None:
@@ -372,3 +382,11 @@ def test_sanitize_rejects_joined_credential_names(bad: str) -> None:
 @pytest.mark.parametrize("good", ["app --passthrough x", "app --privatekeys-dir", "app --tokenize"])
 def test_sanitize_joined_names_keep_word_boundaries(good: str) -> None:
     assert sanitize(_f(good)) is not None
+
+
+def test_glued_suffix_rule_is_conservative() -> None:
+    """Accepted false drop: an option whose name merely ends with ``key``/``pass`` loses the
+    fact (``--monkey x``); a name that does not end with a credential word is kept."""
+    assert sanitize(_f("app --monkey x")) is None
+    assert sanitize(_f("app --keyword x")) is not None
+    assert sanitize(_f("app --tokens-per-second 3")) is not None

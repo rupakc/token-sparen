@@ -392,9 +392,11 @@ a required variable or a build step after 3 sessions that showed the failure and
 command or generated directory after 5 sessions and at least one observed failure it would have
 prevented. Only one test command is active at a time. A fact is retired for good when it looks
 wrong (its command fails with "not found" or a usage error after it was injected, or another
-test runner became the one actually used: a required variable or build step on the first such
-session, other facts on the second), when it looks unneeded twice (the original command works
-again, tests pass without the build), when sessions show it does not prevent the failure it
+test runner replaced it: a required variable or build step on the first such session, other
+facts on the second; different spellings of the same runner, such as `python -m pytest` and
+`uv run pytest`, count as one, and failing tests never count against a test command), when it
+looks unneeded (the original command works again in two sessions; tests passed without the build
+in sessions where the fact was left out, on two different days), when sessions show it does not prevent the failure it
 targets or that sessions without it do as well, and, for test commands and generated
 directories, when it has not been seen for 10 relevant sessions or 30 days. In about one in ten
 sessions (`[facts] withhold_floor = 0.1`) an active fact is deliberately left out, so its effect

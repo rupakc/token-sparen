@@ -1206,3 +1206,16 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   a new epoch; a resume sends only unsent ids within the remaining slots/tokens). Failed mining
   restores the staged facts log into the overlay (`lifecycle.restore_log`). Docs: recency-ranked.
   Glued credential names: api/auth/session token, secret/master/encryption key.
+- Fix round 2 (coordinator rulings, same day): `lifecycle.runner(norm)` = normalised program
+  only (interpreters incl. `.venv/bin/python`, `python -m X` -> X, uv/poetry/pipenv/pdm/hatch
+  run, npx/bunx/pnpm exec/yarn exec/npm exec/`yarn X`, path basename; npm|pnpm|yarn|bun test and
+  `run test` -> `npm-test-script`; cd prefix dropped). test_command contradiction only when
+  replaced: another runner >= 2 successful runs AND the own runner did not run at all; own
+  runner never succeeding is waste (0), never a contradiction (red phase retires only via
+  ucb). Waste event also on a not-found/usage failure of any spelling before the own success.
+  Sanitiser: any `-`-option whose name (dashes/underscores dropped, lowercased) ends with
+  pass|passwd|pwd|password|passphrase|secret|token|key|apikey|cred|creds|credentials or
+  contains `bearer` is a credential when it has a value (accepted false drop: `--monkey x`).
+  generated_dir regenerated ignores ruff/mypy/flake8/eslint/pyright/pylint/prettier,
+  `tsc --noEmit`, `black --check`. build_first unneeded counts only in withheld sessions and
+  retires once seen on 2 distinct UTC days (`unneeded_days`); alias unneeded unchanged.

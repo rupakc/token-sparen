@@ -47,7 +47,12 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code 
   them; retirement when the withheld baseline does as well; test-command and generated-dir
   facts need 5 sessions plus an observed waste event and go stale (10 relevant sessions or 30
   days); resume injects only facts not yet shown; a failed mining step keeps the session's
-  facts log; more glued credential option names rejected.
+  facts log; more glued credential option names rejected. Test runners are compared by
+  normalised program (`python -m pytest` = `uv run pytest` = `pytest`; npm/pnpm/yarn test =
+  one test script), red runs are waste not contradictions, and only a runner that replaced
+  the fact's (>= 2 runs while it never ran) contradicts it. Any option whose name ends with a
+  credential word (`--dbpassword`, `--sshkey`, `--npmtoken`) or contains `bearer` is treated
+  as a secret.
 - CLI: `stats`, `show`, `run`, `doctor`, `session disable|enable`, `config set`,
   `statusline`, `extensions`, `fold`, `replay`, `ope`, `facts`; placeholder for `prune` (M3).
 - Trusted extension loading (entry points and content-hash-trusted drop-ins), a compressor
