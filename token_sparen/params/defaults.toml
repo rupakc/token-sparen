@@ -266,3 +266,4 @@ allow_override = false
 # "insufficient" (constraint_ok = null). User-only (never from a project's token-sparen.toml).
 max_unsupported_trim = 0.2  # share of the target's trimming mass the log cannot support
 min_outcome_coverage = 0.8  # share of logged trimming decisions with a settled outcome
+min_trims = 60  # logged trimming decisions needed before any verdict (an exact bound also applies)

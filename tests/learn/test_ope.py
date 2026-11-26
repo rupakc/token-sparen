@@ -561,6 +561,7 @@ def test_ope_thresholds_are_user_only(tmp_path: Path) -> None:
     env = {"TOKEN_SPAREN_HOME": str(home)}
     assert load_config(proj, env).get("ope.min_outcome_coverage") == 0.8
     assert load_config(proj, env).get("ope.max_unsupported_trim") == 0.2
+    assert load_config(proj, env).get("ope.min_trims") == 60
     (proj / "token-sparen.toml").write_text("[ope]\nmin_outcome_coverage = 0.1\n", "utf-8")
     assert load_config(proj, env).get("ope.min_outcome_coverage") == 0.8
     (home / "config.toml").write_text("[ope]\nmin_outcome_coverage = 0.5\n", "utf-8")
@@ -602,3 +603,69 @@ def test_ope_cli_engine_snapshot_joins_outcomes_across_rotation(
         assert cli.main([*args, "--target", target, "--out", str(out)]) == 0
         point = json.loads(out.read_text(encoding="utf-8"))["points"]["compression"]
         assert point["logged"] == 12 and point["regret_known_fraction"] == 1.0, target
+
+
+# --------------------------------------------------------------------------- fix round 2
+@pytest.mark.parametrize("n_trims", [1, 3, 10, 40])
+def test_few_zero_regret_trims_are_insufficient(n_trims: int) -> None:
+    """A collapsed [0, 0] bootstrap must not certify a target on a handful of trims."""
+    log, regrets = _mixed_log(2 * n_trims, 0.0, 1.0)
+    res = ope.evaluate(log, StaticPolicy({}), regrets=regrets, n_boot=200)["compression"]
+    assert res["constraint_status"] == "insufficient" and res["constraint_ok"] is None
+
+
+def test_min_trims_is_a_parameter_and_the_exact_bound_still_applies() -> None:
+    log, regrets = _mixed_log(2 * 40, 0.0, 1.0)  # 40 trims, none regretted
+    res = ope.evaluate(log, StaticPolicy({}), regrets=regrets, n_boot=200, min_trims=1)
+    point = res["compression"]
+    # bootstrap collapses to [0, 0]; the exact bound for 0/40 is 1 - 0.05 ** (1 / 40) ~ 0.072
+    assert point["regret_per_trim"]["pessimistic"]["ips"]["ci95"] == [0.0, 0.0]
+    assert point["constraint_upper"] == pytest.approx(1 - 0.05 ** (1 / 40), abs=1e-4)
+    assert point["constraint_ok"] is False and point["constraint_status"] == "violated"
+
+
+def test_probe_d_many_safe_trims_are_ok() -> None:
+    log, regrets = _mixed_log(2 * 2000, 0.0, 1.0)
+    res = ope.evaluate(log, StaticPolicy({}), regrets=regrets, n_boot=100)["compression"]
+    assert res["constraint_status"] == "ok" and res["constraint_ok"] is True
+    assert res["constraint_upper"] == pytest.approx(1 - 0.05 ** (1 / 2000), abs=1e-4)
+
+
+class AggressiveTarget:
+    def probs(self, rec: DecisionRecord) -> Mapping[str, float] | None:
+        return {"off": 0.1, "aggressive": 0.9}
+
+
+def test_probe_f_unseen_arm_of_a_stochastic_logger_is_unsupported() -> None:
+    """The logger (off / standard at 0.5) never picked aggressive: the target's 0.9 on it is
+    unsupported mass, not an unbiased zero."""
+    log, regrets = _mixed_log(400, 0.0, 1.0)
+    res = ope.evaluate(log, AggressiveTarget(), regrets=regrets, n_boot=50)["compression"]
+    assert res["unsupported_trim_fraction"] == pytest.approx(1.0)  # all trimming mass unseen
+    assert res["constraint_status"] == "insufficient" and res["constraint_ok"] is None
+
+
+def test_arm_support_is_per_point_and_bucket() -> None:
+    log, regrets = _mixed_log(400, 0.0, 1.0)  # bucket CTX[0] only
+    log += [_rec(f"x{i}", "aggressive", 0.5, CTX[1]) for i in range(10)]
+    regrets.update({f"x{i}": 0.0 for i in range(10)})
+    res = ope.evaluate(log, AggressiveTarget(), regrets=regrets, n_boot=20)["compression"]
+    # aggressive is seen in CTX[1] only: the CTX[0] rows' 0.9 stays unsupported
+    assert res["unsupported_trim_fraction"] == pytest.approx(400 / 410, abs=1e-6)
+
+
+def test_ope_cli_reads_min_trims(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.toml").write_text("[ope]\nmin_trims = 100000\n", "utf-8")
+    monkeypatch.setenv("TOKEN_SPAREN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    log, regrets = _mixed_log(400, 0.0, 1.0)
+    path = home / "projects" / KEY / "decisions.jsonl"
+    path.parent.mkdir(parents=True)
+    rows = [{**asdict(r), "regret": regrets.get(r.decision_id)} for r in log]
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    out = tmp_path / "priv" / "e3.json"
+    assert cli.main(["ope", "--log", str(path), "--target", "static", "--out", str(out)]) == 0
+    point = json.loads(out.read_text(encoding="utf-8"))["points"]["compression"]
+    assert point["constraint_status"] == "insufficient"

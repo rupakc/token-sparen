@@ -942,14 +942,14 @@ def _tau_config() -> dict[str, float]:
     return out
 
 
-def _ope_thresholds() -> dict[str, float]:
+def _ope_thresholds() -> dict[str, Any]:
     """``[ope]`` thresholds of the merged config (user-only keys; finite numbers only)."""
     cfg = load_config(Path.cwd(), os.environ)
-    out: dict[str, float] = {}
-    for key in ("max_unsupported_trim", "min_outcome_coverage"):
+    out: dict[str, Any] = {}
+    for key in ("max_unsupported_trim", "min_outcome_coverage", "min_trims"):
         value = cfg.get(f"ope.{key}")
         if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value):
-            out[key] = float(value)
+            out[key] = int(value) if key == "min_trims" else float(value)
     return out
 
 

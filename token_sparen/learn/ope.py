@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from token_sparen.events import SessionCtx
+from token_sparen.learn.beta import Beta
 from token_sparen.learn.engine import ERROR_BUCKET, Engine
 from token_sparen.learn.features import static_policy
 from token_sparen.learn.policy import (
@@ -480,6 +481,19 @@ def load_log(paths: Iterable[Path]) -> tuple[list[DecisionRecord], dict[str, flo
 
 MAX_UNSUPPORTED_TRIM = 0.2
 MIN_OUTCOME_COVERAGE = 0.8
+MIN_TRIMS = 60
+EXACT_Q = 0.95
+
+
+def exact_upper(regret_sum: float, trims: int, q: float = EXACT_Q) -> float:
+    """Exact (Clopper-Pearson-style) upper bound of a per-trim regret rate: the ``q`` quantile
+    of Beta(k + 1, n - k) with k = the (fractional, pessimistic) regret sum over n trims; 1
+    when every trim is regretted or there are none. For k = 0 it is 1 - (1 - q) ** (1 / n)
+    (~ 3 / n, the rule of three)."""
+    k = min(float(trims), max(0.0, regret_sum))
+    if trims <= 0 or trims - k <= 0.0:
+        return 1.0
+    return Beta(k + 1.0, trims - k).quantile(q)
 
 
 @dataclass
@@ -499,7 +513,19 @@ def _trim_rows(
     regrets: Mapping[str, float],
     clip: float,
 ) -> tuple[list[_TrimRow], float, float]:
-    """(rows, target trimming mass, unsupported target trimming mass), summed over decisions."""
+    """(rows, target trimming mass, unsupported target trimming mass), summed over decisions.
+
+    Support: a deterministic logger's row (propensity ~1) supports only its logged arm; a
+    stochastic logger's row supports a trimming arm only if the log shows that arm chosen with
+    propensity > 0 in the same (point, bucket) somewhere: an arm the logger never picked there
+    (ladder-locked, say) is unsupported mass, never an unbiased zero."""
+    seen: set[tuple[str, str, str]] = {
+        (r.point, r.bucket, r.arm)
+        for r in log
+        if isinstance(r.propensity, int | float)
+        and math.isfinite(r.propensity)
+        and r.propensity > 0.0
+    }
     rows: list[_TrimRow] = []
     total = unsupported = 0.0
     for rec in log:
@@ -516,8 +542,10 @@ def _trim_rows(
             continue
         if p >= DETERMINISTIC:  # only the logged arm is supported
             supported = {a: q for a, q in trim_pi.items() if a == rec.arm}
-            unsupported += mass - sum(supported.values())
-            trim_pi = supported
+        else:
+            supported = {a: q for a, q in trim_pi.items() if (rec.point, rec.bucket, a) in seen}
+        unsupported += mass - sum(supported.values())
+        trim_pi = supported
         w = min(clip, float(probs.get(rec.arm, 0.0)) / p)
         trims = rec.arm != point.safe_arm
         rows.append(
@@ -597,6 +625,7 @@ def regret_per_trim(
     seed: int = 0,
     max_unsupported_trim: float = MAX_UNSUPPORTED_TRIM,
     min_outcome_coverage: float = MIN_OUTCOME_COVERAGE,
+    min_trims: int = MIN_TRIMS,
 ) -> dict[str, Any]:
     """The target's regret per trimming decision (target regret mass / target trimming mass;
     IPS and DR ratio estimators, bootstrap 95 % CIs) in two variants: ``optimistic`` estimates
@@ -605,7 +634,10 @@ def regret_per_trim(
     bound <= ``tau``; None with status ``insufficient`` when more than
     ``max_unsupported_trim`` of the target's trimming mass is unsupported, fewer than
     ``min_outcome_coverage`` of the logged trimming decisions have an outcome, or no ratio can
-    be formed; status ``no_trims`` (ok) when the target never trims."""
+    be formed, or fewer than ``min_trims`` trimming decisions were logged; status ``no_trims``
+    (ok) when the target never trims. The pessimistic upper bound is never below
+    ``exact_upper`` of the logged trims (k = pessimistic regret sum, n = settled + unsettled
+    trims): a bootstrap over a few all-zero rows collapses to [0, 0]."""
     rows, total, unsupported = _trim_rows(log, as_target(target), regrets or {}, clip)
     trimming = [r for r in rows if r.trims]
     settled = sum(1 for r in trimming if r.regret is not None)
@@ -634,12 +666,16 @@ def regret_per_trim(
     elif (
         unsupported_frac > max_unsupported_trim
         or coverage < min_outcome_coverage
+        or len(trimming) < min_trims
         or pess["ips"] is None
         or pess["dr"] is None
     ):
         status, ok = "insufficient", None
     else:
-        upper = max(float(pess[k]["ci95"][1]) for k in ("ips", "dr"))
+        k = sum(1.0 if r.regret is None else r.regret for r in trimming)
+        upper = max(
+            exact_upper(k, len(trimming)), *(float(pess[e]["ci95"][1]) for e in ("ips", "dr"))
+        )
         ok = upper <= tau
         status = "ok" if ok else "violated"
     n = len(rows) or 1
@@ -664,6 +700,7 @@ def evaluate(
     tau: Mapping[str, float] | None = None,
     max_unsupported_trim: float = MAX_UNSUPPORTED_TRIM,
     min_outcome_coverage: float = MIN_OUTCOME_COVERAGE,
+    min_trims: int = MIN_TRIMS,
 ) -> dict[str, dict[str, Any]]:
     """Aggregates per decision point: n, support, clipping, and the IPS/SNIPS/DR estimates of
     savings, regret per decision and the combined objective (the top-level
@@ -694,6 +731,7 @@ def evaluate(
             seed=seed,
             max_unsupported_trim=max_unsupported_trim,
             min_outcome_coverage=min_outcome_coverage,
+            min_trims=min_trims,
         )
         out[name] = {
             "logged": len(rows),
