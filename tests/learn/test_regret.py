@@ -720,6 +720,7 @@ def test_read_dedupe_pointer_tracked_with_engine(tmp_path: Path) -> None:
     rec2 = Recorder()
     _handle(tmp_path, ev, rec2)
     assert rec2.regrets() == [(did, 1.0)]
+    assert _state(tmp_path)["reads"] == {}  # regret: the pointed-at read is forgotten
 
 
 def test_pretrim_lookup_uses_normalised_command(tmp_path: Path) -> None:

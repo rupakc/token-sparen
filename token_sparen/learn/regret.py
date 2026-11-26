@@ -471,12 +471,15 @@ class RegretDetector:
         kept: str,
         ctype: str | None,
         files: Iterable[str] | None = None,
+        read_hash: str | None = None,
     ) -> list[Payout]:
         """Start watching a trimming decision; returns the payouts of decisions evicted to keep
         the table at 200 (their best regret so far, usually 0). Never raises."""
         try:
             entry = _entry(point, bucket, arm, recovery_id, command_sig, full, kept, ctype, files)
             entry["decided_turn"] = ctx.turn
+            if read_hash is not None:
+                entry["read_hash"] = read_hash  # read de-dupe: forget the read on regret
             return self._track(ctx, decision_id, entry)
         except Exception as exc:  # noqa: BLE001 - bookkeeping must never break a hook
             log_error(self.env, "regret", f"track: {type(exc).__name__}: {exc}")
@@ -503,8 +506,10 @@ class RegretDetector:
 
     def _process(
         self, table: dict[str, Any], info: _Info, turn: int, *, settle: bool, final: bool
-    ) -> tuple[list[Payout], list[Payout], bool]:
-        """Apply one event to the table in place: (signals, payouts, changed)."""
+    ) -> tuple[list[Payout], list[Payout], bool, set[str]]:
+        """Apply one event to the table in place: (signals, payouts, changed, read hashes of
+        regretted read de-dupe decisions)."""
+        forget: set[str] = set()
         signals: list[Payout] = []
         payouts: list[Payout] = []
         changed = False
@@ -538,6 +543,9 @@ class RegretDetector:
             best = _best(entry)
             if value > 0.0:
                 signals.append((did, value))
+                read_hash = entry.get("read_hash")
+                if isinstance(read_hash, str):
+                    forget.add(read_hash)
                 if value > best:
                     entry["best"] = best = value
                     changed = True
@@ -545,7 +553,7 @@ class RegretDetector:
                 payouts.append((did, best))
                 del table[did]
                 changed = True
-        return signals, payouts, changed
+        return signals, payouts, changed, forget
 
     def _apply(self, path: Path, info: _Info, turn: int | None, settle: bool, final: bool) -> Any:
         """Lock-free pre-check, then (only if something changes) one locked update.
@@ -557,14 +565,21 @@ class RegretDetector:
             if not info.read_tokens:
                 return [], []
             table = {}
-        _, _, changed = self._process(table, info, now, settle=settle, final=final)
+        _, _, changed, _ = self._process(table, info, now, settle=settle, final=final)
         if not changed and not info.read_tokens:
             return [], []
         out: dict[str, list[Payout]] = {"signals": [], "payouts": []}
 
         def apply(state: dict[str, Any]) -> dict[str, Any]:
             cur = _int(state.get("turn")) if turn is None else turn
-            sig, payouts, _ = self._process(_table(state), info, cur, settle=settle, final=final)
+            table = _table(state)
+            sig, payouts, _, forget = self._process(table, info, cur, settle=settle, final=final)
+            reads = state.get("reads")
+            if forget and isinstance(reads, dict):
+                for key in [
+                    k for k, v in reads.items() if isinstance(v, dict) and v.get("p") in forget
+                ]:
+                    del reads[key]
             _bump(state, "recovery_read_tokens", info.read_tokens)
             _bump(state, "regrets", sum(1 for _, v in payouts if v > 0))
             out["signals"], out["payouts"] = sig, payouts

@@ -151,6 +151,7 @@ def handle_post_tool(
             and prior.get("sha1") == sha1
             and _turn(prior, "turn") >= _turn(state, "last_compact_turn")
             and turn - _turn(prior, "turn") <= max_gap
+            and prior.get("pointed") is not True  # a pointer is served once per stored read
         ):
             found["turn"] = _turn(prior, "turn")
             found["now"] = turn
@@ -198,7 +199,7 @@ def handle_post_tool(
     decisions.append(event.project_key, rec, cfg, env, "read_dedupe")
     if not replaced:
         return Action()
-    _count(event, env, before - after)
+    _count(event, env, before - after, key)
     evicted = regret.RegretDetector(cfg, env).track(
         sctx,
         decision.decision_id,
@@ -211,6 +212,7 @@ def handle_post_tool(
         kept="",
         ctype=None,
         files=[file_path],
+        read_hash=phash,
     )
     regret.pay(policy, evicted)
     regret.reward_savings(
@@ -227,10 +229,16 @@ def handle_post_tool(
     return Action(replace_output=pointer)
 
 
-def _count(event: Event, env: Mapping[str, str], removed: int) -> None:
+def _count(event: Event, env: Mapping[str, str], removed: int, key: str) -> None:
+    """Ledger counters, and mark the read as pointed at: the next identical read is delivered
+    in full (the agent asked again, so the pointer did not serve it) and refreshes the entry."""
+
     def apply(state: dict[str, Any]) -> None:
         for name, inc in (("dedupes", 1), ("tokens_removed", removed)):
             state[name] = _turn(state, name) + inc
+        entry = _reads(state).get(key)
+        if isinstance(entry, dict):
+            entry["pointed"] = True
 
     try:
         _update(event, env, apply)

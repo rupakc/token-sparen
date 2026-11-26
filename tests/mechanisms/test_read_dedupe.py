@@ -135,9 +135,10 @@ def test_read_dedupe_pointer_when_unchanged(tmp_path: Path) -> None:
     assert rec["point"] == "read_dedupe" and rec["arm"] == "pointer"
     assert rec["tokens_after"] < rec["tokens_before"] and rec["tool_name"] == "Read"
     assert rec["recovery_id"] is None
-    # the pointer keeps the original turn; the entry is not refreshed
-    _prompt(tmp_path)
-    assert _read(tmp_path, path).replace_output == POINTER.format(n=1)
+    # a pointer is served once: the next identical read is delivered and refreshes the entry
+    _prompt(tmp_path)  # turn 4
+    assert _read(tmp_path, path).is_noop()
+    assert _read(tmp_path, path).replace_output == POINTER.format(n=4)
     assert _overlay(tmp_path)["dedupes"] == 2
 
 
@@ -336,3 +337,12 @@ def test_read_dedupe_fast(tmp_path: Path) -> None:
     best, act = best_of(lambda: _read(tmp_path, path, cfg=cfg), 5)
     assert act.replace_output is not None
     assert best < 0.025 * perf_factor()
+
+
+def test_pointer_is_served_once_then_full_read_refreshes(tmp_path: Path) -> None:
+    f = _file(tmp_path)
+    assert _read(tmp_path, f).replace_output is None  # first read: recorded
+    assert _read(tmp_path, f).replace_output is not None  # identical re-read: pointer
+    assert _read(tmp_path, f).replace_output is None  # the agent asked again: deliver it
+    third = _read(tmp_path, f)  # the full read refreshed the entry: a pointer again
+    assert third.replace_output == POINTER.format(n=0)
