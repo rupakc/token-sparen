@@ -24,6 +24,9 @@
    stats; a normalised command (``regret.event_signature``) with >= 5 trimming compression
    decisions, mean ``tokens_after / tokens_before`` <= 0.4 and no regret ever becomes
    ``{"lines": 120}`` (at most 200, least recently seen dropped); a regret removes it;
+5b. **outcome backfill**: staged outcome rows whose live ``decisions.jsonl`` outcome line was
+   lost (busy or failing log) are appended, deduplicated by decision id against both log
+   generations (the log's lock is taken alone, after the pre-trim step);
 6. clears ``folding`` and sets ``folded_at``.
 
 Idempotent and crash-safe: every target document records the fold ids it applied (last 200),
@@ -53,8 +56,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-from token_sparen.config import log_error, state_home
-from token_sparen.learn import breaker, pending
+from token_sparen.config import Config, log_error, state_home
+from token_sparen.learn import breaker, decisions, pending
 from token_sparen.learn.beta import Beta, Evidence
 from token_sparen.learn.features import ANY_BUCKET, FEATURE_KEYS, backoff_keys
 from token_sparen.learn.hierarchy import (
@@ -125,6 +128,7 @@ class FoldReport:
     cells: int = 0  # session evidence cells merged into the project
     global_cells: int = 0  # (point, bucket, arm, kind) cells updated in the global store
     outcomes: int = 0  # settled regret outcomes consumed
+    backfilled: int = 0  # outcome lines the live hook failed to log, appended by the fold
     candidates: int = 0  # pre-trim candidates after the fold
     aged: int = 0  # global entries halved for age
     skipped: int = 0  # invalid session evidence entries (point / bucket / arm) not merged
@@ -397,6 +401,7 @@ def _fold(
         _breaker_and_project(rep, fid, cells, outcomes, pdir, params, now, cap, env, timeout)
         _global(rep, fid, cells, home, key, params, now, cap, env, timeout)
         _pretrim(rep, fid, outcomes, pdir, params, now, env, timeout)
+        rep.backfilled = _backfill(staged.get("outcomes"), pdir, params, env)
 
         # Clear and un-index under one overlay lock: a hook that adds evidence either ran
         # before (the re-check sees it and keeps the entry) or runs after (its own index add
@@ -592,6 +597,55 @@ def _age(points: dict[str, Any], now: float, max_age: float) -> int:
 
 
 # --------------------------------------------------------------------------- pre-trim
+_OUTCOME_MARK = b'"kind": "outcome"'
+
+
+def _logged_outcomes(pdir: Path) -> set[str]:
+    """Decision ids with an outcome line in the decision log (both rotation generations)."""
+    seen: set[str] = set()
+    for path in (pdir / DECISIONS_FILE, pdir / (DECISIONS_FILE + ".1")):
+        try:
+            fh = path.open("rb")
+        except OSError:
+            continue
+        with fh:
+            for raw in fh:
+                if _OUTCOME_MARK not in raw:
+                    continue
+                try:
+                    rec = json.loads(raw.decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                did = rec.get("decision_id") if isinstance(rec, dict) else None
+                if isinstance(did, str):
+                    seen.add(did)
+    return seen
+
+
+def _backfill(
+    raw: object, pdir: Path, params: Mapping[str, Any] | None, env: Mapping[str, str]
+) -> int:
+    """Step 5b: outcome lines for staged ``regret_outcomes`` rows whose live write was lost (a
+    busy or failing decision log), deduplicated by decision id against both log generations.
+    The decision log's own lock is taken alone (hooks never hold it while waiting for another
+    lock). Returns the lines appended."""
+    rows = [r for r in raw if isinstance(r, list) and len(r) >= 5] if isinstance(raw, list) else []
+    if not rows:
+        return 0
+    seen = _logged_outcomes(pdir)
+    recs: list[dict[str, Any]] = []
+    for row in rows:
+        did, value = row[0], _num(row[4])
+        if not isinstance(did, str) or value is None or did in seen:
+            continue
+        sig = row[6] if len(row) > 6 and isinstance(row[6], str) else "unknown"
+        recs.append(decisions.outcome(did, value, sig))
+        seen.add(did)
+    cfg = Config(data=dict(params) if params else {})
+    decisions.append_outcomes(pdir, recs, cfg, env, "fold")
+    return len(recs)
+
+
 def _head_id(path: Path) -> str:
     try:
         with path.open("rb") as fh:

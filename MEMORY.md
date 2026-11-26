@@ -1079,3 +1079,4 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - `regret_known_fraction` denominator = evaluated non-safe-arm decisions (1.0 when none).
 - `ope --target engine-snapshot` reads every log once for the outcome join (global by decision id, across rotation generations and files), then maps each decision to its project's engine.
 - `defaults.toml [learn.hold]` lists `compression`, `pretrim`, `read_dedupe = false` so `token-sparen config set learn.hold.<point> true` (which only accepts known keys) can hold a point for one session.
+- Fold step 5b backfills outcome lines for staged `regret_outcomes` rows missing from `decisions.jsonl` / `.jsonl.1` (dedupe by decision id; `FoldReport.backfilled`), so a busy or failing live write loses nothing. The live write stays primary.

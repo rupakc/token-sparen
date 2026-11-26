@@ -240,3 +240,74 @@ def test_cli_show_marks_a_recovery_read(tmp_path: Path) -> None:
     d.prompt()  # the next turn boundary settles the full regret
     out = _outcomes(d.home)[did]
     assert out["regret"] == 1.0 and out["signal"] == "recovery_read"
+
+
+def test_fold_backfills_outcomes_the_live_write_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import types
+
+    from token_sparen.learn import decisions
+    from token_sparen.store import jsonl, jsonstore
+
+    def busy(*args: Any, **kwargs: Any) -> None:
+        raise jsonstore.StoreBusy("decisions.jsonl busy")
+
+    # only the outcome writer fails (decision lines go through jsonl.append directly)
+    lossy = types.SimpleNamespace(append=jsonl.append, append_many=busy)
+
+    d = _driver(tmp_path)
+    d.prompt()
+    _, rid = d.bash()
+    assert rid is not None
+    did = next(r["decision_id"] for r in _rows(d.home) if r.get("recovery_id") == rid)
+    monkeypatch.setattr(decisions, "jsonl", lossy)
+    d.recover(rid)  # settles regret 1; the live outcome write fails
+    d.prompt()
+    _, rid2 = d.bash()
+    d.hook("SessionEnd", reason="exit")  # settles the second at 0; also lost
+    monkeypatch.setattr(decisions, "jsonl", jsonl)
+    assert _outcomes(d.home) == {}
+    errors = (d.home / "logs" / "errors.jsonl").read_text(encoding="utf-8")
+    assert "StoreBusy" in errors
+    key = project_key(d.home, d.proj)
+    overlay.fold(d.sid, key, d.home)
+    outs = _outcomes(d.home)
+    assert outs[did]["regret"] == 1.0 and outs[did]["signal"] == "recovery_read"
+    assert len(outs) == 2 and {o["signal"] for o in outs.values()} == {
+        "recovery_read",
+        "session_end",
+    }
+    n_lines = len(_rows(d.home))
+    overlay.fold(d.sid, key, d.home)  # nothing staged again: nothing appended
+    assert len(_rows(d.home)) == n_lines
+
+
+def test_fold_does_not_duplicate_outcomes_already_logged(tmp_path: Path) -> None:
+    d = _driver(tmp_path)
+    for _ in range(3):
+        d.prompt()
+        d.bash()
+    d.hook("SessionEnd", reason="exit")
+    before = [r for r in _rows(d.home) if r.get("kind") == "outcome"]
+    assert len(before) == 3
+    overlay.fold(d.sid, project_key(d.home, d.proj), d.home)
+    after = [r for r in _rows(d.home) if r.get("kind") == "outcome"]
+    assert after == before
+
+
+def test_fold_backfill_sees_the_rotated_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An outcome already in decisions.jsonl.1 is not appended again."""
+    d = _driver(tmp_path)
+    d.prompt()
+    d.bash()
+    d.hook("SessionEnd", reason="exit")
+    key = project_key(d.home, d.proj)
+    log = _log_paths(d.home)[0]
+    log.rename(log.with_name("decisions.jsonl.1"))
+    overlay.fold(d.sid, key, d.home)
+    assert not log.exists() or not [
+        x for x in log.read_text(encoding="utf-8").splitlines() if '"outcome"' in x
+    ]
