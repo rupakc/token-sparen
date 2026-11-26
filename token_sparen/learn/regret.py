@@ -61,7 +61,9 @@ from token_sparen.events import Action, Event, SessionCtx
 from token_sparen.learn import pending
 from token_sparen.store import jsonstore, paths, session
 
-REGRET_KEY = "regret"
+REGRET_KEY = "regret"  # the previous table format: {decision_id: {field: value}} (still read)
+TABLE_KEY = "rows"  # compact table: {decision_id: [FIELDS...]} (``_encode`` / ``_decode``)
+DIGEST_CHARS = 16  # hex characters of one ``token_digest``
 # settled [decision_id, point, arm, command_sig, value, bucket], for the fold
 OUTCOMES_KEY = "regret_outcomes"
 MAX_OUTCOMES = 1000
@@ -458,12 +460,131 @@ def table_path(overlay: Path) -> Path:
     return overlay.parent / "regret" / overlay.name
 
 
-def _table(state: dict[str, Any]) -> dict[str, Any]:
-    table = state.get(REGRET_KEY)
-    if not isinstance(table, dict):
-        table = {}
-    state[REGRET_KEY] = table
+_FIELDS = (
+    "point",
+    "bucket",
+    "arm",
+    "recovery_id",
+    "command_sig",
+    "command_base",  # null when equal to command_sig
+    "elided_tokens",  # the 16-hex digests joined into one string
+    "files_in_span",  # one string, newline-separated
+    "edited_paths_since",
+    "decided_turn",
+    "ctype",
+    "best",
+    "changed_since",  # 0 / 1
+    "read_hash",
+)
+
+
+def _encode(entry: Mapping[str, Any]) -> list[Any]:
+    """One table row: positional, with the two long lists packed into single strings (a JSON
+    string parses far faster than a list of 64 short strings)."""
+    sig = entry.get("command_sig")
+    base = entry.get("command_base")
+    raw_toks = entry.get("elided_tokens")
+    toks = _digests(raw_toks)
+    packed: Any = (
+        raw_toks
+        if isinstance(raw_toks, str)
+        else "".join(toks)
+        if all(len(t) == DIGEST_CHARS for t in toks)
+        else toks
+    )
+    files = list(dict.fromkeys(f for f in _mentions(entry.get("files_in_span")) if "\n" not in f))
+    read_hash = entry.get("read_hash")
+    return [
+        entry.get("point"),
+        entry.get("bucket"),
+        entry.get("arm"),
+        entry.get("recovery_id"),
+        sig,
+        None if base == sig else base,
+        packed,
+        "\n".join(files[:MAX_FILES]),
+        _strs(entry.get("edited_paths_since")),
+        _int(entry.get("decided_turn")),
+        entry.get("ctype"),
+        _best(entry),
+        1 if entry.get("changed_since") is True else 0,
+        read_hash if isinstance(read_hash, str) else None,
+    ]
+
+
+def _digests(value: Any) -> list[str]:
+    """Elided-token digests of an entry: packed string (compact rows) or list (old format)."""
+    if isinstance(value, str):
+        return [value[i : i + DIGEST_CHARS] for i in range(0, len(value), DIGEST_CHARS)]
+    return _strs(value)
+
+
+def _mentions(value: Any) -> list[str]:
+    """Files an entry mentions: newline-joined string (compact rows) or list (old format)."""
+    if isinstance(value, str):
+        return value.split("\n") if value else []
+    return _strs(value)
+
+
+def _decode(row: Any, *, expand: bool = False) -> dict[str, Any] | None:
+    """A table entry as the detector works with it; a dict is the previous format; None for
+    anything malformed (dropped). The packed token and file strings stay packed unless
+    ``expand`` (the hot path checks them without splitting; ``_digests`` / ``_mentions``)."""
+    if isinstance(row, dict):
+        return row
+    if not isinstance(row, list) or len(row) != len(_FIELDS):
+        return None
+    entry = dict(zip(_FIELDS, row, strict=True))
+    if expand:
+        entry["elided_tokens"] = _digests(entry["elided_tokens"])
+        entry["files_in_span"] = _mentions(entry["files_in_span"])
+    if entry["command_base"] is None:
+        entry["command_base"] = entry["command_sig"]
+    if entry["changed_since"] == 1:
+        entry["changed_since"] = True
+    else:
+        del entry["changed_since"]
+    if entry["read_hash"] is None:
+        del entry["read_hash"]
+    return entry
+
+
+def _hits(packed: str, digests: set[str]) -> list[str]:
+    """The event digests found at digest boundaries of a packed token string (C-speed search
+    instead of splitting 64 digests per entry)."""
+    out = []
+    for d in digests:
+        i = packed.find(d)
+        while i != -1:
+            if i % DIGEST_CHARS == 0:
+                out.append(d)
+                break
+            i = packed.find(d, i + 1)
+    return out
+
+
+def _load_table(doc: Mapping[str, Any], *, expand: bool = False) -> dict[str, Any]:
+    """Decoded table of a sidecar document (previous-format entries included)."""
+    table: dict[str, Any] = {}
+    for key in (REGRET_KEY, TABLE_KEY):
+        raw = doc.get(key)
+        if isinstance(raw, dict):
+            for did, row in raw.items():
+                entry = _decode(row, expand=expand)
+                if entry is not None:
+                    table[did] = entry
     return table
+
+
+def _save_table(doc: dict[str, Any], table: Mapping[str, Any]) -> None:
+    doc.pop(REGRET_KEY, None)
+    doc[TABLE_KEY] = {did: _encode(e) for did, e in table.items() if isinstance(e, dict)}
+
+
+def read_table(overlay: Path) -> dict[str, dict[str, Any]]:
+    """The watched decisions of a session, decoded (for tools and tests)."""
+    side = table_path(overlay)
+    return _load_table(jsonstore.read(side, {}), expand=True) if side.is_file() else {}
 
 
 def _outcome(did: str, entry: Any, value: float) -> list[Any]:
@@ -658,14 +779,15 @@ class RegretDetector:
         def apply(doc: dict[str, Any]) -> dict[str, Any]:
             evicted.clear()
             rows.clear()
-            table = _table(doc)
+            table = _load_table(doc)
             table.pop(decision_id, None)
             table[decision_id] = entry
             while len(table) > MAX_TRACKED:
                 old = next(iter(table))
                 gone = table.pop(old)
-                evicted.append((old, _best(gone) if isinstance(gone, dict) else 0.0))
+                evicted.append((old, _best(gone)))
                 rows.append(_outcome(old, gone, evicted[-1][1]))
+            _save_table(doc, table)
             return doc
 
         jsonstore.update(table_path(ctx.overlay_path), apply, {})
@@ -720,6 +842,9 @@ class RegretDetector:
         payouts: list[Payout] = []
         changed = False
         window = self.window
+        edit_base = ""
+        if info.edit_path is not None:
+            edit_base = info.edit_path.replace("\\", "/").rsplit("/", 1)[-1]
         for did, entry in list(table.items()):
             if not isinstance(entry, dict):
                 del table[did]
@@ -731,7 +856,10 @@ class RegretDetector:
                 value = FULL
             edited = _strs(entry.get("edited_paths_since"))
             if info.edit_path is not None:
-                if any(_path_match(info.edit_path, f) for f in _strs(entry.get("files_in_span"))):
+                files = entry.get("files_in_span")
+                # every match (equal, path suffix, bare name) contains the edited file's name
+                maybe = edit_base in files if isinstance(files, str) else True
+                if maybe and any(_path_match(info.edit_path, f) for f in _mentions(files)):
                     if len(edited) < MAX_EDITS:
                         entry["edited_paths_since"] = [*edited, info.edit_path]
                         changed = True
@@ -754,7 +882,10 @@ class RegretDetector:
                 changed = True
             if len(info.tokens) >= MIN_TOKEN_HITS:
                 hits = 0
-                for tok in _strs(entry.get("elided_tokens")):
+                toks = entry.get("elided_tokens")
+                for tok in (
+                    _digests(toks) if not isinstance(toks, str) else _hits(toks, info.tokens)
+                ):
                     if tok in info.tokens:
                         hits += 1
                         if hits >= MIN_TOKEN_HITS:
@@ -792,8 +923,8 @@ class RegretDetector:
         """Lock-free pre-check, then (only if something changes) one locked update.
         Returns (signals, payouts)."""
         side = table_path(path)
-        table = jsonstore.read(side, {}).get(REGRET_KEY) if side.is_file() else None
-        if not isinstance(table, dict) or not table:
+        table = _load_table(jsonstore.read(side, {})) if side.is_file() else None
+        if not table:
             if not info.read_tokens:
                 return [], []
             table = {}
@@ -808,10 +939,11 @@ class RegretDetector:
 
         def apply(doc: dict[str, Any]) -> dict[str, Any]:
             rows.clear()
-            table = _table(doc)
+            table = _load_table(doc)
             sig, payouts, _, forget = self._process(
                 table, info, now, settle=settle, final=final, outcomes=rows
             )
+            _save_table(doc, table)
             forgotten.clear()
             forgotten.update(forget)
             out["signals"], out["payouts"] = sig, payouts
@@ -845,7 +977,8 @@ class RegretDetector:
         out: list[Payout] = []
 
         def apply(state: dict[str, Any]) -> dict[str, Any]:
-            for did, entry in _table(state).items():
+            table = _load_table(state)
+            for did, entry in table.items():
                 if wanted is not None and did not in wanted:
                     continue
                 if not isinstance(entry, dict) or entry.get("point") != "compression":
@@ -856,6 +989,7 @@ class RegretDetector:
                     continue
                 entry["best"] = max(_best(entry), PARTIAL)
                 out.append((did, PARTIAL))
+            _save_table(state, table)
             return state
 
         try:
@@ -902,9 +1036,11 @@ def record_recovery_read(
             return
 
         def mark(doc: dict[str, Any]) -> dict[str, Any]:
-            for entry in _table(doc).values():
-                if isinstance(entry, dict) and entry.get("recovery_id") == recovery_id:
+            table = _load_table(doc)
+            for entry in table.values():
+                if entry.get("recovery_id") == recovery_id:
                     entry["best"] = FULL
+            _save_table(doc, table)
             return doc
 
         side = table_path(overlay)

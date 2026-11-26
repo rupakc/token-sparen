@@ -48,7 +48,7 @@ def test_regret_hook_under_three_ms(tmp_path: Path) -> None:
             kept="kept",
             ctype="log",
         )
-    assert len(session.read_session(regret.table_path(ov))["regret"]) == 200
+    assert len(regret.read_table(ov)) == 200
     proj = tmp_path / "proj"
     proj.mkdir()
     ev = Event(

@@ -807,3 +807,19 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - `test_session_start_folds_old_unfolded_sessions` flaked on a slow macOS runner (100 ms
   in-process fold budget): `overlay._monotonic` is now injectable; the test freezes it, and a new
   test drives a ticking clock to check the budget stops the loop.
+
+## 2026-11-26 Compact regret table (CI: test_regret_cost 4.82 ms vs 4.5 ms gate)
+- Sidecar rows are positional lists (`regret._FIELDS`, key `rows`): the 64 token digests are one
+  packed string (16 hex each), files one newline-joined string (deduped, capped at 32),
+  `command_base` null when equal to `command_sig`, `changed_since` 0/1. The hot path never splits
+  them: digests are matched with `str.find` at 16-char boundaries (`_hits`), and an edit only
+  splits an entry's files when the edited file's name occurs in the packed string (every match
+  rule contains it). `read_table(overlay)` returns fully expanded entries (tools, tests).
+- Backward compatible: the previous `{"regret": {id: {field: value}}}` format is still read and
+  rewritten as rows on the next change (in-flight sessions keep their watched decisions).
+- A first attempt that expanded every row on load was slower (1.9-3.1 ms): decoding cost beat the
+  JSON savings. Per-hook regret cost, 200-entry table, median / p95 ms (grep, edit, prompt event):
+  before local 1.22/1.55, 2.57/2.83, 1.20/1.46; after 0.93/1.12, 0.99/1.12, 0.93/1.05. Linux
+  container (1 CPU): before 1.35/1.54, 2.55/2.70, 1.37/1.64; after 0.97/1.91, 0.98/1.23,
+  0.97/1.12. Table 484 KB -> 385 KB. Reads per hook: one lock-free read, plus one locked
+  read-modify-write only when something changes (minimal for the lock-free fast path).

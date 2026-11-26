@@ -167,9 +167,8 @@ def _handle(tmp_path: Path, ev: Event, policy: Any) -> None:
 def _state(tmp_path: Path) -> dict[str, Any]:
     """The overlay, with the decision table from its sidecar (``regret.table_path``)."""
     st = session.read_session(_overlay(tmp_path))
-    side = session.read_session(regret.table_path(_overlay(tmp_path)))
-    if REGRET_KEY in side:
-        st[REGRET_KEY] = side[REGRET_KEY]
+    if regret.table_path(_overlay(tmp_path)).exists():
+        st[REGRET_KEY] = regret.read_table(_overlay(tmp_path))
     return st
 
 
@@ -306,7 +305,7 @@ def test_cli_show_records_recovery_read(tmp_path: Path, monkeypatch: pytest.Monk
     assert main(["show", ref.id]) == 0
     st = session.read_session(ov)
     assert st["recovery_read_tokens"] > 0
-    assert session.read_session(regret.table_path(ov))[REGRET_KEY]["d9"]["best"] == 1.0
+    assert regret.read_table(ov)["d9"]["best"] == 1.0
     # the next hook pays it
     rec = Recorder()
     ev = Event("claude", "prompt", SID, proj, key, None, prompt="hi")
@@ -1077,3 +1076,63 @@ def test_show_marks_the_sidecar_table(tmp_path: Path) -> None:
     regret.record_recovery_read(_overlay(tmp_path), "abcdef012345", 50, _env(tmp_path))
     st = _state(tmp_path)
     assert st[REGRET_KEY]["d1"]["best"] == 1.0 and st["recovery_read_tokens"] == 50
+
+
+def test_table_is_stored_compactly(tmp_path: Path) -> None:
+    """Positional rows, digests joined into one string, files in one string: a 200-entry table
+    parses in a fraction of the time of nested dicts and lists."""
+    _track(tmp_path, "d1", command="pytest -q tests")
+    raw = session.read_session(regret.table_path(_overlay(tmp_path)))
+    row = raw[regret.TABLE_KEY]["d1"]
+    assert isinstance(row, list)
+    entry = regret.read_table(_overlay(tmp_path))["d1"]
+    tokens = entry["elided_tokens"]
+    assert tokens and all(len(t) == 16 for t in tokens)
+    assert "".join(tokens) in row and isinstance(entry["files_in_span"], list)
+    assert entry["command_base"] == entry["command_sig"]  # stored once when equal
+    assert REGRET_KEY not in raw
+
+
+def test_previous_table_format_is_still_read(tmp_path: Path) -> None:
+    """A session that started before the compact format keeps its watched decisions."""
+    path = _overlay(tmp_path)
+    side = regret.table_path(path)
+    side.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"turn": 1}), "utf-8")
+    old = {
+        "point": "compression",
+        "bucket": "b",
+        "arm": "standard",
+        "recovery_id": "abcdef012345",
+        "command_sig": "pytest -q",
+        "command_base": "pytest -q",
+        "elided_tokens": [regret.token_digest("frobnicate_widget_matrix")],
+        "files_in_span": ["src/app.py"],
+        "edited_paths_since": [],
+        "decided_turn": 1,
+        "ctype": "test_report",
+        "best": 0.0,
+    }
+    side.write_text(json.dumps({REGRET_KEY: {"d1": old}}), "utf-8")
+    rec = Recorder()
+    out = _proj(tmp_path) / ".token-sparen" / "outputs" / "abcdef012345.txt"
+    out.parent.mkdir(parents=True)
+    out.write_text(FULL, encoding="utf-8")
+    _handle(tmp_path, _event(tmp_path, tool="Read", tool_input={"file_path": str(out)}), rec)
+    assert rec.regrets() == [("d1", 1.0)]
+
+
+def test_packed_digest_search_respects_boundaries() -> None:
+    a, b = regret.token_digest("alpha_token_one"), regret.token_digest("beta_token_two")
+    packed = a + b
+    assert sorted(regret._hits(packed, {a, b})) == sorted([a, b])
+    straddle = a[8:] + b[:8]  # present in the string, but not at a digest boundary
+    assert regret._hits(packed, {straddle}) == []
+
+
+def test_edit_prefilter_keeps_suffix_and_bare_name_matches(tmp_path: Path) -> None:
+    _track(tmp_path, "d1", files=["handlers.py", "pkg_a/__init__.py"])
+    rec = Recorder()
+    edit = str(_proj(tmp_path) / "src" / "app" / "handlers.py")
+    _handle(tmp_path, _event(tmp_path, tool="Edit", tool_input={"file_path": edit}), rec)
+    assert regret.read_table(_overlay(tmp_path))["d1"]["edited_paths_since"] == [edit]
