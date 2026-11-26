@@ -116,6 +116,8 @@ color = true  # NO_COLOR in the environment also turns colours off
 parse_budget_ms = 20  # transcript catch-up per render (the governor's cache keeps the rest)
 
 [learn]
+gamma = 0.98  # Beta posterior discount per observation (forgets toward the prior)
+posterior_cap = 50  # max a + b of a posterior (mean-preserving rescale)
 decision_log_max_bytes = 20000000  # projects/<key>/decisions.jsonl rotates past this size
 
 [facts]
