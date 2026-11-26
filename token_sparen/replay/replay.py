@@ -188,12 +188,19 @@ class _Acc:
     baseline_context_cost: float = 0.0
     arms: dict[str, int] = field(default_factory=dict)
     per_ctype: dict[str, dict[str, float]] = field(default_factory=dict)
+    per_tool: dict[str, dict[str, float]] = field(default_factory=dict)  # "<category>/<ctype>"
+    signals: dict[str, int] = field(default_factory=dict)
+    regret_turns: dict[str, int] = field(default_factory=dict)
 
-    def add(self, ctype: str, key: str, value: float) -> None:
-        row = self.per_ctype.get(ctype)
-        if row is None:
-            row = self.per_ctype[ctype] = dict.fromkeys(_CT_FIELDS, 0.0)
-        row[key] += value
+    def add(self, ctype: str, key: str, value: float, cat: str = "other") -> None:
+        for table, name in ((self.per_ctype, ctype), (self.per_tool, f"{cat}/{ctype}")):
+            row = table.get(name)
+            if row is None:
+                row = table[name] = dict.fromkeys(_CT_FIELDS, 0.0)
+            row[key] += value
+
+    def count(self, table: dict[str, int], key: str) -> None:
+        table[key] = table.get(key, 0) + 1
 
     def total(self, key: str) -> float:
         return sum(row[key] for row in self.per_ctype.values())
@@ -226,10 +233,28 @@ class _Acc:
             "arms": dict(sorted(self.arms.items())),
         }
         out["per_ctype"] = {ct: _ct_row(row) for ct, row in sorted(self.per_ctype.items())}
+        out["per_tool"] = {k: _ct_row(row) for k, row in sorted(self.per_tool.items())}
+        out["regret_signals"] = dict(sorted(self.signals.items()))
+        out["regret_turns"] = {b: self.regret_turns.get(b, 0) for b in TURN_BUCKETS}
         return out
 
 
 _FLOAT_FIELDS = frozenset({"projected_cost_weighted_saved", "proxy_regrets"})
+TURN_BUCKETS = ("0", "1", "2", "3-6", "7+")
+SIGNALS = (
+    "assistant_text",
+    "tool_input",
+    "edit_input",
+    "user_prompt",
+    "rerun",
+    "path_mention",
+)
+
+
+def _turn_bucket(lag: int) -> str:
+    if lag <= 2:
+        return str(max(0, lag))
+    return "3-6" if lag <= 6 else "7+"
 
 
 def _ratio(num: float, den: float) -> float:
@@ -253,6 +278,7 @@ class ReplayReport:
     cutoff: date
     totals: dict[str, Any]
     by_split: dict[str, dict[str, Any]]
+    by_arm: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __getattr__(self, name: str) -> Any:
         totals = self.__dict__.get("totals", {})
@@ -279,6 +305,7 @@ class ReplayReport:
             "heuristics": HEURISTICS,
             "totals": self.totals,
             "by_split": self.by_split,
+            **({"by_arm": self.by_arm} if self.by_arm else {}),
         }
 
 
@@ -297,6 +324,11 @@ HEURISTICS = {
     "of the same signature; partial (0.5): >= 2 in a user prompt; within regret_window_turns "
     "user turns; sum of values",
     "dedupe": "message and tool-use ids counted once per run (resumed sessions copy history)",
+    "breakdowns": "per_tool keys are <tool category>/<content type> (categories: shell = Bash, "
+    "read, search, web, agent, mcp, other); regret_signals counts the signal that settled each "
+    "regretted trim (path_mention: a matched token was a path or its basename, overlaps the "
+    "others); regret_turns: user turns from the trim to that signal; by_arm: every arm of a "
+    "comma-separated --policy replayed in the same pass (totals and by_split are the first arm)",
     "gates": "PostToolUse gates: skip_tools/edit category, recovery reads, Claude Code "
     "replaceable shapes, failed results, 2000-token floor; compression.pick_candidate",
 }
@@ -372,10 +404,23 @@ class _Span:
     ctype: str
     turn: int
     sig: str  # digest of the producing call's re-run signature
+    cat: str = "other"
+    paths: frozenset[int] = frozenset()  # indices of path-like tokens
     best: float = 0.0
+    signal: str = ""
+    lag: int = 0
+    path_hit: bool = False
+
+    def matched(self, digests: set[str]) -> set[int]:
+        return {i for d, i in self.digests.items() if d in digests}
 
     def hits(self, digests: set[str]) -> int:
-        return len({i for d, i in self.digests.items() if d in digests})
+        return len(self.matched(digests))
+
+    def mark(self, value: float, signal: str, lag: int, matched: set[int]) -> None:
+        if value > self.best:
+            self.best, self.signal, self.lag = value, signal, lag
+            self.path_hit = bool(matched & self.paths)
 
     def forget(self, digests: set[str]) -> None:
         if any(d in digests for d in self.digests):
@@ -407,8 +452,9 @@ class _Session:
         self.prompt = ""
         self.cats: deque[str] = deque(maxlen=RECENT_CATS)
         self.paths: deque[str] = deque(maxlen=RECENT_PATHS)
-        self.sent: dict[str, int] = {}  # removed tokens already sent once, per ctype
-        self.awaiting: dict[str, int] = {}  # removed tokens not sent yet, per ctype
+        # removed tokens already sent once / not sent yet, per (category, ctype)
+        self.sent: dict[tuple[str, str], int] = {}
+        self.awaiting: dict[tuple[str, str], int] = {}
         self.watched: deque[_Span] = deque()
         self.seen: set[str] = set()
         self.ctx_tokens: int | None = None
@@ -417,9 +463,9 @@ class _Session:
         self.project_key = "replay"
         self._keys: dict[str, str] = {}
 
-    def _add(self, ctype: str, key: str, value: float) -> None:
+    def _add(self, ctype: str, key: str, value: float, cat: str = "other") -> None:
         for acc in self.accs:
-            acc.add(ctype, key, value)
+            acc.add(ctype, key, value, cat)
 
     # events --------------------------------------------------------------------------------
 
@@ -438,13 +484,16 @@ class _Session:
                 acc.baseline_context_cost += cost
         if rec.model:
             self.model = rec.model
-        for ctype, removed in self.sent.items():
-            self._add(ctype, "tokens_resent_removed", removed)
-            self._add(ctype, "projected_cost_weighted_saved", removed * self.prices.cache_read)
-        for ctype, removed in self.awaiting.items():
-            self._add(ctype, "tokens_resent_removed", removed)
-            self._add(ctype, "projected_cost_weighted_saved", removed * self.prices.cache_write)
-            self.sent[ctype] = self.sent.get(ctype, 0) + removed
+        for (cat, ctype), removed in self.sent.items():
+            self._add(ctype, "tokens_resent_removed", removed, cat)
+            saved = removed * self.prices.cache_read
+            self._add(ctype, "projected_cost_weighted_saved", saved, cat)
+        for key, removed in self.awaiting.items():
+            cat, ctype = key
+            self._add(ctype, "tokens_resent_removed", removed, cat)
+            saved = removed * self.prices.cache_write
+            self._add(ctype, "projected_cost_weighted_saved", saved, cat)
+            self.sent[key] = self.sent.get(key, 0) + removed
         self.awaiting.clear()
 
     def on_compaction(self) -> None:
@@ -453,21 +502,33 @@ class _Session:
 
     def _settle(self, span: _Span) -> None:
         """Pay a span's best value (it leaves the watch)."""
-        if span.best >= regret.FULL:
-            self._add(span.ctype, "proxy_regret_full", 1)
-        elif span.best > 0:
-            self._add(span.ctype, "proxy_regret_partial", 1)
-        if span.best > 0:
-            self._add(span.ctype, "proxy_regrets", span.best)
+        if span.best <= 0:
+            return
+        kind = "proxy_regret_full" if span.best >= regret.FULL else "proxy_regret_partial"
+        self._add(span.ctype, kind, 1, span.cat)
+        self._add(span.ctype, "proxy_regrets", span.best, span.cat)
+        for acc in self.accs:
+            acc.count(acc.signals, span.signal)
+            if span.path_hit:
+                acc.count(acc.signals, "path_mention")
+            acc.count(acc.regret_turns, _turn_bucket(span.lag))
 
-    def _full(self, matched: list[_Span]) -> None:
+    def _full(self, matched: list[tuple[_Span, set[int]]], signal: str) -> None:
         if not matched:
             return
-        for span in matched:
-            span.best = regret.FULL
+        for span, idx in matched:
+            span.mark(regret.FULL, signal, self.turn - span.turn, idx)
             self._settle(span)
-        gone = {id(span) for span in matched}
+        gone = {id(span) for span, _ in matched}
         self.watched = deque(span for span in self.watched if id(span) not in gone)
+
+    def _matches(self, digests: set[str]) -> list[tuple[_Span, set[int]]]:
+        out = []
+        for span in self.watched:
+            idx = span.matched(digests)
+            if len(idx) >= regret.MIN_TOKEN_HITS:
+                out.append((span, idx))
+        return out
 
     def _see(self, text: str, *, refresh: bool) -> set[str]:
         """Record ``text`` as visible context; with ``refresh``, its tokens no longer count as
@@ -481,13 +542,12 @@ class _Session:
         return digests
 
     def on_prompt(self, ev: Prompt) -> None:
+        self.turn = ev.turn
         if self.watched and ev.text:
             asked = _digests(ev.text, regret.INPUT_SCAN_CHARS)
-            for span in self.watched:
-                if span.hits(asked) >= regret.MIN_TOKEN_HITS:
-                    span.best = max(span.best, regret.PARTIAL)  # stays watched
+            for span, idx in self._matches(asked):  # partial: the span stays watched
+                span.mark(regret.PARTIAL, "user_prompt", self.turn - span.turn, idx)
         self._see(ev.text, refresh=True)
-        self.turn = ev.turn
         self.prompt = ev.text[:PROMPT_CHARS]
         if any(self.turn - s.turn > self.window for s in self.watched):
             keep: deque[_Span] = deque()
@@ -498,14 +558,14 @@ class _Session:
                     keep.append(span)
             self.watched = keep
 
-    def on_said(self, text: str) -> None:
+    def on_said(self, text: str, signal: str = "assistant_text") -> None:
         if not text:
             return
         digests = _digests(text, regret.INPUT_SCAN_CHARS)
         if len(self.seen) < MAX_SEEN:
             self.seen |= digests
         if self.watched and len(digests) >= regret.MIN_TOKEN_HITS:
-            self._full([s for s in self.watched if s.hits(digests) >= regret.MIN_TOKEN_HITS])
+            self._full(self._matches(digests), signal)
 
     def _signature(self, name: str, inp: Mapping[str, Any]) -> str:
         sig = regret.signature(name, inp, project_dir=self.cwd, cwd=self.cwd)
@@ -517,10 +577,11 @@ class _Session:
         for text in rec.texts:
             self.on_said(text)
         for _tid, name, inp in rec.tool_uses:
-            if self.watched and translate.tool_category(name) != "edit":
+            edit = translate.tool_category(name) == "edit"
+            if self.watched and not edit:
                 sig = self._signature(name, inp)
-                self._full([s for s in self.watched if s.sig == sig])  # a re-run
-            self.on_said(regret.input_text(inp))
+                self._full([(s, set()) for s in self.watched if s.sig == sig], "rerun")
+            self.on_said(regret.input_text(inp), "edit_input" if edit else "tool_input")
 
     def finish(self) -> None:
         """Session end: pay every watched span its best value."""
@@ -528,8 +589,8 @@ class _Session:
             self._settle(span)
         self.watched.clear()
 
-    def on_result(self, rec: ToolResultRecord) -> None:
-        if self.run_ids is not None and not self.run_ids.add(f"t:{rec.tool_use_id}"):
+    def on_result(self, rec: ToolResultRecord, duplicate: bool = False) -> None:
+        if duplicate:
             for acc in self.accs:
                 acc.duplicate_results += 1  # copied history of a resumed session
             self._see(rec.text, refresh=True)
@@ -561,7 +622,7 @@ class _Session:
             or regret.is_recovery_access(event)
             or not translate.replaceable(event)
             or estimate_tokens(rec.text) < self.min_tokens
-            or not self._replay(event, tool, rec)
+            or not self._replay(event, tool, rec, category)
         ):
             self._see(rec.text, refresh=True)  # shown in full
 
@@ -571,14 +632,14 @@ class _Session:
         window = governor.resolve_window(self.cfg, os.environ, "replay", self.model)
         return self.ctx_tokens / window if window > 0 else None
 
-    def _replay(self, event: Event, tool: ToolCall, rec: ToolResultRecord) -> bool:
+    def _replay(self, event: Event, tool: ToolCall, rec: ToolResultRecord, cat: str) -> bool:
         """True if the result was trimmed (then only its kept text became visible)."""
         text = rec.text
         ctype = detect(text, tool)
         est = compression.est_type(ctype)
         before = estimate_tokens(text, est)
-        self._add(ctype, "eligible", 1)
-        self._add(ctype, "tokens_before", before)
+        self._add(ctype, "eligible", 1, cat)
+        self._add(ctype, "tokens_before", before, cat)
         sctx = SessionCtx(
             "replay",
             self.project_key,
@@ -611,9 +672,9 @@ class _Session:
         if picked is None:
             return False
         removed = before - picked.tokens_after
-        self._add(ctype, "trimmed", 1)
-        self._add(ctype, "tokens_removed", removed)
-        self.awaiting[ctype] = self.awaiting.get(ctype, 0) + removed
+        self._add(ctype, "trimmed", 1, cat)
+        self._add(ctype, "tokens_removed", removed, cat)
+        self.awaiting[(cat, ctype)] = self.awaiting.get((cat, ctype), 0) + removed
         kept = picked.result.text
         seen = self.seen
 
@@ -625,15 +686,18 @@ class _Session:
         )
         self._see(kept, refresh=True)
         digests: dict[str, int] = {}
+        paths: set[int] = set()
         for i, token in enumerate(tokens):
+            if _SEP.search(token):
+                paths.add(i)
             for v in _variants(token):
                 d = regret.token_digest(v)
                 if d not in self.seen:
                     digests[d] = i
         if len(set(digests.values())) >= regret.MIN_TOKEN_HITS:
-            self._add(ctype, "watched", 1)
+            self._add(ctype, "watched", 1, cat)
             sig = self._signature(rec.tool_name, rec.input)
-            self.watched.append(_Span(digests, ctype, self.turn, sig))
+            self.watched.append(_Span(digests, ctype, self.turn, sig, cat, frozenset(paths)))
             while len(self.watched) > MAX_WATCHED:
                 self._settle(self.watched.popleft())
                 for acc in self.accs:
@@ -656,21 +720,28 @@ def _project_key(cwd: str, cache: dict[str, str]) -> str:
     return key
 
 
-def _replay_file(path: Path, sess: _Session) -> bool:
-    """Stream one transcript; True if it held any event of its chain."""
+def _replay_file(path: Path, lanes: Sequence[_Session], run_ids: RunIds | None) -> bool:
+    """Stream one transcript once into every lane (one per policy); True if it held any event
+    of its chain. Ids are de-duplicated once per run, before the lanes see the event."""
     seen = False
-    is_new = sess.run_ids.add if sess.run_ids is not None else None
+    is_new = run_ids.add if run_ids is not None else None
     for ev in iter_events(path, is_new_id=is_new):
         seen = True
         if isinstance(ev, AssistantRecord):
-            sess.on_assistant(ev)
+            for sess in lanes:
+                sess.on_assistant(ev)
         elif isinstance(ev, ToolResultRecord):
-            sess.on_result(ev)
+            dup = run_ids is not None and not run_ids.add(f"t:{ev.tool_use_id}")
+            for sess in lanes:
+                sess.on_result(ev, dup)
         elif isinstance(ev, Prompt):
-            sess.on_prompt(ev)
+            for sess in lanes:
+                sess.on_prompt(ev)
         elif isinstance(ev, Compaction):
-            sess.on_compaction()
-    sess.finish()
+            for sess in lanes:
+                sess.on_compaction()
+    for sess in lanes:
+        sess.finish()
     return seen
 
 
@@ -678,6 +749,25 @@ def _cwd(path: Path) -> str | None:
     """The session's working directory (first ``cwd`` field): the engine snapshot's project."""
     cwd = first_field(path, "cwd")
     return cwd if isinstance(cwd, str) and cwd else None
+
+
+def resolve_policies(policy: Policy | str, cfg: Config, seed: int = 0) -> list[tuple[str, Policy]]:
+    """One ``(name, policy)`` per lane: ``light,standard,aggressive`` (comma-separated) replays
+    each in the same pass; anything else is a single lane (``resolve_policy``)."""
+    if isinstance(policy, str) and "," in policy:
+        names = [n.strip() for n in policy.split(",") if n.strip()]
+        if not names or len(set(names)) != len(names):
+            raise ValueError(f"policy list {policy!r} must name distinct policies")
+        return [resolve_policy(n, cfg, seed) for n in names]
+    return [resolve_policy(policy, cfg, seed)]
+
+
+@dataclass
+class _Lane:
+    name: str
+    policy: Policy
+    total: _Acc
+    parts: dict[str, _Acc]
 
 
 def run(
@@ -690,44 +780,59 @@ def run(
     prices: Prices | None = None,
     seed: int = 0,
 ) -> ReplayReport:
-    """Replay ``transcripts`` (files or directories) under ``policy``; aggregates only."""
+    """Replay ``transcripts`` (files or directories) under ``policy`` (or several, comma
+    separated, in one pass); aggregates only."""
     if split not in ("dev", "test", "all"):
         raise ValueError(f"unknown split {split!r}")
     cfg = cfg or load_config(Path.cwd(), os.environ)
     prices = prices or Prices.load(cfg)
-    name, pol = resolve_policy(policy, cfg, seed)
+    lanes = [
+        _Lane(name, pol, _Acc(), {s: _Acc() for s in SPLITS if split in ("all", s)})
+        for name, pol in resolve_policies(policy, cfg, seed)
+    ]
     window = _window(cfg)
-    total = _Acc()
-    parts = {s: _Acc() for s in SPLITS if split in ("all", s)}
     keys: dict[str, str] = {}
     run_ids = RunIds()
-    needs_key = isinstance(pol, FrozenEngine)
+    needs_key = any(isinstance(lane.policy, FrozenEngine) for lane in lanes)
     with redacted_logs():
         for path in iter_transcripts(transcripts):
             part = "dev" if session_date(path) < date_cutoff else "test"
-            if part not in parts:
+            if part not in lanes[0].parts:
                 continue
-            accs = (total, parts[part])
             cwd = _cwd(path)
-            sess = _Session(accs, pol, cfg, prices, window, run_ids, cwd)
-            if needs_key:
-                sess.project_key = _project_key(cwd, keys) if cwd else "replay"
+            key = (_project_key(cwd, keys) if cwd else "replay") if needs_key else "replay"
+            sessions = []
+            for lane in lanes:
+                accs = (lane.total, lane.parts[part])
+                sess = _Session(accs, lane.policy, cfg, prices, window, run_ids, cwd)
+                sess.project_key = key
+                sessions.append(sess)
             try:
-                if _replay_file(path, sess):
-                    for acc in accs:
-                        acc.sessions += 1
+                ok = _replay_file(path, sessions, run_ids)
             except Exception:  # noqa: BLE001 - one bad session never stops the run (no details)
-                for acc in accs:
-                    acc.sessions_failed += 1
-    total.ids_capped = run_ids.capped
-    for acc in parts.values():
-        acc.ids_capped = run_ids.capped
+                ok = None
+            for lane in lanes:
+                for acc in (lane.total, lane.parts[part]):
+                    if ok is None:
+                        acc.sessions_failed += 1
+                    elif ok:
+                        acc.sessions += 1
+    reports = {}
+    for lane in lanes:
+        for acc in (lane.total, *lane.parts.values()):
+            acc.ids_capped = run_ids.capped
+        reports[lane.name] = {
+            "totals": lane.total.to_dict(),
+            "by_split": {s: acc.to_dict() for s, acc in lane.parts.items()},
+        }
+    first = reports[lanes[0].name]
     return ReplayReport(
-        policy=name,
+        policy=",".join(lane.name for lane in lanes),
         split=split,
         cutoff=date_cutoff,
-        totals=total.to_dict(),
-        by_split={s: acc.to_dict() for s, acc in parts.items()},
+        totals=first["totals"],
+        by_split=first["by_split"],
+        by_arm=reports if len(lanes) > 1 else {},
     )
 
 
@@ -749,6 +854,13 @@ def summary_lines(rep: ReplayReport) -> list[str]:
                     f"proxy_regret_rate {100 * t['proxy_regret_rate']:.2f} %",
                 ]
             )
+        )
+    for arm, rows in rep.by_arm.items():
+        t = rows["totals"]
+        lines.append(
+            f"[arm {arm}] trimmed {t['trimmed']}, tokens_removed {t['tokens_removed']}, "
+            f"saved_share_of_context_cost {100 * t['saved_share_of_context_cost']:.2f} %, "
+            f"proxy_regret_rate {100 * t['proxy_regret_rate']:.2f} %"
         )
     for ct, row in rep.totals["per_ctype"].items():
         keys = ("eligible", "trimmed", "tokens_removed", "tokens_resent_removed")

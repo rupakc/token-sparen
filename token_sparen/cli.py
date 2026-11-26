@@ -93,7 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
         "replay", help="E1: replay transcripts offline; private aggregate report (--out)"
     )
     rep.add_argument("paths", nargs="+", type=Path, help="transcript files or directories")
-    rep.add_argument("--policy", default="static", help="static, engine or a compression arm")
+    rep.add_argument(
+        "--policy",
+        default="static",
+        help="static, engine, a compression arm, or a comma-separated list (one pass)",
+    )
     rep.add_argument("--split", choices=["dev", "test", "all"], default="all")
     rep.add_argument("--cutoff", help="YYYY-MM-DD: sessions before are dev, the rest test")
     rep.add_argument("--seed", type=int, default=0, help="engine policy: sampling seed")
@@ -777,7 +781,7 @@ def _replay_cmd(args: argparse.Namespace) -> int:
     except ValueError:
         raise CliError("--cutoff must be YYYY-MM-DD") from None
     try:
-        replay.resolve_policy(args.policy, load_config(Path.cwd(), os.environ))
+        replay.resolve_policies(args.policy, load_config(Path.cwd(), os.environ))
     except ValueError as exc:
         raise CliError(str(exc)) from None
     try:

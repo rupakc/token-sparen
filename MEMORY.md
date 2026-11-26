@@ -892,3 +892,14 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   re-sent nor re-trimmed (`duplicate_results`). `transcript.iter_events(..., is_new_id=)`.
 - Report heuristics state units (estimated tokens; baseline from API usage) and that cache TTL
   is ignored (conservative).
+
+## 2026-11-26 Task 24 review round 2 (replay breakdowns)
+- Replay report adds `per_tool` (`<tool category>/<content type>`, same fields as `per_ctype`;
+  categories from `translate.tool_category`: shell = Bash, read, search, web, agent, mcp, other),
+  `regret_signals` (the signal that settled each regretted trim: assistant_text, tool_input,
+  edit_input, user_prompt, rerun; path_mention overlaps when a matched token was a path or its
+  basename) and `regret_turns` (user turns from trim to signal: 0, 1, 2, 3-6, 7+).
+- `--policy light,standard,aggressive` replays every listed policy in one pass over the
+  transcripts (one `_Session` lane per policy; each arm compresses each result once); ids are
+  de-duplicated once per run before the lanes see an event. `by_arm` holds each lane's totals
+  and splits; `totals`/`by_split` are the first lane's.

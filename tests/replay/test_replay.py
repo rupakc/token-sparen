@@ -571,3 +571,99 @@ def test_run_id_cap_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(replay, "MAX_RUN_IDS", 2)
     rep = replay.run([resend_session().write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
     assert rep.totals["ids_capped"] is True and rep.trimmed == 1
+
+
+# ------------------------------------------------------------------ breakdowns (round 2)
+
+
+def _read(tid: str, path: str = "/w/notes.txt") -> tuple[str, str, Any]:
+    return (tid, "Read", {"file_path": path})
+
+
+def _read_raw(text: str) -> dict[str, Any]:
+    return {"type": "text", "file": {"content": text}}
+
+
+def test_per_tool_breakdown(tmp_path: Path) -> None:
+    s = Session().prompt()
+    s.call("m1", tool=_read("t1")).result("t1", big_output(seed=1), raw=_read_raw("x"))
+    s.call("m2", tool=_bash("t2")).result("t2", big_output(seed=2))
+    s.call("m3", text="done")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    tools = rep.totals["per_tool"]
+    assert set(tools) == {"read/text", "shell/text"}
+    assert tools["read/text"]["trimmed"] == 1 and tools["shell/text"]["trimmed"] == 1
+    saved = sum(row["projected_cost_weighted_saved"] for row in tools.values())
+    assert saved == pytest.approx(rep.projected_cost_weighted_saved)
+    assert sum(row["tokens_removed"] for row in tools.values()) == rep.tokens_removed
+
+
+def test_regret_signals_and_turns(tmp_path: Path) -> None:
+    def trimmed(sid: str) -> Session:
+        return Session(sid).prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+
+    said = trimmed("said").call("m2", text=f"{MARKERS[0]} {MARKERS[1]}")
+    tool_in = trimmed("tin").call(
+        "m2", tool=("t2", "Grep", {"pattern": f"{MARKERS[0]} {MARKERS[2]}"})
+    )
+    edit = trimmed("edit").call(
+        "m2", tool=("t2", "Edit", {"file_path": "a.py", "old_string": f"{MARKERS[1]} {MARKERS[2]}"})
+    )
+    rerun = trimmed("rerun").call("m2", tool=_bash("t2"))
+    asked = trimmed("asked").prompt(f"{MARKERS[0]} and {MARKERS[1]}?").call("m2", text="ok")
+    later = trimmed("later")
+    for i in range(3):
+        later.prompt(f"next {i}").call(f"x{i}", text="ok")
+    later.call("m9", text=f"{MARKERS[0]} {MARKERS[1]}")
+    sessions = [said, tool_in, edit, rerun, asked, later]
+    paths = [x.write(tmp_path / f"{x.sid}.jsonl") for x in sessions]
+    rep = replay.run(paths, "static", "all", CUTOFF)
+    assert rep.totals["regret_signals"] == {
+        "assistant_text": 2,
+        "tool_input": 1,
+        "edit_input": 1,
+        "rerun": 1,
+        "user_prompt": 1,
+    }
+    assert rep.totals["regret_turns"] == {"0": 4, "1": 1, "2": 0, "3-6": 1, "7+": 0}
+
+
+def test_path_mention_signal(tmp_path: Path) -> None:
+    text = big_output(extra={200: f"see src/deep/quokkafile_x.py near {MARKERS[1]}"})
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", text)
+    s.call("m2", text=f"open quokkafile_x.py for {MARKERS[1]}")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.totals["regret_signals"] == {"assistant_text": 1, "path_mention": 1}
+
+
+def test_multi_arm_single_pass_matches_separate_runs(tmp_path: Path) -> None:
+    s = resend_session().call("m9", text=f"{MARKERS[0]} {MARKERS[1]}")
+    path = s.write(tmp_path / "a.jsonl")
+    multi = replay.run([path], "light,standard,aggressive", "all", CUTOFF)
+    assert multi.policy == "light,standard,aggressive"
+    assert set(multi.by_arm) == {"light", "standard", "aggressive"}
+    for arm in ("light", "standard", "aggressive"):
+        alone = replay.run([path], arm, "all", CUTOFF)
+        got = multi.by_arm[arm]["totals"]
+        for key in ("calls", "trimmed", "tokens_removed", "tokens_resent_removed", "proxy_regrets"):
+            assert got[key] == alone.totals[key], (arm, key)
+        assert multi.by_arm[arm]["by_split"]["test"]["trimmed"] == alone.by_split["test"]["trimmed"]
+    assert multi.totals == multi.by_arm["light"]["totals"]
+    removed = [
+        multi.by_arm[a]["totals"]["tokens_removed"] for a in ("light", "standard", "aggressive")
+    ]
+    assert removed == sorted(removed) and removed[0] < removed[2]
+    assert "by_arm" in multi.to_dict()
+    assert "by_arm" not in replay.run([path], "light", "all", CUTOFF).to_dict()
+
+
+def test_multi_arm_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = resend_session().write(tmp_path / "in" / "a.jsonl")
+    out = tmp_path / "rep.json"
+    args = ["replay", str(path), "--out", str(out), "--policy"]
+    assert cli.main([*args, "light,standard,aggressive"]) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert set(data["by_arm"]) == {"light", "standard", "aggressive"}
+    assert "[arm aggressive]" in capsys.readouterr().out
+    assert cli.main([*args, "light,light"]) == 2
+    assert cli.main([*args, "light,bogus"]) == 2
