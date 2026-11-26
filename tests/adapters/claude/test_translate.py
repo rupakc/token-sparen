@@ -274,3 +274,67 @@ def test_replaceable(tmp_path: Path) -> None:
     fail = _ev(tmp_path, "PostToolUseFailure", tool_name="Bash", tool_input={}, error="boom")
     assert not translate.replaceable(fail)  # Claude Code only adds context on failures
     assert not translate.replaceable(_ev(tmp_path, "SessionEnd"))
+
+
+# --- Agent / Task results (documented object shape) ---------------------------------------
+
+AGENT = {
+    "status": "completed",
+    "agentId": "a-1",
+    "content": [{"type": "text", "text": "part one"}, {"type": "text", "text": "part two"}],
+    "resolvedModel": "m",
+    "modelsUsed": ["m"],
+    "totalTokens": 1234,
+    "totalDurationMs": 50,
+    "totalToolUseCount": 3,
+    "usage": {"input_tokens": 1, "output_tokens": 2},
+}
+
+
+@pytest.mark.parametrize("tool", ["Agent", "Task"])
+def test_agent_output_text_joins_text_blocks(tool: str) -> None:
+    assert translate.output_text(tool, AGENT) == "part one\npart two"
+
+
+@pytest.mark.parametrize("tool", ["Agent", "Task"])
+def test_render_agent_shape_keeps_other_fields(tool: str) -> None:
+    orig = copy.deepcopy(AGENT)
+    out = render_tool_output(tool, AGENT, "short")
+    assert out == {**orig, "content": [{"type": "text", "text": "short"}]}
+    assert AGENT == orig  # original untouched
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        {**AGENT, "content": []},
+        {**AGENT, "content": "text"},
+        {**AGENT, "content": [{"type": "image", "source": {}}]},
+        {**AGENT, "content": [{"type": "text", "text": "a"}, {"type": "image", "source": {}}]},
+        {**AGENT, "content": [{"type": "text", "text": 5}]},
+        {k: v for k, v in AGENT.items() if k != "content"},
+    ],
+)
+def test_agent_unsupported_blocks_untouched(original: Any) -> None:
+    assert render_tool_output("Agent", original, "new") is None
+    assert translate.output_text("Agent", original) is None
+
+
+def test_agent_shape_only_for_agent_tools() -> None:
+    assert render_tool_output("WebFetch", AGENT, "new") is None
+    assert translate.output_text("WebFetch", AGENT) is None
+
+
+def test_agent_post_tool_parse_and_render(tmp_path: Path) -> None:
+    ad = ClaudeAdapter()
+    ev = ad.parse(
+        "PostToolUse",
+        _payload("PostToolUse", tool_name="Agent", tool_input={"prompt": "p"}, tool_response=AGENT),
+        _env(tmp_path),
+    )
+    assert ev.output_text == "part one\npart two"
+    assert ad.replaceable(ev)
+    out = ad.render(ev, Action(replace_output="kept"))
+    new = out["hookSpecificOutput"]["updatedToolOutput"]
+    assert new["content"] == [{"type": "text", "text": "kept"}]
+    assert new["agentId"] == "a-1" and new["usage"] == AGENT["usage"]

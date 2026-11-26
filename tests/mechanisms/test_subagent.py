@@ -152,7 +152,15 @@ def test_oversized_agent_string_result_is_compressed(tmp_path: Path) -> None:
     assert "[token-sparen: kept" in new and "full output:" in new
 
 
-def test_agent_structured_result_is_left_untouched(tmp_path: Path) -> None:
-    # Claude Code's structured Agent result shape cannot be rendered back yet: untouched
+def test_agent_structured_result_is_compressed(tmp_path: Path) -> None:
+    # Claude Code's documented Agent result object: content text blocks are compressed
     resp = {"content": [{"type": "text", "text": _big()}], "totalDurationMs": 5}
+    new = _agent_post(tmp_path, resp)["hookSpecificOutput"]["updatedToolOutput"]
+    assert new["totalDurationMs"] == 5
+    (block,) = new["content"]
+    assert len(block["text"]) < len(_big()) and "[token-sparen: kept" in block["text"]
+
+
+def test_agent_result_with_non_text_block_is_left_untouched(tmp_path: Path) -> None:
+    resp = {"content": [{"type": "text", "text": _big()}, {"type": "image"}], "status": "ok"}
     assert _agent_post(tmp_path, resp) == {}

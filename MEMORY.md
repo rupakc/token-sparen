@@ -311,3 +311,14 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
 - Error-line survival is whole-line membership after stripping trailing whitespace (leading
   whitespace is significant); a substring of a longer output line no longer counts.
 - `allow_override` accepts true, int 1 and "1"/"true" (any case) from every source alike.
+
+## 2026-11-26 M1 fix wave (code)
+- **Layering**: tool-result shapes live only in the host adapter. `HostAdapter` has
+  `render_tool_output()` and `replaceable()`; mechanisms receive the predicate from the entry
+  (`ADAPTER.replaceable`). The mechanism default predicate is host-neutral (any post-tool event);
+  a static test keeps `mechanisms/ compress/ learn/ store/` free of `adapters` imports.
+- **Agent/Task results** (supersedes the Task 15 note): the documented object shape
+  `{status, agentId, content: [{type: "text", text}], usage, ...}` is replaceable when `content`
+  is a non-empty list of text blocks only. The text blocks are joined with `\n` (that join is the
+  preview the never-exceed bound applies to); the replacement deep-copies every other field and
+  sets `content` to one text block. Any non-text block leaves the result untouched.

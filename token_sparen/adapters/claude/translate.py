@@ -77,6 +77,31 @@ def _is_bash(original: Any) -> bool:
     )
 
 
+_AGENT_TOOLS = frozenset({"Agent", "Task"})
+
+
+def _agent_texts(tool_name: str, original: Any) -> list[str] | None:
+    """Texts of an Agent/Task result whose ``content`` is a non-empty list of text blocks only.
+
+    Any other block (e.g. an image) makes the result unreplaceable: rendering a single text block
+    would drop it.
+    """
+    if tool_name not in _AGENT_TOOLS or not isinstance(original, dict):
+        return None
+    content = original.get("content")
+    if not isinstance(content, list) or not content:
+        return None
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            return None
+        text = block.get("text")
+        if not isinstance(text, str):
+            return None
+        texts.append(text)
+    return texts
+
+
 def output_text(tool_name: str, response: Any) -> str | None:
     """Plain text of a tool response for the shapes we can also render back, else None."""
     if isinstance(response, str):
@@ -88,7 +113,8 @@ def output_text(tool_name: str, response: Any) -> str | None:
     if tool_name == "Read":
         file = _read_file(response)
         return None if file is None else str(file["content"])
-    return None
+    texts = _agent_texts(tool_name, response)
+    return None if texts is None else "\n".join(texts)
 
 
 def render_tool_output(tool_name: str, original: Any, new_text: str) -> Any | None:
@@ -110,6 +136,10 @@ def render_tool_output(tool_name: str, original: Any, new_text: str) -> Any | No
         read = copy.deepcopy(original)
         read["file"]["content"] = new_text
         return read
+    if _agent_texts(tool_name, original) is not None:
+        agent = copy.deepcopy(original)  # status, agentId, usage, ... stay as reported
+        agent["content"] = [{"type": "text", "text": new_text}]
+        return agent
     return None
 
 

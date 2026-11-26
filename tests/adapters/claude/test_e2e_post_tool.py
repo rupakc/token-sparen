@@ -82,3 +82,33 @@ def test_e2e_failure_event_is_noop_on_claude(tmp_path: Path) -> None:
     )
     assert _run("PostToolUseFailure", payload, tmp_path) == {}
     assert not (tmp_path / "proj" / ".token-sparen" / "outputs").exists()
+
+
+def test_e2e_agent_result_compressed(tmp_path: Path) -> None:
+    (tmp_path / "proj").mkdir()
+    text = big_pytest()
+    half = len(text.splitlines()) // 2
+    lines = text.splitlines()
+    blocks = ["\n".join(lines[:half]), "\n".join(lines[half:])]
+    response = {
+        "status": "completed",
+        "agentId": "agent-7",
+        "content": [{"type": "text", "text": b} for b in blocks],
+        "totalTokens": 999,
+        "usage": {"input_tokens": 10, "output_tokens": 20},
+    }
+    payload = _payload(
+        "PostToolUse",
+        tool_name="Agent",
+        tool_input={"prompt": "run the tests"},
+        tool_use_id="tu-agent",
+        tool_response=response,
+    )
+    new = _run("PostToolUse", payload, tmp_path)["hookSpecificOutput"]["updatedToolOutput"]
+    assert {k: v for k, v in new.items() if k != "content"} == {
+        k: v for k, v in response.items() if k != "content"
+    }
+    (block,) = new["content"]
+    assert block["type"] == "text" and "[token-sparen: kept " in block["text"]
+    assert len(block["text"]) <= len("\n".join(blocks))  # never more than the model saw
+    assert "FAILED tests/test_cache.py::test_cache_eviction" in block["text"]
