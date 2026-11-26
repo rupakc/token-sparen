@@ -75,6 +75,8 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code 
   and `[compression] allow_ctypes` in your own config (a project file may only narrow them).
 - `token-sparen replay --policy default` replays the production gate; a re-run no longer counts
   as a recovery cost; recovery cost is reported per regret signal.
+- `git show <commit>`, `git log -p` and `git stash show -p` output is recognised as a diff (and
+  so offered for compression); `git show <rev>:<path>` stays file content and is never trimmed.
 - `[learn.hold] compression = true` now stops every output trim: it also holds the learned
   pre-trim and applies when learning is off or the engine fails. `allow_ctypes = []` is the
   config-only switch. `[learn] enabled = false` still uses the fixed standard compression. The command-family

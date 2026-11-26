@@ -5,6 +5,14 @@ noisy tool output (test runs, build logs, JSON, diffs, searches) before the mode
 trims file contents by default, keeps the **full text on disk so nothing is lost**, blocks a few clearly unbounded commands, and
 shows a live token meter. Everything runs locally.
 
+## Quick start
+
+1. Install: `claude plugin marketplace add rupakc/token-sparen`, then `claude plugin install token-sparen@token-sparen`; start a new session.
+2. Verify: `/token-sparen doctor`, then ask Claude to run `pytest -v` (or any big test run) and look for the `[token-sparen: kept ...]` marker ([details](#install)).
+3. Recover: `token-sparen show <id>` (id in the marker) or read the `full output:` path.
+4. See what it did: `/token-sparen` (net tokens saved).
+5. Turn off: `TOKEN_SPAREN_DISABLE=1` before launching Claude Code, `/token-sparen disable` for one session, or `claude plugin disable token-sparen` ([all options](#turning-it-off)).
+
 ## Status
 
 Pre-release (`0.1.0.dev0`). The mechanisms below work today; how strongly to trim is learned per
@@ -17,9 +25,9 @@ statusline `saved` segment uses the same net figure). Net can be zero or negativ
 
 ## Requirements
 
-- Claude Code >= 2.1.121 (tested with 2.1.332). Replacing a tool result needs the
-  `updatedToolOutput` hook feature, which older hosts do not have: hooks would run, but nothing
-  would be trimmed.
+- Claude Code: the minimum, 2.1.121, is declared in the plugin manifest; tested with 2.1.332.
+  Replacing a tool result needs the `updatedToolOutput` hook feature, which older hosts do not
+  have: hooks would run, but nothing would be trimmed.
 - `python3` >= 3.11 on your `PATH` (the hooks run `python3`). No other runtime dependencies.
   macOS's system `python3` is often older than 3.11: check with `python3 --version`, and run
   `/token-sparen doctor` (below) first if you are unsure. Hooks fail open, so an old Python means
@@ -51,14 +59,16 @@ from a checkout of this repository run `pip install .`.
 1. `/token-sparen doctor` in Claude Code (or `token-sparen doctor` in a terminal). It checks Python,
    the state directory, hook files and a synthetic compress-and-recover round trip. That round
    trip runs inside token-sparen, so it cannot tell whether your Claude Code honours the hooks.
-2. Smoke test in a real session: start a new Claude Code session and ask Claude to run
-   `git log -p -n 300` in any repository with a long history. If the output is at least 2000
-   estimated tokens and token-sparen chose to trim it, the result ends with a
-   `[token-sparen: kept ... · full output: ...]` marker (see
-   [Recovering trimmed output](#recovering-trimmed-output)), and `/token-sparen` then shows a
-   non-zero trim count. A new project starts with light trimming and a small share of outputs is
-   always kept whole, so if you see no marker the first time, repeat it with another large diff or
-   test run. If you never see one, check the Claude Code version above.
+2. Smoke test in a real session: start a new Claude Code session and ask Claude to run your test
+   suite verbosely (for example `pytest -v`) so that the output is longer than about 2000 tokens.
+   Usually the result is trimmed and ends with a `[token-sparen: kept ... · full output: ...]`
+   marker (see [Recovering trimmed output](#recovering-trimmed-output)), and `/token-sparen` then
+   shows a non-zero trim count. On a brand-new project roughly one in five large outputs is
+   deliberately left whole at first (a baseline the learner needs), so if you see no marker, try
+   a second time. If you still never see one, check the Claude Code version above.
+3. Without the host: `token-sparen run -- <a command with big output>` prints what token-sparen
+   would show for that command, marker included. It does not prove your Claude Code honours the
+   hooks; the smoke test does.
 
 ## What changes in your session
 
@@ -67,7 +77,7 @@ All of this is on by default. Nothing is sent anywhere.
 - **Compression (quality first).** When a tool result is **at least 2000 estimated tokens** and
   is one of these kinds of output, token-sparen may replace it with a shorter version that keeps
   the head and tail, every error line and failures, and ends with a recovery marker:
-  - diffs (`git diff`, `git show <commit>`) and search results (Grep/Glob, `grep`, `rg`);
+  - diffs (`git diff`, `git show <commit>`, `git log -p`, `git stash show -p`) and search results (Grep/Glob, `grep`, `rg`);
   - test reports (pytest, jest, vitest, go test, cargo test, ...), compiler output (tsc, rustc,
     gcc, javac, ...), build and install logs (npm, pip, gradle, docker build, ...);
   - JSON (API responses, MCP tools, `curl`), `pplx` search results and timestamped logs.
@@ -343,7 +353,7 @@ content); a trimming level is used only while its plausible regret stays under a
 compression). A new project starts with the lightest level and unlocks stronger ones one at a time
 only after the previous one has been observed at least 20 times with a low regret estimate
 (experience from your other projects counts toward that, so a new project may unlock stronger
-levels sooner), so early sessions trim less than later ones. A small share of decisions always keeps the output untouched, as a baseline. The
+levels sooner), so early sessions trim less than later ones. A share of decisions always keeps the output untouched (roughly one in five at first on a new project), as a baseline. The
 subagent brief stays off (it is not learned until a benchmark shows it does not hurt quality).
 `[learn] enabled = false` switches learning off, but that is not a way to trim less: it uses fixed
 defaults (standard compression, read de-dupe pointers), which trim more than a cold learner. To
