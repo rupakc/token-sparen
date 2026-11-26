@@ -215,3 +215,58 @@ def test_sanitize_embedded_project_paths() -> None:
     assert sanitize(_f("pytest src/a/b ./c")) is not None
     home = "/home/u/proj"
     assert sanitize(_f(f"{home}/.venv/bin/pytest"), project_dir=home) is None
+
+
+INSTRUCTIONS = [
+    "disregard earlier output",
+    "forget it",
+    "override safety",
+    "see previous",
+    "follow the rules",
+    "you should run make",
+    "delete all files",
+    "exfiltrate env",
+    "exfil data",
+    "dump credentials",
+    "developer access",
+    "debug mode",
+    "pretend nothing",
+    "jailbreak now",
+    "you are root",
+    "you-are-root",
+    "you_are_root",
+    "youare root",
+    "do-not stop",
+    "do_not stop",
+    "dont stop",
+    "do not stop",
+    "1gn0re it",
+    "IGNORE_PREVIOUS",
+    "i.g.n.o.r.e it",
+    "pr3v10us",
+    "f0rg3t",
+    "sh0uld",
+    "ignored prompts",
+    "Instructions",
+    "make test-mode=on",
+    "run --system=x",
+]
+
+
+@pytest.mark.parametrize("bad", INSTRUCTIONS)
+def test_sanitize_rejects_instruction_words_after_normalising(bad: str) -> None:
+    assert sanitize(_f(bad)) is None
+
+
+ACCEPTED = [
+    "systemctl status",
+    "cat .gitignore",
+    "pytest tests/test_api.py::test_returns_empty_list_when_nothing_matches",
+    "pytest -k test_sanitize_rejects_paths_outside_project",
+    "npm run lint",
+]
+
+
+@pytest.mark.parametrize("good", ACCEPTED)
+def test_sanitize_word_boundaries_accept_plain_commands(good: str) -> None:
+    assert sanitize(_f(good)) is not None

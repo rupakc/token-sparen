@@ -23,12 +23,45 @@ MAX_CHARS = 120
 
 # One command-token sequence: allow-listed characters, tokens separated by exactly one space.
 _TOKENS = re.compile(r"[A-Za-z0-9_./:@=+-]+(?: [A-Za-z0-9_./:@=+-]+)*")
-_INSTRUCTION = re.compile(
-    r"ignore|instruction|system|assistant|prompt|must|always|never", re.IGNORECASE
+# Instruction-like words, matched as whole words (plus simple inflections) after normalising:
+# lowercase, leetspeak digits mapped back, and once more with - _ . separators dropped.
+_DENY_WORDS = frozenset(
+    {
+        "ignore",
+        "instruction",
+        "system",
+        "assistant",
+        "prompt",
+        "must",
+        "always",
+        "never",
+        "disregard",
+        "forget",
+        "override",
+        "previous",
+        "rule",
+        "should",
+        "delete",
+        "credential",
+        "developer",
+        "mode",
+        "pretend",
+        "jailbreak",
+        "youare",
+        "donot",
+        "dont",
+    }
 )
+_DENY_PREFIXES = ("exfil",)
+_DENY_PAIRS = frozenset({("you", "are"), ("do", "not")})
+_SUFFIXES = frozenset({"", "s", "es", "ed", "d", "ing", "ly"})
+_LEET = str.maketrans("013457", "oieast")
+_NON_WORD = re.compile(r"[^a-z0-9]+")
+_NON_TOKEN = re.compile(r"[^a-z0-9._-]+")
+_SEPARATORS = re.compile(r"[._-]")
+_LONG_RUN = re.compile(r"[A-Za-z0-9_\-]{32,}")
 _SECRET = re.compile(
-    r"[A-Za-z0-9_\-]{32,}"  # long opaque token (API keys, hashes, JWT parts)
-    r"|(?<![A-Za-z0-9])sk-"  # OpenAI-style / Stripe-style secret keys
+    r"(?<![A-Za-z0-9])sk-"  # OpenAI-style / Stripe-style secret keys
     r"|gh[pousr]_|github_pat_"  # GitHub tokens
     r"|AKIA|ASIA"  # AWS access key ids
     r"|(?<![A-Za-z0-9])xox"  # Slack tokens
@@ -102,6 +135,46 @@ def _paths_ok(text: str, project_dir: str | None) -> bool:
     return True
 
 
+def _denied(word: str) -> bool:
+    if word.startswith(_DENY_PREFIXES):
+        return True
+    for d in _DENY_WORDS:
+        if word.startswith(d) and word[len(d) :] in _SUFFIXES:
+            return True
+        if d.endswith("e") and word == d[:-1] + "ing":
+            return True
+    return False
+
+
+def _instruction(text: str) -> bool:
+    """Instruction-like wording: whole denied words after lowercasing and mapping leetspeak
+    digits back (0 o, 1 i, 3 e, 4 a, 5 s, 7 t), split on every non-alphanumeric character and,
+    separately, with ``-``, ``_`` and ``.`` dropped inside a token (``i.g.n.o.r.e``, ``do_not``).
+    ``systemctl`` or ``.gitignore`` are not words of the list."""
+    base = text.lower().translate(_LEET)
+    words = [w for w in _NON_WORD.split(base) if w]
+    if any(_denied(w) for w in words):
+        return True
+    if any(pair in _DENY_PAIRS for pair in zip(words, words[1:], strict=False)):
+        return True
+    for piece in _NON_TOKEN.split(base):
+        joined = _SEPARATORS.sub("", piece)
+        if joined and _denied(joined):
+            return True
+    return False
+
+
+def _long_secret(text: str) -> bool:
+    """A long opaque run (API keys, hashes, JWT parts): >= 32 word characters with at least two
+    digits or no ``_``/``-`` separator at all. A long test name (``test_returns_empty_...``) is
+    not one."""
+    for m in _LONG_RUN.finditer(text):
+        run = m.group(0)
+        if sum(c.isdigit() for c in run) >= 2 or not any(c in "_-" for c in run):
+            return True
+    return False
+
+
 def _clean(text: object, project_dir: str | None) -> bool:
     if not isinstance(text, str) or not 0 < len(text) <= MAX_CHARS:
         return False
@@ -111,7 +184,9 @@ def _clean(text: object, project_dir: str | None) -> bool:
         return False
     if _TOKENS.fullmatch(text) is None:  # also rejects ; | & > < $ quotes and whitespace runs
         return False
-    if _INSTRUCTION.search(text) or _SECRET.search(text) or _ARGV_SECRET.search(text):
+    if _instruction(text) or _long_secret(text):
+        return False
+    if _SECRET.search(text) or _ARGV_SECRET.search(text):
         return False
     tokens = text.split(" ")
     if any(posixpath.basename(t) in _PW_CLIENTS for t in tokens) and any(
