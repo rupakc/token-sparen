@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from token_sparen import __version__
-from token_sparen.config import load_config, state_home
+from token_sparen.config import Config, load_config, state_home
 from token_sparen.events import ToolCall
 from token_sparen.store import jsonstore, keycache, paths, session
 
@@ -406,6 +406,20 @@ def _check_hooks_json(root: Path) -> tuple[bool, str]:
     return True, f"{root} ({len(commands)} hook commands)"
 
 
+MIN_TOKENS_FLOOR = 2000
+
+
+def _below_floor(cfg: Config) -> list[str]:
+    """Configured ``*.min_tokens`` values under the 2000-token floor (ignored at runtime)."""
+    out = []
+    for key in ("compression.min_tokens", "read_dedupe.min_tokens"):
+        value = cfg.get(key)
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            if value < MIN_TOKENS_FLOOR:
+                out.append(f"{key} = {value:g} is below the floor; {MIN_TOKENS_FLOOR} is used")
+    return out
+
+
 def _host_platform() -> str:
     return sys.platform
 
@@ -493,6 +507,9 @@ def _doctor(args: argparse.Namespace) -> int:
         add(_WARN, "python3 on PATH", python3_missing_hint(_host_platform()))
     elif path_py < (3, 11):
         add(_WARN, "python3 on PATH", f"{path_py[0]}.{path_py[1]} < 3.11; hooks use python3")
+    floors = _below_floor(load_config(Path.cwd(), env))
+    if floors:
+        add(_WARN, "min_tokens", "; ".join(floors))
     home = state_home(env)
     try:
         home.mkdir(parents=True, exist_ok=True)

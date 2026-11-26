@@ -523,8 +523,7 @@ def test_handler_latency_50kb(tmp_path: Path) -> None:
     assert best < 0.050 * perf_factor()
 
 
-def test_min_tokens_floor_is_enforced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(compression, "_FLOOR_LOGGED", False)
+def test_min_tokens_floor_is_enforced(tmp_path: Path) -> None:
     lines = big_pytest().splitlines()
     text = "\n".join(lines[: len(lines) // 8])
     tokens = estimate_tokens(text)
@@ -538,3 +537,59 @@ def test_min_tokens_floor_is_enforced(tmp_path: Path, monkeypatch: pytest.Monkey
     assert len(rows) == 1 and "min_tokens" in rows[0]["error"] and "2000" in rows[0]["error"]
     # at or above the floor the configured value is used as before
     assert _handle(tmp_path, _bash(tmp_path, big_pytest()), cfg).replace_output is not None
+
+
+def _floor_rows(tmp_path: Path) -> list[dict[str, Any]]:
+    log = tmp_path / "home" / "logs" / "errors.jsonl"
+    if not log.exists():
+        return []
+    rows = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    return [r for r in rows if "min_tokens" in r["error"]]
+
+
+def test_floor_warning_once_per_project_across_processes(tmp_path: Path) -> None:
+    import os
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    lines = big_pytest().splitlines()
+    payload = json.dumps(
+        {
+            "session_id": "s-floor",
+            "cwd": proj.as_posix(),
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest -v"},
+            "tool_use_id": "t1",
+            "tool_response": {"stdout": "\n".join(lines[: len(lines) // 8]), "stderr": ""},
+        }
+    )
+    base = {k: v for k, v in os.environ.items() if not k.startswith(("TOKEN_SPAREN_", "CLAUDE_"))}
+    base.update(
+        TOKEN_SPAREN_HOME=str(tmp_path / "home"),
+        CLAUDE_PROJECT_DIR=str(proj),
+        TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS="5000",
+    )
+
+    def hook(min_tokens: str) -> None:
+        env = {**base, "TOKEN_SPAREN_COMPRESSION__MIN_TOKENS": min_tokens}
+        subprocess.run(
+            [sys.executable, "-I", str(root / "hooks" / "run.py"), "PostToolUse"],
+            input=payload,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            timeout=60,
+            check=True,
+        )
+
+    hook("500")
+    hook("500")  # a second process: still one warning for this project
+    assert len(_floor_rows(tmp_path)) == 1
+    hook("800")  # the configured value changed: warn again
+    rows = _floor_rows(tmp_path)
+    assert len(rows) == 2 and "800" in rows[1]["error"]

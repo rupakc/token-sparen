@@ -487,3 +487,16 @@ def test_config_set_uses_last_active_session(env: dict[str, str]) -> None:
     _hook("UserPromptSubmit", {"session_id": "live-9", "cwd": cwd, "prompt": "hi"}, env)
     assert main(["config", "set", "governor.hard_stop", "true"]) == 0
     assert _overlay(env, "live-9")["config_overrides"] == {"governor": {"hard_stop": True}}
+
+
+def test_doctor_reports_min_tokens_below_floor(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import token_sparen.cli as cli
+
+    monkeypatch.setattr(cli, "PACKAGE_ROOT", Path.cwd() / "no-plugin")  # skip the round-trip
+    Path("token-sparen.toml").write_text("[compression]\nmin_tokens = 700\n", encoding="utf-8")
+    assert main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if "min_tokens" in ln)
+    assert line.startswith("!") and "700" in line and "2000" in line

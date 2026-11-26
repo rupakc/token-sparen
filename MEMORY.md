@@ -379,3 +379,7 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   capture every identity-like key; the misreading risk outweighs the saving (quality first).
   Elision logic, golden and tests reverted; a regression test keeps repeated values verbatim.
   Spec §6.1 "duplicated-field elision" should be dropped by the docs task.
+- **min_tokens floor warning is per project** (supersedes "logged once per process"):
+  `projects/<key>/floor_warned.json` keeps `{min_tokens: <value warned about>}`; the warning is
+  logged again only when the configured value changes. `doctor` shows a `!` line for any
+  `compression.min_tokens` / `read_dedupe.min_tokens` below 2000 in the current directory's config.

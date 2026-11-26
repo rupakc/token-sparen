@@ -78,20 +78,36 @@ def default_replaceable(event: Event) -> bool:
     return event.tool is not None and event.kind in _POST_KINDS
 
 
-_FLOOR_LOGGED = False
+FLOOR_FILE = "floor_warned.json"
 
 
-def _min_tokens(cfg: Config, env: Mapping[str, str]) -> float:
-    """``compression.min_tokens``, never below the 2000-token invariant (logged once a process)."""
-    global _FLOOR_LOGGED
+def _min_tokens(cfg: Config, env: Mapping[str, str], project_key: str) -> float:
+    """``compression.min_tokens``, never below the 2000-token invariant.
+
+    A lower configured value is logged once per project (``projects/<key>/floor_warned.json``
+    keeps the value warned about) and again only when the configured value changes.
+    """
     configured = _num(cfg, "compression.min_tokens", MIN_TOKENS)
-    if configured < MIN_TOKENS and not _FLOOR_LOGGED:
-        _FLOOR_LOGGED = True
-        log_error(
-            env,
-            "compression",
-            f"min_tokens = {configured:g} is below the floor; using {MIN_TOKENS}",
-        )
+    if configured < MIN_TOKENS:
+        path = paths.project_dir_for(state_home(env), project_key) / FLOOR_FILE
+        if jsonstore.read(path, {}).get("min_tokens") != configured:
+            warned = False
+
+            def apply(state: dict[str, Any]) -> dict[str, Any]:
+                nonlocal warned
+                warned = state.get("min_tokens") != configured
+                return {"min_tokens": configured}
+
+            try:
+                jsonstore.update(path, apply, {})
+            except (jsonstore.StoreBusy, OSError) as exc:
+                log_error(env, "compression", f"floor flag: {type(exc).__name__}: {exc}")
+            if warned:
+                log_error(
+                    env,
+                    "compression",
+                    f"min_tokens = {configured:g} is below the floor; using {MIN_TOKENS}",
+                )
     return max(float(MIN_TOKENS), configured)
 
 
@@ -223,7 +239,7 @@ def handle_post_tool(
     if not (replaceable or default_replaceable)(event):
         return Action()  # checked before any work: nothing to save or log if we cannot replace
     preview = event.output_text
-    if estimate_tokens(preview) < _min_tokens(cfg, env):
+    if estimate_tokens(preview) < _min_tokens(cfg, env, event.project_key):
         return Action()
     full = _persisted_text(event, cfg)
     if full == preview:
