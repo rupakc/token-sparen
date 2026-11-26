@@ -478,3 +478,14 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   as `allow_override`; a project-only opt-in is ignored and logged. No opt-in -> safe arm,
   propensity 1. With opt-in: ladder + Thompson + regret ucb(0.95) <= tau gate. `Engine(...,
   env=None)` reads `os.environ` unless an env mapping is given.
+- **Exact propensity** (`learn/propensity.py`, replaces the 64-draw Monte-Carlo, key
+  `propensity_samples` removed): p_i = P_i * int f_Si(s) prod_{j!=i} [1 - P_j + P_j F_Sj(s)] ds,
+  P_j = F_Rj(tau) (`beta.beta_cdf`, new public, with a precise-complement argument);
+  p_safe = prod (1 - P_j); logged p = floor*[safe] + (1-floor)*p_branch, clamped [1e-3, 1].
+  Quadrature: trapezoid in logit space y = logit(s) (Beta densities there are smooth, log-concave,
+  exponential tails, so a, b < 1 is fine), per arm over mode +- 6 sd + 20/a | 20/b, step
+  min(0.7, 0.7 * smallest sd among overlapping arms); tail terms beyond +-700. Measured sum error
+  <= 2e-7 on stress cases (heavy close peaks, singular ends), ~0.7 ms for 3 trimming arms, whole
+  decide ~1.4 ms incl. the locked pending write. Gauss-Legendre / plain Simpson on s were rejected:
+  they miss narrow peaks (sum error 1e-2) and endpoint singularities (cold pointer Beta(5.4, 0.6)).
+- **Decision ids are uuid4** (not the injected rng); choices stay deterministic under a seeded rng.

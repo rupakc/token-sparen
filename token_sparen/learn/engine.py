@@ -10,11 +10,13 @@ Per (point, bucket, arm) the engine keeps two posteriors, savings ``S`` and regr
    feasible arm with the largest ``S~`` wins, ties going to the safe arm, then declared order.
 
 So a trimming arm can only win when its plausible regret is under the tier's target: the engine
-cannot drift toward aggressive trimming by construction. The logged propensity is a Monte-Carlo
-replay of step 2 (``propensity_samples`` draws from an rng seeded by the decision id, so it is
-reproducible) mixed with the floor. Rewards update only the session overlay (``evidence``);
-the fold into the project store is Task 22. The engine never raises into a hook: on any error
-it logs and returns the safe arm with propensity 1.0 and bucket ``error``.
+cannot drift toward aggressive trimming by construction. Before sampling, the safe-exploration
+ladder and (high tier) the user opt-in and ucb gate remove arms deterministically. The logged
+propensity is exact (``learn.propensity``: numerical integral of the win probability) mixed with
+the floor, so off-policy estimates stay unbiased. Decision ids are uuid4. Rewards update only
+the session overlay (``evidence``); the fold into the project store is Task 22. The engine never
+raises into a hook: on any error it logs and returns the safe arm, propensity 1.0, bucket
+``error``.
 """
 
 from __future__ import annotations
@@ -31,10 +33,11 @@ from typing import Any
 
 from token_sparen.config import ENV_PREFIX, Config, log_error
 from token_sparen.events import SessionCtx
-from token_sparen.learn.beta import Beta, Evidence
+from token_sparen.learn.beta import Beta, Evidence, beta_cdf
 from token_sparen.learn.features import backoff_keys, backoff_levels, bucket_key, lookup_param
 from token_sparen.learn.hierarchy import SESSION_KEY, Kind, StoreChain, prior_for
 from token_sparen.learn.policy import Decision, DecisionPoint, StaticPolicy, get_point
+from token_sparen.learn.propensity import win_probabilities
 from token_sparen.store import jsonstore, session
 
 ERROR_BUCKET = "error"
@@ -229,25 +232,25 @@ class Engine:
             cands.append((arm, s.a, s.b, r.a, r.b))
         return cands
 
-    def _propensity(
-        self, point: DecisionPoint, cands: list[Cand], arm: str, decision_id: str
-    ) -> float:
+    def _propensity(self, point: DecisionPoint, cands: list[Cand], arm: str) -> float:
+        """Exact probability that ``decide`` picks ``arm`` (floor mixed with the sampling branch;
+        see ``learn.propensity``), clamped to [1e-3, 1]."""
+        tau = self._tau(point)
+        safe, ps = win_probabilities(
+            [
+                (Beta(sa, sb), 1.0 if tau >= 1.0 else beta_cdf(tau, ra, rb))
+                for _, sa, sb, ra, rb in cands
+            ]
+        )
+        branch = dict(zip((c[0] for c in cands), ps, strict=True))
+        branch[point.safe_arm] = safe
         floor = self._floor(point)
-        n = max(1, int(self._param(("propensity_samples",), 64.0)))
-        if not cands:
-            freq = 1.0 if arm == point.safe_arm else 0.0
-        else:
-            rng = random.Random(decision_id)  # noqa: S311 - reproducible logging, not crypto
-            tau = self._tau(point)
-            freq = sum(_draw(cands, tau, point.safe_arm, rng) == arm for _ in range(n)) / n
-        p = floor * (arm == point.safe_arm) + (1.0 - floor) * freq
+        p = floor * (arm == point.safe_arm) + (1.0 - floor) * branch.get(arm, 0.0)
         return min(1.0, max(MIN_PROPENSITY, p))
 
-    def propensity(
-        self, point: DecisionPoint, features: Mapping[str, str], arm: str, decision_id: str
-    ) -> float:
-        """Probability that ``decide`` picks ``arm`` here (deterministic given ``decision_id``)."""
-        return self._propensity(point, self._candidates(point, features), arm, decision_id)
+    def propensity(self, point: DecisionPoint, features: Mapping[str, str], arm: str) -> float:
+        """Probability that ``decide`` picks ``arm`` for these features (exact)."""
+        return self._propensity(point, self._candidates(point, features), arm)
 
     # --- Policy -------------------------------------------------------------------------------
 
@@ -269,13 +272,13 @@ class Engine:
     ) -> Decision:
         bucket = self.bucket(point, features)
         cands = self._candidates(point, features)
-        decision_id = f"{self.rng.getrandbits(128):032x}"
+        decision_id = uuid.uuid4().hex
         floor = self._floor(point)
         if floor > 0.0 and self.rng.random() < floor:
             arm = point.safe_arm
         else:
             arm = _draw(cands, self._tau(point), point.safe_arm, self.rng)
-        p = self._propensity(point, cands, arm, decision_id)
+        p = self._propensity(point, cands, arm)
         self._points[point.name] = point
         if self._overlay is None:
             self._overlay = ctx.overlay_path

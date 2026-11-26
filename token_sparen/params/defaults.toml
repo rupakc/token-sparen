@@ -127,7 +127,6 @@ kappa_max = 20
 kappa_min_siblings = 3  # sibling buckets (each >= min_parent_obs) needed to estimate kappa
 kappa_regret = 20  # fixed strength of every regret prior (designed default and parent derived)
 enabled = true  # false -> the static policy (no learning, propensity 1)
-propensity_samples = 64  # Monte-Carlo replays of the Thompson draw to estimate a logged propensity
 ladder_obs = 20  # a trimming arm unlocks the next more aggressive one only with >= this many
 # regret observations (pooled full bucket, or any back-off level in project/global scope) and a
 # regret posterior mean <= tau

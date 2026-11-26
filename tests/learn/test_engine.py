@@ -406,29 +406,52 @@ def test_reward_error_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert any("disk" in line for line in _log_lines(home))
 
 
-def test_propensity_deterministic_given_decision_id(tmp_path: Path) -> None:
+def test_propensity_is_exact_and_logged(tmp_path: Path) -> None:
+    from token_sparen.learn.beta import beta_cdf
+    from token_sparen.learn.propensity import win_probabilities
+
     home = tmp_path / "h"
     _arms(
         home,
         {"light": 0.4, "standard": 0.5, "aggressive": 0.6},
-        {"light": 0.03, "standard": 0.04, "aggressive": 0.05},
+        {"light": 0.01, "standard": 0.02, "aggressive": 0.03},
     )
-    p1 = _engine(home, seed=1).propensity(COMPRESSION, FULL, "standard", "abc")
-    p2 = _engine(home, seed=2).propensity(COMPRESSION, FULL, "standard", "abc")
-    assert p1 == p2
-    assert 0.0 < p1 < 1.0
-    eng = _engine(home, seed=3)
-    d = eng.decide(COMPRESSION, FULL, _ctx(home))
-    assert d.propensity == pytest.approx(
-        _engine(home, seed=9).propensity(COMPRESSION, FULL, d.arm, d.decision_id)
+    eng = _engine(home)
+    posts = eng.posteriors(COMPRESSION, FULL)
+    assert eng.eligible(COMPRESSION, FULL) == ["light", "standard", "aggressive"]
+    safe, ps = win_probabilities(
+        [(s, beta_cdf(0.05, r.a, r.b)) for s, r in (posts[a] for a in COMPRESSION.arms[1:])]
     )
+    exact = dict(zip(COMPRESSION.arms, [0.05 + 0.95 * safe] + [0.95 * p for p in ps], strict=True))
+    assert sum(exact.values()) == pytest.approx(1.0, abs=1e-6)
+    for arm in COMPRESSION.arms:
+        assert eng.propensity(COMPRESSION, FULL, arm) == pytest.approx(exact[arm], rel=1e-9)
+    seen = Counter()
+    for _ in range(300):
+        d = eng.decide(COMPRESSION, FULL, _ctx(home))
+        seen[d.arm] += 1
+        assert d.propensity == pytest.approx(max(1e-3, exact[d.arm]), rel=1e-9)
+    for arm in COMPRESSION.arms:
+        assert seen[arm] / 300 == pytest.approx(exact[arm], abs=0.08)
 
 
-def test_decisions_deterministic_given_seed(tmp_path: Path) -> None:
+def test_decision_ids_are_uuid4(tmp_path: Path) -> None:
+    import uuid
+
+    home = tmp_path / "h"
+    a = _engine(home, seed=5).decide(COMPRESSION, FULL, _ctx(home))
+    b = _engine(home, seed=5).decide(COMPRESSION, FULL, _ctx(home))
+    assert a.decision_id != b.decision_id
+    assert uuid.UUID(a.decision_id).version == 4
+
+
+def test_choices_deterministic_given_seed(tmp_path: Path) -> None:
     home = tmp_path / "h"
     a = [_engine(home, seed=5).decide(COMPRESSION, FULL, _ctx(home)) for _ in range(3)]
     b = [_engine(home, seed=5).decide(COMPRESSION, FULL, _ctx(home)) for _ in range(3)]
-    assert a == b
+    assert [(d.arm, d.propensity, d.bucket) for d in a] == [
+        (d.arm, d.propensity, d.bucket) for d in b
+    ]
 
 
 def test_tier_none_has_no_floor_and_all_feasible(tmp_path: Path) -> None:
@@ -454,7 +477,7 @@ def test_learn_defaults_present() -> None:
 
     learn = packaged_defaults()["learn"]
     assert learn["enabled"] is True
-    assert learn["propensity_samples"] == 64
+    assert "propensity_samples" not in learn  # exact propensity, no Monte-Carlo
     assert learn["pending_max"] == 500
     assert learn["cold_obs"] == 3
     assert learn["ladder_obs"] == 20

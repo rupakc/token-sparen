@@ -64,6 +64,24 @@ def _betainc(x: float, a: float, b: float) -> float:
     return 1.0 - front * _betacf(1.0 - x, b, a) / b
 
 
+def beta_cdf(x: float, a: float, b: float, *, xc: float | None = None) -> float:
+    """Beta(a, b) CDF at ``x``; ``xc`` is ``1 - x`` computed precisely by the caller (keeps the
+    upper tail exact when ``x`` is within rounding of 1)."""
+    c = 1.0 - x if xc is None else xc
+    if x <= 0.0:
+        return 0.0
+    if c <= 0.0:
+        return 1.0
+    if x < (a + 1.0) / (a + b + 2.0):
+        return math.exp(_log_front2(x, c, a, b)) * _betacf(x, a, b) / a
+    return 1.0 - math.exp(_log_front2(c, x, b, a)) * _betacf(c, b, a) / b
+
+
+def _log_front2(x: float, c: float, a: float, b: float) -> float:
+    """``_log_front`` with the complement ``c = 1 - x`` given."""
+    return math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log(c)
+
+
 def _beta_quantile(q: float, a: float, b: float) -> float:
     """Exact Beta(a, b) quantile: safeguarded Newton on I_x, bisection fallback."""
     lo, hi = 0.0, 1.0

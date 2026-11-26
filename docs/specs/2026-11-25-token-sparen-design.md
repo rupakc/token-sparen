@@ -44,6 +44,11 @@ events per fresh bucket) and the Monte-Carlo propensity is unusable for IPS on r
   `[learn.optin] <point> = true` set by the user (user config or env, never a project file, same
   rule as `allow_override`); otherwise the safe arm always (propensity 1). With opt-in the ladder
   and Thompson rule apply plus the gate regret `ucb(0.95) ≤ τ`.
+- §7.6/§7.8 exact propensity (replaces Monte-Carlo): with the floor and the deterministic gates
+  applied, `p_i = P_i ∫ f_{S_i}(s) Π_{j≠i}[1 − P_j + P_j F_{S_j}(s)] ds` with `P_j = F_{R_j}(τ)`,
+  `p_safe = Π_j (1 − P_j)` in the sampling branch, logged `p = floor·[safe] + (1−floor)·p_branch`.
+  Integrated in logit space by the trapezoid rule (smooth, no endpoint singularities): Σ p = 1
+  within 1e-6, agrees with 100 000-draw frequencies within 0.005. Decision ids are uuid4.
 
 ---
 
