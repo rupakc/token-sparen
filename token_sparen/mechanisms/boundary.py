@@ -21,7 +21,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from token_sparen.config import Config, log_error
+from token_sparen.config import Config, flag, log_error
 from token_sparen.events import Action, Event, SessionCtx
 from token_sparen.mechanisms import governor, tracking
 from token_sparen.store import jsonstore, session
@@ -139,10 +139,14 @@ def _remember(
     session.update_session(tracking.overlay_path(event, env), apply)
 
 
+def _enabled(cfg: Config) -> bool:
+    return flag(cfg.get("boundary.enabled"), True)
+
+
 def on_prompt(event: Event, cfg: Config, *, env: Mapping[str, str] | None = None) -> Action:
     """UserPromptSubmit (after tracking and the governor): maybe recommend /compact."""
     env = os.environ if env is None else env
-    if cfg.get("boundary.enabled", True) is False or event.prompt is None:
+    if not _enabled(cfg) or event.prompt is None:
         return Action()
     try:
         path = tracking.overlay_path(event, env)

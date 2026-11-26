@@ -141,13 +141,35 @@ SESSION_KEY = "config_overrides"
 _OFF = {"0", "no", "false", "off"}
 
 
+_ON = {"1", "yes", "true", "on"}
+
+
 def flag_off(value: object) -> bool:
-    """A switch set to off in any spelling: False, 0, "0", "no", "false", "off"."""
+    """A switch set to off in any spelling: False, 0, "0", "no", "false", "off" (any case)."""
     if isinstance(value, bool):
         return not value
     if isinstance(value, int | float):
         return value == 0
     return isinstance(value, str) and value.strip().lower() in _OFF
+
+
+def flag_on(value: object) -> bool:
+    """A switch set to on in any spelling: True, 1, "1", "yes", "true", "on" (any case)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return value == 1
+    return isinstance(value, str) and value.strip().lower() in _ON
+
+
+def flag(value: object, default: bool) -> bool:
+    """Every boolean-ish config read: on or off in any spelling (``flag_on`` / ``flag_off``);
+    anything else (missing, unrecognised) keeps ``default``."""
+    if flag_on(value):
+        return True
+    if flag_off(value):
+        return False
+    return default
 
 
 # The project file (``<project>/token-sparen.toml``) is committed, so possibly someone else's. It
@@ -455,5 +477,5 @@ def load_config(
     data: dict[str, Any] = {}
     for layer in (defaults, user, project, *late):
         _merge(data, layer)
-    disabled = env.get("TOKEN_SPAREN_DISABLE", "").strip().lower() in _TRUE
+    disabled = flag_on(env.get("TOKEN_SPAREN_DISABLE", ""))
     return Config(data=data, disabled=disabled, trusted=trusted)

@@ -515,7 +515,7 @@ def test_override_user_file_int_one(env: dict[str, str]) -> None:
     assert _load(env).allow_override is True
 
 
-@pytest.mark.parametrize("value", ["0", "false", "yes"])
+@pytest.mark.parametrize("value", ["0", "false", "no", "off"])
 def test_override_env_false_values(
     env: dict[str, str], monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:

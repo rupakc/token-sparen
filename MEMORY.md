@@ -1020,3 +1020,12 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   fgrep, rg, ag, ack, z/bz/xz-grep with pattern `''`, `.`, `^`, `$`, `.*`, or `rg --passthru`,
   and at least one file/dir operand; -l/-L/-c/-q/-o excluded). Tool-name verbs add load, show;
   nouns add blob, raw. README: scripts you run are not inspected.
+
+## 2026-11-26 M2 close-out code fixes (C1-C6)
+- C3: one truthy parser. `config.flag_on` (true/1/yes/on, any case), `flag_off` (false/0/no/off),
+  `flag(value, default)` (anything else keeps the default). Used by `learn.hold.*` (via
+  `learn.features.held`: an unrecognised value falls back to the packaged default),
+  `learn.optin.*`, `extensions.allow_override` (now also yes/on: it is user-only anyway),
+  `TOKEN_SPAREN_DISABLE`, every `*.enabled`, `governor.hard_stop`,
+  `compression.trim_file_contents`, `statusline.ascii/color`. The project-file policy stays
+  strict (`true_only`/`false_only` accept only real booleans; a string is dropped and logged).

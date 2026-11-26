@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
-from token_sparen.config import Config, log_error, state_home
+from token_sparen.config import Config, flag, log_error, state_home
 from token_sparen.events import Action, Event, SessionCtx
 from token_sparen.mechanisms import tracking
 from token_sparen.store import jsonstore, session
@@ -102,11 +102,11 @@ def _num(cfg: Config, key: str, default: float) -> float:
 
 
 def _enabled(cfg: Config) -> bool:
-    return cfg.get("governor.enabled", True) is not False
+    return flag(cfg.get("governor.enabled"), True)
 
 
 def _hard_stop(cfg: Config) -> bool:
-    return cfg.get("governor.hard_stop", False) is True
+    return flag(cfg.get("governor.hard_stop"), False)
 
 
 # --------------------------------------------------------------------------- transcript parsing

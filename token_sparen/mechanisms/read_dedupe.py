@@ -23,7 +23,7 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from token_sparen.config import Config, log_error, state_home
+from token_sparen.config import Config, flag, log_error, state_home
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event
 from token_sparen.learn import decisions, features, regret
@@ -103,7 +103,7 @@ def _turn(state: Mapping[str, Any], key: str) -> int:
 
 
 def _enabled(cfg: Config) -> bool:
-    return cfg.get("read_dedupe.enabled", True) is not False
+    return flag(cfg.get("read_dedupe.enabled"), True)
 
 
 def handle_post_tool(

@@ -13,7 +13,7 @@ import os
 import time
 from collections.abc import Mapping
 
-from token_sparen.config import Config
+from token_sparen.config import Config, flag
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event
 from token_sparen.learn import decisions, features
@@ -31,12 +31,16 @@ def brief() -> str:
     return BRIEF
 
 
+def _enabled(cfg: Config) -> bool:
+    return flag(cfg.get("subagent.enabled"), True)
+
+
 def handle_pre_tool(
     event: Event, policy: Policy, cfg: Config, *, env: Mapping[str, str] | None = None
 ) -> Action:
     env = os.environ if env is None else env
     tool = event.tool
-    if tool is None or tool.name not in AGENT_TOOLS or cfg.get("subagent.enabled", True) is False:
+    if tool is None or tool.name not in AGENT_TOOLS or not _enabled(cfg):
         return Action()
     prompt = tool.input.get("prompt")
     if not isinstance(prompt, str) or not prompt or BRIEF in prompt:

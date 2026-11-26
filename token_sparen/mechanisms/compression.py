@@ -34,7 +34,7 @@ from token_sparen.compress import (
     load_level,
 )
 from token_sparen.compress.filedump import is_file_dump, is_file_tool
-from token_sparen.config import Config, flag_off, log_error, state_home
+from token_sparen.config import Config, flag, log_error, state_home
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event, SessionCtx, ToolCall
 from token_sparen.learn import features, regret
@@ -80,7 +80,6 @@ DEFAULT_ALLOW_CTYPES = (
 )
 GATE_FILE_CONTENT = "file_content"
 GATE_CTYPE = "ctype_not_allowed"
-_ON = frozenset({"true", "1", "yes", "on"})
 _COMMAND_TOOLS = frozenset({"powershell", "pwsh"})  # shells outside the `shell` category
 _EST_TYPE = {"json": "json", "pplx": "json", "log": "log", "build_log": "log"}
 _POST_KINDS = frozenset({"post_tool", "post_tool_failure"})
@@ -303,10 +302,7 @@ def allowed_ctypes(cfg: Config) -> frozenset[str]:
 
 def trims_file_contents(cfg: Config) -> bool:
     """``[compression] trim_file_contents``: only an explicit on value opts in."""
-    raw = cfg.get("compression.trim_file_contents", False)
-    if raw is None or flag_off(raw):
-        return False
-    return raw is True or raw == 1 or (isinstance(raw, str) and raw.strip().lower() in _ON)
+    return flag(cfg.get("compression.trim_file_contents"), False)
 
 
 def is_file_content(tool: ToolCall) -> bool:

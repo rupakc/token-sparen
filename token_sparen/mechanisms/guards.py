@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from token_sparen.compress.base import Level, load_level
-from token_sparen.config import Config
+from token_sparen.config import Config, flag
 from token_sparen.events import Action, Event
 from token_sparen.learn.policy import PRETRIM
 from token_sparen.learn.regret import MAX_SIG_CHARS, normalize_command
@@ -83,7 +83,7 @@ REASON_LS = (
 
 
 def _enabled(cfg: Config) -> bool:
-    return cfg.get("guards.enabled", True) is not False
+    return flag(cfg.get("guards.enabled"), True)
 
 
 def _int(cfg: Config, key: str, default: int) -> int:

@@ -11,7 +11,7 @@ import functools
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from token_sparen.config import packaged_defaults
+from token_sparen.config import flag_off, flag_on, packaged_defaults
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Event, SessionCtx
 from token_sparen.learn.policy import DecisionPoint
@@ -154,6 +154,13 @@ def lookup_param(
         if value is not None and valid(value):
             return value
     return None
+
+
+def held(params: Mapping[str, Any] | None, point: str) -> bool:
+    """``[learn.hold] <point>`` in any on spelling (``config.flag_on``); an unrecognised value
+    falls back to the packaged default (the subagent brief is held there)."""
+    value = lookup_param(params, ("learn", "hold", point), lambda v: flag_on(v) or flag_off(v))
+    return flag_on(value)
 
 
 def backoff_levels(point: str, params: Mapping[str, Any] | None = None) -> list[list[str]]:

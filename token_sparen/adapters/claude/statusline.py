@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, TextIO
 
-from token_sparen.config import Config, load_config, log_error, state_home
+from token_sparen.config import Config, flag, load_config, log_error, state_home
 from token_sparen.events import SessionCtx
 from token_sparen.mechanisms import governor
 from token_sparen.store import jsonstore, keycache, session
@@ -186,10 +186,18 @@ def _governor_cfg(cfg: Config) -> Config:
     return Config(data={**cfg.data, "governor": {**gov, "parse_budget_ms": value}})
 
 
+def _ascii(cfg: Config) -> bool:
+    return flag(cfg.get("statusline.ascii"), False)
+
+
+def _use_colour(cfg: Config, env: Mapping[str, str]) -> bool:
+    return not _str(env.get("NO_COLOR")) and flag(cfg.get("statusline.color"), True)
+
+
 def _governor_state(
     sctx: SessionCtx, transcript: Path, cfg: Config, env: Mapping[str, str]
 ) -> governor.GovernorState | None:
-    if cfg.get("governor.enabled", True) is False:
+    if not flag(cfg.get("governor.enabled"), True):
         return None
     if transcript.is_file():
         try:
@@ -246,7 +254,7 @@ def _render(payload: Mapping[str, Any], env: Mapping[str, str]) -> tuple[str, bo
     session_id, transcript = bound
     project_dir = _project_dir(payload, env)
     cfg = load_config(project_dir if project_dir is not None else state_home(env), env)
-    ascii_ = cfg.get("statusline.ascii", False) is True
+    ascii_ = _ascii(cfg)
     if cfg.disabled:
         return _minimal(ascii_), ascii_
     model_id = _str(_dict(payload.get("model")).get("id"))
@@ -268,7 +276,7 @@ def _render(payload: Mapping[str, Any], env: Mapping[str, str]) -> tuple[str, bo
         st = _governor_state(sctx, transcript, cfg, env)
         overlay = session.read_session(path)
 
-    colour = not _str(env.get("NO_COLOR")) and cfg.get("statusline.color", True) is not False
+    colour = _use_colour(cfg, env)
     head = _minimal(ascii_)
     parts: list[str] = []
     for name in _segments(cfg):

@@ -51,7 +51,7 @@ from typing import Any
 
 from token_sparen import EXTENSION_API_VERSION
 from token_sparen.compress.base import Compressor, is_compressor, registry, unwrap
-from token_sparen.config import Config, log_error
+from token_sparen.config import Config, flag_on, log_error
 from token_sparen.learn import policy
 from token_sparen.learn.policy import DecisionPoint
 from token_sparen.store import jsonstore
@@ -488,14 +488,8 @@ class LoadedExtensions:
 
 
 def _truthy(value: Any) -> bool:
-    """One rule for every source: true, 1 (int) and "1"/"true" (any case) enable."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value == 1
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true"}
-    return False
+    """One rule for every source: ``config.flag_on`` (true/1/yes/on, any case)."""
+    return flag_on(value)
 
 
 def _user_allows_override(home: Path, env: Mapping[str, str]) -> bool:

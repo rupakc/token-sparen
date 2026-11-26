@@ -33,11 +33,17 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from token_sparen.config import ENV_PREFIX, Config, flag_off, log_error
+from token_sparen.config import ENV_PREFIX, Config, flag_off, flag_on, log_error
 from token_sparen.events import SessionCtx
 from token_sparen.learn import pending
 from token_sparen.learn.beta import Beta, Evidence, beta_cdf
-from token_sparen.learn.features import backoff_keys, backoff_levels, bucket_key, lookup_param
+from token_sparen.learn.features import (
+    backoff_keys,
+    backoff_levels,
+    bucket_key,
+    held,
+    lookup_param,
+)
 from token_sparen.learn.hierarchy import SESSION_KEY, Kind, StoreChain, prior_for
 from token_sparen.learn.policy import (
     DEFAULT_TAU,
@@ -74,11 +80,7 @@ def _is_num(value: object) -> bool:
 
 
 def _truthy(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value == 1
-    return isinstance(value, str) and value.strip().lower() in {"1", "true"}
+    return flag_on(value)
 
 
 def _received(entry: list[Any]) -> set[str]:
@@ -245,10 +247,7 @@ class Engine:
         """``[learn.hold] <point> = true``: the point is decided here (bucket, breaker, pending,
         propensity 1) but never explores a trimming arm, e.g. the subagent brief, which spec 6.7
         keeps off until the live benchmark shows non-inferior quality."""
-        value = lookup_param(
-            self.cfg.data, ("learn", "hold", point.name), lambda v: isinstance(v, bool)
-        )
-        return value is True
+        return held(self.cfg.data, point.name)
 
     def _candidates(self, point: DecisionPoint, features: Mapping[str, str]) -> list[Cand]:
         if self.held(point) or (point.tier == "high" and not self.opted_in(point)):
