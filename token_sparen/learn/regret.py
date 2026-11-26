@@ -123,7 +123,13 @@ def signature(tool_name: str, tool_input: Mapping[str, Any]) -> str:
 # --------------------------------------------------------------------------- elided span
 _TOKEN = re.compile(r"[A-Za-z0-9_./-]{8,}")
 _FILE = re.compile(
-    r"(?<![\w./-])(?:[A-Za-z]:)?/?(?:[\w.-]+/)*[\w-][\w.-]*\.[A-Za-z][A-Za-z0-9]{0,7}(?![\w/])"
+    r"(?<![\w./-])(?:[A-Za-z]:)?/?(?:[\w.-]+/)*[\w-][\w.-]*\.([A-Za-z][A-Za-z0-9]{0,7})(?![\w/])"
+)
+# Without a path separator a dotted word is a file only with one of these extensions
+# (``cache.put`` or ``pytest.mark`` are not files).
+_FILE_EXTS = frozenset(
+    "py js ts tsx jsx go rs java kt rb php c h cc cpp cs swift scala md json yaml yml toml txt "
+    "sh sql html css".split()
 )
 
 
@@ -173,20 +179,20 @@ def _span_tokens(span: str, kept: str, exclude: str) -> list[str]:
 def _files(text: str) -> Iterator[str]:
     for m in _FILE.finditer(text):
         path = m.group()
+        if "/" not in path and m.group(1).lower() not in _FILE_EXTS:
+            continue
         yield path[2:] if path.startswith("./") else path
 
 
 def span_files(full: str, kept: str) -> list[str]:
-    """Up to 32 file paths the output mentions: elided span first, then the kept text.
-
-    The kept text counts too: re-running after fixing a failure the agent could see is normal.
-    """
+    """Up to 32 file paths the output mentions: the kept text first (what the agent sees and
+    fixes; re-running after fixing it is normal), then the elided span."""
     return _span_files(_elided(full, kept), kept)
 
 
 def _span_files(span: str, kept: str) -> list[str]:
     out: dict[str, None] = {}
-    for text in (span, kept[:SCAN_CHARS]):
+    for text in (kept[:SCAN_CHARS], span):
         for path in _files(text):
             out.setdefault(path, None)
             if len(out) >= MAX_FILES:
@@ -197,9 +203,9 @@ def _span_files(span: str, kept: str) -> list[str]:
 def _path_match(edited: str, mentioned: str) -> bool:
     e = edited.replace("\\", "/")
     m = mentioned.replace("\\", "/")
-    if m.startswith("/") or (len(m) > 1 and m[1] == ":"):
-        return os.path.normpath(e) == os.path.normpath(m)
-    return e == m or e.endswith("/" + m)
+    if e == m or e.endswith("/" + m.lstrip("/")):
+        return True
+    return e.rsplit("/", 1)[-1] == m.rsplit("/", 1)[-1]  # same file name: likely the same file
 
 
 # --------------------------------------------------------------------------- recovery reads

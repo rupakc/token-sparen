@@ -214,8 +214,8 @@ def test_distinctive_tokens_and_files() -> None:
     assert all(len(t) >= 8 for t in toks)
     assert "AssertionError" not in toks  # kept
     files = regret.span_files(FULL, KEPT)
-    assert files[0] == "src/app/handlers.py"  # elided span first
-    assert "tests/test_core.py" in files  # also mentioned in the kept text
+    assert files[0] == "tests/test_core.py"  # kept text first: that is what the agent fixes
+    assert "src/app/handlers.py" in files  # then the elided span
     many = "\n".join(f"tok_{i:06d}_abcdefgh /p/f{i}.py" for i in range(500))
     assert len(regret.distinctive_tokens(many, "")) == 64
     assert len(regret.span_files(many, "")) == 32
@@ -729,3 +729,35 @@ def test_pretrim_lookup_uses_normalised_command(tmp_path: Path) -> None:
     )
     ev = _bash_event(tmp_path, "x", command="cd /w && npm test 2>&1")
     assert guards.pretrim_lines(ev, store, _cfg(tmp_path), env=_env(tmp_path)) == 40
+
+
+# --------------------------------------------------------------------------- review round 1
+def test_file_regex_needs_separator_or_known_extension() -> None:
+    text = "cache.put('k1') pytest.mark.parametrize at foo.py and a/b.weird; Model.load(x) x.toml"
+    files = regret.span_files(text, "")
+    assert "foo.py" in files and "a/b.weird" in files and "x.toml" in files
+    assert "cache.put" not in files and "pytest.mark.parametrize" not in files
+    assert "Model.load" not in files
+
+
+def test_large_suite_keeps_failing_file_and_fix_rerun_is_not_regret(tmp_path: Path) -> None:
+    ev = _bash_event(tmp_path, big_pytest(400_000), command="pytest -v")
+    act = compression.handle_post_tool(ev, StaticPolicy({}), _cfg(tmp_path), env=_env(tmp_path))
+    assert act.replace_output is not None
+    (did,) = _state(tmp_path)["regret"]
+    files = _state(tmp_path)["regret"][did]["files_in_span"]
+    assert "tests/test_models.py" in files  # > 32 passing files elided, the failing one kept
+    rec = Recorder()
+    edit = _event(tmp_path, tool="Edit", tool_input={"file_path": "/w/proj/tests/test_models.py"})
+    _handle(tmp_path, edit, rec)
+    _handle(tmp_path, _bash(tmp_path, "pytest -v"), rec)
+    assert rec.regrets() == []
+
+
+def test_edit_matches_mentioned_file_by_basename(tmp_path: Path) -> None:
+    _track(tmp_path, files=["lib/widget_store.py"])
+    rec = Recorder()
+    edit = _event(tmp_path, tool="Edit", tool_input={"file_path": "/repo/src/widget_store.py"})
+    _handle(tmp_path, edit, rec)
+    _handle(tmp_path, _bash(tmp_path, "pytest -q tests"), rec)
+    assert rec.regrets() == []
