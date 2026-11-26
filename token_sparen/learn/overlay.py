@@ -31,8 +31,9 @@ so a re-run after a crash between steps applies nothing twice; re-folding a fold
 finds nothing staged. **Lock order** (``LOCK_ORDER``), the same everywhere: the project's
 ``posteriors.json`` lock is held for the whole fold (it serialises folds of a project); under
 it ``breaker.json``, then ``global/posteriors.json``, then ``pretrim.json``, then the session
-overlay are taken one at a time, each innermost. Hooks only ever take the overlay lock alone,
-so no cycle is possible.
+overlay, then ``pending.json`` (the pending-fold index, ``learn.pending``) are taken one at a
+time, each innermost. Hooks only ever take the overlay or the index lock alone, so no cycle is
+possible.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from token_sparen.config import log_error, state_home
-from token_sparen.learn import breaker
+from token_sparen.learn import breaker, pending
 from token_sparen.learn.beta import Beta, Evidence
 from token_sparen.learn.features import ANY_BUCKET, backoff_keys
 from token_sparen.learn.hierarchy import (
@@ -73,6 +74,7 @@ LOCK_ORDER = (
     "global/posteriors.json",
     "pretrim.json",
     "overlay",
+    "pending.json",
 )
 FOLDING_KEY = "folding"
 FOLDED_AT = "folded_at"
@@ -322,14 +324,18 @@ def _fold(
 ) -> None:
     env = {"TOKEN_SPAREN_HOME": str(home)}
     ov = session.session_path(home, key, rep.session_id)
+    name = ov.name.removesuffix(".json")
     if not ov.exists():
+        pending.remove(home, key, name, env, timeout=timeout)
         return
     pdir = project_dir_for(home, key)
     post = pdir / POSTERIORS_FILE
     with jsonstore.locked(post, timeout):
         staged = _stage(ov, now, env, timeout)
         if staged is None:
+            pending.remove(home, key, name, env, timeout=timeout)
             return
+        pending.add(home, key, name, env, timeout=timeout)  # a crash from here on is resumed
         rep.staged = True
         fid = str(staged["id"])
         cells = list(_cells(staged.get("evidence")))
@@ -349,6 +355,7 @@ def _fold(
             return state
 
         jsonstore.update(ov, clear, {}, env, timeout=timeout)
+        pending.remove(home, key, name, env, timeout=timeout)
 
 
 def _breaker_and_project(
@@ -642,6 +649,35 @@ def pending_sessions(
     return out
 
 
+def indexed_sessions(
+    project_key: str,
+    home: Path,
+    *,
+    older_than: float = PENDING_AGE_S,
+    limit: int = PENDING_PER_START,
+    exclude: str | None = None,
+    now: float | None = None,
+) -> list[str]:
+    """Sessions in the pending-fold index (``learn.pending``) whose overlay has been idle for
+    ``older_than`` seconds (or is gone), oldest first, at most ``limit``. No directory scan."""
+    env = {"TOKEN_SPAREN_HOME": str(home)}
+    now = time.time() if now is None else now
+    skip = None if exclude is None else session.session_path(home, project_key, exclude).name
+    found: list[tuple[float, str]] = []
+    for name in pending.entries(home, project_key, env):
+        path = session.session_path(home, project_key, name)
+        if path.name == skip:
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0  # gone: its fold drops the entry
+        if now - mtime >= older_than:
+            found.append((mtime, name))
+    found.sort()
+    return [name for _, name in found[: max(0, limit)]]
+
+
 def _bytes(paths: list[Path]) -> int:
     total = 0
     for path in paths:
@@ -662,7 +698,7 @@ def fold_pending(
     """SessionStart: fold up to 3 left-over sessions (idle >= 1 h) in-process when small and
     quick, else spawn a detached ``fold --all``. Never raises."""
     try:
-        sids = pending_sessions(project_key, home, exclude=exclude)
+        sids = indexed_sessions(project_key, home, exclude=exclude)
         if not sids:
             return []
         pdir = project_dir_for(home, project_key)

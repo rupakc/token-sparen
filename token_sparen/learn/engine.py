@@ -34,6 +34,7 @@ from typing import Any
 
 from token_sparen.config import ENV_PREFIX, Config, log_error
 from token_sparen.events import SessionCtx
+from token_sparen.learn import pending
 from token_sparen.learn.beta import Beta, Evidence, beta_cdf
 from token_sparen.learn.features import backoff_keys, backoff_levels, bucket_key, lookup_param
 from token_sparen.learn.hierarchy import SESSION_KEY, Kind, StoreChain, prior_for
@@ -418,3 +419,4 @@ class Engine:
 
         jsonstore.update(path, fn, {}, self._env)
         self.stores.invalidate("session")
+        pending.add_overlay(path, self._env)  # the session now has evidence awaiting a fold

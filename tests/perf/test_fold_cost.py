@@ -45,6 +45,8 @@ def _sessions(home: Path, n: int) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"evidence": _evidence()}), encoding="utf-8")
         os.utime(path, (old, old))
+    index = home / "projects" / KEY / "pending.json"
+    index.write_text(json.dumps({f"old-{i}": old for i in range(n)}), encoding="utf-8")
 
 
 def test_session_start_in_process_fold_under_100_ms(tmp_path: Path) -> None:

@@ -352,7 +352,7 @@ def test_lock_order_is_project_then_overlay(
     monkeypatch.setattr(jsonstore, "locked", spy)
     _fold(home)
     order = overlay.LOCK_ORDER
-    assert order[0] == "posteriors.json" and order[-1] == "overlay"
+    assert order[0] == "posteriors.json" and order[-2:] == ("overlay", "pending.json")
     for chain in chains:
         assert all(n in order for n in chain), chain
         idx = [order.index(n) for n in chain]
@@ -617,6 +617,98 @@ def _age(path: Path, seconds: float) -> None:
     os.utime(path, (t, t))
 
 
+def _index(home: Path, *sids: str) -> None:
+    path = _pdir(home) / "pending.json"
+    doc = _read(path)
+    doc.update({sid: 1.0 for sid in sids})
+    _write(path, doc)
+
+
+def _start(tmp_path: Path) -> list[overlay.FoldReport]:
+    home = _home(tmp_path)
+    return overlay.fold_pending(
+        KEY, home, tmp_path / "proj", exclude=SID, env={"TOKEN_SPAREN_HOME": str(home)}
+    )
+
+
+def test_pending_index_finds_crashed_session_among_many_folded(
+    tmp_path: Path, popen: type[_Popen], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    for i in range(60):
+        _age(_session(home, f"f-{i:02d}", evidence={}, folded_at=1.0), 9000 + i)
+    _session(home, "crashed", evidence=ONE)
+
+    def boom(*a: Any, **k: Any) -> None:
+        raise RuntimeError("crash after staging")
+
+    with monkeypatch.context() as m:
+        m.setattr(overlay, "_global", boom)
+        assert _fold(home, "crashed").staged
+    assert "folding" in _read(_ov(home, "crashed"))
+    assert "crashed" in _read(_pdir(home) / "pending.json")
+    _age(_ov(home, "crashed"), 7200)
+    reps = _start(tmp_path)
+    assert [r.session_id for r in reps] == ["crashed"]
+    assert "folding" not in _read(_ov(home, "crashed"))
+    assert _read(_pdir(home) / "pending.json") == {}
+    assert _proj_ev(home).n == 1.0  # type: ignore[union-attr]
+
+
+def test_session_start_reads_only_the_index(
+    tmp_path: Path, popen: type[_Popen], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    _age(_session(home, "unindexed", evidence=ONE), 7200)
+    _age(_session(home, "indexed", evidence=ONE), 7200)
+    _index(home, "indexed", "gone")  # "gone" has no overlay any more: dropped by its fold
+
+    def no_scan(*a: Any, **k: Any) -> None:
+        raise AssertionError("SessionStart must not scan the sessions directory")
+
+    monkeypatch.setattr(overlay.os, "scandir", no_scan)
+    reps = _start(tmp_path)
+    assert sorted(r.session_id for r in reps) == ["gone", "indexed"]
+    assert "folded_at" not in _read(_ov(home, "unindexed"))
+    assert _read(_pdir(home) / "pending.json") == {}
+
+
+def test_engine_reward_and_regret_outcomes_index_the_session(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    ctx = SessionCtx(SID, KEY, 1, None, None, _ov(home))
+    eng = _engine(home)
+    d = eng.decide(COMPRESSION, FULL, ctx)
+    while d.arm == "off":
+        d = eng.decide(COMPRESSION, FULL, ctx)
+    assert not (_pdir(home) / "pending.json").exists()  # a decision alone is not evidence
+    eng.reward(d.decision_id, 0.5, None)
+    assert SID in _read(_pdir(home) / "pending.json")
+    _fold(home)
+    assert _read(_pdir(home) / "pending.json") == {}
+    # settled regret outcomes (any policy) index the session too
+    env = {"TOKEN_SPAREN_HOME": str(home)}
+    det = regret.RegretDetector(load_config(tmp_path / "proj", env), env)
+    det.track(
+        ctx,
+        "d9",
+        point="compression",
+        bucket="static",
+        arm="standard",
+        recovery_id=None,
+        command_sig="make",
+        full="",
+        kept="",
+        ctype="log",
+    )
+    det._apply(_ov(home), regret._Info(), 1, True, True)
+    assert SID in _read(_pdir(home) / "pending.json")
+
+
+def test_breaker_notice_runs_after_pending_fold() -> None:
+    names = [getattr(f, "__name__", "") for f in entry.HANDLERS["session_start"]]
+    assert names.index("_on_fold_pending") < names.index("_on_breaker_notice")
+
+
 def test_session_start_folds_old_unfolded_sessions(tmp_path: Path, popen: type[_Popen]) -> None:
     home = _home(tmp_path)
     for i in range(5):
@@ -624,6 +716,7 @@ def test_session_start_folds_old_unfolded_sessions(tmp_path: Path, popen: type[_
     _session(home, "recent", evidence=ONE)
     _age(_session(home, SID, evidence=ONE), 7200)  # the starting session itself
     _age(_session(home, "done", evidence={}, folded_at=1.0), 7200)
+    _index(home, *[f"old-{i}" for i in range(5)], "recent", SID)
     env = {"TOKEN_SPAREN_HOME": str(home)}
     token = entry.HOOK_ENV.set(env)
     try:
@@ -643,6 +736,7 @@ def test_session_start_spawns_when_in_process_fold_is_too_big(
 ) -> None:
     home = _home(tmp_path)
     _age(_session(home, "old-0", evidence=ONE), 7200)
+    _index(home, "old-0")
     monkeypatch.setattr(overlay, "INPROCESS_MAX_BYTES", 1)
     token = entry.HOOK_ENV.set({"TOKEN_SPAREN_HOME": str(home)})
     try:

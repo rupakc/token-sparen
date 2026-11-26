@@ -52,6 +52,7 @@ from token_sparen import recovery
 from token_sparen.config import Config, log_error, state_home
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event, SessionCtx
+from token_sparen.learn import pending
 from token_sparen.store import jsonstore, paths, session
 
 REGRET_KEY = "regret"
@@ -645,6 +646,8 @@ class RegretDetector:
             return state
 
         session.update_session(ctx.overlay_path, apply)
+        if evicted:
+            pending.add_overlay(ctx.overlay_path, self.env)
         return evicted
 
     # --- signals ----------------------------------------------------------------------------
@@ -768,6 +771,8 @@ class RegretDetector:
             return state
 
         session.update_session(path, apply)
+        if out["payouts"]:
+            pending.add_overlay(path, self.env)  # settled outcomes await a fold
         return out["signals"], out["payouts"]
 
     def on_event(self, event: Event, ctx: SessionCtx) -> list[Payout]:

@@ -212,8 +212,8 @@ for _kind, _fn in (
     ("pre_compact", _on_compact_instructions),
     ("session_start", _on_session_start),
     ("session_start", _on_session_active),
-    ("session_start", _on_breaker_notice),  # once per circuit-breaker trip
     ("session_start", _on_fold_pending),
+    ("session_start", _on_breaker_notice),  # after the fold: a trip it causes is shown now
     ("session_end", _on_regret),  # settles every open regret window
     ("session_end", _on_fold_spawn),  # after settling: the fold sees every regret outcome
 ):

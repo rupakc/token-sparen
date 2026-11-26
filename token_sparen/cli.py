@@ -713,9 +713,10 @@ def _fold_cmd(args: argparse.Namespace) -> int:
     params = load_config(project, env).data
     if args.all:
         limit = args.max if args.max > 0 else 1_000_000
-        sids = overlay.pending_sessions(
-            key, home, older_than=max(0.0, args.older_than), limit=limit, max_scan=None
-        )
+        age = max(0.0, args.older_than)
+        indexed = overlay.indexed_sessions(key, home, older_than=age, limit=limit)
+        scanned = overlay.pending_sessions(key, home, older_than=age, limit=limit, max_scan=None)
+        sids = list(dict.fromkeys([*indexed, *scanned]))[:limit]  # index first, scan fallback
         reports = [_fold_one(s, key, home, params) for s in sids]
         done = [r for r in reports if r.staged]
         cells = sum(r.cells for r in done)
