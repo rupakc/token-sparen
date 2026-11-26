@@ -42,7 +42,10 @@ def test_heavy_prior_still_learns_toward_data() -> None:
     for _ in range(200):
         post = post.update(1.0, gamma=0.98, cap=20.0, prior=prior)
     assert post.a + post.b == pytest.approx(20.0)
-    assert post.mean > 0.65
+    # Fixed point of (discount toward prior 30/30, +1 to a, rescale to cap 20): with
+    # s = 20 / (60(1-g) + 20g + 1) = 20/21.8, b = 0.6s / (1 - g s) = 60/11, a = 20 - b = 160/11,
+    # so the mean settles at 8/11 (above the prior's 0.5: it learns toward the data).
+    assert post.mean == pytest.approx(8 / 11, abs=1e-6)
 
 
 @pytest.mark.parametrize(

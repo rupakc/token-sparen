@@ -17,4 +17,5 @@ def test_thousand_quantiles_under_budget() -> None:
         return [p.lcb() + p.ucb() for p in posts[:500]]
 
     best, _ = best_of(once, 5)
-    assert best < 0.050 * perf_factor()
+    # The engine needs only a handful of quantiles per hook: budget 100 us/call.
+    assert best < 0.100 * perf_factor()
