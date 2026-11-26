@@ -182,3 +182,63 @@ class Beta:
         if isinstance(seq, (str, bytes)) or not isinstance(seq, Sequence) or len(seq) != 3:
             raise ValueError(f"not a [a, b, n] triple: {seq!r}")
         return cls(_real(seq[0]), _real(seq[1]), _real(seq[2]))
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """Discounted, capped observation counts of one (point, bucket, arm, kind), without a prior.
+
+    Stored instead of a posterior so the prior stays swappable at decision time and data-only
+    means are available (an estimator over stored posteriors would see its own priors). With no
+    cap binding, ``observe`` then ``posterior(prior)`` equals ``Beta.update`` with that prior
+    (discount toward the prior == discount of the evidence). The cap here bounds the evidence
+    mass only, mean-preserving.
+    """
+
+    ea: float
+    eb: float
+    n: float = 0.0
+
+    def __post_init__(self) -> None:
+        for v in (self.ea, self.eb, self.n):
+            if not math.isfinite(v):
+                raise ValueError(f"non-finite Evidence value: {v!r}")
+        if self.ea < 0 or self.eb < 0 or self.n < 0:
+            raise ValueError(f"invalid Evidence({self.ea!r}, {self.eb!r}, n={self.n!r})")
+
+    @property
+    def mean_data(self) -> float | None:
+        """Data-only mean ``ea / (ea + eb)``; None without evidence mass."""
+        total = self.ea + self.eb
+        return None if total <= 0.0 else self.ea / total
+
+    def observe(self, x: float, *, gamma: float, cap: float) -> Evidence:
+        """Discount by ``gamma``, add ``x`` (clamped to [0, 1]) and ``1 - x``, ``n += 1``; if
+        ``ea + eb > cap`` scale both so the sum is ``cap`` (mean preserved)."""
+        if math.isnan(x):
+            raise ValueError("reward is NaN")
+        if not (0.0 <= gamma <= 1.0):
+            raise ValueError(f"gamma must be in [0, 1], got {gamma!r}")
+        if not (math.isfinite(cap) and cap > 0.0):
+            raise ValueError(f"cap must be finite and > 0, got {cap!r}")
+        x = min(1.0, max(0.0, x))
+        ea = gamma * self.ea + x
+        eb = gamma * self.eb + (1.0 - x)
+        total = ea + eb
+        if total > cap:
+            scale = cap / total
+            ea, eb = ea * scale, eb * scale
+        return Evidence(ea, eb, self.n + 1.0)
+
+    def posterior(self, prior: Beta) -> Beta:
+        return Beta(prior.a + self.ea, prior.b + self.eb, self.n)
+
+    def to_list(self) -> list[float]:
+        return [self.ea, self.eb, self.n]
+
+    @classmethod
+    def from_list(cls, seq: Sequence[float]) -> Evidence:
+        """Inverse of ``to_list``; any malformed input raises ValueError (same rules as Beta)."""
+        if isinstance(seq, (str, bytes)) or not isinstance(seq, Sequence) or len(seq) != 3:
+            raise ValueError(f"not a [ea, eb, n] triple: {seq!r}")
+        return cls(_real(seq[0]), _real(seq[1]), _real(seq[2]))
