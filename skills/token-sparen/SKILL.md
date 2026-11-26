@@ -6,11 +6,11 @@ allowed-tools:
   - Bash(token-sparen stats:*)
   - Bash(token-sparen show:*)
   - Bash(token-sparen doctor:*)
-  - Bash(token-sparen session:*)
+  - Bash(token-sparen session disable:*)
   - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" stats:*)'
   - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" show:*)'
   - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" doctor:*)'
-  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" session:*)'
+  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" session disable:*)'
 ---
 
 # token-sparen
@@ -36,7 +36,8 @@ user needs the full output).
 2. `statusline`: offer `token-sparen statusline install` (edits Claude Code settings, keeps a
    backup; `token-sparen statusline uninstall` reverses it). Run it only if the user agrees.
 3. `disable`: run `token-sparen session disable --session ${CLAUDE_SESSION_ID}` and confirm that
-   outputs are no longer trimmed in this session. `enable`: the same with `session enable`.
+   outputs are no longer trimmed in this session. `enable`: the same with `session enable`
+   (not pre-approved: it turns trimming back on, so Claude Code asks for permission).
    Without `--session` the CLI acts on this project's most recently active session (< 6 h).
 4. Anything else: run `token-sparen doctor` and report any failing check.
 

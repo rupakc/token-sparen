@@ -136,7 +136,8 @@ def flag_off(value: object) -> bool:
 # keep more, never trim more, recover less or block more. Every project leaf is checked against
 # ``PROJECT_POLICY`` (first matching pattern; ``*`` one segment, ``**`` any rest) and the trusted
 # value (defaults, user file, env, session overrides); an unlisted key is user-only. Kinds:
-#   free       cosmetic or advisory, normal precedence (still type-checked)
+#   free       cosmetic or advisory, normal precedence (still type-checked and bounded);
+#              listed key by key, never by wildcard, so a new key is never free by accident
 #   user_only  never from a project
 #   max / min  project may only raise / lower it (numbers, within bounds)
 #   true_only / false_only   only that boolean (holds; switching a mechanism off)
@@ -144,6 +145,7 @@ def flag_off(value: object) -> bool:
 #   enum       an ordered choice the project may only move toward the conservative end
 RATIO = (0.0, 1.0)
 COUNT = (0.0, 1e12)
+POSITIVE = (1.0, 1e12)  # for readers that map <= 0 to their default (a "lower" 0 would loosen)
 PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     # learning: only tighter targets, holds and stricter breaker thresholds
     (("learn", "tau", "*"), "min", RATIO),  # a lower regret target trims less
@@ -166,10 +168,12 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     (("compression", "min_tokens"), "max", COUNT),
     (("compression", "min_saving_ratio"), "max", RATIO),
     (("compression", "skip_tools"), "union", None),
-    (("compression", "save_deadline_ms"), "free", COUNT),  # lower = fewer replacements
-    (("compression", "levels", "*", "head"), "max", COUNT),
-    (("compression", "levels", "*", "tail"), "max", COUNT),
+    (("compression", "save_deadline_ms"), "min", COUNT),  # lower = fewer replacements
+    # head/tail are user-only: the budget is max(head + tail, keep_ratio x total), so a larger
+    # head/tail displaces prompt-relevant lines rather than keeping more of them
     (("compression", "levels", "*", "keep_ratio"), "max", RATIO),
+    (("compression", "levels", "*", "head"), "user_only", None),
+    (("compression", "levels", "*", "tail"), "user_only", None),
     (("compression", "json", "items", "*"), "max", COUNT),
     (("compression", "diff", "context", "*"), "max", COUNT),
     (("compression", "stacktrace", "edge_frames", "*"), "max", COUNT),
@@ -181,21 +185,24 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     (("compression", "persisted_max_bytes"), "user_only", None),
     (("compression", "json", "max_bytes"), "user_only", None),
     (("compression", "**"), "user_only", None),
-    (("pricing", "*"), "free", COUNT),  # reporting only
+    (("pricing", "input"), "free", COUNT),  # reporting only
+    (("pricing", "cache_write"), "free", COUNT),
+    (("pricing", "cache_read"), "free", COUNT),
+    (("pricing", "output"), "free", COUNT),
     # recovery: keep saved outputs longer, never less
     (("recovery", "ttl_days"), "max", COUNT),
     (("recovery", "max_files"), "max", COUNT),
     (("recovery", "max_bytes"), "max", COUNT),
     # guards: block less
     (("guards", "enabled"), "false_only", None),
-    (("guards", "max_read_bytes"), "max", COUNT),
-    (("guards", "pretrim_lines"), "max", COUNT),
-    (("guards", "pretrim_head"), "max", COUNT),
+    (("guards", "max_read_bytes"), "max", POSITIVE),
+    (("guards", "pretrim_lines"), "user_only", None),  # same displacement as head/tail
+    (("guards", "pretrim_head"), "user_only", None),
     # read de-dupe: fewer pointers
     (("read_dedupe", "enabled"), "false_only", None),
     (("read_dedupe", "min_tokens"), "max", COUNT),
     (("read_dedupe", "max_turn_gap"), "min", COUNT),
-    (("read_dedupe", "max_entries"), "min", COUNT),
+    (("read_dedupe", "max_entries"), "min", POSITIVE),
     # governor: advisories are free; budgets, the hard stop and parsing are the user's
     (("governor", "enabled"), "false_only", None),
     (("governor", "econ_notice"), "free", RATIO),
@@ -204,10 +211,20 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     (("governor", "ctx_advise"), "free", RATIO),
     (("governor", "**"), "user_only", None),  # hard_stop, session_budget_tokens, windows, ...
     (("boundary", "enabled"), "false_only", None),
-    (("boundary", "*"), "free", COUNT),  # advice thresholds
+    (("boundary", "min_ctx_pct"), "free", RATIO),  # advice thresholds
+    (("boundary", "min_overlap"), "free", RATIO),
+    (("boundary", "min_turn"), "free", COUNT),
+    (("boundary", "history"), "free", (1.0, 20.0)),
+    (("boundary", "min_identifiers"), "free", COUNT),
+    (("boundary", "cooldown_turns"), "free", COUNT),
     (("subagent", "enabled"), "false_only", None),
-    (("statusline", "**"), "free", COUNT),
-    (("adapter", "*"), "free", COUNT),
+    (("statusline", "segments"), "free", None),
+    (("statusline", "ascii"), "free", None),
+    (("statusline", "color"), "free", None),
+    (("statusline", "parse_budget_ms"), "free", (1.0, 1000.0)),
+    (("adapter", "latency_budget_ms"), "min", POSITIVE),  # lower = more hooks give up (no-op)
+    (("adapter", "latency_sample_rate"), "user_only", None),  # the user's own logs
+    (("adapter", "latency_log_max_bytes"), "user_only", None),
 ]
 SAFETY_WARNED_FILE = "config_safety_warned.json"
 

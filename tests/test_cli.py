@@ -348,11 +348,13 @@ def test_slash_command_is_a_skill() -> None:
             break
         tools.append(ln[4:].strip().strip("'"))
     # Model-invocable skill: pre-approve only read-only / low-risk subcommands.
-    safe = ("stats", "show", "doctor", "session")
+    # `session disable` only: re-enabling trimming (`session enable`) needs a permission prompt
+    safe = ("stats", "show", "doctor", "session disable")
     boot = 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"'
     assert tools == [f"Bash(token-sparen {c}:*)" for c in safe] + [
         f"Bash({boot} {c}:*)" for c in safe
     ]
+    assert not any("session:" in t or "session enable" in t for t in tools)
     assert "argument-hint:" in front
     for bare in ("python3:*", "python:*", "sh:*", "bash:*", "token-sparen:*", 'run_cli.py":*'):
         assert bare not in front

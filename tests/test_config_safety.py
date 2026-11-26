@@ -9,7 +9,14 @@ from typing import Any
 
 import pytest
 
-from token_sparen.config import _is_num, flag_off, load_config, packaged_defaults, policy_for
+from token_sparen.config import (
+    PROJECT_POLICY,
+    _is_num,
+    flag_off,
+    load_config,
+    packaged_defaults,
+    policy_for,
+)
 
 
 def _setup(tmp_path: Path, *, user: str = "", project: str = "") -> tuple[Path, dict[str, str]]:
@@ -249,8 +256,6 @@ CASES: list[tuple[str, Any, Any, Any]] = [
     ("recovery.max_files", 500, 0, -1),
     ("recovery.max_bytes", 200_000_000, 0, 1e400),
     ("compression.levels.standard.keep_ratio", 0.5, 0.0, 7.0),
-    ("compression.levels.standard.head", 60, 0, True),
-    ("compression.levels.light.tail", 50, 1, [1]),
     ("compression.json.items.standard", 8, 1, "8"),
     ("compression.diff.context.standard", 3, 0, 10**300),
     ("compression.stacktrace.edge_frames.aggressive", 5, 1, None),
@@ -261,8 +266,11 @@ CASES: list[tuple[str, Any, Any, Any]] = [
     ("compression.min_saving_ratio", 0.3, 0.0, 2.0),
     ("compression.min_tokens", 5000, 2000, "big"),
     ("guards.max_read_bytes", 9_000_000, 10, -1),
-    ("guards.pretrim_lines", 200, 5, "x"),
     ("read_dedupe.max_turn_gap", 3, 50, -1),
+    ("read_dedupe.max_entries", 50, 500, 0),  # the reader maps <= 0 to the default (200)
+    ("adapter.latency_budget_ms", 200, 1000, 0),  # <= 0 -> default 400
+    ("compression.save_deadline_ms", 100, 500, -1),
+    ("guards.max_read_bytes", 9_000_001, 10, 0),  # <= 0 -> default
     ("read_dedupe.min_tokens", 5000, 2000, "x"),
     ("learn.tau.medium", 0.01, 0.2, 5.0),
     ("learn.floor.medium", 0.2, 0.0, 1.5),
@@ -325,7 +333,12 @@ def test_project_direction_per_key(
         ("governor.parse_budget_ms", 100000),
         ("compression.persisted_max_bytes", 10),
         ("compression.json.max_bytes", 10),
-        ("read_dedupe.max_entries", 100000),
+        ("compression.levels.standard.head", 329),  # head/tail displace relevant lines
+        ("compression.levels.light.tail", 300),
+        ("guards.pretrim_head", 300),
+        ("guards.pretrim_lines", 400),
+        ("adapter.latency_log_max_bytes", 10),
+        ("adapter.latency_sample_rate", 1.0),
         ("learn.breaker_reentry_scale", 1.0),
         ("learn.breaker_window", 5),
         ("learn.regret_window_turns", 1),
@@ -347,11 +360,11 @@ def test_user_only_keys_ignored_from_project(tmp_path: Path, key: str, value: An
     [
         ("statusline.ascii", True),
         ("statusline.segments", ["ctx", "saved"]),
-        ("adapter.latency_sample_rate", 0.0),
         ("boundary.min_turn", 5),
+        ("boundary.history", 20),
+        ("statusline.parse_budget_ms", 10),
         ("governor.ctx_notice", 0.7),
         ("pricing.output", 4.0),
-        ("compression.save_deadline_ms", 100),
     ],
 )
 def test_free_keys_follow_normal_precedence(tmp_path: Path, key: str, value: Any) -> None:
@@ -450,3 +463,14 @@ def test_probe_project_cannot_zero_the_levels(tmp_path: Path) -> None:
     )
     out = _hook(proj, env, _LINES, "c1")
     assert "kept " in out and "kept 0 of" not in out
+
+
+def test_free_rules_are_explicit_keys() -> None:
+    """No wildcard free rule: a new key must be classified (the completeness test catches it)."""
+    free = [pattern for pattern, kind, _ in PROJECT_POLICY if kind == "free"]
+    assert free and all("*" not in part and "**" not in part for p in free for part in p)
+
+
+def test_boundary_history_is_bounded(tmp_path: Path) -> None:
+    proj, env = _setup(tmp_path, project="[boundary]\nhistory = 50\n")
+    assert load_config(proj, env).get("boundary.history") == 3

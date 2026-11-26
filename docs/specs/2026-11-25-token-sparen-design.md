@@ -106,7 +106,10 @@ free (display/advice/timing), user_only, max/min (direction-only numbers within 
 true_only (`learn.hold.*`), false_only (mechanism switches), union (`compression.skip_tools`),
 enum (`compiler.warnings` toward `keep`); each relative to the trusted value. `learn.enabled` is
 user/env/session only (a project disabling learning would fall back to the static standard arm,
-ignoring the user's holds/tau/floor). README has the table.
+ignoring the user's holds/tau/floor). README has the table. Round 4: level `head`/`tail` and
+`guards.pretrim_*` are user-only (a larger head/tail displaces prompt-relevant lines); bounds
+exclude values readers map to their default (<= 0); free keys are listed one by one;
+`save_deadline_ms` and `adapter.latency_budget_ms` are lower-only.
 Rounds 1-2 (superseded): the project `token-sparen.toml` layer is sanitised before merging with an
 **allowlist** (`config.PROJECT_LEARN_KEYS`, `config.sanitise_project`): the whole `learn` subtree
 and `extensions.allow_override` are stripped, then only these leaves are re-added, each only as a

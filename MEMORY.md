@@ -765,3 +765,20 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - `_is_num` catches OverflowError (300-digit ints rejected).
 - Tests that configured compressor levels / search knobs / `min_tokens = 700` through a project
   file now use the user config (they test the loaders, not the project layer).
+
+## 2026-11-26 Task 23 review round 4 (controller rulings)
+- `compression.levels.*.head/tail`, `guards.pretrim_head/pretrim_lines`: user-only. The level
+  budget is max(head + tail, keep_ratio x total), so a larger head/tail displaces prompt-relevant
+  lines instead of keeping more (probe: head 329 kept 5 of 120 relevant lines). `keep_ratio`
+  stays raise-only.
+- "<= 0 means default" audit: `read_dedupe._cfg_int` (`max_entries`, `min_tokens`), `guards._int`
+  (`max_read_bytes`), `entry._budget_ms` (`latency_budget_ms`) map <= 0 to the default, so their
+  project bounds are `POSITIVE` (1..1e12). `read_dedupe.max_turn_gap` (< 0 -> default, 0 is
+  valid), compressor knobs (`_shared.setting`: non-negative ints), recovery limits (no fallback;
+  raise-only), breaker `min_obs`/`every` (bounds >= 1) and `tau`/`floor` (clamped) need nothing more.
+- Free keys are listed one by one (no wildcard free rule; test). `compression.save_deadline_ms` and
+  `adapter.latency_budget_ms` are lower-only; `boundary.history` free within 1..20;
+  `statusline.parse_budget_ms` free within 1..1000; `adapter.latency_sample_rate` and
+  `latency_log_max_bytes` user-only.
+- The `/token-sparen` skill pre-approves `session disable` only (both the `token-sparen` and the
+  `run_cli.py` form); `session enable` turns trimming back on and so asks for permission.

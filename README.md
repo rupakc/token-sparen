@@ -203,14 +203,14 @@ session); anything else is ignored and logged once.
 
 | Settings | A project may |
 |---|---|
-| `statusline.*`, `adapter.*`, `pricing.*`, `boundary.*` thresholds, `governor.{econ,ctx}_{notice,advise}`, `compression.save_deadline_ms` | set freely (display, advice, timing) |
+| `statusline.{segments,ascii,color,parse_budget_ms}`, `pricing.*`, `boundary.{min_ctx_pct,min_overlap,min_turn,history,min_identifiers,cooldown_turns}`, `governor.{econ,ctx}_{notice,advise}` | set freely within bounds (display, advice) |
 | `guards.enabled`, `read_dedupe.enabled`, `governor.enabled`, `boundary.enabled`, `subagent.enabled` | only turn off |
-| `compression.min_tokens`, `min_saving_ratio`, `levels.*.{head,tail,keep_ratio}`, the per-type knobs (`json.items`, `diff.context`, `stacktrace.edge_frames`, `test_report.block_lines`, `search.per_file`, `pplx.results`, `log.tail`), `recovery.*`, `guards.max_read_bytes`, `guards.pretrim_*`, `read_dedupe.min_tokens` | only raise (keep more) |
+| `compression.min_tokens`, `min_saving_ratio`, `levels.*.keep_ratio`, the per-type knobs (`json.items`, `diff.context`, `stacktrace.edge_frames`, `test_report.block_lines`, `search.per_file`, `pplx.results`, `log.tail`), `recovery.*`, `guards.max_read_bytes`, `read_dedupe.min_tokens` | only raise (keep more) |
 | `compression.compiler.warnings.*` | only move from `count` to `keep` |
 | `compression.skip_tools` | only add tools |
-| `read_dedupe.max_turn_gap`, `read_dedupe.max_entries` | only lower |
+| `read_dedupe.max_turn_gap`, `read_dedupe.max_entries`, `compression.save_deadline_ms`, `adapter.latency_budget_ms` | only lower |
 | `learn.tau.<tier>` lower; `learn.floor.<tier>`, `learn.ladder_obs` higher; `learn.hold.<point>` only `true`; `learn.breaker_min_obs`, `learn.breaker_every` lower; `learn.breaker_lcb_q`, `learn.breaker_sessions` higher | only make learning more careful |
-| everything else, including `learn.enabled` and all other `learn.*`, `governor.hard_stop`, `governor.session_budget_tokens`, `governor.windows`, `extensions.*`, and any key not listed | nothing (user config, env or `config set` only) |
+| everything else, including `learn.enabled` and all other `learn.*`, `compression.levels.*.{head,tail}` and `guards.pretrim_*` (a larger head/tail displaces prompt-relevant lines), `governor.hard_stop`, `governor.session_budget_tokens`, `governor.windows`, `adapter.latency_sample_rate`, `adapter.latency_log_max_bytes`, `extensions.*`, and any key not listed | nothing (user config, env or `config set` only) |
 
 | Key | Default | Meaning |
 |---|---|---|
