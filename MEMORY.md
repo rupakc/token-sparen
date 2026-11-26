@@ -984,3 +984,24 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - `compression.is_file_content` also gates any tool whose name matches (case-insensitive)
   `read_?file|get_file|file_read|read_text|cat_file|view_file|open_file` (MCP tools included),
   and `PowerShell`/`pwsh` tool commands go through `is_file_dump`.
+
+## 2026-11-26 Task 24b fix round 2 (controller rulings)
+- Gating detection moved to `compress/filedump.py` (`is_file_dump`, `is_file_tool`; one place;
+  `families.is_file_dump` delegates). Adds: `$(...)`/backticks (also in double quotes, not in
+  single quotes, not `$((...))`) and `eval` unwrapped; stdin from a file (`<` token: `< f`,
+  `0< f`, `<f`, `done < f`, `$(< f)`) counts, here-docs/here-strings do not; `dd if=` (output to
+  stdout), `cp f /dev/stdout|/dev/stderr|-`; wrappers ssh, su -c, docker/podman/nerdctl
+  exec|run and compose exec|run, kubectl exec -- (without `--`: not unwrapped), adb shell,
+  script -c, watch, unbuffer, ionice, strace/ltrace, chroot, busybox, coreutils, g-prefixed
+  coreutils, powershell/pwsh -Command; dump binaries fold, fmt, paste, column, pr, expand,
+  unexpand, base64, xzcat, bzcat, zstdcat, view, most, batcat, highlight, pygmentize, glow,
+  mdcat, yq (with a file operand), decompressors with -c/--stdout, `tar -xO`/`--to-stdout`,
+  `unzip -p`, gsutil cat, gcloud storage cat, `aws s3 cp <src> -`; interpreters: perl/ruby
+  `-e` code that reads a file or a file operand after the code (`perl -ne '...' f`), ruby
+  File.read/readlines/IO.read, node createReadStream, python fileinput, PowerShell
+  `[IO.File]::ReadAll*` anywhere in the command. grep/rg/git blame/git log -p stay allowed.
+- Tool names: a `read` token (camelCase/underscore split), a verb (get, fetch, download, view,
+  open, cat) with a noun (file(s), document(s), media, resource(s), content) or run together
+  (`readfile`), or a bare last MCP part `cat`/`view`/`read`/`open`.
+- README: detection is best effort; opt out with `[learn.hold] compression = true` or
+  `TOKEN_SPAREN_DISABLE=1`.

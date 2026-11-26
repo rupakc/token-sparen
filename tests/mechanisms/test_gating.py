@@ -386,6 +386,9 @@ def test_chained_and_looped_dumps_of_an_allowed_type_untouched(tmp_path: Path, c
         "mcp__editor__view_file",
         "mcp__editor__open_file",
         "read_file",
+        "mcp__docs__fetch_document",
+        "mcp__notes__read_page",
+        "NotebookRead",
     ],
 )
 def test_file_reading_tools_are_file_content(tmp_path: Path, name: str) -> None:
@@ -397,6 +400,20 @@ def test_file_reading_tools_are_file_content(tmp_path: Path, name: str) -> None:
 def test_other_mcp_tools_are_not_file_content(tmp_path: Path) -> None:
     ev = _event(tmp_path, _tool("mcp__api__list_users", {}), big_json())
     assert compression.gated(ev, "json", _cfg(tmp_path)) is None
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        'echo "$(cat app.log)"',
+        "wc -c < app.log",
+        "docker exec web cat /app/app.log",
+        "kubectl exec pod -- tail -n 3000 /app/app.log",
+        "gunzip -c app.log.gz",
+    ],
+)
+def test_substitution_redirect_and_wrapped_dumps_untouched(tmp_path: Path, cmd: str) -> None:
+    _untouched(tmp_path, _bash(tmp_path, cmd, big_log()))
 
 
 @pytest.mark.parametrize("cmd", ["Get-Content app.log", "gc app.log", "type app.log"])

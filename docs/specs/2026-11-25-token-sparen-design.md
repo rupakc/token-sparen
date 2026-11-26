@@ -147,7 +147,10 @@ Fix round 1: the gate's file-dump check looks at **every** part of a command (ch
 loops, `find -exec`, `bash -c`, `xargs`), counts `sort`/`uniq`/`cut`/`rev`/`strings` on a file,
 `python -c`/`node -e` code that opens a file and PowerShell `Get-Content`/`gc`/`type`; tools
 named like `read_file`/`get_file`/`view_file`/... (MCP included) are file content. E1 families
-keep the first program.
+keep the first program. Fix round 2: detection lives in `compress/filedump.py` and also unwraps
+command substitutions, `eval` and remote/container wrappers, treats stdin from a file as file
+content, and covers more dump binaries, archives, cloud `cat`s and interpreters; tool names
+with a read verb and a file/document/media/resource/content noun are file content.
 
 ---
 

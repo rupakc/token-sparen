@@ -33,7 +33,7 @@ from token_sparen.compress import (
     detect,
     load_level,
 )
-from token_sparen.compress.families import is_file_dump
+from token_sparen.compress.filedump import is_file_dump, is_file_tool
 from token_sparen.config import Config, flag_off, log_error, state_home
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event, SessionCtx, ToolCall
@@ -81,10 +81,6 @@ DEFAULT_ALLOW_CTYPES = (
 GATE_FILE_CONTENT = "file_content"
 GATE_CTYPE = "ctype_not_allowed"
 _ON = frozenset({"true", "1", "yes", "on"})
-# Tools (MCP included) whose name says they return a file's contents.
-_FILE_TOOL = re.compile(
-    r"read_?file|get_file|file_read|read_text|cat_file|view_file|open_file", re.IGNORECASE
-)
 _COMMAND_TOOLS = frozenset({"powershell", "pwsh"})  # shells outside the `shell` category
 _EST_TYPE = {"json": "json", "pplx": "json", "log": "log", "build_log": "log"}
 _POST_KINDS = frozenset({"post_tool", "post_tool_failure"})
@@ -314,12 +310,10 @@ def trims_file_contents(cfg: Config) -> bool:
 
 
 def is_file_content(tool: ToolCall) -> bool:
-    """A file's contents: the read category (Read tool); a tool whose name says it reads a file
-    (``read_file``, ``ReadFile``, ``get_file_contents``, ``view_file`` ..., MCP tools included);
-    or a shell/PowerShell command any part of which dumps a file (``families.is_file_dump``:
-    cat, head, tail, sed -n, ``git show <rev>:<path>``, loops, ``find -exec cat``,
-    ``Get-Content`` ...)."""
-    if tool.category == "read" or _FILE_TOOL.search(tool.name):
+    """A file's contents, best effort (``compress/filedump.py``): the read category (Read tool);
+    a tool whose name says it reads a file (``filedump.is_file_tool``, MCP tools included); or a
+    shell/PowerShell command any part of which prints a file (``filedump.is_file_dump``)."""
+    if tool.category == "read" or is_file_tool(tool.name):
         return True
     cmd = tool.input.get("command")
     shell = tool.category == "shell" or tool.name.lower() in _COMMAND_TOOLS

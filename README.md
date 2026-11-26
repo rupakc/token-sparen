@@ -62,7 +62,9 @@ All of this is on by default. Nothing is sent anywhere.
   part that prints a file, wherever it sits in a chain, pipe or loop (`cat`, `head`, `tail`,
   `sed -n`, `less`, `bat`, `nl`, `awk`, `jq <file>`, `xxd`, `sort`/`uniq`/`cut`/`rev`/`strings`
   on a file, `python -c`/`node -e` code that opens a file, `find -exec cat`, `... | xargs cat`,
-  `git show <rev>:<path>`, `Get-Content`/`gc`/`type`). Nor does it trim plain text, tables or stack traces from any
+  `git show <rev>:<path>`, `Get-Content`/`gc`/`type`; also inside `$(...)`, backticks, `eval`,
+  `ssh`/`docker exec`/`kubectl exec` and similar wrappers, and any command whose stdin is
+  redirected from a file). Nor does it trim plain text, tables or stack traces from any
   tool (Agent/Task and web results included). Those outputs are shown in full and never reach
   the learner. To widen it, in your own `~/.token-sparen/config.toml`, env or `config set` (a
   project file may only narrow it):
@@ -72,6 +74,10 @@ All of this is on by default. Nothing is sent anywhere.
   trim_file_contents = true   # also trim Read results and cat/head/tail/... output
   allow_ctypes = ["diff", "search", "test_report", "compiler", "build_log", "json", "pplx", "log", "text"]
   ```
+
+  File-content detection is best effort: an unusual binary or wrapper may slip through. To rule
+  out trimming entirely, set `[learn.hold] compression = true` (keeps compression at its safe
+  arm) or launch with `TOKEN_SPAREN_DISABLE=1` (every hook a no-op).
 
   Quality warning: the agent usually goes on to use a file's contents (to edit or quote it), so
   trimming them often costs a recovery read and can cost answer quality; on the maintainer's own
