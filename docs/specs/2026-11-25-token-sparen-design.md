@@ -152,6 +152,26 @@ command substitutions, `eval` and remote/container wrappers, treats stdin from a
 content, and covers more dump binaries, archives, cloud `cat`s and interpreters; tool names
 with a read verb and a file/document/media/resource/content noun are file content.
 
+**2026-11-26 (M2 close).** Reconciliation of this spec with the shipped M2 code; no behaviour
+change. §7.1 reward is `engine.reward(decision_id, savings, regret)` (each optional, clamped to
+[0,1], one of each kind per decision; a decision's regret is reported as 0 explicitly when its
+window expires). §7.5: the `off` (safe) arm's reward is **defined** (savings 0, regret 0), not
+observed; the propensity floor still runs it so its propensity is logged. Savings are **token
+counts** (normalised by a running p95); cost-weighted savings are deferred to M4 (E1 reports a
+cache-aware cost-weighted figure, but the learner does not use it). §7.9: the designed prior
+means in `params/defaults.toml` are **hand-set** until M4 refits them from E1 data. §6.1: keep
+ratios are fixed per level (`off`, `light`, `standard`, `aggressive`); the learner chooses the
+level per bucket, it does not learn ratios. Deferred to M4: host and model-tier prior-sharing
+keys (§7.2) and the LinTS challenger (§7.8). §9: the project config layer is deny-by-default (see
+revision round 3 above) and every boolean setting accepts `true/1/yes/on` and `false/0/no/off`.
+`[learn.hold] compression = true` also holds the learned pre-trim and applies when learning is off
+or the engine fails; `allow_ctypes = []` is the config-only switch. §10: E1/E3 results, aggregates
+included, are never committed (C4). E3 constraint semantics are in §10.3. Each settled regret is
+appended to `decisions.jsonl` as an outcome line (decision id, regret, signal); the fold backfills
+missing ones. `stats` reports net savings (gross minus recovery reads minus injected tokens), as
+the statusline does. The plugin manifest requires Claude Code >= 2.1.121 (`updatedToolOutput` on
+PostToolUse for all tools).
+
 ---
 
 ## 1. Intent and why
@@ -306,7 +326,8 @@ attribute reward to it. Tier governs exploration (§7.6).
   snippets), keyword-guided keep (lines scored by relevance to the current user prompt and recent
   edited paths — BM25-lite), head+tail with error-line pinning, and repetitive-line folding
   ("× 37 similar lines").
-- **Arms**: `off`, `light`, `standard`, `aggressive` (keep ratios learned per content type).
+- **Arms**: `off`, `light`, `standard`, `aggressive`. The keep ratios are fixed per level
+  (`[compression.levels.*]`); the learner chooses the level per context bucket, not the ratios.
 - **Invariants**: never elide lines matching error/failure/exception signatures; always append a
   marker `[token-sparen: kept X of Y lines · full output: <abs path> · `token-sparen show <id>`]`;
   full output saved to `<project>/.token-sparen/outputs/<id>.txt` (gitignored, TTL + size cap).
@@ -424,13 +445,14 @@ attribute reward to it. Tier governs exploration (§7.6).
 ## 7. Learning engine (the essence)
 
 ### 7.1 API
-`engine.decide(point, context) -> Decision{arm, propensity, decision_id}` and
-`engine.reward(decision_id, signal, value, weight)`; posteriors and logs live in the store.
+`engine.decide(point, features, session) -> Decision{arm, propensity, decision_id}` and
+`engine.reward(decision_id, savings, regret)` (each value optional, in [0,1]); evidence and logs
+live in the store.
 
 ### 7.2 Context features
 Per decision point, a small discrete feature tuple, e.g. for compression:
-`context_band × tool_category × size_band × content_type × task_phase`, plus host and model tier
-as *prior-sharing* keys (not bucket explosion). Bucket count is kept small by design; sparse buckets
+`context_band × tool_category × size_band × content_type × task_phase`. (Host and model tier as
+*prior-sharing* keys, not bucket explosion, are deferred to M4.) Bucket count is kept small by design; sparse buckets
 back off hierarchically (§7.4).
 
 ### 7.3 Algorithm
@@ -456,14 +478,17 @@ A single blended scalar is what let Reference A's trim arms beat `off` by constr
   (i) a recovery read of the saved full output, (ii) a re-run of the same **normalised** command
   (full argv after stripping `cd … &&`, env prefixes and pipes we added) within W turns, (iii) the
   agent explicitly asking for elided content, (iv) a failure loop or failed task in the same turn after
-  a trim of an error-bearing output. `off` has R ≡ 0 by definition (it is observed, not assumed: the
-  propensity floor in §7.6 runs it, and its non-regret confirms the baseline).
+  a trim of an error-bearing output. `off` has R ≡ 0 and S ≡ 0 **by definition** (defined, not
+  observed: no reward is recorded for a safe-arm decision; the propensity floor in §7.6 still runs
+  it and logs its propensity).
 
 **Selection (Thompson, constrained):** sample S̃, R̃ for every arm; among arms with R̃ ≤ τ_tier
 (default τ = 5 % medium tier, 1 % high tier) choose max S̃; `off` is always feasible. Thus `off` wins
 exactly when every trimming arm's plausible regret exceeds the target — no hand-set reward for `off`,
-no weights to rig. Units of "savings" are **cost-weighted tokens** (cache-read/cache-write/input/output
-priced at list ratios), so a change that breaks the prompt cache is correctly charged (§10.4).
+no weights to rig. In M2 the units of "savings" are **token counts** (estimated tokens removed,
+times the expected re-sends). Cost-weighting (cache-read/cache-write/input/output priced at list
+ratios, so a change that breaks the prompt cache is charged) is deferred to M4; the E1 report and
+E4 (§10.4) already use it.
 
 ### 7.6 Exploration safety
 - Each tier has a **propensity floor** for the safe arm (always some probability of `off`), so the
@@ -479,15 +504,15 @@ priced at list ratios), so a change that breaks the prompt cache is correctly ch
 
 ### 7.8 Offline evaluation and challengers
 Decision logs with propensities allow **IPS and doubly-robust** estimates of any candidate policy
-on past sessions. A LinTS challenger and every tuned hyper-parameter are evaluated this way;
-promotion only on held-out improvement (§10.6).
+on past sessions. A LinTS challenger (deferred to M4) and every tuned hyper-parameter are
+evaluated this way; promotion only on held-out improvement (§10.6).
 
 ### 7.9 Lessons from the references (design requirements)
 - Reference A's reward let trim arms score ~0.9–1.0 while `off` capped at 0.85 → aggressive won with
   67 % re-reads. Fixed by §7.5–7.6.
 - Reference A's command signature collapsed `cd x && …` to `cd` → fixed by normalised argv.
-- Reference A's "empirically calibrated" priors were hand-set → our designed defaults are fitted by
-  offline replay and documented with their provenance.
+- Reference A's "empirically calibrated" priors were hand-set → our designed defaults are
+  **hand-set until M4**, then refit by offline replay and documented with their provenance.
 - Reference B's fixed gates delayed facts to ~session 5 and pruning had no in-session recovery →
   §6.8, §6.10.
 
@@ -519,6 +544,10 @@ the host version, capabilities and that hooks fire (synthetic event round-trip).
   < env vars (`TOKEN_SPAREN_*`) < per-session overrides (`token-sparen config set`, also reachable
   from the `/token-sparen` skill). `TOKEN_SPAREN_DISABLE=1`
   is a global kill switch.
+- The project layer is **deny-by-default**: `<project>/token-sparen.toml` may be someone else's, so
+  it can only make token-sparen intervene less or keep more (never trim more, recover less or block
+  more). Each key has a kind (`config.PROJECT_POLICY`); an unlisted key is user-only, and a value
+  that is out of bounds, of the wrong type or in the unsafe direction is ignored and logged once.
 
 ## 10. Evaluation, benchmarking and hill-climbing
 
@@ -532,15 +561,28 @@ only exist once token-sparen is installed; these come from a dogfooding period (
 Replay transcripts (Claude Code JSONL) through the pipeline in each policy; measure tokens removed
 from re-sent context, projected billed tokens (cache-aware), and **information preservation**: for
 each elided span, whether the agent later referenced content inside it (strings, paths, line
-numbers) → "would-have-regretted" rate. Dev/test split by session date. Output: aggregate table
-only, stored in `~/token-sparen-private/` (outside the repo).
+numbers) → "would-have-regretted" rate. Dev/test split by session date. Output: a private
+aggregate report written outside any git work tree. **Its numbers are never committed to the
+repo** (C4), not even as aggregates.
 
 ### 10.2 E2 — Fact-preservation suite (public, deterministic, CI)
 Corpus of synthetic and public tool outputs (test reports, compiler errors, JSON APIs, logs, diffs,
 `pplx` results) with planted "needles" (the failing test name, the error line, the key field); a
 compressor passes only if every needle survives or is reachable via the marker. Runs in CI on every PR.
 
-### 10.3 E3 — Off-policy evaluation (§7.8) on E1 logs.
+### 10.3 E3 — Off-policy evaluation (§7.8) on decision logs.
+`token-sparen ope` estimates a target policy (`static` or an `engine-snapshot`) from logged
+decisions with IPS, self-normalised IPS and doubly-robust estimators (clipped weights, bootstrap
+CIs), with savings and regret estimated separately. The quality constraint is judged on **regret
+per trim** (the target's regret mass over its trimming mass, not an average over all decisions):
+`pessimistic` counts each unsettled trim as regret 1. `constraint_ok` is true when the largest
+upper bound (IPS bootstrap, DR bootstrap, and an exact Beta bound on the pessimistic regret count)
+is at most τ. The verdict is **`insufficient`** (`constraint_ok = null`) when fewer than
+`[ope] min_trims` trims were logged, when outcome coverage is below `min_outcome_coverage`, when
+more than `max_unsupported_trim` of the target's trimming mass is on arms the log never chose in
+that bucket, or when no ratio can be formed; a target that never trims is `no_trims` and ok. The
+`[ope]` thresholds are user-only. Outcomes are joined to decisions by id across log files and
+rotation generations; an unsettled outcome counts as regret in the pessimistic variant.
 
 ### 10.4 E4 — Live benchmark with Claude Code under Max
 - Tasks: **SWE-bench Verified Mini (50 tasks)**; harness: Harbor (`claude-code` agent with
