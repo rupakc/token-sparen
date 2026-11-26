@@ -170,6 +170,7 @@ def test_builtin_order() -> None:
     # pruning recovery runs first: a later block ends the chain, and it never blocks itself
     assert names == [
         "_on_prune_tool",
+        "_on_activity",
         "_on_pre_invalidate",
         "_on_governor_stop",
         "_on_guard",
@@ -184,9 +185,11 @@ def test_builtin_order() -> None:
         "_on_regret",
         "_on_read_dedupe",
         "_on_compress",
+        "_on_activity",
         "_on_track",
     ]
     assert entry.HANDLERS["post_tool"][-1] in entry.ALWAYS_RUN
+    assert entry.HANDLERS["post_tool"][-2] in entry.ALWAYS_RUN
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["post_tool_failure"]]
     assert names == [
         "_on_prune_tool",

@@ -160,6 +160,22 @@ def record_active(event: Event, *, env: Mapping[str, str] | None = None) -> None
         log_error(env, "tracking", f"last_active: {type(exc).__name__}: {exc}")
 
 
+ACTIVE_REFRESH_S = 60.0
+
+
+def touch_active(event: Event, *, env: Mapping[str, str] | None = None) -> None:
+    """Tool calls are activity too (long autonomous turns, concurrent sessions): refresh
+    ``last_active`` at most once per ``ACTIVE_REFRESH_S`` (a small read per call otherwise)."""
+    if event.session_id == "unknown":
+        return
+    env = os.environ if env is None else env
+    state = jsonstore.read(last_active_path(state_home(env), event.project_key), {}, env)
+    ts = state.get("ts")
+    if isinstance(ts, int | float) and 0 <= time.time() - float(ts) < ACTIVE_REFRESH_S:
+        return
+    record_active(event, env=env)
+
+
 def last_active(home: Path, project_key: str, max_age_s: float) -> tuple[str | None, bool]:
     """(session id, fresh): the last active session and whether it is younger than max_age_s."""
     state = jsonstore.read(last_active_path(home, project_key), {})

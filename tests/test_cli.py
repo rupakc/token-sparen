@@ -396,7 +396,8 @@ def test_slash_command_is_a_skill() -> None:
         tools.append(ln[4:].strip().strip("'"))
     # Model-invocable skill: pre-approve only read-only / low-risk subcommands.
     # `session disable` only: re-enabling trimming (`session enable`) needs a permission prompt
-    safe = ("stats", "show", "doctor", "session disable")
+    # `prune restore` only removes deny rules token-sparen wrote: always safe
+    safe = ("stats", "show", "doctor", "session disable", "prune restore")
     boot = 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"'
     assert tools == [f"Bash(token-sparen {c}:*)" for c in safe] + [
         f"Bash({boot} {c}:*)" for c in safe
@@ -405,8 +406,12 @@ def test_slash_command_is_a_skill() -> None:
     assert "argument-hint:" in front
     for bare in ("python3:*", "python:*", "sh:*", "bash:*", "token-sparen:*", 'run_cli.py":*'):
         assert bare not in front
-    for risky in ("extensions", "config", "statusline", "prune", "trust", "run"):
+    for risky in ("extensions", "config", "statusline", "prune enable", "trust", "run"):
         assert not any(f" {risky}" in t.split("run_cli.py")[-1] for t in tools), risky
+    assert [t for t in tools if " prune" in t] == [
+        "Bash(token-sparen prune restore:*)",
+        f"Bash({boot} prune restore:*)",
+    ]
     assert "permission prompt" in body
     assert "explicitly" in body and "/token-sparen" in body
     assert "$ARGUMENTS" in body

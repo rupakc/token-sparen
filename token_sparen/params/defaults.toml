@@ -252,11 +252,13 @@ max_tokens = 300       # injected block budget (estimated tokens)
 max_facts = 8
 
 [prune]
-# Learned tool pruning (opt-in, spec 6.10): never-used tools are denied in the project's
-# .claude/settings.local.json. Enable per project with `token-sparen prune enable` (or here /
-# TOKEN_SPAREN_PRUNE__ENABLED for every project); a project's token-sparen.toml can never enable
-# it, only switch it off with `allow = false`. Every key but `allow` is user-only.
+# Learned tool pruning (opt-in, spec 6.10): never-used MCP servers are denied in the checkout's
+# .claude/settings.local.json. Enable per project with `token-sparen prune enable`, or for every
+# project with `enabled = true` in ~/.token-sparen/config.toml. `enabled` and `builtins` are read
+# from that file only (never from TOKEN_SPAREN_* variables, a session or a project file); a
+# project's token-sparen.toml may only switch pruning off with `allow = false`.
 enabled = false
+builtins = false      # also prune always-loaded built-in tools an SDK init record listed
 allow = true          # false: never prune here, and revert our rules at the next fold
 min_sessions = 3      # sessions with the tool available and unused before it is a candidate
 min_prompts = 15      # ... spanning at least this many prompts

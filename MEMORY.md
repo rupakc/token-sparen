@@ -1268,4 +1268,23 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - `restore <tool>` / `restore --all`: regret 1.0 and kept for good (user said the tool is
   needed); `disable` and the `allow = false` revert: no regret, not kept. Savings: count only
   (`⊘ N` statusline segment `pruned`, `stats` line, `pruned_tools` in stats JSON).
+- Fix round 1 (coordinator rulings, same day): (1) owned rules, `created`, `foreign` and refusal
+  state live per settings-file real path in `prune.json` `files` {realpath: {dir, owned, created,
+  foreign}}; hooks/fold touch the current checkout's file only, `restore --all` / `disable` /
+  `allow = false` revert every recorded file (tested with two clones + a worktree). (2) Notices
+  render the CLI as `python3 "<CLAUDE_PLUGIN_ROOT>/hooks/run_cli.py"` when the plugin root is
+  known (stored notices use a `{cli}` placeholder); SKILL.md pre-approves `prune restore` in both
+  forms (lines trimmed to stay at 80). (3) The SessionStart line has its own budget
+  (`NOTICE_TOKENS = 100`): names truncated to `A, B, … +N more — run ... prune status`.
+  (4) `prune enable` and the first fold with a transcript after any enable seed `used` from the
+  project's transcripts (`<claude config>/projects/<cwd, non-alphanumerics -> '-'>` plus the
+  session transcript's directory; last 60 days, newest first, <= 50 MB). (5) PreToolUse and
+  PostToolUse (always) refresh `last_active` at most once a minute (`tracking.touch_active`).
+  (6) Scope: MCP servers only by default; built-ins need `[prune] builtins = true` AND an SDK
+  `init` record listing them (`ToolInventory.always`, `doc.always`); owned rules that stop being
+  candidates are reverted without regret. (7) Prompt matching: exact name (case-sensitive) or a
+  multi-word form (camel/`_`/`-` words, >= 2); `restore mcp__srv__tool` -> `mcp__srv`; settings
+  JSON with duplicate keys is refused (`object_pairs_hook`, also for the statusline); a refused
+  write gives one notice per distinct message; `[prune] enabled` and `builtins` are read only
+  from `~/.token-sparen/config.toml` (`config.user_config`), never env, session or project.
 

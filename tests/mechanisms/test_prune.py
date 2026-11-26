@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -21,6 +22,7 @@ import pytest
 from token_sparen.adapters.claude import entry, settings
 from token_sparen.cli import main
 from token_sparen.config import load_config, policy_for
+from token_sparen.estimate import estimate_tokens
 from token_sparen.learn import overlay
 from token_sparen.learn.beta import Beta
 from token_sparen.mechanisms import prune, tracking
@@ -41,11 +43,31 @@ def proj(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.fixture
-def env(tmp_path: Path, proj: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    e = {"TOKEN_SPAREN_HOME": str(tmp_path / "home"), "CLAUDE_PROJECT_DIR": str(proj)}
-    monkeypatch.setenv("TOKEN_SPAREN_HOME", e["TOKEN_SPAREN_HOME"])
+def plain_env(tmp_path: Path, proj: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Temporary state root and Claude config dir (never the real ``~/.claude``)."""
+    e = {
+        "TOKEN_SPAREN_HOME": str(tmp_path / "home"),
+        "CLAUDE_PROJECT_DIR": str(proj),
+        "CLAUDE_CONFIG_DIR": str(tmp_path / "claude"),
+    }
+    for k in ("TOKEN_SPAREN_HOME", "CLAUDE_CONFIG_DIR"):
+        monkeypatch.setenv(k, e[k])
     monkeypatch.chdir(proj)
     return e
+
+
+def _user_config(env: dict[str, str], text: str) -> None:
+    home = _home(env)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.toml").write_text(text, encoding="utf-8")
+
+
+@pytest.fixture
+def env(plain_env: dict[str, str]) -> dict[str, str]:
+    """As ``plain_env`` with built-in pruning switched on in the user's own config (most tests
+    use built-ins listed by an SDK init record; the default scope is tested separately)."""
+    _user_config(plain_env, "[prune]\nbuiltins = true\n")
+    return plain_env
 
 
 def _home(env: dict[str, str]) -> Path:
@@ -138,6 +160,10 @@ def _deny(proj: Path) -> list[str]:
 def _doc(env: dict[str, str], proj: Path) -> dict[str, Any]:
     path = _pdir(env, proj) / prune.PRUNE_FILE
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def _owned(env: dict[str, str], proj: Path) -> list[str]:
+    return prune.owned_in(_doc(env, proj), prune.file_key(_local(proj)))
 
 
 def _three(env: dict[str, str], proj: Path, **kw: Any) -> None:
@@ -270,7 +296,7 @@ def test_writes_only_owned_rules_and_backup(env: dict[str, str], proj: Path) -> 
     data = json.loads(_local(proj).read_text(encoding="utf-8"))
     assert data["permissions"]["deny"] == ["Bash(rm *)", "WebSearch", "WebFetch"]
     assert data["permissions"]["allow"] == ["Read"] and data["env"] == {"X": "1"}
-    assert _doc(env, proj)["owned"] == ["WebFetch"]  # WebSearch was the user's rule
+    assert _owned(env, proj) == ["WebFetch"]  # WebSearch was the user's rule
     backup = _local(proj).with_name("settings.local.json.token-sparen.bak")
     assert backup.read_text(encoding="utf-8") == raw
     # the user edits the file; a later prune never overwrites the pristine backup
@@ -285,7 +311,7 @@ def test_writes_only_owned_rules_and_backup(env: dict[str, str], proj: Path) -> 
     after = json.loads(_local(proj).read_text(encoding="utf-8"))
     assert after["permissions"]["deny"] == ["Bash(rm *)", "WebSearch", "Bash(curl *)"]
     assert after["env"] == {"X": "1"}
-    assert _doc(env, proj)["owned"] == []
+    assert _owned(env, proj) == []
 
 
 def test_restore_on_attempted_use(env: dict[str, str], proj: Path) -> None:
@@ -300,7 +326,7 @@ def test_restore_on_attempted_use(env: dict[str, str], proj: Path) -> None:
     doc = _doc(env, proj)
     after = Beta.from_list(doc["tools"]["WebFetch"]["r"])
     assert after.a == pytest.approx(before.a + 1.0)  # regret 1.0
-    assert "WebFetch" not in doc["owned"] and "WebFetch" in doc["kept"]
+    assert "WebFetch" not in _owned(env, proj) and "WebFetch" in doc["kept"]
     assert not prune.is_candidate("WebFetch", doc)  # never pruned again
     _three(env, proj)
     assert "WebFetch" not in _deny(proj)
@@ -318,7 +344,7 @@ def test_restore_cli_exact_revert(env: dict[str, str], proj: Path) -> None:
     assert main(["prune", "restore", "--all", "--project", str(proj)]) == 0
     # the file and the directory did not exist before: both are gone again
     assert not _local(proj).exists() and not (proj / ".claude").exists()
-    assert _doc(env, proj)["owned"] == []
+    assert _owned(env, proj) == []
 
 
 # --------------------------------------------------------------------------- more behaviour
@@ -335,17 +361,43 @@ def test_project_config_cannot_enable(env: dict[str, str], proj: Path) -> None:
     assert not _local(proj).exists()
 
 
-def test_user_config_enables_and_project_may_disable(
-    env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("TOKEN_SPAREN_PRUNE__ENABLED", "1")
-    env["TOKEN_SPAREN_PRUNE__ENABLED"] = "1"
+def test_user_config_enables_and_project_may_disable(env: dict[str, str], proj: Path) -> None:
+    _user_config(env, "[prune]\nenabled = true\nbuiltins = true\n")
     _three(env, proj)
     assert _deny(proj) == ["WebFetch", "WebSearch"]
     # the project switches pruning off: the next fold reverts every rule we own
     (proj / "token-sparen.toml").write_text("[prune]\nallow = false\n", encoding="utf-8")
     _fold(env, proj, "s4")
     assert not _local(proj).exists()
+
+
+def test_env_cannot_enable_or_widen(
+    plain_env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a repository's committed Claude Code settings can set `env`: never enough to opt in
+    for k, v in (("TOKEN_SPAREN_PRUNE__ENABLED", "1"), ("TOKEN_SPAREN_PRUNE__BUILTINS", "1")):
+        monkeypatch.setenv(k, v)
+        plain_env[k] = v
+    _three(plain_env, proj, listed=[*BUILTINS, "mcp__alpha__get"])
+    assert not _local(proj).exists()
+    _enable(plain_env, proj)
+    _three(plain_env, proj, listed=[*BUILTINS, "mcp__alpha__get"])
+    assert _deny(proj) == ["mcp__alpha"]  # built-ins need `builtins = true` in config.toml
+
+
+def test_default_scope_is_mcp_servers_only(plain_env: dict[str, str], proj: Path) -> None:
+    _enable(plain_env, proj)
+    listed = [*BUILTINS, "mcp__alpha__get", "mcp__alpha__put"]
+    _three(plain_env, proj, listed=listed)
+    assert _deny(proj) == ["mcp__alpha"]
+    assert "WebFetch" not in _doc(plain_env, proj)["tools"]
+
+
+def test_builtins_only_when_always_loaded(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    # listed only as deferred tools (interactive Claude Code): ~5 tokens each, never pruned
+    _three(env, proj, listed=["Read", "WebFetch", "mcp__alpha__get"], deferred=True)
+    assert _deny(proj) == ["mcp__alpha"]
 
 
 def test_mcp_server_level_candidates(env: dict[str, str], proj: Path) -> None:
@@ -364,11 +416,11 @@ def test_mcp_server_level_candidates(env: dict[str, str], proj: Path) -> None:
 
 def test_deferred_tools_listing_and_fallback(env: dict[str, str], proj: Path) -> None:
     _enable(env, proj)
-    _fold(env, proj, "s1", listed=["Read", "WebFetch"], deferred=True)
+    _fold(env, proj, "s1", listed=["Read", "WebFetch", "mcp__alpha__get"], deferred=True)
     # sessions without a tool list count for the tools other sessions listed
     _fold(env, proj, "s2", listed=None)
     _fold(env, proj, "s3", listed=None)
-    assert _deny(proj) == ["WebFetch"]
+    assert _deny(proj) == ["mcp__alpha"]  # a deferred built-in is never a candidate
 
 
 def test_mtime_race_retries_then_gives_up(
@@ -396,7 +448,7 @@ def test_mtime_race_retries_then_gives_up(
     for sid in ("t1", "t2", "t3"):
         _fold(env, proj, sid, listed=["Read", "NotebookEdit"])
     assert "NotebookEdit" not in _deny(proj)
-    assert "NotebookEdit" not in _doc(env, proj)["owned"]  # never owned what we did not write
+    assert "NotebookEdit" not in _owned(env, proj)  # never owned what we did not write
 
 
 def test_invalid_settings_file_is_never_touched(env: dict[str, str], proj: Path) -> None:
@@ -405,7 +457,7 @@ def test_invalid_settings_file_is_never_touched(env: dict[str, str], proj: Path)
     _local(proj).write_text("{not json", encoding="utf-8")
     _three(env, proj)
     assert _local(proj).read_text(encoding="utf-8") == "{not json"
-    assert _doc(env, proj)["owned"] == []
+    assert _owned(env, proj) == []
 
 
 @pytest.fixture
@@ -507,7 +559,7 @@ def test_rule_removed_by_the_user_counts_as_a_restore(env: dict[str, str], proj:
     _local(proj).write_text('{"permissions": {"deny": ["WebSearch"]}}', encoding="utf-8")
     _fold(env, proj, "s4")
     doc = _doc(env, proj)
-    assert doc["owned"] == ["WebSearch"] and "WebFetch" in doc["kept"]
+    assert _owned(env, proj) == ["WebSearch"] and "WebFetch" in doc["kept"]
     assert _deny(proj) == ["WebSearch"]
 
 
@@ -569,7 +621,14 @@ def test_candidate_names_and_matching() -> None:
     assert prune.server_of("WebFetch") is None
     assert prune.mentions("use webfetch please", ["WebFetch", "WebSearch"]) == ["WebFetch"]
     assert prune.mentions("a Web-Search now", ["WebSearch"]) == ["WebSearch"]
-    assert prune.mentions("open my gmail", ["mcp__claude_ai_Gmail"]) == ["mcp__claude_ai_Gmail"]
+    gmail = ["mcp__claude_ai_Gmail"]
+    assert prune.mentions("open my gmail", gmail) == []  # a single common word never restores
+    assert prune.mentions("use claude ai gmail", gmail) == gmail
+    assert prune.mentions("the mcp__claude_ai_Gmail server", gmail) == gmail
+    assert prune.mentions("check github", ["mcp__github"]) == []
+    assert prune.mentions("use mcp__github", ["mcp__github"]) == ["mcp__github"]
+    assert prune.mentions("monitor the build", ["Monitor"]) == []
+    assert prune.mentions("use the Monitor tool", ["Monitor"]) == ["Monitor"]
     assert prune.mentions("select:mcp__srv__a", ["mcp__srv"]) == ["mcp__srv"]
     assert prune.mentions("webfetcher", ["WebFetch"]) == []
     assert prune.mentions("the ai is fine", ["mcp__claude_ai"]) == []  # short words never match
@@ -647,3 +706,123 @@ def test_tool_inventory_reads_listings(tmp_path: Path) -> None:
     empty = tmp_path / "none.jsonl"
     empty.write_text("", encoding="utf-8")
     assert tool_inventory(empty).listed is None
+
+
+def test_restore_cli_maps_a_tool_to_its_server(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _three(env, proj, listed=["Read", "mcp__alpha__get", "mcp__beta__ask"])
+    assert _deny(proj) == ["mcp__alpha", "mcp__beta"]
+    assert main(["prune", "restore", "mcp__alpha__get", "--project", str(proj)]) == 0
+    assert _deny(proj) == ["mcp__beta"]
+
+
+@pytest.mark.parametrize(
+    "bad", ["{not json", '{"a": 1, "a": 2}', '{"permissions": {"deny": [], "deny": ["X"]}}']
+)
+def test_refused_settings_file_gives_a_notice(env: dict[str, str], proj: Path, bad: str) -> None:
+    _enable(env, proj)
+    _local(proj).parent.mkdir()
+    _local(proj).write_text(bad, encoding="utf-8")
+    _three(env, proj)
+    assert _local(proj).read_text(encoding="utf-8") == bad
+    msg = _hook(env, "SessionStart", {"source": "startup"})["systemMessage"]
+    assert "could not write" in msg and "settings.local.json" in msg
+
+
+def test_notice_names_the_plugin_launcher(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _three(env, proj)
+    root = str(proj.parent / "plugin root")
+    out = _hook({**env, "CLAUDE_PLUGIN_ROOT": root}, "SessionStart", {"source": "startup"})
+    cmd = f'python3 "{root}/hooks/run_cli.py" prune restore <tool>'
+    assert f"run `{cmd}` if needed." in out["hookSpecificOutput"]["additionalContext"]
+    assert cmd in out["systemMessage"]
+
+
+def test_notice_is_truncated_not_dropped(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    servers = [f"mcp__plugin_some-vendor_server{i:02d}__tool" for i in range(28)]
+    _three(env, proj, listed=["Read", *servers])
+    assert len(_deny(proj)) == 28
+    out = _hook(env, "SessionStart", {"source": "startup"})
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert ctx.startswith("Pruned (unused here): mcp__plugin_some-vendor_server00, ")
+    assert "more — run `token-sparen prune status`" in ctx
+    assert estimate_tokens(ctx) <= prune.NOTICE_TOKENS
+
+
+def test_enable_seeds_tools_used_in_earlier_sessions(
+    plain_env: dict[str, str], proj: Path, tmp_path: Path
+) -> None:
+    hist = tmp_path / "claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(proj))
+    _transcript(hist / "old.jsonl", listed=None, used=["mcp__alpha__get"], prompts=1)
+    stale = _transcript(hist / "older.jsonl", listed=None, used=["mcp__beta__ask"], prompts=1)
+    old = time.time() - 90 * 86400  # outside the 60-day window
+    os.utime(stale, (old, old))
+    _enable(plain_env, proj)
+    used = _doc(plain_env, proj)["used"]
+    assert "mcp__alpha__get" in used and "mcp__beta__ask" not in used
+    _three(plain_env, proj, listed=["Read", "mcp__alpha__get", "mcp__beta__ask"])
+    assert _deny(proj) == ["mcp__beta"]  # alpha was used before pruning was enabled
+
+
+def test_first_fold_after_config_enable_seeds_history(env: dict[str, str], proj: Path) -> None:
+    _user_config(env, "[prune]\nenabled = true\n")
+    _transcript(
+        _home(env).parent / "transcripts" / "earlier.jsonl",
+        listed=None,
+        used=["mcp__alpha__put"],
+        prompts=1,
+    )
+    _three(env, proj, listed=["Read", "mcp__alpha__get", "mcp__beta__ask"])
+    assert _deny(proj) == ["mcp__beta"]
+    assert _doc(env, proj)["seeded"] is True
+
+
+def test_tool_calls_count_as_activity(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _make_idle(env, proj)
+    _hook(env, "PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "make"}})
+    path = tracking.last_active_path(_home(env), _key(env, proj))
+    first = json.loads(path.read_text(encoding="utf-8"))["ts"]
+    assert time.time() - first < 5
+    _hook(env, "PostToolUse", {"tool_name": "Bash", "tool_input": {}, "tool_response": "ok"})
+    assert json.loads(path.read_text(encoding="utf-8"))["ts"] == first  # throttled (1/min)
+    _three(env, proj)
+    assert not _local(proj).exists()  # a long autonomous turn is activity: deferred
+    assert _doc(env, proj)["pending"] is True
+
+
+@pytest.mark.usefixtures("plain_git")
+def test_sibling_checkouts_and_worktree_keep_their_own_rules(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    def git(where: Path, *args: str) -> None:
+        subprocess.run(["git", "-C", str(where), *args], check=True, capture_output=True)
+
+    a, b = tmp_path / "clone-a", tmp_path / "clone-b"
+    for d in (a, b):
+        d.mkdir()
+        git(d, "init", "-q")
+        git(d, "remote", "add", "origin", "https://example.invalid/team/repo.git")
+        (d / ".gitignore").write_text(".claude/settings.local.json\n", encoding="utf-8")
+    git(a, "add", ".gitignore")
+    git(a, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "x")
+    wt = tmp_path / "wt"
+    git(a, "worktree", "add", "-q", str(wt))
+    assert _key(env, a) == _key(env, b) == _key(env, wt)  # one project key
+    _enable(env, a)
+    for d, tag in ((a, "a"), (b, "b"), (wt, "w")):
+        for i in range(3):
+            _fold(env, d, f"{tag}{i}")
+        assert _deny(d) == ["WebFetch", "WebSearch"], d
+    doc = _doc(env, a)
+    assert len(doc["files"]) == 3
+    # a restore in one checkout touches only that checkout's file
+    out = _hook({**env, "CLAUDE_PROJECT_DIR": str(b)}, "PreToolUse", {"tool_name": "WebFetch"})
+    assert "WebFetch" in out["systemMessage"]
+    assert _deny(b) == ["WebSearch"] and _deny(a) == ["WebFetch", "WebSearch"]
+    # restore --all and disable revert every recorded file of the project key
+    assert main(["prune", "disable", "--project", str(a)]) == 0
+    for d in (a, b, wt):
+        assert not _local(d).exists(), d

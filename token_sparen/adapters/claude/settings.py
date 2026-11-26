@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -85,6 +86,16 @@ def _reject_constant(name: str) -> Any:
     raise ValueError(f"non-finite number {name} is not strict JSON")
 
 
+def _unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Strict: a duplicated key is refused (which value would win is parser-dependent)."""
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError(f"duplicate key {key!r}")
+        out[key] = value
+    return out
+
+
 def _load(path: Path) -> tuple[dict[str, Any], bool]:
     """(settings, existed); raises _Invalid for anything but a strict JSON object."""
     try:
@@ -94,7 +105,7 @@ def _load(path: Path) -> tuple[dict[str, Any], bool]:
     except (OSError, UnicodeDecodeError) as exc:
         raise _Invalid(f"{path} cannot be read ({exc}); nothing was changed") from exc
     try:
-        data = json.loads(text, parse_constant=_reject_constant)
+        data = json.loads(text, parse_constant=_reject_constant, object_pairs_hook=_unique)
     except (ValueError, RecursionError) as exc:
         raise _Invalid(f"{path} is not valid JSON ({exc}); nothing was changed") from exc
     if not isinstance(data, dict):
@@ -535,6 +546,21 @@ class ClaudeDenyWriter:
 
     def present(self, project_dir: Path) -> set[str] | None:
         return deny_rules(local_settings_path(project_dir))
+
+    def history_dirs(self, project_dir: Path, env: Mapping[str, str]) -> list[Path]:
+        return transcript_dirs(project_dir, env)
+
+
+def transcript_dirs(project_dir: Path, env: Mapping[str, str]) -> list[Path]:
+    """Claude Code keeps a project's transcripts in ``<config dir>/projects/<cwd with every
+    non-alphanumeric character replaced by ->``; both the given and the real path are tried."""
+    config_dir = settings_path(env).parent
+    out: list[Path] = []
+    for p in dict.fromkeys([str(project_dir), str(project_dir.resolve())]):
+        d = config_dir / "projects" / re.sub(r"[^A-Za-z0-9]", "-", p)
+        if d.is_dir() and d not in out:
+            out.append(d)
+    return out
 
 
 prune.register_writer(ClaudeDenyWriter())

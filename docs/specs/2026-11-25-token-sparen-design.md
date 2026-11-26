@@ -208,7 +208,11 @@ a session after >= 60 idle minutes is still between sessions for the prompt cach
 ToolSearch queries (PostToolUse), PreToolUse / PostToolUseFailure / PermissionDenied (defensive:
 a denied tool is not in the model's tool list), user prompts naming the tool, and at fold from
 the transcript ("No such tool available"); a restored tool is kept for good. Claude Code only.
-Details in `MEMORY.md`.
+Fix round 1: candidates are MCP servers by default (built-ins are deferred in interactive Claude
+Code; only with the user-only `[prune] builtins = true` and an SDK init listing); enabling only via
+`prune enable` or the user's config.toml, seeding tools used in the last 60 days; rules tracked
+per settings-file real path (sibling clones, worktrees); tool calls count as activity for the idle
+gate. Details in `MEMORY.md`.
 
 ---
 

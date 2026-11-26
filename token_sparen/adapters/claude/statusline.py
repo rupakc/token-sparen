@@ -25,6 +25,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, TextIO
 
+from token_sparen.adapters.claude import settings
 from token_sparen.config import Config, flag, flag_on, load_config, log_error, state_home
 from token_sparen.events import SessionCtx
 from token_sparen.mechanisms import governor, prune, tracking
@@ -314,7 +315,8 @@ def _render(payload: Mapping[str, Any], env: Mapping[str, str]) -> tuple[str, bo
         elif name == "learn":
             parts.append(f"learn: {_learner_state(project_key, env)}")
         elif name == "pruned" and project_key:
-            n = prune.pruned_count(state_home(env), project_key, env)
+            local = settings.local_settings_path(project_dir) if project_dir else None
+            n = prune.pruned_count(state_home(env), project_key, env, local)
             if n:  # a count only: hooks cannot measure the definitions' size
                 parts.append(f"pruned {n}" if ascii_ else f"⊘ {n}")
     line = (SEP_ASCII if ascii_ else SEP).join([head, *parts])

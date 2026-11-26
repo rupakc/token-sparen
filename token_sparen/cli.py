@@ -344,7 +344,7 @@ def _stats_data(args: argparse.Namespace) -> dict[str, Any]:
 def _pruned_count(home: Path, key: str, env: Mapping[str, str]) -> int:
     from token_sparen.mechanisms import prune
 
-    return prune.pruned_count(home, key, env)
+    return prune.pruned_count(home, key, env)  # every checkout of the project
 
 
 def _stats(args: argparse.Namespace) -> int:
@@ -1060,44 +1060,51 @@ def _prune_cmd(args: argparse.Namespace) -> int:
     project = _project_dir(args).resolve()
     key = keycache.cached_project_key(project, env)
     target = settings.local_settings_path(project)
-    s = prune.settings(load_config(project, env).data)
+    s = prune.settings_for(load_config(project, env).data, env)
     if args.action == "status":
         doc = prune.read_doc(home, key, env)
-        print("\n".join(prune.status_lines(doc, s, target)))
+        print("\n".join(prune.status_lines(doc, s, target, env)))
         return 0
     if args.action == "enable":
-        prune.set_enabled(home, key, True, env)
+        seeded = prune.enable(home, key, project, env)
         print(
-            "token-sparen prune: enabled for this project (opt-in). Tools available but never "
-            f"used across enough sessions will be denied in {target} (backed up once to "
-            f"{target.name}{settings.BACKUP_SUFFIX}), only while the project is idle. Undo with "
+            "token-sparen prune: enabled for this project (opt-in). MCP servers available but "
+            f"never used across enough sessions will be denied in {target} (backed up once to "
+            f"{target.name}{settings.BACKUP_SUFFIX}), only while the project is idle; savings "
+            "are modest (their tool names and server instructions). Undo with "
             "`token-sparen prune restore <tool>`, `restore --all` or `prune disable`."
         )
+        if seeded:
+            print(f"{seeded} tool(s) used in earlier sessions here will never be pruned.")
         if not s.allow:
             print("note: this project's token-sparen.toml sets [prune] allow = false")
         if settings.git_exposure(project) == "unignored":
             print(f"warning: {target} is not covered by .gitignore; add it there.")
         return 0
     if args.action == "disable":
-        prune.set_enabled(home, key, False, env)
-        done = prune.restore(home, key, project, None, env, reason=None)
+        done = prune.disable(home, key, env)
         print(
             "token-sparen prune: disabled for this project"
             + (f"; restored {', '.join(done)}" if done else "")
         )
         if s.enabled:
-            print("note: [prune] enabled = true in your config still enables it here")
+            print("note: [prune] enabled = true in your config.toml still enables it here")
         return 0
     if args.all == (args.tool is not None):
         raise CliError("prune restore needs a tool name or --all")
     doc = prune.read_doc(home, key, env)
-    if args.tool is not None and args.tool not in prune.owned(doc):
+    if args.all:
+        done = prune.restore(home, key, None, None, env)  # every recorded checkout
+        print(f"token-sparen prune: restored {', '.join(done)}" if done else "nothing is pruned")
+        return 0
+    mine = prune.owned_in(doc, prune.file_key(target))
+    want = prune.tool_rule(args.tool, mine)  # a tool of a pruned server maps to the server
+    if not want:
         raise CliError(f"{args.tool} is not pruned by token-sparen here", code=1)
-    want = None if args.all else [args.tool]
     done = prune.restore(home, key, project, want, env)
-    if not done and prune.owned(doc):
+    if not done:
         raise CliError(f"could not change {target}; see `token-sparen doctor`", code=1)
-    print(f"token-sparen prune: restored {', '.join(done)}" if done else "nothing is pruned here")
+    print(f"token-sparen prune: restored {', '.join(done)}")
     return 0
 
 

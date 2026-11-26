@@ -10,12 +10,19 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code 
 
 ### Added
 - Opt-in learned tool pruning (`token-sparen prune status|enable|disable|restore <tool>|restore
-  --all`): never-used built-in tools and whole unused MCP servers are denied in the project's
-  `.claude/settings.local.json` (owned rules only, one backup, stamp re-check, tracked files
-  refused, `.gitignore` warning) after >= 3 sessions / 15 prompts and a high-tier regret bound,
-  only while the project is idle; one-line SessionStart notice; immediate restore (regret 1.0,
-  kept for good) when the agent searches for or calls a pruned tool, the user names it, or the
-  fold sees an attempt; `PermissionDenied` hook; `⊘ N` statusline segment and `stats` count.
+  --all`): MCP servers none of whose tools was ever used are denied in the checkout's
+  `.claude/settings.local.json` after >= 3 sessions / 15 prompts and a high-tier regret bound,
+  only while the project is idle (session starts, prompts and tool calls count as activity).
+  Savings are modest (unused servers' tool names and instructions) and reported as a count only.
+  Built-ins only with `[prune] builtins = true` in the user's config.toml and an SDK init record.
+  Enabling needs `prune enable` or the user's config.toml (never env or a project file) and seeds
+  tools used in the last 60 days of transcripts. Owned rules only, tracked per settings-file real
+  path (sibling clones and worktrees), one backup, stamp re-check, strict JSON (duplicate keys
+  refused, with a notice), tracked files refused, `.gitignore` warning. SessionStart line with
+  the restore command (plugin launcher when needed; `prune restore` pre-approved in the skill),
+  truncated to its own budget; immediate restore (regret 1.0, kept for good) on a ToolSearch
+  query, a direct call, a `PermissionDenied` event, a user prompt naming it (exact or multi-word)
+  or a fold-time attempt. `⊘ N` statusline segment and `stats` count.
 - Repository bootstrap: package skeleton, CLI `--version`, CI, deny-list check, MIT licence and
   NOTICE.
 - Core: canonical events and actions, layered config (defaults, user, project, environment,

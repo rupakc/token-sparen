@@ -388,6 +388,7 @@ class ToolInventory:
 
     used: set[str] = field(default_factory=set)
     listed: set[str] | None = None
+    always: set[str] | None = None  # listed by an SDK ``init`` record: loaded on every request
     prompts: int = 0
     unknown: set[str] = field(default_factory=set)
 
@@ -397,6 +398,8 @@ class ToolInventory:
         self.unknown |= other.unknown
         if other.listed is not None:
             self.listed = (self.listed or set()) | other.listed
+        if other.always is not None:
+            self.always = (self.always or set()) | other.always
 
 
 def _names(raw: Any) -> list[str]:
@@ -420,7 +423,9 @@ def tool_inventory(
     for rec in _records(path, max_bytes, on_limit):
         kind = rec.get("type")
         if kind == "system" and rec.get("subtype") == "init" and "tools" in rec:
-            inv.listed = (inv.listed or set()) | set(_names(rec.get("tools")))
+            names = set(_names(rec.get("tools")))
+            inv.listed = (inv.listed or set()) | names
+            inv.always = (inv.always or set()) | names
             continue
         att = rec.get("attachment")
         if kind == "attachment" and isinstance(att, dict):

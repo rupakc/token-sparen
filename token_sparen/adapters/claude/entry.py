@@ -227,6 +227,12 @@ def _on_prune_tool(event: Event, cfg: Config) -> Action:
     return prune.on_tool(event, cfg, env=HOOK_ENV.get())
 
 
+def _on_activity(event: Event, cfg: Config) -> Action:
+    """Tool calls refresh the project's last activity (throttled): the pruning idle gate."""
+    tracking.touch_active(event, env=HOOK_ENV.get())
+    return Action()
+
+
 def _on_prune_search(event: Event, cfg: Config) -> Action:
     return prune.on_tool_search(event, cfg, env=HOOK_ENV.get())
 
@@ -238,6 +244,7 @@ for _kind, _fn in (
     ("prompt", _on_regret),  # after the turn count: expires regret windows (explicit 0)
     ("prompt", _on_prune_prompt),  # the user named a pruned tool: restore it
     ("pre_tool", _on_prune_tool),  # first: a later block ends the chain; never blocks itself
+    ("pre_tool", _on_activity),
     ("pre_tool", _on_pre_invalidate),
     ("pre_tool", _on_governor_stop),
     ("pre_tool", _on_guard),
@@ -247,6 +254,7 @@ for _kind, _fn in (
     ("post_tool", _on_regret),  # sees this call before it is itself trimmed or tracked
     ("post_tool", _on_read_dedupe),
     ("post_tool", _on_compress),
+    ("post_tool", _on_activity),  # always (also after a replacement)
     ("post_tool", _on_track),  # last + always: its lock wait never eats compression's budget
     # same chain minus de-dupe; the host decides whether a failure result can be replaced
     ("post_tool_failure", _on_prune_tool),
@@ -266,7 +274,8 @@ for _kind, _fn in (
     ("session_end", _on_fold_spawn),  # after settling: the fold sees every regret outcome
     ("permission_denied", _on_prune_tool),
 ):
-    register(cast(EventKind, _kind), _contained(cast(Handler, _fn)), always=_fn is _on_track)
+    always = _fn is _on_track or (_kind == "post_tool" and _fn is _on_activity)
+    register(cast(EventKind, _kind), _contained(cast(Handler, _fn)), always=always)
 
 
 def _join(a: str | None, b: str | None, sep: str) -> str | None:

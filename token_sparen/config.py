@@ -460,6 +460,14 @@ def _warn_once(env: Mapping[str, str], project_dir: Path, key: str, value: Any) 
         )
 
 
+def user_config(env: Mapping[str, str]) -> dict[str, Any]:
+    """Only ``~/.token-sparen/config.toml`` (no environment, project or session layer): for
+    switches a repository must never be able to flip, e.g. ``[prune] enabled`` (a committed
+    Claude Code settings file can set environment variables)."""
+    path = state_home(env) / "config.toml"
+    return _load_toml(None, path, env) if path.is_file() else {}
+
+
 def load_config(
     project_dir: Path, env: Mapping[str, str], *, session: Mapping[str, Any] | None = None
 ) -> Config:

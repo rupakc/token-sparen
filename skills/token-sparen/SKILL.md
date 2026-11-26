@@ -7,10 +7,12 @@ allowed-tools:
   - Bash(token-sparen show:*)
   - Bash(token-sparen doctor:*)
   - Bash(token-sparen session disable:*)
+  - Bash(token-sparen prune restore:*)
   - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" stats:*)'
   - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" show:*)'
   - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" doctor:*)'
   - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" session disable:*)'
+  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" prune restore:*)'
 ---
 
 # token-sparen
@@ -22,9 +24,9 @@ the model sees them, and keeps the full text on disk so nothing is lost. File co
 ## Running the CLI
 Use `token-sparen <args>`. If that is not installed (command not found), run exactly
 `python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>` instead (same arguments). Run nothing else.
-Only `stats`, `show`, `doctor` and `session` are pre-approved. Every other subcommand
-(`statusline install`, `config set`, `extensions trust`, `prune`, ...) goes through the normal
-permission prompt: run it only when the user asked for it, and let the user approve it.
+Pre-approved: `stats`, `show`, `doctor`, `session disable`, `prune restore <tool>` (run it when you
+need a tool the session-start line lists as pruned). Every other subcommand (`statusline install`,
+`config set`, `prune enable`, ...) goes through the normal permission prompt: only when asked.
 
 ## /token-sparen
 Argument given: `$ARGUMENTS`. Follow these steps only when the user explicitly typed
@@ -48,14 +50,13 @@ A trimmed output ends with:
 `[token-sparen: kept X of Y lines · full output: <path> · `token-sparen show <id>`]`
 - Error lines, failures and stack-trace edges are never elided.
 - To see everything, run `token-sparen show <id>` (12 hex characters), or read the `<path>` file.
-- Recover only what you need: lines you can see are enough in most cases.
-- Full outputs live in `<project>/.token-sparen/outputs/` and are pruned after 14 days (checked whenever a new output is saved).
+- Recover only what you need. Full outputs live in `<project>/.token-sparen/outputs/` (14 days).
 
 ## Commands
 - `token-sparen stats [--session ID] [--json]`: net tokens saved (gross minus recovery reads minus
   injected tokens; as in the statusline, can be negative), its parts, decisions per arm.
-- `token-sparen doctor [--fix]`: verifies Python, state home, hooks and a synthetic round-trip.
-- `token-sparen run -- <command>`: run a command and print its compressed output.
+- `token-sparen doctor [--fix]`: verifies Python, state home, hooks and a synthetic round-trip;
+  `token-sparen run -- <command>`: run a command and print its compressed output.
 - `token-sparen statusline install|uninstall`: opt-in live statusline (backs up settings).
 - `token-sparen extensions list`: installed and drop-in extensions with their trust status.
   Trusting a drop-in (`extensions trust <path> --yes`) is the user's decision: never run it for them.
@@ -69,12 +70,11 @@ A trimmed output ends with:
 - All trimming: `[learn.hold] compression = true` in `~/.token-sparen/config.toml` (one session:
   `token-sparen config set learn.hold.compression true --session ${CLAUDE_SESSION_ID}`) or
   `[compression] allow_ctypes = []`. Read pointers: `[learn.hold] read_dedupe = true`.
-- Change config only when the user asks. Needs Claude Code >= 2.1.121; trimmed output is never
-  lost (marker path or `show <id>`).
+- Change config only when the user asks. Needs Claude Code >= 2.1.121.
 
 ## Configuration
 Precedence, lowest first: packaged defaults, `~/.token-sparen/config.toml`,
 `<project>/token-sparen.toml`, environment `TOKEN_SPAREN_*`, then this session's overrides:
 `token-sparen config set <section.key> <value> --session ${CLAUDE_SESSION_ID}` (e.g.
-`guards.enabled false`). State root is `~/.token-sparen/`
-(override with `TOKEN_SPAREN_HOME`). Outputs under 2000 estimated tokens are never modified.
+`guards.enabled false`). State root `~/.token-sparen/` (`TOKEN_SPAREN_HOME`). Outputs under 2000
+estimated tokens are never modified.
