@@ -63,6 +63,7 @@ class GovernorState:
     last_ctx: int = 0
     ctx_level: Level = "ok"
     econ_level: Level = "ok"
+    window_unknown: bool = False  # the last call exceeded the resolved window: no ctx advice
 
 
 # --------------------------------------------------------------------------- config helpers
@@ -155,20 +156,47 @@ def _apply_line(cache: dict[str, Any], line: bytes, count_burn: bool = True) -> 
         cache["model"] = model
 
 
-def _scan(fh: BinaryIO, cache: dict[str, Any], size: int, deadline: float) -> bool:
-    """Parse complete lines from ``cache['offset']``; False if stopped early by the deadline."""
+def _next_newline(fh: BinaryIO, pos: int, size: int) -> int | None:
+    """Position of the first ``\n`` at or after ``pos`` (streamed, nothing kept), else None."""
+    fh.seek(pos)
+    while pos < size:
+        piece = fh.read(min(CHUNK, size - pos))
+        if not piece:
+            return None
+        hit = piece.find(b"\n")
+        if hit >= 0:
+            return pos + hit
+        pos += len(piece)
+    return None
+
+
+def _scan(fh: BinaryIO, cache: dict[str, Any], size: int, deadline: float, max_line: int) -> bool:
+    """Parse complete lines from ``cache['offset']``; False if stopped early by the deadline.
+
+    Every read starts at the offset reached (end of the last complete line), so a record split
+    by a chunk boundary is read whole by the next read. A line longer than a chunk is read whole
+    when it is at most ``max_line`` bytes; a longer one is skipped as unparseable. An incomplete
+    last line waits for its newline.
+    """
     offset = int(cache["offset"])
-    fh.seek(offset)
     while offset < size:
+        fh.seek(offset)
         chunk = fh.read(min(CHUNK, size - offset))
         if not chunk:
             break
         end = chunk.rfind(b"\n")
-        if end < 0:
-            break  # an incomplete last line: wait for its newline
-        for line in chunk[: end + 1].splitlines():
-            _apply_line(cache, line)
-        offset += end + 1
+        if end >= 0:
+            for line in chunk[: end + 1].splitlines():
+                _apply_line(cache, line)
+            offset += end + 1
+        else:
+            newline = _next_newline(fh, offset + len(chunk), size)
+            if newline is None:
+                break  # an incomplete last line: wait for its newline
+            if newline - offset <= max_line:
+                fh.seek(offset)
+                _apply_line(cache, fh.read(newline - offset))
+            offset = newline + 1
         cache["offset"] = offset
         if time.monotonic() > deadline and offset < size:
             return False
@@ -224,7 +252,7 @@ def _advance(
             new["catching_up"] = False
         else:
             budget = _num(cfg, "governor.parse_budget_ms", 150) / 1000
-            done = _scan(fh, new, size, started + budget)
+            done = _scan(fh, new, size, started + budget, int(max_unparsed))
             new["catching_up"] = not done
         new["head"] = _head(fh, int(new["offset"]))
         return new
@@ -282,8 +310,13 @@ def _build(
     unknown = cache.get("burn_unknown") is True
     ctx_pct = last_ctx / window
     econ_pct = 0.0 if unknown else burn / budget
-    ctx_level = _level(
-        ctx_pct, _num(cfg, "governor.ctx_notice", 0.6), _num(cfg, "governor.ctx_advise", 0.8)
+    window_unknown = last_ctx > window  # the resolved window is wrong for this model
+    ctx_level: Level = (
+        "ok"
+        if window_unknown
+        else _level(
+            ctx_pct, _num(cfg, "governor.ctx_notice", 0.6), _num(cfg, "governor.ctx_advise", 0.8)
+        )
     )
     econ_level = _level(
         econ_pct, _num(cfg, "governor.econ_notice", 0.5), _num(cfg, "governor.econ_advise", 0.8)
@@ -306,6 +339,7 @@ def _build(
         last_ctx=last_ctx,
         ctx_level=ctx_level,
         econ_level=econ_level,
+        window_unknown=window_unknown,
     )
 
 
@@ -427,8 +461,19 @@ def _message(kind: str, level: Level, st: GovernorState) -> str:
     return head + eta + "; /compact or start a fresh session."
 
 
-def _advise(event: Event, st: GovernorState, env: Mapping[str, str]) -> str | None:
-    """Announce each level once per session (the overlay records what was said)."""
+def _seen(overlay: Mapping[str, Any]) -> list[str]:
+    raw = overlay.get(ADVISED)
+    return [k for k in raw if isinstance(k, str)] if isinstance(raw, list) else []
+
+
+def _advise(
+    event: Event, st: GovernorState, env: Mapping[str, str], overlay: Mapping[str, Any]
+) -> str | None:
+    """Announce each level once per session (the overlay records what was said).
+
+    ``overlay`` is the lock-free read taken before this hook's update: when every wanted level
+    is already in it, no lock is taken (the common case on every PostToolUse).
+    """
     if st.catching_up:
         return None
     wanted: list[tuple[str, Level]] = []
@@ -439,14 +484,14 @@ def _advise(event: Event, st: GovernorState, env: Mapping[str, str]) -> str | No
             level = "advise"
         if level != "ok":
             wanted.append((kind, level))
-    if not wanted:
+    already = _seen(overlay)
+    if all(f"{kind}:{level}" in already for kind, level in wanted):
         return None
     lines: list[str] = []
 
     def apply(state_: dict[str, Any]) -> dict[str, Any]:
         lines.clear()
-        raw = state_.get(ADVISED)
-        seen = [k for k in raw if isinstance(k, str)] if isinstance(raw, list) else []
+        seen = _seen(state_)
         for kind, level in wanted:
             key = f"{kind}:{level}"
             if key in seen:
@@ -463,23 +508,26 @@ def _advise(event: Event, st: GovernorState, env: Mapping[str, str]) -> str | No
 
 def _session_state(
     event: Event, cfg: Config, env: Mapping[str, str], *, turn_boundary: bool = False
-) -> GovernorState | None:
+) -> tuple[GovernorState, dict[str, Any]] | None:
+    """(state, the overlay as read before the update), or None when there is nothing to meter."""
     if event.transcript_path is None or not _enabled(cfg):
         return None
     if not event.transcript_path.is_file():
         return None
     path = tracking.overlay_path(event, env)
-    sctx = tracking.session_ctx(event, session.read_session(path), path)
-    return state(sctx, event.transcript_path, cfg, env, turn_boundary=turn_boundary)
+    overlay = session.read_session(path)
+    sctx = tracking.session_ctx(event, overlay, path)
+    st = state(sctx, event.transcript_path, cfg, env, turn_boundary=turn_boundary)
+    return st, overlay
 
 
 def _advisory(event: Event, cfg: Config, env: Mapping[str, str] | None, boundary: bool) -> Action:
     env = os.environ if env is None else env
     try:
-        st = _session_state(event, cfg, env, turn_boundary=boundary)
-        if st is None:
+        got = _session_state(event, cfg, env, turn_boundary=boundary)
+        if got is None:
             return Action()
-        return Action(user_message=_advise(event, st, env))
+        return Action(user_message=_advise(event, got[0], env, got[1]))
     except (jsonstore.StoreBusy, OSError) as exc:  # advisory: fail open
         log_error(env, "governor", f"{type(exc).__name__}: {exc}")
         return Action()
@@ -501,16 +549,18 @@ def check_pre_tool(event: Event, cfg: Config, *, env: Mapping[str, str] | None =
     if not _hard_stop(cfg) or event.tool is None or event.tool.name not in STOP_TOOLS:
         return Action()
     try:
-        st = _session_state(event, cfg, env)
+        got = _session_state(event, cfg, env)
     except (jsonstore.StoreBusy, OSError) as exc:
         log_error(env, "governor", f"{type(exc).__name__}: {exc}")
         return Action()
-    if st is None or st.level != "stop":
+    if got is None or got[0].level != "stop":
         return Action()
+    st = got[0]
     return Action(
         block_reason=(
             f"token-sparen: session budget reached ({_fmt(st.burn)} of {_fmt(st.budget)} "
             f"tokens); {event.tool.name} is paused by the opt-in hard stop. Edits still work. "
-            "To lift it, set TOKEN_SPAREN_GOVERNOR__HARD_STOP=false or run /token-sparen."
+            "To lift it, set `[governor] hard_stop = false` or raise `session_budget_tokens` in "
+            "~/.token-sparen/config.toml or <project>/token-sparen.toml."
         )
     )

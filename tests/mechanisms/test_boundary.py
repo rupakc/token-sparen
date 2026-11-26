@@ -88,9 +88,29 @@ def test_identifiers() -> None:
     assert boundary.identifiers("yes please go ahead") == set()
 
 
-def test_jaccard() -> None:
-    assert boundary.jaccard({"a", "b"}, {"b", "c"}) == pytest.approx(1 / 3)
-    assert boundary.jaccard(set(), set()) == 0.0
+def test_containment() -> None:
+    assert boundary.containment({"a", "b"}, {"b", "c", "d", "e"}) == pytest.approx(1 / 2)
+    assert boundary.containment(set(), {"a"}) == 0.0
+
+
+def test_known_identifiers_against_large_history_do_not_trigger(tmp_path: Path) -> None:
+    # reviewer probe: every identifier of the prompt is known, but the 3-prompt union is large
+    # (Jaccard 3/21 = 0.143 would have advised /compact); containment is 3/3
+    history = [
+        "Refactor alpha_one beta_two gamma_three delta_four epsilon_five sigma_six tau_seven",
+        "Then zeta_eight eta_nine theta_ten iota_eleven kappa_twelve lambda_thirteen mu_fourteen",
+        "Also nu_fifteen xi_sixteen omicron_seventeen pi_eighteen rho_nineteen phi_twenty chi_x21",
+    ]
+    for text in history:  # unrelated to each other, so build them up at low context
+        assert _prompt(tmp_path, text, ctx=10_000) is None
+    assert _prompt(tmp_path, "Now rename alpha_one, theta_ten and phi_twenty") is None
+    assert _prompt(tmp_path, TOPIC_B) is not None  # a true shift still triggers
+
+
+def test_no_boundary_advice_when_window_unknown(tmp_path: Path) -> None:
+    for text in TOPIC_A:
+        _prompt(tmp_path, text)
+    assert _prompt(tmp_path, TOPIC_B, ctx=300_000) is None  # last call > window: unknown
 
 
 def test_boundary_triggers_on_topic_shift(tmp_path: Path) -> None:
@@ -196,9 +216,22 @@ def test_precompact_keeps_recovery_paths(tmp_path: Path) -> None:
     assert len(text) < 10_000
 
 
-def test_precompact_without_edits(tmp_path: Path) -> None:
+def test_precompact_without_markers_or_edits_is_noop(tmp_path: Path) -> None:
     act = boundary.on_pre_compact(_event(tmp_path, "pre_compact"), _cfg(tmp_path))
-    assert act.compact_instructions is not None and "full output" in act.compact_instructions
+    assert act.is_noop()
+
+
+def test_precompact_with_markers_only(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    ev = _event(tmp_path, "pre_compact")
+    session.update_session(tracking.overlay_path(ev, env), lambda s: {**s, "trims": 2})
+    text = boundary.on_pre_compact(ev, _cfg(tmp_path), env=env).compact_instructions
+    assert text is not None and "full output" in text and "files edited" not in text
+
+
+def test_precompact_instructions_have_balanced_backticks() -> None:
+    assert boundary.INSTRUCTIONS.count("`") % 2 == 0
+    assert "``" not in boundary.INSTRUCTIONS
 
 
 def test_render_text_only_for_pre_compact(tmp_path: Path) -> None:

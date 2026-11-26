@@ -255,6 +255,73 @@ def test_catch_up_parse_continues_across_hooks(
     assert _prompt(tmp_path, t, cfg, **over) is not None
 
 
+def _unique(n: int, start: int = 0) -> list[str]:
+    return [_assistant(f"u{i}", 1000 + i) for i in range(start, start + n)]
+
+
+def test_multi_chunk_scan_is_exact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(governor, "CHUNK", 1000)  # many chunk boundaries split records
+    t = _transcript(tmp_path, [x for i in range(300) for x in (_user(f"p{i}"), *_unique(1, i))])
+    st = _state(tmp_path, t)
+    assert st.catching_up is False
+    assert st.burn == session_burn(t)
+    cache = session.read_session(_ctx(tmp_path).overlay_path)["governor"]
+    assert cache["offset"] == t.stat().st_size
+    _append(t, _unique(50, 1000))
+    assert _state(tmp_path, t).burn == session_burn(t)
+
+
+def test_line_longer_than_chunk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(governor, "CHUNK", 200)
+    big = _assistant("big", 7000, content="x" * 5000)  # a record far longer than a chunk
+    t = _transcript(tmp_path, [*_unique(3), big, *_unique(3, 10)])
+    st = _state(tmp_path, t)
+    assert st.catching_up is False and st.burn == session_burn(t)
+    _append(t, [_user("y" * 3000), *_unique(5, 20)])
+    assert _state(tmp_path, t).burn == session_burn(t)
+
+
+def test_line_over_cap_is_skipped_not_stalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(governor, "CHUNK", 200)
+    over = {"TOKEN_SPAREN_GOVERNOR__MAX_UNPARSED_BYTES": "3000"}
+    t = _transcript(tmp_path, _unique(2))
+    cfg = _cfg(tmp_path, **over)
+    assert _state(tmp_path, t, cfg, **over).burn == 2001
+    _append(t, [_assistant("huge", 9000, content="x" * 4000), *_unique(1, 50)])
+    st = _state(tmp_path, t, cfg, **over)
+    assert st.catching_up is False
+    assert st.burn == 2001 + 1050  # the oversized record is unparseable, the next one counts
+    assert session.read_session(_ctx(tmp_path).overlay_path)["governor"]["offset"] == (
+        t.stat().st_size
+    )
+
+
+def test_window_unknown_when_last_call_exceeds_it(tmp_path: Path) -> None:
+    t = _transcript(tmp_path, [_assistant("m1", 300_000)])
+    st = _state(tmp_path, t)
+    assert st.window_unknown is True and st.ctx_level == "ok" and st.level == "ok"
+    assert _prompt(tmp_path, t, _cfg(tmp_path)) is None
+
+
+def test_advised_levels_skip_the_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _cfg(tmp_path)
+    t = _transcript(tmp_path, [_assistant("m1", 170_000)])
+    ev = _event(tmp_path, "post_tool", t, tool="Bash")
+    assert governor.on_post_tool(ev, cfg, env=_env(tmp_path)).user_message is not None
+    calls: list[int] = []
+    real = session.update_session
+
+    def spy(*a: Any, **k: Any) -> Any:
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(session, "update_session", spy)
+    assert governor.on_post_tool(ev, cfg, env=_env(tmp_path)).user_message is None
+    assert calls == []  # nothing new to parse, everything already said: no locked write
+
+
 def test_burn_unknown_suppresses_economy(tmp_path: Path) -> None:
     lines = [_assistant(f"m{i}", 1000) for i in range(50)]
     t = _transcript(tmp_path, lines)
@@ -421,7 +488,9 @@ def test_hard_stop_blocks_context_adding_tools(tmp_path: Path) -> None:
         ev = _event(tmp_path, "pre_tool", t, tool=tool)
         reason = governor.check_pre_tool(ev, cfg, env=env).block_reason
         assert reason is not None and reason.startswith("token-sparen:")
-        assert "TOKEN_SPAREN_GOVERNOR__HARD_STOP=false" in reason and "/token-sparen" in reason
+        assert "hard_stop = false" in reason and "session_budget_tokens" in reason
+        assert "~/.token-sparen/config.toml" in reason and "token-sparen.toml" in reason
+        assert "run /token-sparen" not in reason
 
 
 def test_hard_stop_never_blocks_edits(tmp_path: Path) -> None:

@@ -2,14 +2,16 @@
 
 On UserPromptSubmit the prompt's identifiers (file paths as basenames, ``snake_case`` and
 ``camelCase`` tokens of >= 4 chars, backticked words; lower-cased) are compared with the union of
-the last ``history`` prompts' identifiers and the recently touched paths. Jaccard below
-``max_jaccard`` with context above ``min_ctx_pct`` from turn ``min_turn`` on means the user
+the last ``history`` prompts' identifiers and the recently touched paths. Containment (share of
+the prompt's identifiers already in that union) below ``min_overlap`` with context above
+``min_ctx_pct`` (and a known window) from turn ``min_turn`` on means the user
 probably started a new task: a terminal-only message recommends ``/compact`` (at most once per
 ``cooldown_turns``). A prompt with fewer than ``min_identifiers`` identifiers ("yes, go on") is
 never a boundary.
 
 PreCompact: the summary is asked to keep every recovery marker's full-output path and the list of
-files edited, so trimmed outputs stay recoverable after compaction.
+files edited, so trimmed outputs stay recoverable after compaction. Nothing is emitted when the
+session has neither recovery markers (``trims``) nor edited files.
 """
 
 from __future__ import annotations
@@ -34,9 +36,9 @@ _TICK = re.compile(r"`([^`\n]{1,80})`")
 _MIN_LEN = 4
 
 INSTRUCTIONS = (
-    "token-sparen: when summarising, keep every `[token-sparen: kept X of Y lines · full output: "
-    "<path> · `token-sparen show <id>`]` recovery marker's full output path and `token-sparen "
-    "show <id>` command verbatim, so trimmed tool outputs stay recoverable after compaction."
+    "token-sparen: when summarising, keep verbatim the full output path and the "
+    "'token-sparen show <id>' command of every '[token-sparen: kept X of Y lines ...]' recovery "
+    "marker, so trimmed tool outputs stay recoverable after compaction."
 )
 
 
@@ -53,9 +55,13 @@ def identifiers(text: str) -> set[str]:
     return {w.lower() for w in found if len(w) >= _MIN_LEN}
 
 
-def jaccard(a: set[str], b: set[str]) -> float:
-    union = a | b
-    return len(a & b) / len(union) if union else 0.0
+def containment(current: set[str], prior: set[str]) -> float:
+    """Share of ``current``'s identifiers already seen in ``prior`` (|A ∩ B| / |A|).
+
+    Unlike Jaccard it does not shrink as the recent-history union grows, so a prompt that only
+    names known identifiers is never mistaken for a new task.
+    """
+    return len(current & prior) / len(current) if current else 0.0
 
 
 def _int_cfg(cfg: Config, key: str, default: int) -> int:
@@ -114,7 +120,7 @@ def detect(
     prior = _context_set(overlay, _int_cfg(cfg, "boundary.history", 3))
     if len(current) < _int_cfg(cfg, "boundary.min_identifiers", 2) or not prior:
         return False
-    return jaccard(current, prior) < _num_cfg(cfg, "boundary.max_jaccard", 0.15)
+    return containment(current, prior) < _num_cfg(cfg, "boundary.min_overlap", 0.15)
 
 
 def _remember(
@@ -145,7 +151,10 @@ def on_prompt(event: Event, cfg: Config, *, env: Mapping[str, str] | None = None
         sctx = tracking.session_ctx(event, overlay, path)
         prompt = event.prompt[: tracking.PROMPT_MAX_CHARS]
         hit = (
-            st is not None and not st.catching_up and detect(prompt, sctx, cfg, ctx_pct=st.ctx_pct)
+            st is not None
+            and not st.catching_up
+            and not st.window_unknown
+            and detect(prompt, sctx, cfg, ctx_pct=st.ctx_pct)
         )
         history = _int_cfg(cfg, "boundary.history", 3)
         _remember(event, env, identifiers(prompt), history, sctx.turn if hit else None)
@@ -167,10 +176,14 @@ def on_pre_compact(event: Event, cfg: Config, *, env: Mapping[str, str] | None =
     """Summary instructions: keep recovery paths and the list of files edited."""
     env = os.environ if env is None else env
     try:
-        edited = tracking.edited_paths(session.read_session(tracking.overlay_path(event, env)))
+        overlay = session.read_session(tracking.overlay_path(event, env))
     except OSError as exc:
         log_error(env, "boundary", f"{type(exc).__name__}: {exc}")
-        edited = []
+        return Action()
+    edited = tracking.edited_paths(overlay)
+    trims = overlay.get("trims")
+    if not edited and not (isinstance(trims, int) and trims > 0):
+        return Action()  # nothing to keep: let the host summarise as usual
     text = INSTRUCTIONS
     if edited:
         listed = "\n".join(f"- {p}" for p in edited[-MAX_EDITED:])

@@ -203,9 +203,13 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   re-arm after a compaction (strictly once per session).
 - **Hard stop** (`[governor] hard_stop = true` and burn >= `session_budget_tokens`): PreToolUse
   deny of Read/Bash/WebFetch/WebSearch/Task/Agent only; never edits. Reason names
-  `TOKEN_SPAREN_GOVERNOR__HARD_STOP=false` and `/token-sparen`.
+  `[governor] hard_stop = false` / raising `session_budget_tokens` in the user or project config
+  (no slash command named until Task 17 adds one).
 - **Boundary**: identifiers = path basenames, snake_case/camelCase (>= 4 chars), backticked words,
-  lower-cased; compared with the last 3 prompts' identifiers plus identifiers of `recent_paths`.
+  lower-cased; compared with the last 3 prompts' identifiers plus identifiers of `recent_paths`
+  by containment |A ∩ B| / |A| (A = the prompt), threshold `[boundary] min_overlap = 0.15`
+  (fix round 1: Jaccard against the growing 3-prompt union flagged prompts naming only known
+  identifiers).
   Extra guard: a prompt with < `min_identifiers = 2` identifiers (or an empty history) is never a
   boundary, otherwise "yes, go on" would always look like a topic shift. Cooldown 10 turns.
 - **PreCompact output is plain-text stdout** (Claude Code docs: a non-blocking PreCompact hook's
@@ -222,3 +226,15 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
 - **Agent results**: a plain-string Agent/Task result is compressed by the normal PostToolUse
   path; a structured result (`{"content": [...], ...}`) is not a replaceable shape yet and is left
   untouched.
+
+## 2026-11-26 Task 15 fix round 1 (controller rulings)
+- Transcript scan seeks to the offset reached before every read, so a record split by a chunk
+  boundary is read whole next time (was: dropped, and the lagging offset re-parsed later, double
+  counting beyond the 64-id dedupe). A line longer than a chunk is read whole up to
+  `max_unparsed_bytes`; a longer one is skipped as unparseable, never stalling the scan.
+- If the last call's context exceeds the resolved window, the window is treated as unknown:
+  no ctx advisory and no boundary advice (`GovernorState.window_unknown`).
+- PreCompact instructions are emitted only when the session has recovery markers (`trims` > 0)
+  or edited files; otherwise the JSON no-op. Instruction text uses no nested backticks.
+- Advisories check `governor_advised` in the lock-free overlay read first; no lock when every
+  wanted level was already said.

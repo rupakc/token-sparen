@@ -186,9 +186,7 @@ def test_pipeline_read_dedupe_pointer_and_compact(tmp_path: Path) -> None:
     content = out["hookSpecificOutput"]["updatedToolOutput"]["file"]["content"]
     assert content.startswith("[token-sparen: unchanged since turn 1 ")
     # PreCompact: the earlier read is gone from context, full content again
-    out = io.StringIO()  # PreCompact answers with plain-text summary instructions
-    entry.main("PreCompact", io.StringIO(json.dumps({"session_id": "s-r"})), out, env)
-    assert "token-sparen" in out.getvalue()
+    _run("PreCompact", {"session_id": "s-r", "trigger": "auto"}, env)
     assert _run("PostToolUse", _read_payload(path), env) == {}
     # an Edit (PreToolUse) invalidates
     edit = {"session_id": "s-r", "tool_name": "Edit", "tool_input": {"file_path": str(path)}}

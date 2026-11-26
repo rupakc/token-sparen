@@ -275,9 +275,6 @@ def test_e2e_run_py_subprocess(tmp_path: Path) -> None:
             timeout=30,
         )
         assert proc.returncode == 0, proc.stderr
-        if event == "PreCompact":  # plain-text summary instructions (Claude Code contract)
-            assert proc.stdout.startswith("token-sparen:"), (proc.stdout, proc.stderr)
-            continue
         assert proc.stdout == "{}\n", (event, proc.stdout, proc.stderr)
 
 

@@ -100,7 +100,7 @@ default = 200000
 [boundary]
 enabled = true
 min_ctx_pct = 0.40  # advise /compact at a task boundary only when context is this full
-max_jaccard = 0.15  # identifier overlap with recent prompts and paths below this = new task
+min_overlap = 0.15  # share of the prompt's identifiers seen in recent prompts/paths; below = new task
 min_turn = 3
 history = 3  # recent prompts compared against
 min_identifiers = 2  # a prompt with fewer identifiers is never a boundary
