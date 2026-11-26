@@ -36,12 +36,14 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 
 
 def _child(tmp_path: Path, text: str, code: int = 0, err: str = "") -> list[str]:
+    """A child that emits exactly these bytes (no newline translation on any OS)."""
     src = tmp_path / "out.txt"
-    src.write_text(text, encoding="utf-8")
+    src.write_bytes(text.encode("utf-8"))
     prog = (
         "import sys;"
-        f"sys.stdout.write(open({src.as_posix()!r}, encoding='utf-8').read());sys.stdout.flush();"
-        f"sys.stderr.write({err!r});sys.exit({code})"
+        f"sys.stdout.buffer.write(open({src.as_posix()!r}, 'rb').read());sys.stdout.buffer.flush();"
+        f"sys.stderr.buffer.write({err.encode('utf-8')!r});sys.stderr.buffer.flush();"
+        f"sys.exit({code})"
     )
     return [sys.executable, "-c", prog]
 
