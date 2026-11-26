@@ -335,3 +335,10 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
 - **`compression.min_tokens` is floored at 2000** (CLAUDE.md invariant wins over the spec's
   "default 2000"), like `read_dedupe.min_tokens`. A lower configured value is ignored and logged
   once per process to `errors.jsonl`; a higher value is honoured.
+- **JSON same-value elision** (spec §6.1, plan Task 8; judged safe): in an array whose first item
+  is an object, a later *kept* object's scalar value that equals the first item's value for the
+  same key (same type) is shown as `"key": …same`. Never for keys `id name path url file` (any
+  case), never for ERROR_PATTERNS values, never inside an item that carries an error (kept whole),
+  never in the first item, and only when `…same` is shorter than the value (output never grows).
+  Line counts are unchanged (the line is kept, its value abbreviated, like `…(+N chars)`); the
+  full document stays recoverable through the marker. E2 stays 153/153.

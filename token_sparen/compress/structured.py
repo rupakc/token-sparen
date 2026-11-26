@@ -33,6 +33,9 @@ _TEXT = TextCompressor()
 MAX_JSON_KEYS = 50
 MAX_JSON_STRING = 500
 _SECTION = {"items": "json", "context": "diff", "edge_frames": "stacktrace"}
+SAME = "…same"
+# Identity-like keys are never elided: two records with the same id/name/path are worth seeing.
+_SAME_EXEMPT = frozenset({"id", "name", "path", "url", "file"})
 
 
 def _knob(key: str, level: Level, ctx: CompressContext) -> int:
@@ -100,7 +103,30 @@ class _JsonRender:
         self.markers += 1
         self.out.append(f"{pad}{text}")
 
-    def emit(self, v: Any, depth: int, lead: str, trail: str) -> None:
+    def _same_keys(self, item: Any, ref: dict[str, Any] | None) -> frozenset[str]:
+        """Keys of a kept array item whose scalar value repeats the first item's value.
+
+        Never for identity-like keys, error-pattern values or items that carry an error, only
+        for values of the same type, and only where the marker is shorter than the value.
+        """
+        if ref is None or item is ref or not isinstance(item, dict) or self._bad(item):
+            return frozenset()
+        same = set()
+        for key, val in item.items():
+            if key.lower() in _SAME_EXEMPT or key not in ref or isinstance(val, dict | list):
+                continue
+            other = ref[key]
+            if type(val) is not type(other) or val != other:
+                continue
+            if isinstance(val, str) and is_error_line(val):
+                continue
+            if len(json_dumps(val)) > len(SAME):
+                same.add(key)
+        return frozenset(same)
+
+    def emit(
+        self, v: Any, depth: int, lead: str, trail: str, same: frozenset[str] = frozenset()
+    ) -> None:
         pad = "  " * depth
         if not isinstance(v, dict | list):
             self.out.append(f"{pad}{lead}{self._scalar(v)}{trail}")
@@ -111,7 +137,7 @@ class _JsonRender:
         opener, closer = ("{", "}") if isinstance(v, dict) else ("[", "]")
         self.out.append(f"{pad}{lead}{opener}")
         if isinstance(v, dict):
-            self._members(v, depth + 1)
+            self._members(v, depth + 1, same)
         else:
             self._items(v, depth + 1)
         self.out.append(f"{pad}{closer}{trail}")
@@ -137,13 +163,15 @@ class _JsonRender:
             else:
                 gap.append(item)
         flush()
+        ref = arr[0] if isinstance(arr[0], dict) else None
         for j, (is_marker, payload) in enumerate(plan):
             if is_marker:
                 self._marker("  " * depth, payload)
             else:
-                self.emit(payload, depth, "", "," if j < len(plan) - 1 else "")
+                comma = "," if j < len(plan) - 1 else ""
+                self.emit(payload, depth, "", comma, self._same_keys(payload, ref))
 
-    def _members(self, obj: dict[str, Any], depth: int) -> None:
+    def _members(self, obj: dict[str, Any], depth: int, same: frozenset[str]) -> None:
         plan: list[tuple[bool, Any]] = []
         gap = 0
         for i, (key, val) in enumerate(obj.items()):
@@ -161,7 +189,12 @@ class _JsonRender:
                 self._marker("  " * depth, payload)
             else:
                 key, val = payload
-                self.emit(val, depth, f"{json_dumps(key)}: ", "," if j < len(plan) - 1 else "")
+                comma = "," if j < len(plan) - 1 else ""
+                if key in same:
+                    self.changed = True
+                    self.out.append(f"{'  ' * depth}{json_dumps(key)}: {SAME}{comma}")
+                else:
+                    self.emit(val, depth, f"{json_dumps(key)}: ", comma)
 
 
 def json_dumps(v: Any) -> str:
