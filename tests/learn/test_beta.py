@@ -36,10 +36,87 @@ def test_cap_preserves_mean() -> None:
     assert new.mean == pytest.approx(expected, abs=1e-9)
 
 
-def test_cap_below_prior_mass_keeps_prior() -> None:
+def test_heavy_prior_still_learns_toward_data() -> None:
     prior = Beta(30.0, 30.0, 0.0)
-    new = prior.update(1.0, gamma=0.98, cap=50.0, prior=prior)
-    assert (new.a, new.b, new.n) == (30.0, 30.0, 1.0)
+    post = prior
+    for _ in range(200):
+        post = post.update(1.0, gamma=0.98, cap=20.0, prior=prior)
+    assert post.a + post.b == pytest.approx(20.0)
+    assert post.mean > 0.65
+
+
+@pytest.mark.parametrize(
+    "gamma,cap",
+    [
+        (-0.1, 50.0),
+        (1.1, 50.0),
+        (math.nan, 50.0),
+        (0.9, 0.0),
+        (0.9, -1.0),
+        (0.9, math.inf),
+        (0.9, math.nan),
+    ],
+)
+def test_update_rejects_bad_params(gamma: float, cap: float) -> None:
+    with pytest.raises(ValueError):
+        PRIOR.update(0.5, gamma=gamma, cap=cap, prior=PRIOR)
+
+
+def test_update_is_keyword_only() -> None:
+    with pytest.raises(TypeError):
+        PRIOR.update(0.5, 0.9, 50.0, PRIOR)  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "seq",
+    [b"\x01\x02\x03", "123", [True, 1, 0], [1, 1, False], [1, 1, 1j], [1, 1, "2"], [1, 1, None]],
+)
+def test_from_list_rejects_non_real(seq: object) -> None:
+    with pytest.raises(ValueError):
+        Beta.from_list(seq)  # type: ignore[arg-type]
+
+
+def test_quantile_closed_forms() -> None:
+    for q in (0.01, 0.05, 0.3, 0.7, 0.95, 0.99):
+        assert Beta(1.0, 1.0).quantile(q) == pytest.approx(q, abs=1e-8)
+        for k in (2.0, 5.0, 17.0):
+            assert Beta(1.0, k).quantile(q) == pytest.approx(1 - (1 - q) ** (1 / k), abs=1e-8)
+            assert Beta(k, 1.0).quantile(q) == pytest.approx(q ** (1 / k), abs=1e-8)
+    b = Beta(3.5, 11.0)
+    assert b.quantile(0.1) == pytest.approx(1 - Beta(11.0, 3.5).quantile(0.9), abs=1e-8)
+    # Beta(2,2) cdf = 3x^2 - 2x^3
+    assert Beta(2.0, 2.0).quantile(0.5) == pytest.approx(0.5, abs=1e-8)
+    assert Beta(2.0, 2.0).quantile(0.15625) == pytest.approx(0.25, abs=1e-8)
+
+
+def test_lcb_ucb_sides() -> None:
+    b = Beta(10.0, 10.0)
+    assert b.lcb() < 0.5 < b.ucb()
+    for q in (0.5, 0.9):
+        with pytest.raises(ValueError):
+            b.lcb(q)
+    for q in (0.5, 0.1):
+        with pytest.raises(ValueError):
+            b.ucb(q)
+    assert 0.0 <= Beta(1e-3, 1e6).lcb() and Beta(1e6, 1e-3).ucb() <= 1.0
+
+
+@given(betas, st.floats(min_value=0.001, max_value=0.999))
+def test_quantile_ordering(b: Beta, q: float) -> None:
+    lo, hi = b.quantile(q / 2), b.quantile((1 + q) / 2)
+    assert 0.0 <= lo <= hi <= 1.0
+
+
+@given(betas, unit)
+def test_exact_monotonicity_condition(b: Beta, g: float) -> None:
+    prior = Beta(2.0, 3.0, 0.0)
+    k, pm, m = prior.a + prior.b, prior.mean, b.mean
+    new = b.update(1.0, gamma=g, cap=1e12, prior=prior)
+    cond = (1 - g) * k * (pm - m) + (1 - m)
+    if cond > 1e-9:
+        assert new.mean > m - 1e-12
+    elif cond < -1e-9:
+        assert new.mean < m + 1e-12
 
 
 def test_discount_forgets_toward_prior() -> None:
@@ -93,19 +170,6 @@ def test_sample_tiny_params() -> None:
     rng = random.Random(1)
     s = Beta(1e-12, 1e-12, 0.0).sample(rng)
     assert 0.0 <= s <= 1.0
-
-
-def test_bounds() -> None:
-    b = Beta(10.0, 10.0, 20.0)
-    assert 0.0 <= b.lcb() < 0.5 < b.ucb() <= 1.0
-    assert b.lcb(0.5) == pytest.approx(0.5) == b.ucb(0.5)
-    assert Beta(1e6, 1e-3, 0.0).ucb() == 1.0
-    assert Beta(1e-3, 1e6, 0.0).lcb() == 0.0
-    for q in (0.0, 1.0, -0.1, 1.5, math.nan):
-        with pytest.raises(ValueError):
-            b.lcb(q)
-        with pytest.raises(ValueError):
-            b.ucb(q)
 
 
 def test_defaults_toml_learn_keys() -> None:

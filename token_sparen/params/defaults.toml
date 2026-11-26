@@ -117,7 +117,8 @@ parse_budget_ms = 20  # transcript catch-up per render (the governor's cache kee
 
 [learn]
 gamma = 0.98  # Beta posterior discount per observation (forgets toward the prior)
-posterior_cap = 50  # max a + b of a posterior (mean-preserving rescale)
+posterior_cap = 50  # max a + b of a posterior; whole-vector mean-preserving rescale, so the long-run
+# prior weight is cap-independent (do not "fix" this to scale only the excess over the prior)
 decision_log_max_bytes = 20000000  # projects/<key>/decisions.jsonl rotates past this size
 
 [facts]
