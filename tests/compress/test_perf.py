@@ -61,9 +61,11 @@ def test_huge_and_binary_output() -> None:
     assert "FATAL: disk on fire" in res.text
     assert res.total_lines == big.count("\n") + 1
     t_small, t_big = _best(small, 3), _best(big, 2)
-    factor = perf_factor(3.0)
-    assert t_big < 0.2 * factor, f"took {t_big * 1000:.0f} ms"
+    # Default suite: scaling only (shared CI runners vary ~3x in absolute speed; the calibrated
+    # absolute 10 MB budget is `test_strict_budget_10mb` in the perf job). The 5 s guard only
+    # catches a hang or a pathological regression, not a slow runner.
     assert t_big / t_small <= 15, f"1 MB {t_small * 1000:.0f} ms, 10 MB {t_big * 1000:.0f} ms"
+    assert t_big < 5.0 * perf_factor(1.0), f"took {t_big * 1000:.0f} ms"
 
 
 @pytest.mark.perf

@@ -915,3 +915,15 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   the turn the regret fires and priced like removed tokens (cache write on the next call, cache
   read after, nothing after a compaction). `recovery_cost_weighted`, `net_cost_weighted_saved`,
   `net_saved_share_of_context_cost` per total, content type, tool and family.
+
+## 2026-11-26 CI after Task 24 (Windows report writer, perf flake)
+- Windows: `report.write_private` called `os.fchmod` (absent on Windows before Python 3.13):
+  AttributeError -> `replay/ope failed` exit 1; the cleanup then unlinked the temp file while its
+  descriptor was still open (WinError 32). On 3.13 the call exists but Windows only has a
+  read-only flag (modes read back 0o666/0o777). Now the file object owns the descriptor
+  immediately, modes are set only on POSIX (`report.POSIX`), and on Windows the report relies on
+  inherited directory ACLs (documented: keep it in the user profile; no stdlib ACL API). Mode
+  tests run on POSIX only; CLI exit-code assertions show stderr.
+- `test_huge_and_binary_output` (default suite) asserted an absolute 600 ms on 10 MB and flaked
+  at 641 ms on a macOS runner. It now checks scaling only (10 MB / 1 MB <= 15) plus a 5 s hang
+  guard; the calibrated absolute budget stays in the perf job (`test_strict_budget_10mb`).

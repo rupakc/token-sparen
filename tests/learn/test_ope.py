@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import stat
 import statistics
@@ -241,8 +242,10 @@ def test_ope_cli_writes_private_aggregates(
     log = _write_log(home / "projects" / KEY / "decisions.jsonl")
     out = tmp_path / "priv" / "e3.json"
     for target in ("static", "engine-snapshot"):
-        assert cli.main(["ope", "--log", str(log), "--target", target, "--out", str(out)]) == 0
-        assert stat.S_IMODE(out.stat().st_mode) == 0o600
+        code = cli.main(["ope", "--log", str(log), "--target", target, "--out", str(out)])
+        assert code == 0, capsys.readouterr().err
+        if os.name == "posix":  # Windows: inherited directory ACLs (see replay.report)
+            assert stat.S_IMODE(out.stat().st_mode) == 0o600
         data = json.loads(out.read_text(encoding="utf-8"))
         assert data["target"] == target and "compression" in data["points"]
         point = data["points"]["compression"]
@@ -342,7 +345,8 @@ def test_ope_cli_holdout_after(
     log.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
     out = tmp_path / "priv" / "e3.json"
     args = ["ope", "--log", str(log), "--target", "static", "--out", str(out)]
-    assert cli.main([*args, "--holdout-after", "2026-11-10"]) == 0
+    code = cli.main([*args, "--holdout-after", "2026-11-10"])
+    assert code == 0, capsys.readouterr().err
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data["points"]["compression"]["logged"] == 3
     assert data["holdout_after"] == "2026-11-10" and "in-sample" in json.dumps(data["notes"])

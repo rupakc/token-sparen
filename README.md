@@ -302,7 +302,8 @@ sessions by date. `token-sparen ope --log <decisions.jsonl...> --target static|e
 self-normalised IPS, doubly robust, with bootstrap intervals, clipped importance weights and the
 share of the target's choices the log cannot support). Both read only what you point them at,
 print aggregate numbers only (no paths, ids or text), and write a JSON report with mode 0600; the
-report path must be outside any git work tree, so a report can never be committed by accident.
+report path must be outside any git work tree, so a report can never be committed by accident. (On Windows file modes do not apply: keep the report inside your user profile, whose
+default permissions are private to you.)
 While they run, error log lines keep only where an error happened, never its message.
 
 ## Credits and licence

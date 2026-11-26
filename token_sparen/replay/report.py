@@ -5,6 +5,12 @@ only and are written where they can never be committed by accident: never under 
 tree of the current directory, never under this package's own checkout, and never inside any
 git work tree at all (``git rev-parse`` succeeds, or an ancestor holds a ``.git`` entry). The
 file is written atomically with mode 0600; every missing parent directory is created 0700.
+
+Windows has no POSIX modes (``os.chmod`` only toggles the read-only flag and ``os.fchmod`` is
+missing before Python 3.13), so there the report relies on the ACLs it inherits from its
+directory: choose a location inside your user profile (the default ACL there grants only you,
+SYSTEM and administrators). The stdlib has no portable ACL API, so this is documented, not
+enforced.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from typing import Any
 import token_sparen
 
 GIT_TIMEOUT_S = 10.0
+POSIX = os.name == "posix"  # file modes are only meaningful (and settable) on POSIX
 
 
 class OutPathError(ValueError):
@@ -90,7 +97,8 @@ def _mkdirs_private(directory: Path) -> None:
         node = node.parent
     for d in reversed(missing):
         d.mkdir(mode=0o700, exist_ok=True)
-        os.chmod(d, 0o700)
+        if POSIX:
+            os.chmod(d, 0o700)  # whatever the umask
 
 
 def write_private(path: Path, data: Any) -> Path:
@@ -99,14 +107,18 @@ def write_private(path: Path, data: Any) -> Path:
     _mkdirs_private(out.parent)
     fd, tmp = tempfile.mkstemp(dir=out.parent, prefix=".report-", suffix=".tmp")
     try:
-        os.fchmod(fd, 0o600)
+        # The file object owns the descriptor from here, so a failure below closes the handle
+        # before the unlink (Windows refuses to delete an open file: WinError 32).
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            if POSIX:
+                os.fchmod(fh.fileno(), 0o600)  # mkstemp already does; explicit for clarity
             json.dump(data, fh, indent=2, sort_keys=True)
             fh.write("\n")
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, out)
-        os.chmod(out, 0o600)
+        if POSIX:
+            os.chmod(out, 0o600)  # an existing report keeps no looser mode
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise

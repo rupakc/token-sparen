@@ -20,6 +20,19 @@ from token_sparen.replay.report import OutPathError, check_out_path
 MARKERS = ("quokkamarker77", "zebrafinch99x", "okapibravo12")
 _WORDS = "alpha beta gamma delta lorem ipsum dolor amet copy move sync file slot node tree".split()
 CUTOFF = date(2026, 11, 1)
+POSIX = os.name == "posix"
+NO_MODES = "POSIX file modes; on Windows the report relies on its directory's inherited ACLs"
+
+
+def assert_mode(path: Path, mode: int) -> None:
+    """File modes exist only on POSIX (see ``replay.report``); elsewhere nothing to check."""
+    if POSIX:
+        assert stat.S_IMODE(path.stat().st_mode) == mode, oct(path.stat().st_mode)
+
+
+def ok(code: int, capsys: pytest.CaptureFixture[str]) -> None:
+    """Exit 0, showing the CLI's stderr (aggregates-only messages) when it is not."""
+    assert code == 0, capsys.readouterr().err
 
 
 @pytest.fixture(autouse=True)
@@ -352,9 +365,9 @@ def test_report_written_0600_with_aggregates(
     path = resend_session().write(tmp_path / "in" / "a.jsonl")
     out = tmp_path / "private" / "reports" / "e1.json"
     code = cli.main(["replay", str(tmp_path / "in"), "--policy", "static", "--out", str(out)])
-    assert code == 0
-    assert stat.S_IMODE(out.stat().st_mode) == 0o600
-    assert stat.S_IMODE(out.parent.stat().st_mode) == 0o700
+    ok(code, capsys)
+    assert_mode(out, 0o600)
+    assert_mode(out.parent, 0o700)
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data["totals"]["trimmed"] == 1 and data["policy"] == "static"
     assert path.exists()
@@ -365,7 +378,7 @@ def test_stdout_has_no_paths_or_ids(tmp_path: Path, capsys: pytest.CaptureFixtur
     s.call("m9", text=f"{MARKERS[0]} {MARKERS[1]}")
     path = s.write(tmp_path / "secretproject" / "sess-SECRET-ID.jsonl")
     out = tmp_path / "outdirxyz" / "report.json"
-    assert cli.main(["replay", str(path), "--policy", "static", "--out", str(out)]) == 0
+    ok(cli.main(["replay", str(path), "--policy", "static", "--out", str(out)]), capsys)
     captured = capsys.readouterr()
     text = captured.out + captured.err
     assert "tool_results" in captured.out
@@ -394,13 +407,14 @@ def test_replay_errors_never_leak_paths(
     assert "secret-session" not in err and str(tmp_path) not in err
 
 
-def test_existing_report_keeps_0600(tmp_path: Path) -> None:
+@pytest.mark.skipif(not POSIX, reason=NO_MODES)
+def test_existing_report_keeps_0600(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     path = resend_session().write(tmp_path / "in" / "a.jsonl")
     out = tmp_path / "rep.json"
     out.write_text("{}", encoding="utf-8")
     os.chmod(out, 0o644)
-    assert cli.main(["replay", str(path), "--policy", "light", "--out", str(out)]) == 0
-    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    ok(cli.main(["replay", str(path), "--policy", "light", "--out", str(out)]), capsys)
+    assert_mode(out, 0o600)
 
 
 def test_error_log_is_redacted_during_replay(
@@ -552,6 +566,7 @@ def test_copied_history_counted_once_across_files(tmp_path: Path) -> None:
     assert both.totals["duplicate_results"] == 1
 
 
+@pytest.mark.skipif(not POSIX, reason=NO_MODES)
 def test_new_report_dirs_are_all_0700(tmp_path: Path) -> None:
     from token_sparen.replay.report import write_private
 
@@ -661,7 +676,7 @@ def test_multi_arm_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> No
     path = resend_session().write(tmp_path / "in" / "a.jsonl")
     out = tmp_path / "rep.json"
     args = ["replay", str(path), "--out", str(out), "--policy"]
-    assert cli.main([*args, "light,standard,aggressive"]) == 0
+    ok(cli.main([*args, "light,standard,aggressive"]), capsys)
     data = json.loads(out.read_text(encoding="utf-8"))
     assert set(data["by_arm"]) == {"light", "standard", "aggressive"}
     assert "[arm aggressive]" in capsys.readouterr().out
@@ -760,3 +775,31 @@ def test_no_regret_no_recovery_and_families_only_for_shell(tmp_path: Path) -> No
     assert rep.totals["recovery_cost_weighted"] == 0
     assert set(rep.totals["per_family"]) == {"test"}
     assert rep.totals["net_cost_weighted_saved"] == rep.totals["projected_cost_weighted_saved"]
+
+
+# ------------------------------------------------------------------ portability (CI round)
+
+
+def test_write_private_without_fchmod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows before 3.13 has no os.fchmod: the report must still be written."""
+    from token_sparen.replay import report
+
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    monkeypatch.setattr(report, "POSIX", False)
+    out = report.write_private(tmp_path / "w" / "r.json", {"a": 1})
+    assert json.loads(out.read_text(encoding="utf-8")) == {"a": 1}
+    assert [p.name for p in out.parent.iterdir()] == ["r.json"]
+
+
+def test_failed_write_leaves_nothing_and_closes_the_handle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from token_sparen.replay import report
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(report.json, "dump", boom)
+    with pytest.raises(OSError):
+        report.write_private(tmp_path / "w" / "r.json", {"a": 1})
+    assert list((tmp_path / "w").iterdir()) == []  # temp file removed (handle closed first)
