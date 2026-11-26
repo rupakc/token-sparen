@@ -10,11 +10,16 @@ shows a live token meter. Everything runs locally.
 Pre-release (`0.1.0.dev0`). The mechanisms below work today; how strongly to trim is learned per
 project from your own sessions (see [How it learns](#how-it-learns)), starting conservatively.
 There are **no published benchmark numbers yet**, so this README makes no savings claims; measure
-on your own sessions with `/token-sparen` or `token-sparen stats`.
+on your own sessions with `/token-sparen` or `token-sparen stats`. Both report **net** savings:
+tokens removed by trims, minus the tokens the agent spent re-reading trimmed output, minus the
+tokens token-sparen itself injected (`stats` also prints the gross figure and both parts; the
+statusline `saved` segment uses the same net figure). Net can be zero or negative.
 
 ## Requirements
 
-- Claude Code with plugin support.
+- Claude Code >= 2.1.121 (tested with 2.1.332). Replacing a tool result needs the
+  `updatedToolOutput` hook feature, which older hosts do not have: hooks would run, but nothing
+  would be trimmed.
 - `python3` >= 3.11 on your `PATH` (the hooks run `python3`). No other runtime dependencies.
   macOS's system `python3` is often older than 3.11: check with `python3 --version`, and run
   `/token-sparen doctor` (below) first if you are unsure. Hooks fail open, so an old Python means
@@ -41,8 +46,19 @@ for you. To run it yourself in a terminal, call the bundled launcher from the pl
 Optional: the `token-sparen` console command (handy in your own terminal). It is **not published on PyPI yet**;
 from a checkout of this repository run `pip install .`.
 
-**Verify:** in Claude Code run `/token-sparen doctor`, or in a terminal `token-sparen doctor`. `doctor` checks Python, the state directory, hook files and a
-synthetic compress-and-recover round trip.
+**Verify.** Two steps:
+
+1. `/token-sparen doctor` in Claude Code (or `token-sparen doctor` in a terminal). It checks Python,
+   the state directory, hook files and a synthetic compress-and-recover round trip. That round
+   trip runs inside token-sparen, so it cannot tell whether your Claude Code honours the hooks.
+2. Smoke test in a real session: start a new Claude Code session and ask Claude to run
+   `git log -p -n 300` in any repository with a long history. If the output is at least 2000
+   estimated tokens and token-sparen chose to trim it, the result ends with a
+   `[token-sparen: kept ... · full output: ...]` marker (see
+   [Recovering trimmed output](#recovering-trimmed-output)), and `/token-sparen` then shows a
+   non-zero trim count. A new project starts with light trimming and a small share of outputs is
+   always kept whole, so if you see no marker the first time, repeat it with another large diff or
+   test run. If you never see one, check the Claude Code version above.
 
 ## What changes in your session
 
@@ -76,13 +92,14 @@ All of this is on by default. Nothing is sent anywhere.
   ```
 
   File-content detection is best effort: an unusual binary or wrapper may slip through, and
-  scripts you run (`./x.sh`, `bash x.sh`) are not inspected. To rule
-  out trimming entirely, set `[learn.hold] compression = true` (keeps compression at its safe
-  arm) or launch with `TOKEN_SPAREN_DISABLE=1` (every hook a no-op).
+  scripts you run (`./x.sh`, `bash x.sh`) are not inspected. To stop all trimming, see
+  [Turning it off](#turning-it-off).
 
   Quality warning: the agent usually goes on to use a file's contents (to edit or quote it), so
   trimming them often costs a recovery read and can cost answer quality; on the maintainer's own
-  sessions it saved little once those re-reads were counted.
+  sessions it saved little once those re-reads were counted. You can check this on your own
+  sessions with `token-sparen replay --policy static` against `--policy default` (see
+  [Measuring it on your own sessions](#measuring-it-on-your-own-sessions-offline-private)).
 - **Never larger.** The replacement is used only if it is no longer than what the model would
   have seen anyway and saves at least 15 % of it; otherwise the output is left untouched.
 - **What is never touched.** Results below 2000 tokens (a lower `min_tokens` in config is
@@ -101,8 +118,12 @@ All of this is on by default. Nothing is sent anywhere.
 
   A command that cannot be parsed is never blocked. Turn guards off with `guards.enabled = false`.
 - **Read de-duplication.** Re-reading an unchanged file that is still in context (within 8 turns,
-  not compacted since) returns a short pointer, `[token-sparen: unchanged since turn N ...]`,
-  instead of the file again.
+  not compacted since, and of at least 2000 estimated tokens) returns a short pointer,
+  `[token-sparen: unchanged since turn N ...]`, instead of the file again. This is not covered
+  by `trim_file_contents`: it replaces a repeat of something the model already has, not the first
+  read. It is a learned decision like compression (a small share of re-reads always returns the
+  full file; with learning off it always returns the pointer). Turn it off with
+  `read_dedupe.enabled = false`, or hold it with `[learn.hold] read_dedupe = true`.
 - **Notices (terminal only, no model tokens).** Budget notices when your session passes 50 % and
   80 % of the configured token budget (default 500M billed context tokens), context-window notices at 60 % and 80 %, and at most an
   occasional "this looks like a new task, consider `/compact`" hint when context is fairly full.
@@ -131,13 +152,18 @@ A trimmed result ends with a marker:
 
 ## Turning it off
 
-| Scope | How |
+| To stop | How |
 |---|---|
-| Everywhere | `TOKEN_SPAREN_DISABLE=1` (every hook becomes a no-op). It must be in the environment Claude Code is **launched** from; setting it in a running session's shell is too late |
-| This session | `/token-sparen disable` (and `/token-sparen enable`), or `token-sparen session disable` (with no `--session` it acts on this project's most recently active session, if active in the last 6 hours; otherwise pass `--session ID`) |
-| The plugin | `claude plugin disable token-sparen` (and `claude plugin enable token-sparen`) |
-| One mechanism | `guards.enabled`, `read_dedupe.enabled`, `governor.enabled`, `boundary.enabled` or `subagent.enabled` set to `false`. There is no `compression.enabled`: turn compression off with one of the first three rows |
+| Everything | `TOKEN_SPAREN_DISABLE=1` (every hook becomes a no-op; any of `1`, `true`, `yes`, `on`). It must be in the environment Claude Code is **launched** from; setting it in a running session's shell is too late. Or `claude plugin disable token-sparen` (and `claude plugin enable token-sparen`) |
+| Everything, this session only | `/token-sparen disable` (and `/token-sparen enable`), or `token-sparen session disable` (with no `--session` it acts on this project's most recently active session, if active in the last 6 hours; otherwise pass `--session ID`) |
+| All trimming of tool output | `[learn.hold] compression = true` in `~/.token-sparen/config.toml` (any truthy spelling: `true`, `1`, `yes`, `on`). It keeps compression and the learned pre-trim at their safe arm, whether learning is on or off, so nothing is trimmed. For one session only: `token-sparen config set learn.hold.compression true`. A project's `token-sparen.toml` may set it too. Config-only alternative: `[compression] allow_ctypes = []` (no content type may be trimmed). Guards and read de-duplication stay on |
+| Read pointers only | `[learn.hold] read_dedupe = true` or `read_dedupe.enabled = false` |
+| Blocking, notices, other mechanisms | `guards.enabled`, `governor.enabled`, `boundary.enabled` or `subagent.enabled` set to `false` |
 | Uninstall | `claude plugin uninstall token-sparen@token-sparen`; run `token-sparen statusline uninstall` first if you installed the statusline |
+
+There is no `compression.enabled` key; use the hold or `allow_ctypes` row above. Setting
+`[learn] enabled = false` does **not** stop trimming: it falls back to fixed defaults (standard
+compression), which trims more than a cold learner does.
 
 Uninstalling leaves `~/.token-sparen/` and each project's `.token-sparen/` in place; both are safe
 to delete.
@@ -153,10 +179,13 @@ Everything stays on your machine, but some of it is plain text you should know a
   - `config.toml` (yours, optional), `trusted_extensions.json`, `statusline_install.json` (records
     your settings file's path and original `statusLine`), `statusline.sh` (launcher copy),
     `windows.json` (context window per session), `project_keys.json` (index from project to hash
-    key);
+    key), `config_safety_warned.json` (which ignored project-config values were already reported:
+    a short hash of the project path, the key and the value);
   - `logs/errors.jsonl` and sampled `logs/latency.jsonl`;
+  - small `<file>.lock` files next to the JSON files above, used for file locking;
   - `projects/<key>/`: `decisions.jsonl` (per-decision log; keeps the first 500 characters of Bash
-    commands), `sessions/<id>.json` (session overlay: the **last user prompt, up to 2000
+    commands, and for each trim an outcome line with its settled regret value and signal; it is
+    rotated to `decisions.jsonl.1` past 20 MB, which outcome lines make happen sooner), `sessions/<id>.json` (session overlay: the **last user prompt, up to 2000
     characters**, recently read/edited **file paths**, the last 10 tool categories (for the
     learning engine's task phase), identifiers used for task-boundary
     detection, the token ledger and read de-dupe memory, and the session's learned evidence, bucket
@@ -192,7 +221,8 @@ ours is appended after it. Only `statusLine` is touched; a settings file that is
 refused. `token-sparen statusline uninstall` restores your original `statusLine` exactly (or removes
 the key) and leaves every other setting alone. Not supported on Windows yet.
 
-Example (colours on a terminal; `NO_COLOR` or `statusline.ascii = true` simplify it):
+Illustrative example (the numbers are made up; colours on a terminal, `NO_COLOR` or
+`statusline.ascii = true` simplify it):
 
 ```
 ⛁ ts 42% ctx │ burn 48M/500M 10% │ +2.4k/turn │ saved 31.2k (≈$0.84) │ ✂ 12 ↺ 1 │ learn: cold
@@ -249,7 +279,7 @@ session); anything else is ignored and logged once.
 | `compression.min_tokens` | 2000 | outputs below this are never modified (floor) |
 | `compression.min_saving_ratio` | 0.15 | minimum share saved for a replacement to be used |
 | `compression.skip_tools` | edit tools, TodoWrite, ... | tools whose output is never compressed |
-| `compression.allow_ctypes` | diff, search, test_report, compiler, build_log, json, pplx, log | content types that may be trimmed (add `text`, `table`, `stacktrace` to widen) |
+| `compression.allow_ctypes` | diff, search, test_report, compiler, build_log, json, pplx, log | content types that may be trimmed (add `text`, `table`, `stacktrace` to widen; `[]` trims nothing) |
 | `compression.trim_file_contents` | false | also trim file contents (Read, `cat`, `head`, ...); see the quality warning above |
 | `guards.enabled` | true | block the unbounded commands listed above |
 | `guards.max_read_bytes` | 5000000 | size limit for `cat`/Read without a range |
@@ -260,7 +290,9 @@ session); anything else is ignored and logged once.
 | `governor.hard_stop` | false | deny context-adding tools at 100 % of the budget |
 | `boundary.enabled` | true | suggest `/compact` at task boundaries |
 | `subagent.enabled` | true | subagent brief decision point (its default arm is off) |
-| `learn.enabled` | true | learn how strongly to trim; `false` uses the fixed defaults (user config, env or `config set` only) |
+| `learn.enabled` | true | learn how strongly to trim; `false` uses the fixed defaults, which trim more than a cold learner (user config, env or `config set` only) |
+| `learn.hold.compression` | false | `true` stops all trimming of tool output (see [Turning it off](#turning-it-off)) |
+| `learn.hold.read_dedupe` | false | `true` stops read pointers |
 | `statusline.segments` | all six | which segments to show |
 | `statusline.ascii`, `statusline.color` | false, true | plain glyphs; colours |
 | `recovery.ttl_days`, `max_files`, `max_bytes` | 14, 200, 100 MB | recovery file retention |
@@ -309,32 +341,46 @@ constraint: it never trades quality for tokens in a weighted sum. Each trim is w
 it hurt (the agent reading the saved full output, re-running the command, asking for trimmed
 content); a trimming level is used only while its plausible regret stays under a target (5 % for
 compression). A new project starts with the lightest level and unlocks stronger ones one at a time
-only after the previous one has been observed enough without regret, so early sessions trim less
-than later ones. A small share of decisions always keeps the output untouched, as a baseline. The
+only after the previous one has been observed at least 20 times with a low regret estimate
+(experience from your other projects counts toward that, so a new project may unlock stronger
+levels sooner), so early sessions trim less than later ones. A small share of decisions always keeps the output untouched, as a baseline. The
 subagent brief stays off (it is not learned until a benchmark shows it does not hurt quality).
-Turn learning off with `[learn] enabled = false` (fixed defaults: standard compression, read
-de-dupe pointers). A project's `token-sparen.toml` can only make learning more careful (see [What a
-project file may change](#configuration)); it cannot turn learning off (that would fall back to
-the fixed standard compression), so a project that wants less trimming sets
+`[learn] enabled = false` switches learning off, but that is not a way to trim less: it uses fixed
+defaults (standard compression, read de-dupe pointers), which trim more than a cold learner. To
+trim nothing, use the hold in [Turning it off](#turning-it-off). A project's `token-sparen.toml`
+can only make learning more careful (see [What a project file may change](#configuration)); it
+cannot turn learning off, so a project that wants less trimming sets
 `[learn.hold] compression = true`. When a session ends, a background `token-sparen fold` merges what the session learned into the
 project (and, weighted 0.3, into a cross-project global store that forgets after 90 idle days);
 sessions it missed are folded at the next session start. A circuit breaker pauses a decision point
 for the project for 3 sessions when the learner's recent trims clearly caused re-reads at more than
 twice the target rate, and tells you once. Repo-fact injection and tool pruning are planned for M3; `prune` and
-`facts` CLI commands are placeholders.
+`facts` CLI commands are placeholders. The starting values of the learner's priors are hand-set
+for now.
 
 ### Measuring it on your own sessions (offline, private)
 
-`token-sparen replay <transcript files or dirs> --policy default|static|engine|<arm> --out <file>`
+`token-sparen replay <transcript files or dirs> --policy default|static|engine|<arm>[,...] --out <file>`
 replays your past Claude Code transcripts through the same compression path the hook uses
 (nothing is saved or learned; `default` and `engine` apply the quality gate above, `static` and
 an arm name replay every eligible output) and estimates tokens removed, projected re-sends until the next compaction,
 cache-aware cost-weighted savings and a proxy regret rate (the agent later used distinctive words
-that only the trimmed part contained). `--split dev|test|all` and `--cutoff YYYY-MM-DD` split
-sessions by date. `token-sparen ope --log <decisions.jsonl...> --target static|engine-snapshot
---out <file>` estimates how another policy would have done on your logged decisions (IPS,
-self-normalised IPS, doubly robust, with bootstrap intervals, clipped importance weights and the
-share of the target's choices the log cannot support). Both read only what you point them at,
+that only the trimmed part contained). `--policy` takes a comma-separated list to compare several
+policies in one pass; `--split dev|test|all` and `--cutoff YYYY-MM-DD` split sessions by date;
+`--seed` fixes the engine policy's sampling.
+
+`token-sparen ope --log <decisions.jsonl...> --target static|engine-snapshot --out <file>`
+estimates how another policy would have done on your logged decisions (IPS, self-normalised IPS,
+doubly robust, with bootstrap intervals, clipped importance weights and the share of the target's
+choices the log cannot support). Options: `--n-boot`, `--seed` and `--holdout-after YYYY-MM-DD`
+(evaluate only decisions logged on or after that date). Savings and regret are estimated
+separately, and the report gives a verdict on the quality constraint: regret **per trim**, judged
+pessimistically (an unsettled trim counts as regret), must stay under the target. The verdict is
+`constraint_ok` true or false, or null with status `insufficient` when the log is too small or
+too weak (fewer than 60 logged trims, outcomes missing for too many trims, or too much of the
+target's trimming that the log never tried). Pass every log file of the project, including the
+rotated `decisions.jsonl.1`, so a decision and its outcome are found together. Logs live in
+`~/.token-sparen/projects/<key>/`; `project_keys.json` maps a project to its `<key>`. Both read only what you point them at,
 print aggregate numbers only (no paths, ids or text), and write a JSON report with mode 0600; the
 report path must be outside any git work tree, so a report can never be committed by accident. (On Windows file modes do not apply: keep the report inside your user profile, whose
 default permissions are private to you.)
