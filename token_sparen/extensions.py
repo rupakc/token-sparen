@@ -69,8 +69,9 @@ PREVIEW_LINES = 40
 OVERRIDE_ENV = "TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE"
 _MANIFEST_KEYS = frozenset({"compressors", "decision_points", "signals"})
 _API_KEY = "api"
-_API_RE = re.compile(r"(\d+)(?:\.(?:\d+|x))?")
-_API_MAJOR = EXTENSION_API_VERSION.split(".", 1)[0]
+_API_RE = re.compile(r"(\d+)(?:\.(?:(\d+)|x))?")
+_API_MAJOR, _API_MINOR_TEXT = EXTENSION_API_VERSION.split(".", 1)
+_API_MINOR = int(_API_MINOR_TEXT)
 _SHA_RE = re.compile(r"[0-9a-f]{64}")
 
 __all__ = [
@@ -80,6 +81,7 @@ __all__ = [
     "UnsafeFile",
     "api_compatible",
     "discover",
+    "entry_point_api_status",
     "entry_point_listing",
     "load_extensions",
     "preview",
@@ -157,17 +159,22 @@ def _read_checked(path: Path) -> bytes:
 
 
 def api_compatible(declared: Any) -> tuple[bool, str]:
-    """(compatible, reason) for a declared ``api`` value; undeclared counts as compatible."""
+    """(compatible, reason) for a declared ``api`` value; undeclared counts as compatible.
+
+    Compatible = same major and a minor no newer than the host's (``"1.x"`` means any 1.y).
+    """
     if declared is None:
         return True, ""
-    want = f"{_API_MAJOR}.x"
+    host = EXTENSION_API_VERSION
     if not isinstance(declared, str):
-        return False, f"api {declared!r} is not a string (needs {want})"
-    m = _API_RE.fullmatch(declared.strip())
+        return False, f"api {declared!r} unreadable (host {host})"
+    text = declared.strip()
+    m = _API_RE.fullmatch(text)
     if m is None:
-        return False, f"api {declared!r} unreadable (needs {want})"
-    if m.group(1) != _API_MAJOR:
-        return False, f"api {declared.strip()} (needs {want})"
+        return False, f"api {declared!r} unreadable (host {host})"
+    minor = m.group(2)
+    if m.group(1) != _API_MAJOR or (minor is not None and int(minor) > _API_MINOR):
+        return False, f"requires api {text} (host {host})"
     return True, ""
 
 
@@ -548,16 +555,49 @@ def reset() -> None:
     _CACHE.clear()
 
 
-def entry_point_listing() -> list[tuple[str, str, str]]:
-    """``(group, name, value)`` for every installed entry point. Loads nothing."""
-    out: list[tuple[str, str, str]] = []
+def entry_point_api_status(ep: Any) -> str:
+    """The entry point's declared api, read from its installed source file without importing.
+
+    Uses the distribution's file list (``ep.dist.files``) to find the module; anything not
+    determinable that way is ``api unknown (checked at load)``.
+    """
+    unknown = "api unknown (checked at load)"
+    module = str(getattr(ep, "value", "")).split(":", 1)[0].strip()
+    dist = getattr(ep, "dist", None)
+    files = getattr(dist, "files", None)
+    if not module or dist is None or not files:
+        return unknown
+    base = module.replace(".", "/")
+    wanted = {f"{base}.py", f"{base}/__init__.py"}
+    try:
+        for f in files:
+            if Path(str(f)).as_posix() in wanted:
+                path = Path(dist.locate_file(f))
+                if path.stat().st_size > MAX_DROPIN_BYTES:
+                    return unknown
+                ok, reason = api_compatible(_literal_api(path.read_bytes()))
+                return "api ok" if ok else reason
+    except Exception:  # noqa: BLE001 - listing is best effort
+        return unknown
+    return unknown
+
+
+def entry_point_listing() -> list[tuple[str, str, str, str]]:
+    """``(group, name, value, api status)`` for every installed entry point. Loads nothing."""
+    out: list[tuple[str, str, str, str]] = []
     for group in GROUPS:
         try:
             eps = list(_entry_points(group))
         except Exception:  # noqa: BLE001 - listing is best effort
             continue
         out.extend(
-            (group, str(getattr(ep, "name", "?")), str(getattr(ep, "value", "?"))) for ep in eps
+            (
+                group,
+                str(getattr(ep, "name", "?")),
+                str(getattr(ep, "value", "?")),
+                entry_point_api_status(ep),
+            )
+            for ep in eps
         )
     return out
 

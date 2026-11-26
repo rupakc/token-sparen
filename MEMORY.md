@@ -390,3 +390,8 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   `Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <sub>:*)`; everything else goes through
   the normal permission prompt (the body says so). `stats` runs only when the user explicitly
   typed `/token-sparen`, not when the skill is auto-loaded for a question.
+- **Extension api: newer minor rejected; entry-point status listed** (refines the C6 entry):
+  compatible = same major and minor <= host minor (`"1.x"` = any 1.y); `"1.5"` on host `1.0` is
+  skipped as `requires api 1.5 (host 1.0)`. `extensions list` shows an entry point's api status
+  read with `ast` from the distribution's installed source file (`ep.dist.files`, no import);
+  if that is not determinable it shows `api unknown (checked at load)`.

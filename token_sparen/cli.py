@@ -611,9 +611,9 @@ def _extensions_list(args: argparse.Namespace) -> int:
     for d in dropins:
         sha = d.sha256[:12] if d.sha256 else "-"
         print(f"{d.status:<24} {sha:<12} {extensions.printable(str(d.path))}")
-    for group, name, value in eps:
+    for group, name, value, api in eps:
         text = extensions.printable(f"{name} = {value}")
-        print(f"{'entry-point':<24} {group:<31} {text}")
+        print(f"{'entry-point':<24} {group:<31} {text}  [{api}]")
     return 0
 
 

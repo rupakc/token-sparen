@@ -836,6 +836,8 @@ def test_extension_api_version_constant() -> None:
         ("1.x", True),
         ("1.0", True),
         ("1", True),
+        ("1.5", False),  # newer minor than the host supports
+        ("1.x.2", False),
         ("2.0", False),
         ("0.9", False),
         ("x.1", False),
@@ -868,18 +870,15 @@ def test_dropin_with_incompatible_api_is_skipped(
     loaded = _load(env)
     statuses = {d.path.name: d.status for d in loaded.dropins}
     assert statuses["a_good.py"] == "trusted"
-    assert statuses["b_future.py"].startswith("skipped:api")
+    assert statuses["b_future.py"] == "skipped:requires api 2.0 (host 1.0)"
     assert loaded.compressor_for("table").compress("x\ny", LEVEL, CTX).text == "g"
-    assert (
-        isinstance(loaded.compressor_for("log"), TextCompressor)
-        or loaded.compressor_for("log").name != "first-line"
-    )
+    assert loaded.compressor_for("log").name != "first-line"
     assert not bad_sentinel.exists()  # never executed
     extensions.reset()
     assert main(["extensions", "list"]) == 0
     out = capsys.readouterr().out
     line = next(ln for ln in out.splitlines() if "b_future.py" in ln)
-    assert "api 2.0" in line and "1.x" in line
+    assert "requires api 2.0" in line
 
 
 def test_dynamic_incompatible_api_disabled_at_import(env: dict[str, str]) -> None:
@@ -913,3 +912,47 @@ def test_entry_point_incompatible_api_skipped(
     monkeypatch.setattr(extensions, "_entry_points", lambda group: groups.get(group, []))
     assert _load(env).signals() == [current_signal]
     assert any("future" in e["error"] and "2.1" in e["error"] for e in _logged(env))
+
+
+def test_newer_minor_api_reason() -> None:
+    assert extensions.api_compatible("1.5") == (False, "requires api 1.5 (host 1.0)")
+
+
+class _Dist:
+    def __init__(self, root: Path, files: list[str]) -> None:
+        self._root = root
+        self.files = [Path(f) for f in files]
+
+    def locate_file(self, f: Any) -> Path:
+        return self._root / f
+
+
+def test_entry_point_api_status_from_metadata(
+    env: dict[str, str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    site = tmp_path / "site"
+    (site / "newpkg").mkdir(parents=True)
+    sentinel = tmp_path / "newpkg.imported"
+    (site / "newpkg" / "comp.py").write_text(
+        f"open({sentinel.as_posix()!r}, 'w').close()\n"
+        "TOKEN_SPAREN_EXTENSION = {'api': '1.5'}\nclass C: pass\n",
+        encoding="utf-8",
+    )
+    (site / "okpkg.py").write_text("TOKEN_SPAREN_EXTENSION = {'api': '1.x'}\n", encoding="utf-8")
+    new = _EPObj("new", None, "newpkg.comp:C")
+    new.dist = _Dist(site, ["newpkg/__init__.py", "newpkg/comp.py"])  # type: ignore[attr-defined]
+    ok = _EPObj("ok", None, "okpkg:C")
+    ok.dist = _Dist(site, ["okpkg.py"])  # type: ignore[attr-defined]
+    nodist = _EPObj("mystery", None, "gone.mod:C")
+    groups = {"token_sparen.compressors": [new, ok, nodist]}
+    monkeypatch.setattr(extensions, "_entry_points", lambda group: groups.get(group, []))
+    assert main(["extensions", "list"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    line = {name: next(ln for ln in out if name in ln) for name in ("new", "okpkg", "mystery")}
+    assert "requires api 1.5" in line["new"]
+    assert "api ok" in line["okpkg"]
+    assert "unknown (checked at load)" in line["mystery"]
+    assert not sentinel.exists()  # listing imports nothing
