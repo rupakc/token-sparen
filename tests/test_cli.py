@@ -253,7 +253,7 @@ def test_doctor_pip_only_install_skips_plugin_checks(
     assert "skipped (pip-only install" in out and "✗" not in out
 
 
-def test_check_wheel_script_importable() -> None:
+def test_check_wheel_script_covers_data_and_run() -> None:
     text = (ROOT / "scripts" / "check_wheel.py").read_text(encoding="utf-8")
     assert "token_sparen/params/defaults.toml" in text and "seq" in text
 

@@ -5,6 +5,7 @@ Run from the repository root: ``python scripts/check_wheel.py`` (needs ``pip ins
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -17,15 +18,17 @@ ROOT = Path(__file__).resolve().parent.parent
 REQUIRED_FILES = ("token_sparen/params/defaults.toml", "token_sparen/__main__.py")
 
 
-def _run(argv: list[str], cwd: Path, **kw: object) -> subprocess.CompletedProcess[str]:
+def _run(argv: list[str], cwd: Path, home: Path) -> subprocess.CompletedProcess[str]:
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env["TOKEN_SPAREN_HOME"] = str(home)
     proc = subprocess.run(  # noqa: S603
         argv,
         cwd=cwd,
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
         check=False,
-        **kw,  # type: ignore[call-overload]
     )
     if proc.returncode != 0:
         sys.exit(f"FAIL {' '.join(argv)}\n{proc.stdout}\n{proc.stderr}")
@@ -44,7 +47,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="token-sparen-wheel-") as tmp_s:
         tmp = Path(tmp_s)
         dist = tmp / "dist"
-        _run([sys.executable, "-m", "build", "--wheel", "--outdir", str(dist), str(ROOT)], tmp)
+        home = tmp / "home"
+        home = tmp / "home"
+        _run(
+            [sys.executable, "-m", "build", "--wheel", "--outdir", str(dist), str(ROOT)], tmp, home
+        )
         (wheel,) = dist.glob("*.whl")
         names = set(zipfile.ZipFile(wheel).namelist())
         missing = [f"{d}/__init__.py" for d in _subpackages() if f"{d}/__init__.py" not in names]
@@ -55,14 +62,14 @@ def main() -> int:
         env_dir = tmp / "venv"
         venv.EnvBuilder(with_pip=True).create(env_dir)
         bindir = env_dir / ("Scripts" if sys.platform == "win32" else "bin")
-        _run([str(bindir / "python"), "-m", "pip", "install", "-q", str(wheel)], tmp)
+        _run([str(bindir / "python"), "-m", "pip", "install", "-q", str(wheel)], tmp, home)
         work = tmp / "work"  # outside the checkout: the repo must not be on sys.path
         work.mkdir()
         exe = str(bindir / "token-sparen")
-        print("ok", _run([exe, "--version"], work).stdout.strip())
-        _run([exe, "stats", "--json"], work)
+        print("ok", _run([exe, "--version"], work, home).stdout.strip())
+        _run([exe, "stats", "--json"], work, home)
         print("ok stats --json")
-        out = _run([exe, "run", "--", "seq", "1", "5000"], work).stdout
+        out = _run([exe, "run", "--", "seq", "1", "5000"], work, home).stdout
         saved = list((work / ".token-sparen" / "outputs").glob("*.txt"))
         shown = re.search(r"token-sparen show ([0-9a-f]{12})", out)
         if len(saved) != 1 or not shown or saved[0].stem != shown.group(1):

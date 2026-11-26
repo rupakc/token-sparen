@@ -86,16 +86,15 @@ def _project_dir(args: argparse.Namespace) -> Path:
 
 
 def _emit(text: str) -> None:
-    """Write text to stdout as UTF-8, whatever the console encoding (surrogateescape kept)."""
-    try:
+    """Write text to stdout byte-exact as UTF-8 (surrogateescape), bypassing newline translation."""
+    sys.stdout.flush()  # keep order with anything the text layer already wrote
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is None:
         sys.stdout.write(text)
         sys.stdout.flush()
-    except UnicodeEncodeError:
-        buffer = getattr(sys.stdout, "buffer", None)
-        if buffer is None:
-            raise
-        buffer.write(text.encode("utf-8", errors="surrogateescape"))
-        buffer.flush()
+        return
+    buffer.write(text.encode("utf-8", errors="surrogateescape"))
+    buffer.flush()
 
 
 def _show(args: argparse.Namespace) -> int:
