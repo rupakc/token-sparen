@@ -339,18 +339,29 @@ def _elided(full: str, kept: str) -> str:
     return "\n".join(lines)
 
 
-def distinctive_tokens(full: str, kept: str, exclude: str = "") -> list[str]:
+def distinctive_tokens(
+    full: str, kept: str, exclude: str = "", skip: Callable[[str], bool] | None = None
+) -> list[str]:
     """Up to 64 distinctive tokens of the elided span: 8+ characters of ``[A-Za-z0-9_./-]`` with
     a letter, absent from the kept text and from ``exclude`` (the command), spread over the span.
+    ``skip`` drops further tokens *before* the 64 are sampled (offline replay: tokens already in
+    the context, common words).
     """
-    return _span_tokens(_elided(full, kept), kept, exclude)
+    return _span_tokens(_elided(full, kept), kept, exclude, skip)
 
 
-def _span_tokens(span: str, kept: str, exclude: str) -> list[str]:
+def iter_tokens(text: str) -> Iterator[str]:
+    """The distinctive-token candidates of ``text`` (8+ characters with a letter)."""
+    return _tokens(text)
+
+
+def _span_tokens(
+    span: str, kept: str, exclude: str, skip: Callable[[str], bool] | None = None
+) -> list[str]:
     banned = set(_tokens(kept)) | set(_tokens(exclude))
     seen: dict[str, None] = {}
     for tok in _tokens(span):
-        if tok not in banned and tok not in seen:
+        if tok not in banned and tok not in seen and (skip is None or not skip(tok)):
             seen[tok] = None
             if len(seen) >= 64 * MAX_TOKENS:
                 break

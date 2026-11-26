@@ -29,11 +29,13 @@ def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
-def big_output(seed: int = 7, at: int = 200) -> str:
+def big_output(seed: int = 7, at: int = 200, extra: dict[int, str] | None = None) -> str:
     """~4300 estimated tokens of varied lines; the markers sit in the elided middle."""
     rng = random.Random(seed)
     lines = [" ".join(rng.choice(_WORDS) for _ in range(8)) for _ in range(400)]
     lines[at] = f"note {MARKERS[0]} linked with {MARKERS[1]} and {MARKERS[2]}"
+    for i, text in (extra or {}).items():
+        lines[i] = text
     return "\n".join(lines)
 
 
@@ -75,7 +77,9 @@ class Session:
         if text is not None:
             content.append({"type": "text", "text": text})
         if tool is not None:
-            content.append({"type": "tool_use", "id": tool[0], "name": tool[1], "input": tool[2]})
+            tid = f"{self.sid}:{tool[0]}"  # ids are unique across sessions, as in real transcripts
+            content.append({"type": "tool_use", "id": tid, "name": tool[1], "input": tool[2]})
+        mid = f"{self.sid}:{mid}"
         usage = {
             "input_tokens": 10,
             "cache_creation_input_tokens": 100,
@@ -101,7 +105,11 @@ class Session:
         is_error: bool = False,
         sidechain: bool = False,
     ) -> Session:
-        block: dict[str, Any] = {"type": "tool_result", "tool_use_id": tid, "content": text}
+        block: dict[str, Any] = {
+            "type": "tool_result",
+            "tool_use_id": f"{self.sid}:{tid}",
+            "content": text,
+        }
         if is_error:
             block["is_error"] = True
         rec = self._base(
@@ -273,7 +281,8 @@ def test_watch_window_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(replay, "MAX_WATCHED", 2)
     s = Session().prompt()
     for i in range(4):
-        s.call(f"m{i}", tool=_bash(f"t{i}")).result(f"t{i}", big_output(seed=i))
+        cmd = (f"t{i}", "Bash", {"command": f"make step{i}"})  # distinct: no re-run regret
+        s.call(f"m{i}", tool=cmd).result(f"t{i}", big_output(seed=i))
     s.call("end", text=f"{MARKERS[0]} {MARKERS[1]}")
     rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
     assert rep.trimmed == 4
@@ -440,13 +449,14 @@ def test_cli_rejects_bad_cutoff_and_policy(
     assert not Path(out).exists()
 
 
-def test_edit_inputs_are_not_regret(tmp_path: Path) -> None:
-    """As the live detector: an edit's input repeats code the agent is changing, not a lookup."""
-    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
-    edit = {"file_path": "a.py", "old_string": MARKERS[0], "new_string": MARKERS[1]}
+def test_edit_inputs_count_when_only_in_span(tmp_path: Path) -> None:
+    """Read -> Edit: an edit quoting text the agent could only have seen in the elided part."""
+    s = Session().prompt().call("m1", tool=("t1", "Read", {"file_path": "/w/notes.txt"}))
+    s.result("t1", big_output(), raw={"type": "text", "file": {"content": big_output()}})
+    edit = {"file_path": "/w/notes.txt", "old_string": f"{MARKERS[0]} {MARKERS[1]}"}
     s.call("m2", tool=("t2", "Edit", edit))
     rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
-    assert rep.trimmed == 1 and rep.proxy_regrets == 0
+    assert rep.trimmed == 1 and rep.proxy_regrets == 1
 
 
 def test_tokens_seen_before_are_not_regret(tmp_path: Path) -> None:
@@ -465,3 +475,99 @@ def test_tokens_seen_again_later_are_not_regret(tmp_path: Path) -> None:
     s.call("m3", text=f"{MARKERS[0]} {MARKERS[1]}")
     rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
     assert rep.trimmed == 1 and rep.proxy_regrets == 0
+
+
+def test_user_prompt_with_elided_tokens_is_partial(tmp_path: Path) -> None:
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    s.prompt(f"what about {MARKERS[0]} and {MARKERS[2]}?").call("m2", text="ok")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.proxy_regrets == pytest.approx(0.5)
+    assert rep.totals["proxy_regret_partial"] == 1 and rep.totals["proxy_regret_full"] == 0
+
+
+def test_partial_then_full_regret_counts_once(tmp_path: Path) -> None:
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    s.prompt(f"what about {MARKERS[0]} and {MARKERS[2]}?")  # partial; span stays watched
+    s.call("m2", tool=_bash("t2"))  # then a re-run: full
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.proxy_regrets == 1 and rep.totals["proxy_regret_full"] == 1
+
+
+def test_rerun_of_same_command_is_regret(tmp_path: Path) -> None:
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    s.call("m2", tool=("t2", "Bash", {"command": "make   sync 2>&1"}))  # same normalised
+    other = Session("o").prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    other.call("m2", tool=("t2", "Bash", {"command": "make check"}))
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.proxy_regrets == 1
+    rep2 = replay.run([other.write(tmp_path / "b.jsonl")], "static", "all", CUTOFF)
+    assert rep2.proxy_regrets == 0
+
+
+def test_tokens_sampled_after_removing_seen(tmp_path: Path) -> None:
+    """100 elided tokens the agent saw before crowd the 64-token sample unless removed first."""
+    seen = [f"seentoken{i:03d}" for i in range(100)]
+    extra = {150 + i: f"row {seen[2 * i]} {seen[2 * i + 1]}" for i in range(50)}
+    extra[260] = f"tail {MARKERS[0]} {MARKERS[1]}"
+    text = big_output(extra={**extra, 200: "plain middle line"})
+    s = Session().prompt().call("m0", tool=("t0", "Grep", {"pattern": "x"}))
+    s.result("t0", " ".join(seen), raw="r")
+    s.call("m1", tool=_bash("t1")).result("t1", text)
+    s.call("m2", text=f"{MARKERS[0]} {MARKERS[1]}")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.trimmed == 1 and rep.proxy_regrets == 1
+
+
+def test_common_words_are_not_distinctive(tmp_path: Path) -> None:
+    text = big_output(extra={200: "configuration successfully initialized everything"})
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", text)
+    s.call("m2", text="The configuration was successfully initialized.")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.trimmed == 1 and rep.proxy_regrets == 0
+
+
+def test_path_and_basename_match_as_one_token(tmp_path: Path) -> None:
+    text = big_output(extra={200: f"see src/deep/quokkafile_x.py near {MARKERS[1]}"})
+    hit = Session().prompt().call("m1", tool=_bash("t1")).result("t1", text)
+    hit.call("m2", text=f"open quokkafile_x.py for {MARKERS[1]}")
+    one = Session("o").prompt().call("m1", tool=_bash("t1")).result("t1", text)
+    one.call("m2", text="src/deep/quokkafile_x.py and quokkafile_x.py")  # one token, twice
+    rep = replay.run([hit.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.proxy_regrets == 1
+    rep2 = replay.run([one.write(tmp_path / "b.jsonl")], "static", "all", CUTOFF)
+    assert rep2.proxy_regrets == 0
+
+
+def test_copied_history_counted_once_across_files(tmp_path: Path) -> None:
+    first = resend_session("a")
+    resumed = Session("a")  # a resumed session copies the earlier records (same ids)
+    resumed.records = [dict(r) for r in first.records]
+    resumed.call("m7", text="new work")
+    paths = [first.write(tmp_path / "a.jsonl"), resumed.write(tmp_path / "b.jsonl")]
+    one = replay.run(paths[:1], "static", "all", CUTOFF)
+    both = replay.run(paths, "static", "all", CUTOFF)
+    assert both.calls == one.calls + 1
+    assert both.trimmed == 1 and both.tokens_removed == one.tokens_removed
+    assert both.tokens_resent_removed == one.tokens_resent_removed
+    assert both.totals["duplicate_results"] == 1
+
+
+def test_new_report_dirs_are_all_0700(tmp_path: Path) -> None:
+    from token_sparen.replay.report import write_private
+
+    out = write_private(tmp_path / "x" / "y" / "z" / "r.json", {"a": 1})
+    for d in (tmp_path / "x", tmp_path / "x" / "y", tmp_path / "x" / "y" / "z"):
+        assert stat.S_IMODE(d.stat().st_mode) == 0o700
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+
+def test_report_states_units_and_caveats(tmp_path: Path) -> None:
+    data = replay.run([resend_session().write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    text = json.dumps(data.to_dict()["heuristics"])
+    assert "estimate" in text and "TTL" in text and "API usage" in text
+
+
+def test_run_id_cap_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(replay, "MAX_RUN_IDS", 2)
+    rep = replay.run([resend_session().write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.totals["ids_capped"] is True and rep.trimmed == 1

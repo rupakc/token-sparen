@@ -8,25 +8,34 @@ policy under test (a ``StaticPolicy`` arm, or a frozen ``Engine`` snapshot: side
 ``Engine.choose``, no pending entries, no rewards, no store writes) and compressed with
 ``compression.pick_candidate`` (the hook's never-larger rule). Nothing is saved.
 
+**Units.** Tokens are estimates (``estimate_tokens``, chars per token by content type), the
+same as the hook books; the baseline is the API's reported usage. Cache TTL is ignored: every
+later call is assumed to read the cache, so a removed token is priced as a cheap cache read rather
+than a re-write after an expiry (conservative).
+
 **Projected re-sends.** A removed token is not sent again on every later API call of the session
 until the next compaction (``transcript.is_compaction``: a ``compact_boundary`` system record or
 an ``isCompactSummary`` user record). ``tokens_resent_removed`` = sum over trims of removed x
-later calls (distinct message ids of the chain) before the next compaction. Cost-weighted
-(``estimate.Prices``): the first later call writes the removed tokens to the prompt cache
-(``cache_write``), every further call reads them (``cache_read``); a result followed by no call
-saves nothing. ``baseline_context_cost`` prices the context of every call the same way (input,
-cache write, cache read; output excluded), so the saved share is comparable.
+later calls (distinct message ids, counted once per run: a resumed session copies its history,
+and copied tool results are not replayed again, ``duplicate_results``) before the next
+compaction. Cost-weighted (``estimate.Prices``): the first later call writes the removed tokens
+to the prompt cache (``cache_write``), every further call reads them (``cache_read``); a result
+followed by no call saves nothing. ``baseline_context_cost`` prices the context of every call the
+same way (input, cache write, cache read; output excluded), so the saved share is comparable.
 
-**Proxy regret.** A trim is regretted when a later assistant text block or non-edit tool input
-of the same session (edit inputs repeat code being changed; the live detector ignores them too)
-contains >= 2 distinctive tokens of its elided span (``regret.distinctive_tokens``: 8+
-characters with a letter, absent from the kept text and the tool input) that are found **only**
-in that span: tokens already in the session's context before the trim (prompts, assistant text,
-tool inputs, the visible text of earlier results; first ``SCAN_CHARS`` of each, up to
-``MAX_SEEN`` digests) are dropped, and tokens that reappear in a later prompt or tool result
-are dropped from the span before they can count. Matched through ``regret.token_digest`` within
-``[learn] regret_window_turns`` user turns. At most ``MAX_WATCHED`` spans are watched (the
-oldest is evicted unregretted, counted in ``evicted``).
+**Proxy regret** (aligned with the live detector where cheap). Per trim, up to 64 distinctive
+tokens of its elided span (``regret.distinctive_tokens``: 8+ characters with a letter, absent
+from the kept text and the tool input), sampled *after* dropping tokens already in the session's
+context (prompts, assistant text, tool inputs, visible result text; first ``SCAN_CHARS`` each, up
+to ``MAX_SEEN`` digests) and common English words (``STOPWORDS``). A path-like token also
+matches by its basename (one token either way). A token that later reappears in a prompt or a
+tool result stops counting (the agent has it from elsewhere). Within ``[learn]
+regret_window_turns`` user turns: a later assistant text block or tool input (edits included:
+Read -> Edit of text only the elided part held) with >= 2 such tokens, or a re-run of the same
+``regret.signature`` (normalised command, same file read), is a full regret (1.0); a user prompt
+with >= 2 is partial (0.5, the span stays watched). A trim keeps its maximum; partials are paid
+at expiry, eviction or the session end. At most ``MAX_WATCHED`` spans are watched (the oldest is
+evicted and paid, counted in ``evicted``). ``proxy_regrets`` is the sum of values.
 
 **Memory.** One record at a time; per session only counters, the last prompt (<= 2000 chars),
 recent tool categories and paths, and the watched spans' digests.
@@ -37,9 +46,11 @@ before ``date_cutoff`` are ``dev``, the rest ``test``.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import random
+import re
 import uuid
 from collections import deque
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -76,6 +87,20 @@ RECENT_PATHS = 20
 RECENT_CATS = 10
 MAX_ENGINES = 64
 MAX_SEEN = 500_000  # token digests already in the session's context (no more added beyond)
+MAX_RUN_IDS = 5_000_000  # message / tool-use id digests per run (beyond: no more de-duplication)
+# Common English words of 8+ letters: never distinctive enough to show a lookup.
+STOPWORDS = frozenset(
+    """
+    configuration successfully initialized initializing information available following
+    required function functions parameter parameters returned returning response requests
+    completed complete different directory directories documentation environment everything
+    implementation important including instance language location messages modified necessary
+    original optional possible previous processing properties property received security
+    specified standard statement template together variable variables warnings whatever
+    although continue attribute attributes generated internal external settings finished
+    starting updating undefined deprecated exception exceptions currently actually
+    """.split()
+)
 _PATH_TOOLS = frozenset({"read", "edit"})
 _NULL_OVERLAY = Path(os.devnull)
 SPLITS: tuple[str, ...] = ("dev", "test")
@@ -143,6 +168,8 @@ _CT_FIELDS = (
     "tokens_resent_removed",
     "projected_cost_weighted_saved",
     "proxy_regrets",
+    "proxy_regret_full",
+    "proxy_regret_partial",
     "watched",
 )
 
@@ -155,6 +182,8 @@ class _Acc:
     sessions_failed: int = 0
     calls: int = 0
     tool_results: int = 0
+    duplicate_results: int = 0
+    ids_capped: bool = False
     evicted: int = 0
     baseline_context_cost: float = 0.0
     arms: dict[str, int] = field(default_factory=dict)
@@ -178,6 +207,8 @@ class _Acc:
             "sessions_failed": self.sessions_failed,
             "calls": self.calls,
             "tool_results": self.tool_results,
+            "duplicate_results": self.duplicate_results,
+            "ids_capped": self.ids_capped,
             "eligible": int(self.total("eligible")),
             "trimmed": int(trimmed),
             "tokens_before_eligible": int(self.total("tokens_before")),
@@ -186,7 +217,9 @@ class _Acc:
             "projected_cost_weighted_saved": round(saved, 3),
             "baseline_context_cost": round(self.baseline_context_cost, 3),
             "saved_share_of_context_cost": _ratio(saved, self.baseline_context_cost),
-            "proxy_regrets": int(regrets),
+            "proxy_regrets": round(regrets, 1),
+            "proxy_regret_full": int(self.total("proxy_regret_full")),
+            "proxy_regret_partial": int(self.total("proxy_regret_partial")),
             "proxy_regret_rate": _ratio(regrets, trimmed),
             "watched_spans": int(self.total("watched")),
             "evicted": self.evicted,
@@ -196,13 +229,16 @@ class _Acc:
         return out
 
 
+_FLOAT_FIELDS = frozenset({"projected_cost_weighted_saved", "proxy_regrets"})
+
+
 def _ratio(num: float, den: float) -> float:
     return round(num / den, 6) if den > 0 else 0.0
 
 
 def _ct_row(row: Mapping[str, float]) -> dict[str, Any]:
     out: dict[str, Any] = {
-        k: (round(v, 3) if k == "projected_cost_weighted_saved" else int(v)) for k, v in row.items()
+        k: (round(v, 3) if k in _FLOAT_FIELDS else int(v)) for k, v in row.items()
     }
     out["proxy_regret_rate"] = _ratio(row["proxy_regrets"], row["trimmed"])
     return out
@@ -247,13 +283,20 @@ class ReplayReport:
 
 
 HEURISTICS = {
+    "units": "tokens are estimates (chars per token by content type, as the hook books them); "
+    "baseline_context_cost comes from the API usage the transcripts record",
+    "cache_ttl": "cache TTL ignored: every later call is priced as a cache read of the removed "
+    "tokens (no re-write after expiry), so savings are conservative",
     "resends": "later API calls (distinct message ids, own chain) before the next compaction "
     "(compact_boundary system record or isCompactSummary user record)",
     "cost": "first later call prices removed tokens as cache_write, each further call as "
     "cache_read (estimate.Prices); baseline prices every call's context the same way",
-    "proxy_regret": ">= 2 distinctive tokens found only in the elided span (not in the context "
-    "before the trim, not in a later prompt or tool result) in one later assistant text block or "
-    "non-edit tool input within regret_window_turns user turns",
+    "proxy_regret": "full (1.0): >= 2 distinctive tokens found only in the elided span (not in "
+    "the context before the trim, not in a later prompt or tool result; common words dropped; a "
+    "path also matches by basename) in one later assistant text block or tool input, or a re-run "
+    "of the same signature; partial (0.5): >= 2 in a user prompt; within regret_window_turns "
+    "user turns; sum of values",
+    "dedupe": "message and tool-use ids counted once per run (resumed sessions copy history)",
     "gates": "PostToolUse gates: skip_tools/edit category, recovery reads, Claude Code "
     "replaceable shapes, failed results, 2000-token floor; compression.pick_candidate",
 }
@@ -285,19 +328,75 @@ def session_date(path: Path) -> date:
         return date.min
 
 
+class RunIds:
+    """Ids seen in this run (8-byte digests): message ids (``m:``) and tool-use ids (``t:``)."""
+
+    def __init__(self) -> None:
+        self._ids: set[bytes] = set()
+        self.cap = MAX_RUN_IDS
+        self.capped = False
+
+    def add(self, key: str) -> bool:
+        """Record ``key``; True if it was not seen before in this run."""
+        d = hashlib.blake2b(key.encode("utf-8", "surrogatepass"), digest_size=8).digest()
+        if d in self._ids:
+            return False
+        if len(self._ids) >= self.cap:
+            self.capped = True  # stop growing: later duplicates are counted again
+            return True
+        self._ids.add(d)
+        return True
+
+
+_SEP = re.compile(r"[/\\]")
+
+
+def _variants(token: str) -> Iterator[str]:
+    """A token, plus its basename when it is path-like (and itself distinctive)."""
+    yield token
+    base = _SEP.split(token)[-1]
+    if base != token and len(base) >= 8 and any(c.isalpha() for c in base):
+        yield base
+
+
+def _digests(text: str, limit: int) -> set[str]:
+    """Digests of the distinctive tokens (and path basenames) of ``text[:limit]``."""
+    return {
+        regret.token_digest(v) for t in set(regret.iter_tokens(text[:limit])) for v in _variants(t)
+    }
+
+
 @dataclass
 class _Span:
-    digests: set[str]
+    digests: dict[str, int]  # digest -> token index (a path and its basename are one token)
     ctype: str
     turn: int
+    sig: str  # digest of the producing call's re-run signature
+    best: float = 0.0
+
+    def hits(self, digests: set[str]) -> int:
+        return len({i for d, i in self.digests.items() if d in digests})
+
+    def forget(self, digests: set[str]) -> None:
+        if any(d in digests for d in self.digests):
+            self.digests = {d: i for d, i in self.digests.items() if d not in digests}
 
 
 class _Session:
     """Replays one transcript into the accumulators (totals and its split)."""
 
     def __init__(
-        self, accs: Sequence[_Acc], policy: Policy, cfg: Config, prices: Prices, window: int
+        self,
+        accs: Sequence[_Acc],
+        policy: Policy,
+        cfg: Config,
+        prices: Prices,
+        window: int,
+        run_ids: RunIds | None = None,
+        cwd: str | None = None,
     ) -> None:
+        self.run_ids = run_ids
+        self.cwd = cwd
         self.accs = accs
         self.policy = policy
         self.cfg = cfg
@@ -352,41 +451,65 @@ class _Session:
         self.sent.clear()
         self.awaiting.clear()
 
+    def _settle(self, span: _Span) -> None:
+        """Pay a span's best value (it leaves the watch)."""
+        if span.best >= regret.FULL:
+            self._add(span.ctype, "proxy_regret_full", 1)
+        elif span.best > 0:
+            self._add(span.ctype, "proxy_regret_partial", 1)
+        if span.best > 0:
+            self._add(span.ctype, "proxy_regrets", span.best)
+
+    def _full(self, matched: list[_Span]) -> None:
+        if not matched:
+            return
+        for span in matched:
+            span.best = regret.FULL
+            self._settle(span)
+        gone = {id(span) for span in matched}
+        self.watched = deque(span for span in self.watched if id(span) not in gone)
+
     def _see(self, text: str, *, refresh: bool) -> set[str]:
         """Record ``text`` as visible context; with ``refresh``, its tokens no longer count as
         found only in a watched span (the agent has them from elsewhere now)."""
-        digests = regret.text_digests(text, regret.SCAN_CHARS) if text else set()
+        digests = _digests(text, regret.SCAN_CHARS) if text else set()
         if digests and len(self.seen) < MAX_SEEN:
             self.seen |= digests
         if refresh and digests:
             for span in self.watched:
-                span.digests -= digests
+                span.forget(digests)
         return digests
 
     def on_prompt(self, ev: Prompt) -> None:
+        if self.watched and ev.text:
+            asked = _digests(ev.text, regret.INPUT_SCAN_CHARS)
+            for span in self.watched:
+                if span.hits(asked) >= regret.MIN_TOKEN_HITS:
+                    span.best = max(span.best, regret.PARTIAL)  # stays watched
         self._see(ev.text, refresh=True)
         self.turn = ev.turn
         self.prompt = ev.text[:PROMPT_CHARS]
         if any(self.turn - s.turn > self.window for s in self.watched):
-            self.watched = deque(s for s in self.watched if self.turn - s.turn <= self.window)
+            keep: deque[_Span] = deque()
+            for span in self.watched:
+                if self.turn - span.turn > self.window:
+                    self._settle(span)
+                else:
+                    keep.append(span)
+            self.watched = keep
 
-    def on_said(self, text: str, *, counts: bool = True) -> None:
+    def on_said(self, text: str) -> None:
         if not text:
             return
-        digests = regret.text_digests(text)
+        digests = _digests(text, regret.INPUT_SCAN_CHARS)
         if len(self.seen) < MAX_SEEN:
             self.seen |= digests
-        if not counts or not self.watched:
-            return
-        if len(digests) < regret.MIN_TOKEN_HITS:
-            return
-        keep: deque[_Span] = deque()
-        for span in self.watched:
-            if len(span.digests & digests) >= regret.MIN_TOKEN_HITS:
-                self._add(span.ctype, "proxy_regrets", 1)
-            else:
-                keep.append(span)
-        self.watched = keep
+        if self.watched and len(digests) >= regret.MIN_TOKEN_HITS:
+            self._full([s for s in self.watched if s.hits(digests) >= regret.MIN_TOKEN_HITS])
+
+    def _signature(self, name: str, inp: Mapping[str, Any]) -> str:
+        sig = regret.signature(name, inp, project_dir=self.cwd, cwd=self.cwd)
+        return regret.token_digest(sig)
 
     def on_assistant(self, rec: AssistantRecord) -> None:
         if rec.new_call:
@@ -394,10 +517,23 @@ class _Session:
         for text in rec.texts:
             self.on_said(text)
         for _tid, name, inp in rec.tool_uses:
-            edit = translate.tool_category(name) == "edit"
-            self.on_said(regret.input_text(inp), counts=not edit)
+            if self.watched and translate.tool_category(name) != "edit":
+                sig = self._signature(name, inp)
+                self._full([s for s in self.watched if s.sig == sig])  # a re-run
+            self.on_said(regret.input_text(inp))
+
+    def finish(self) -> None:
+        """Session end: pay every watched span its best value."""
+        for span in self.watched:
+            self._settle(span)
+        self.watched.clear()
 
     def on_result(self, rec: ToolResultRecord) -> None:
+        if self.run_ids is not None and not self.run_ids.add(f"t:{rec.tool_use_id}"):
+            for acc in self.accs:
+                acc.duplicate_results += 1  # copied history of a resumed session
+            self._see(rec.text, refresh=True)
+            return
         for acc in self.accs:
             acc.tool_results += 1
         category = translate.tool_category(rec.tool_name) if rec.tool_name else "other"
@@ -479,14 +615,27 @@ class _Session:
         self._add(ctype, "tokens_removed", removed)
         self.awaiting[ctype] = self.awaiting.get(ctype, 0) + removed
         kept = picked.result.text
-        tokens = regret.distinctive_tokens(text, kept, exclude=regret.input_text(rec.input))
+        seen = self.seen
+
+        def skip(token: str) -> bool:
+            return token.lower() in STOPWORDS or regret.token_digest(token) in seen
+
+        tokens = regret.distinctive_tokens(
+            text, kept, exclude=regret.input_text(rec.input), skip=skip
+        )
         self._see(kept, refresh=True)
-        digests = {regret.token_digest(t) for t in tokens} - self.seen
-        if len(digests) >= regret.MIN_TOKEN_HITS:
+        digests: dict[str, int] = {}
+        for i, token in enumerate(tokens):
+            for v in _variants(token):
+                d = regret.token_digest(v)
+                if d not in self.seen:
+                    digests[d] = i
+        if len(set(digests.values())) >= regret.MIN_TOKEN_HITS:
             self._add(ctype, "watched", 1)
-            self.watched.append(_Span(digests, ctype, self.turn))
+            sig = self._signature(rec.tool_name, rec.input)
+            self.watched.append(_Span(digests, ctype, self.turn, sig))
             while len(self.watched) > MAX_WATCHED:
-                self.watched.popleft()
+                self._settle(self.watched.popleft())
                 for acc in self.accs:
                     acc.evicted += 1
         return True
@@ -510,7 +659,8 @@ def _project_key(cwd: str, cache: dict[str, str]) -> str:
 def _replay_file(path: Path, sess: _Session) -> bool:
     """Stream one transcript; True if it held any event of its chain."""
     seen = False
-    for ev in iter_events(path):
+    is_new = sess.run_ids.add if sess.run_ids is not None else None
+    for ev in iter_events(path, is_new_id=is_new):
         seen = True
         if isinstance(ev, AssistantRecord):
             sess.on_assistant(ev)
@@ -520,6 +670,7 @@ def _replay_file(path: Path, sess: _Session) -> bool:
             sess.on_prompt(ev)
         elif isinstance(ev, Compaction):
             sess.on_compaction()
+    sess.finish()
     return seen
 
 
@@ -549,6 +700,7 @@ def run(
     total = _Acc()
     parts = {s: _Acc() for s in SPLITS if split in ("all", s)}
     keys: dict[str, str] = {}
+    run_ids = RunIds()
     needs_key = isinstance(pol, FrozenEngine)
     with redacted_logs():
         for path in iter_transcripts(transcripts):
@@ -556,9 +708,9 @@ def run(
             if part not in parts:
                 continue
             accs = (total, parts[part])
-            sess = _Session(accs, pol, cfg, prices, window)
+            cwd = _cwd(path)
+            sess = _Session(accs, pol, cfg, prices, window, run_ids, cwd)
             if needs_key:
-                cwd = _cwd(path)
                 sess.project_key = _project_key(cwd, keys) if cwd else "replay"
             try:
                 if _replay_file(path, sess):
@@ -567,6 +719,9 @@ def run(
             except Exception:  # noqa: BLE001 - one bad session never stops the run (no details)
                 for acc in accs:
                     acc.sessions_failed += 1
+    total.ids_capped = run_ids.capped
+    for acc in parts.values():
+        acc.ids_capped = run_ids.capped
     return ReplayReport(
         policy=name,
         split=split,

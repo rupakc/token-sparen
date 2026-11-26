@@ -870,3 +870,25 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   resamples. Synthetic coverage: with rare regret events (x20) small-n percentile intervals
   under-cover (31/50 at n = 200), so the unbiasedness test uses n = 1000 (46/50); bias over 400
   seeds is within one standard error.
+
+## 2026-11-26 Task 24 review round 1 (controller rulings)
+- E1 baseline exists privately (owner's machine); not recorded in the repo.
+- SNIPS is reported **conditional on support**: normalised over fully supported decisions only
+  (`rows`); a deterministic logger's row where the target also puts mass elsewhere is left out
+  (before, SNIPS filled that mass with the supported rows' value). `ope --holdout-after
+  YYYY-MM-DD` evaluates only later decisions (engine-snapshot on its own training logs is
+  in-sample); report `notes` state units, the support caveat (a lower bound for stochastic
+  loggers) and missing regret. An `EngineTarget` with `[learn] enabled = false` is the static
+  policy. Every report directory the writer creates is 0700.
+- Proxy regret (supersedes the Task 24 entry's rule): edit inputs count again (the only-in-span
+  filter already drops text the agent saw elsewhere, so Read -> Edit of elided text is caught);
+  the 64 span tokens are sampled after dropping seen tokens and ~60 common 8+ letter English words
+  (`replay.STOPWORDS`); path-like tokens match by path or basename (one token); a user prompt
+  with >= 2 tokens is partial 0.5 (span stays watched); a re-run of the same `regret.signature`
+  (non-edit tool) is full 1.0. A trim keeps its max; partials are paid at expiry, eviction or
+  session end; `proxy_regrets` is the sum of values (`proxy_regret_full` / `_partial` counts).
+- Message and tool-use ids are de-duplicated across all transcripts of a run (8-byte digests,
+  cap 5 000 000, `ids_capped` in the report): a resumed session's copied history is neither
+  re-sent nor re-trimmed (`duplicate_results`). `transcript.iter_events(..., is_new_id=)`.
+- Report heuristics state units (estimated tokens; baseline from API usage) and that cache TTL
+  is ignored (conservative).

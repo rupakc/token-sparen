@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -252,13 +252,16 @@ def _prompt_text(content: Any) -> str:
     )
 
 
-def iter_events(path: Path, recent_ids: int = 4096) -> Iterator[SessionEvent]:
+def iter_events(
+    path: Path, recent_ids: int = 4096, is_new_id: Callable[[str], bool] | None = None
+) -> Iterator[SessionEvent]:
     """Stream one session's events in file order, for the file's own chain only.
 
     The chain is the ``isSidechain`` value of the first user/assistant record: a subagent
     transcript (all sidechain) replays as its own session, and inline sidechain records of a
     main transcript are skipped. Memory is bounded: open tool uses (``MAX_OPEN_USES``) and the
-    last ``recent_ids`` message ids.
+    last ``recent_ids`` message ids. ``is_new_id`` (records the id, True if unseen) replaces the
+    per-file id memory, e.g. to count a resumed session's copied history only once per run.
     """
     chain: bool | None = None
     uses = _Uses()
@@ -282,11 +285,14 @@ def iter_events(path: Path, recent_ids: int = 4096) -> Iterator[SessionEvent]:
             mid = msg.get("id")
             model = msg.get("model")
             new = False
-            if isinstance(mid, str) and model != SYNTHETIC_MODEL and mid not in seen:
-                seen[mid] = None
-                if len(seen) > recent_ids:
-                    seen.popitem(last=False)
-                new = True
+            if isinstance(mid, str) and model != SYNTHETIC_MODEL:
+                if is_new_id is not None:
+                    new = is_new_id(f"m:{mid}")
+                elif mid not in seen:
+                    seen[mid] = None
+                    if len(seen) > recent_ids:
+                        seen.popitem(last=False)
+                    new = True
             blocks = _blocks(content)
             texts = tuple(
                 b["text"]
