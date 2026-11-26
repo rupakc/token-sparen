@@ -262,7 +262,9 @@ only after the previous one has been observed enough without regret, so early se
 than later ones. A small share of decisions always keeps the output untouched, as a baseline. The
 subagent brief stays off (it is not learned until a benchmark shows it does not hurt quality).
 Turn learning off with `[learn] enabled = false` (fixed defaults: standard compression, read
-de-dupe pointers). When a session ends, a background `token-sparen fold` merges what the session learned into the
+de-dupe pointers). A project's `token-sparen.toml` can only make learning more careful (turn it
+off, lower the regret target, raise the untouched share, hold a decision point); looser values
+there are ignored and logged, so a repository you clone cannot make trimming more aggressive. When a session ends, a background `token-sparen fold` merges what the session learned into the
 project (and, weighted 0.3, into a cross-project global store that forgets after 90 idle days);
 sessions it missed are folded at the next session start. A circuit breaker pauses a decision point
 for the project for 3 sessions when the learner's recent trims clearly caused re-reads at more than

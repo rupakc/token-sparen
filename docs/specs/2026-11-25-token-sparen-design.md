@@ -98,6 +98,19 @@ unknown). §6.7: the subagent brief is decided by the engine but held at `off`
 `token-sparen run` keeps the static policy (no session lifecycle to settle regret or fold).
 A trimming arm that ends as a no-op for any reason (nothing worth trimming, save deadline,
 never-larger check) gets savings 0 and regret 0 at once.
+Review round 1: a project `token-sparen.toml` may only tighten learning safety settings
+(`config.SAFETY`, resolved by `config.safety_param` against defaults + user file + env + session
+overrides): holds only on; opt-in, `extensions.allow_override` and `learn.enabled` only off; tau
+only lower; floor, `ladder_obs`, `breaker_lcb_q`, `breaker_sessions`, `breaker_reentry_scale` only
+higher; `breaker_min_obs`, `breaker_every` only lower; `breaker_window` fixed. Looser project values
+are ignored and logged once. `learn.enabled` is off in any spelling (false, 0, "0", "no", "off").
+Accepted fail-open behaviour: an engine or store error falls back to the static policy (the
+known-good, E2-tested arms) for that hook, and a corrupt `breaker.json` reads as not tripped.
+M4 items: (1) savings reward as the fraction removed (`removed / before`, optionally x
+`min(1, resends / R)`) or the counterfactual `removed / max_removed` over the arms, validated on
+E1 before any change (the p95-normalised value saturates, so trimming arms look alike);
+(2) 1M-context models without the statusline sensor are mis-banded (the governor's window table
+falls back to 200k and `band` reads `unk` once a call exceeds it).
 
 ---
 

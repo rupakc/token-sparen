@@ -698,3 +698,26 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - Hook latency with a large store (~600 compression buckets, 263 KB project + 263 KB global
   posteriors.json, parsed every deciding hook): p50 29 ms / p95 38 ms. Still under 50 ms; store
   size is the next latency lever (compaction or a per-point split) if it grows further.
+
+## 2026-11-26 Task 23 review round 1 (controller rulings)
+- **Project config may only tighten learning safety** (`config.SAFETY`, `config.safety_param`):
+  `Config.trusted` = defaults + user file + env + session overrides (everything but the project
+  file); `load_config` resolves each registered key once (so the engine, hierarchy, breaker and
+  fold all read the resolved value): a project value looser than the trusted one is replaced by it
+  and logged once per (project hash, key, value) via `~/.token-sparen/config_safety_warned.json`.
+  Directions: `learn.hold.*` on; `learn.optin.*`, `learn.enabled`, `extensions.allow_override`
+  off; `learn.tau.*` min; `learn.floor.*`, `ladder_obs`, `breaker_lcb_q`, `breaker_sessions`,
+  `breaker_reentry_scale` max (keeping more of the tripping evidence is safer);
+  `breaker_min_obs`, `breaker_every` min; `breaker_window` fixed (neither direction is uniformly
+  safer). A switch only the project sets must be the safe side; a number with no trusted baseline
+  passes through (readers validate it). Probe before the fix: a project `hold = false` turned the
+  subagent brief on for 32 of 40 calls.
+- `config.flag_off`: false, 0, "0", "no", "false", "off" (any case) -> `learn.enabled` off in both
+  `HookPolicy` and `Engine.enabled`.
+- `TOKEN_SPAREN_TEST_SEED` is honoured only when `TOKEN_SPAREN_HOME` resolves inside
+  `tempfile.gettempdir()` and is not the default root.
+- Accepted: an engine/store error falls back to the static policy (known-good, E2-tested) for that
+  hook; a corrupt `breaker.json` reads as not tripped.
+- M4 items: savings reward as the fraction removed (`removed/before`, optionally x
+  `min(1, resends/R)`) or counterfactual `removed/max_removed`, validated on E1 before changing;
+  1M-window models without the statusline sensor are mis-banded (governor window table).
