@@ -421,43 +421,11 @@ def test_project_override_changes_json_items(tmp_path: Path) -> None:
     assert "… 25 more items" in JsonCompressor().compress(doc, STANDARD, NO_CTX).text
 
 
-def test_json_same_value_elision_golden() -> None:
-    src, want = _golden("json_same")
-    res = JsonCompressor().compress(src, AGGRESSIVE, NO_CTX)
-    assert res.text == want
-    assert res.total_lines == len(json.dumps(json.loads(src), indent=2).split("\n"))
-    assert not res.lossless
-
-
-def test_json_same_value_rules() -> None:
-    first = {"id": 1, "name": "x", "path": "/a", "url": "u", "file": "f", "kind": "widget-type"}
-    items = [first] + [dict(first) for _ in range(3)]
-    items[1]["kind"] = "other-kind"
-    items[2]["flag"] = True
-    items[3] = {**first, "kind": "TypeError: boom"}
-    first["kind2"] = "TypeError: boom"
-    items[3]["kind2"] = "TypeError: boom"
-    out = JsonCompressor().compress(json.dumps(items), LIGHT, NO_CTX).text
-    body = out.split("\n")
-    # never for id/name/path/url/file, never for error-pattern values, never in the first item
-    for key, val in (
-        ("id", "1"),
-        ("name", '"x"'),
-        ("path", '"/a"'),
-        ("url", '"u"'),
-        ("file", '"f"'),
-    ):
-        assert body.count(f'    "{key}": {val},') == 4
-    assert '"kind": "other-kind"' in out  # differing value kept
-    assert out.count('"kind": …same') == 1  # item 2 only; item 3 carries an error (kept whole)
-    assert out.count('"kind2": "TypeError: boom"') == 2
-    assert '"flag": true' in out
-
-
-def test_json_same_only_when_shorter_and_same_type() -> None:
-    items = [{"n": 1, "b": True, "s": "abcdefgh"}, {"n": 1.0, "b": True, "s": "abcdefgh"}]
+def test_json_repeated_values_are_shown_verbatim() -> None:
+    # Ruling (M1 fix round 1): no `…same` elision; a repeated value reads as itself.
+    items = [{"id": i, "role": "maintainer", "team": "platform-infrastructure"} for i in range(4)]
     items += [{"pad": i} for i in range(20)]
-    out = JsonCompressor().compress(json.dumps(items), AGGRESSIVE, NO_CTX).text
-    assert '"n": 1.0' in out  # 1.0 == 1 but a different type: kept
-    assert '"b": true' in out.split('"n": 1.0')[1]  # "true" is not longer than the marker
-    assert '"s": …same' in out
+    out = JsonCompressor().compress(json.dumps(items), LIGHT, NO_CTX).text
+    assert "…same" not in out
+    assert out.count('"team": "platform-infrastructure"') == 4
+    assert out.count('"role": "maintainer"') == 4

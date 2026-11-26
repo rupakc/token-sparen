@@ -372,3 +372,10 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   defaults (typos refused); values parse like env values; the session resolves like `session
   disable`. `extensions.allow_override` still needs the user file or env (a session value alone
   is ignored). The CLI `run`, statusline and other CLI commands do not apply the session layer.
+
+## 2026-11-26 M1 fix wave, round 1 (controller rulings)
+- **Supersedes "JSON same-value elision": dropped.** `…same` reads as "same as the previous
+  item" but meant "same as the first", and an exemption list (id/name/path/url/file) cannot
+  capture every identity-like key; the misreading risk outweighs the saving (quality first).
+  Elision logic, golden and tests reverted; a regression test keeps repeated values verbatim.
+  Spec §6.1 "duplicated-field elision" should be dropped by the docs task.
