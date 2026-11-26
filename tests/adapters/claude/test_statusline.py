@@ -22,7 +22,7 @@ from token_sparen.mechanisms import governor
 from token_sparen.store import keycache, session
 
 ROOT = Path(__file__).resolve().parents[3]
-LAUNCHER = ROOT / "scripts" / "statusline.sh"
+LAUNCHER = ROOT / "token_sparen" / "assets" / "statusline.sh"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 

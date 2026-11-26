@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Mapping
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ from token_sparen.events import ToolCall
 from token_sparen.store import jsonstore, keycache, paths, session
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent  # plugin or source checkout root
-LAUNCHER_TEMPLATE = PACKAGE_ROOT / "scripts" / "statusline.sh"
+LAUNCHER_TEMPLATE = Path(str(resources.files("token_sparen").joinpath("assets", "statusline.sh")))
 _FALLBACK_LINE = "FALLBACK_ROOT=''"
 
 
@@ -576,7 +577,10 @@ def _statusline(args: argparse.Namespace) -> int:
     target: Path = args.settings or settings.settings_path(os.environ)
     if args.action == "install":
         if not LAUNCHER_TEMPLATE.is_file():
-            print("token-sparen: launcher scripts/statusline.sh not found", file=sys.stderr)
+            print(
+                "token-sparen: launcher (token_sparen/assets/statusline.sh) not found",
+                file=sys.stderr,
+            )
             return 1
         try:
             settings.load_settings(target)  # refuse before writing anything (the launcher too)

@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 REQUIRED_FILES = (
     "token_sparen/params/defaults.toml",
+    "token_sparen/assets/statusline.sh",
     "token_sparen/__main__.py",
     "token_sparen/testing/conformance.py",
 )
@@ -88,6 +89,16 @@ def main() -> int:
         if len(saved) != 1 or not shown or saved[0].stem != shown.group(1):
             sys.exit(f"FAIL run did not save a recovery file\n{out[-300:]}")
         print(f"ok run saved {saved[0].name}")
+        settings = tmp / "claude" / "settings.json"
+        settings.parent.mkdir()
+        settings.write_text("{}\n", encoding="utf-8")
+        install = _run([exe, "statusline", "install", "--settings", str(settings)], work, home)
+        if "statusLine" not in settings.read_text(encoding="utf-8"):
+            sys.exit(f"FAIL statusline install did not write settings\n{install.stdout}")
+        _run([exe, "statusline", "uninstall", "--settings", str(settings)], work, home)
+        if "statusLine" in settings.read_text(encoding="utf-8"):
+            sys.exit("FAIL statusline uninstall did not restore settings")
+        print("ok statusline install + uninstall from the wheel")
     return 0
 
 

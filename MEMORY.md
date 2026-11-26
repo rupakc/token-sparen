@@ -397,3 +397,9 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   if that is not determinable it shows `api unknown (checked at load)`.
 - **Layering test resolves relative imports**: `from ..adapters`, `from ...adapters`,
   `from .. import adapters` are resolved against the module's package before the check.
+
+## 2026-11-26 Statusline launcher moved into the package (docs review round 1)
+- `scripts/statusline.sh` moved to `token_sparen/assets/statusline.sh` (package-data) so a
+  non-editable `pip install .` can run `statusline install`; `LAUNCHER_TEMPLATE` resolves it with
+  `importlib.resources`. `scripts/check_wheel.py` now installs and uninstalls the statusline from the
+  wheel venv. Supersedes the launcher path in the Task 20 entry above.

@@ -32,7 +32,7 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-token_sparen = ["params/*.toml"]
+token_sparen = ["params/*.toml", "assets/statusline.sh"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

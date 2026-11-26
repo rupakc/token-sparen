@@ -506,3 +506,22 @@ def test_doctor_reports_min_tokens_below_floor(
     out = capsys.readouterr().out
     line = next(ln for ln in out.splitlines() if "min_tokens" in ln)
     assert line.startswith("!") and "700" in line and "2000" in line
+
+
+def test_launcher_ships_inside_the_package() -> None:
+    import tomllib
+
+    import token_sparen.cli as cli
+
+    assert cli.LAUNCHER_TEMPLATE.is_file()
+    assert cli.LAUNCHER_TEMPLATE.parent.name == "assets"
+    assert cli.LAUNCHER_TEMPLATE.parent.parent.name == "token_sparen"
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data = pyproject["tool"]["setuptools"]["package-data"]["token_sparen"]
+    assert "assets/statusline.sh" in data
+    assert not (ROOT / "scripts" / "statusline.sh").exists()
+
+
+def test_check_wheel_script_installs_the_statusline() -> None:
+    text = (ROOT / "scripts" / "check_wheel.py").read_text(encoding="utf-8")
+    assert "statusline" in text and "--settings" in text and "uninstall" in text
