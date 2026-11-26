@@ -8,7 +8,7 @@ first) come from ``[learn.backoff.<point>] levels`` in the packaged defaults or 
 from __future__ import annotations
 
 import functools
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from token_sparen.config import packaged_defaults
@@ -103,21 +103,27 @@ def for_point(
 
 
 def bucket_key(features: Mapping[str, str], levels: Sequence[str]) -> str:
-    """Canonical ``k=v|k=v`` in ``levels`` order; ``*`` for no keys; a missing value is unk."""
+    """Canonical ``k=v|k=v`` in ``levels`` order; ``*`` for no keys; a missing value is unk.
+
+    A key or value containing ``|`` or ``=`` would make keys ambiguous: ValueError.
+    """
     if not levels:
         return ANY_BUCKET
-    return "|".join(f"{k}={features.get(k, UNKNOWN)}" for k in levels)
+    parts = []
+    for k in levels:
+        v = features.get(k, UNKNOWN)
+        if "|" in k or "=" in k or "|" in v or "=" in v:
+            raise ValueError(f"feature {k!r}={v!r} contains '|' or '='")
+        parts.append(f"{k}={v}")
+    return "|".join(parts)
 
 
-def _valid_levels(value: object) -> list[list[str]] | None:
-    if not isinstance(value, list) or not value:
-        return None
-    out: list[list[str]] = []
-    for level in value:
-        if not isinstance(level, list) or not all(isinstance(k, str) for k in level):
-            return None
-        out.append(list(level))
-    return out
+def _valid_levels(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(lv, list) and all(isinstance(k, str) for k in lv) for lv in value)
+    )
 
 
 @functools.lru_cache(maxsize=1)
@@ -125,18 +131,36 @@ def packaged_params() -> dict[str, Any]:
     return packaged_defaults()
 
 
+def _dig(data: Mapping[str, Any] | None, path: Sequence[str]) -> object:
+    node: object = data
+    for key in path:
+        if not isinstance(node, Mapping):
+            return None
+        node = node.get(key)
+    return node
+
+
+def lookup_param(
+    params: Mapping[str, Any] | None, path: Sequence[str], valid: Callable[[object], bool]
+) -> object:
+    """``path`` in ``params`` (merged config) if valid, else in the packaged defaults, else None."""
+    for data in (params, packaged_params()):
+        value = _dig(data, path)
+        if value is not None and valid(value):
+            return value
+    return None
+
+
 def backoff_levels(point: str, params: Mapping[str, Any] | None = None) -> list[list[str]]:
     """Back-off levels, most specific first, always ending in ``[]`` (the ``*`` bucket).
 
-    Read from ``params`` (a merged config dict) or the packaged defaults; a missing or malformed
-    table falls back to ``[full feature set, []]`` (``[[]]`` for an unknown point).
+    ``[learn.backoff.<point>] levels`` from ``params`` (merged config), else the packaged
+    defaults; neither valid -> ``[full feature set, []]`` (``[[]]`` for an unknown point).
     """
-    data = packaged_params() if params is None else params
-    learn = data.get("learn")
-    table = learn.get("backoff") if isinstance(learn, Mapping) else None
-    entry = table.get(point) if isinstance(table, Mapping) else None
-    levels = _valid_levels(entry.get("levels") if isinstance(entry, Mapping) else None)
-    if levels is None:
+    value = lookup_param(params, ("learn", "backoff", point, "levels"), _valid_levels)
+    if isinstance(value, list):
+        levels = [list(lv) for lv in value]
+    else:
         full = list(FEATURE_KEYS.get(point, ()))
         levels = [full] if full else []
     if not levels or levels[-1]:

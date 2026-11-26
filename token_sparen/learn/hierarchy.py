@@ -1,21 +1,26 @@
-"""Empirical-Bayes hierarchical priors over the posterior stores (spec section 7.4).
+"""Empirical-Bayes hierarchical priors over the evidence stores (spec section 7.4).
 
-``StoreChain`` is a read-only, per-instance cached view of three stores, each with the inner
-shape ``{point: {bucket: {arm: {"savings": [a, b, n], "regret": [a, b, n]}}}}``:
+The stores hold **evidence**, never posteriors (a stored posterior would fold its prior in for
+good, and an estimator over stored posteriors would see its own priors). ``StoreChain`` is a
+read-only, per-instance cached view of three stores with the inner shape
+``{point: {bucket: {arm: {"savings": [ea, eb, n], "regret": [ea, eb, n]}}}}``:
 
 - ``projects/<key>/posteriors.json`` and ``global/posteriors.json``:
-  ``{"version": 1, "points": <inner>}``;
+  ``{"version": 2, "points": <inner>}`` (version 1 held posteriors: read as empty, logged);
 - the session overlay (``projects/<key>/sessions/<id>.json``) under the key ``posteriors``.
 
 ``prior_for`` walks the back-off levels (most specific to ``*``) in project scope, then the same
-in global scope; the first parent posterior with ``n >= min_parent_obs`` real observations lends
-its mean ``m``: prior = ``Beta(m * kappa, (1 - m) * kappa, n=0)``. Otherwise the designed default
-``[learn.defaults.<point>.<arm>]`` (hand-set; to be refit in M4) is used with strength
-``kappa_default``. The session scope is not
-part of the chain: the session posterior is the child whose prior this is.
+in global scope. The first parent with ``n >= min_parent_obs`` real observations lends the mean
+``m = (ea + kappa0 * d) / (ea + eb + kappa0)`` (its data shrunk toward the designed default ``d``
+with ``kappa0 = kappa_default`` pseudo-counts; no recursion up the chain). The prior is
+``Beta(m * kappa, (1 - m) * kappa, n=0)`` with the point's estimated ``kappa``. Without a
+qualifying parent the designed default ``[learn.defaults.<point>.<arm>]`` (hand-set; to be refit
+in M4) is used with strength ``kappa_default``. The session scope is not part of the chain: the
+session evidence is the child this prior is for.
 
 A mean of exactly 0 (the safe arm's designed default) is represented as ``Beta(EPS, kappa)``
 because a Beta needs ``a > 0``; the engine treats safe-arm savings and regret as 0 by definition.
+Unknown (undeclared extension) arms default to savings 0, regret 0.5: deliberately conservative.
 """
 
 from __future__ import annotations
@@ -27,22 +32,26 @@ from pathlib import Path
 from typing import Any, Literal
 
 from token_sparen.config import log_error
-from token_sparen.learn.beta import Beta
-from token_sparen.learn.features import FEATURE_KEYS, backoff_keys, backoff_levels, packaged_params
+from token_sparen.learn.beta import Beta, Evidence
+from token_sparen.learn.features import (
+    FEATURE_KEYS,
+    backoff_keys,
+    backoff_levels,
+    lookup_param,
+)
 from token_sparen.learn.policy import DecisionPoint
 from token_sparen.store import jsonstore, session
 from token_sparen.store.paths import project_dir_for
 
 Kind = Literal["savings", "regret"]
 Scope = Literal["session", "project", "global"]
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 POSTERIORS_FILE = "posteriors.json"
 SESSION_KEY = "posteriors"
 EPS = 1e-3
 DEFAULT_KAPPA = 6.0
 _SCOPES: tuple[Scope, ...] = ("session", "project", "global")
 _CHAIN: tuple[Scope, ...] = ("project", "global")
-# Unknown point/arm: no savings expected, regret uninformative (never favoured by default).
 _FALLBACK_MEAN: dict[str, float] = {"savings": 0.0, "regret": 0.5}
 
 
@@ -53,10 +62,11 @@ def _num(value: object, default: float) -> float:
 
 
 class StoreChain:
-    """Read-only view over the session overlay, project and global posterior stores.
+    """Read-only view over the session overlay, project and global evidence stores.
 
-    Each file is read at most once per instance; corrupt entries read as ``None`` and are logged
-    once per instance.
+    ``params`` is the merged config dict (``Config.data``); a missing ``learn.*`` key falls back
+    to the packaged default. Each file is read at most once per instance; corrupt entries read
+    as ``None`` and are logged once per instance.
     """
 
     def __init__(
@@ -70,15 +80,14 @@ class StoreChain:
         self.project_key = project_key
         self.home = home
         self.session_id = session_id
-        self.params: Mapping[str, Any] = packaged_params() if params is None else params
+        self.params: Mapping[str, Any] | None = params
         self._env = {"TOKEN_SPAREN_HOME": str(home)}
         self._docs: dict[Scope, dict[str, Any]] = {}
-        self._kappa: dict[tuple[str, str, str], float] = {}
+        self.kappa_cache: dict[tuple[str, str, str], float] = {}
         self._warned = False
 
     def learn_param(self, name: str, default: float) -> float:
-        learn = self.params.get("learn")
-        return _num(learn.get(name) if isinstance(learn, Mapping) else None, default)
+        return _num(lookup_param(self.params, ("learn", name), _valid_num), default)
 
     def _warn(self, message: str) -> None:
         if not self._warned:
@@ -101,13 +110,13 @@ class StoreChain:
             if not doc:
                 return {}
             if doc.get("version") != SCHEMA_VERSION:
-                self._warn(f"{scope} posteriors: unsupported version {doc.get('version')!r}")
+                self._warn(f"{scope} evidence: unsupported version {doc.get('version')!r}")
                 return {}
             inner = doc.get("points")
         if inner is None:
             return {}
         if not isinstance(inner, dict):
-            self._warn(f"{scope} posteriors: points is not an object")
+            self._warn(f"{scope} evidence: points is not an object")
             return {}
         return inner
 
@@ -120,39 +129,45 @@ class StoreChain:
             doc = self._docs[scope] = self._load(scope)
         return doc
 
-    def get(self, point: str, bucket: str, arm: str, kind: Kind, scope: Scope) -> Beta | None:
+    def get(self, point: str, bucket: str, arm: str, kind: Kind, scope: Scope) -> Evidence | None:
         node: Any = self.points(scope).get(point)
         for key in (bucket, arm):
             if not isinstance(node, dict):
                 if node is not None:
-                    self._warn(f"{scope} posteriors: malformed entry under {point!r}")
+                    self._warn(f"{scope} evidence: malformed entry under {point!r}")
                 return None
             node = node.get(key)
         if node is None:
             return None
         if not isinstance(node, dict):
-            self._warn(f"{scope} posteriors: malformed {point}/{bucket}/{arm}")
+            self._warn(f"{scope} evidence: malformed {point}/{bucket}/{arm}")
             return None
         raw = node.get(kind)
         if raw is None:
             return None
         try:
-            return Beta.from_list(raw)
+            return Evidence.from_list(raw)
         except ValueError:
-            self._warn(f"{scope} posteriors: corrupt {point}/{bucket}/{arm}/{kind}")
+            self._warn(f"{scope} evidence: corrupt {point}/{bucket}/{arm}/{kind}")
             return None
+
+
+def _valid_num(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int | float) and math.isfinite(value)
 
 
 def kappa(point: DecisionPoint, arm: str, kind: Kind, stores: StoreChain) -> float:
     """Prior strength by method of moments over sibling buckets (cached per StoreChain).
 
     Siblings: project-scope buckets of the point's most specific level with the same arm and
-    kind and ``n >= min_parent_obs``. With m, var the mean and (population) variance of their
-    posterior means, kappa = m(1-m)/var - 1, clamped to [kappa_min, kappa_max]; fewer than
-    ``kappa_min_siblings`` siblings -> ``kappa_default``.
+    kind and ``n >= min_parent_obs``. On their data-only means m_i (mass w_i = ea_i + eb_i):
+    ``var_between = var(m_i) - mean(m_i (1 - m_i) / (w_i + 1))`` (sampling noise removed);
+    fewer than ``kappa_min_siblings`` -> ``kappa_default``; ``var_between <= 0`` ->
+    ``kappa_max`` (indistinguishable buckets pool strongly); else
+    ``mean(m_i) (1 - mean(m_i)) / var_between - 1`` clamped to [kappa_min, kappa_max].
     """
     cache_key = (point.name, arm, kind)
-    cached = stores._kappa.get(cache_key)
+    cached = stores.kappa_cache.get(cache_key)
     if cached is not None:
         return cached
     default = stores.learn_param("kappa_default", DEFAULT_KAPPA)
@@ -164,6 +179,7 @@ def kappa(point: DecisionPoint, arm: str, kind: Kind, stores: StoreChain) -> flo
     prefixes = tuple(f"{k}=" for k in full)
     buckets = stores.points("project").get(point.name)
     means: list[float] = []
+    noise: list[float] = []
     if isinstance(buckets, dict) and prefixes:
         for bucket in buckets:
             parts = bucket.split("|") if isinstance(bucket, str) else []
@@ -171,25 +187,26 @@ def kappa(point: DecisionPoint, arm: str, kind: Kind, stores: StoreChain) -> flo
                 p.startswith(pre) for p, pre in zip(parts, prefixes, strict=True)
             ):
                 continue
-            post = stores.get(point.name, bucket, arm, kind, "project")
-            if post is not None and post.n >= min_obs:
-                means.append(post.mean)
+            ev = stores.get(point.name, bucket, arm, kind, "project")
+            m = None if ev is None or ev.n < min_obs else ev.mean_data
+            if ev is not None and m is not None:
+                means.append(m)
+                noise.append(m * (1.0 - m) / (ev.ea + ev.eb + 1.0))
     value = default
     if len(means) >= max(min_sib, 2):
-        m = statistics.fmean(means)
-        var = statistics.pvariance(means, m)
-        value = hi if var <= 0.0 else m * (1.0 - m) / var - 1.0
+        m_bar = statistics.fmean(means)
+        between = statistics.pvariance(means, m_bar) - statistics.fmean(noise)
+        value = hi if between <= 0.0 else m_bar * (1.0 - m_bar) / between - 1.0
         value = min(hi, max(lo, value))
-    stores._kappa[cache_key] = value
+    stores.kappa_cache[cache_key] = value
     return value
 
 
-def designed_default(point: str, arm: str, kind: Kind, params: Mapping[str, Any]) -> float:
+def designed_default(
+    point: str, arm: str, kind: Kind, params: Mapping[str, Any] | None = None
+) -> float:
     """``[learn.defaults.<point>.<arm>] <kind>`` clamped to [0, 1]; unknown -> fallback mean."""
-    node: Any = params.get("learn")
-    for key in ("defaults", point, arm):
-        node = node.get(key) if isinstance(node, Mapping) else None
-    raw = node.get(kind) if isinstance(node, Mapping) else None
+    raw = lookup_param(params, ("learn", "defaults", point, arm, kind), _valid_num)
     return min(1.0, max(0.0, _num(raw, _FALLBACK_MEAN[kind])))
 
 
@@ -205,13 +222,13 @@ def prior_for(
     stores: StoreChain,
 ) -> Beta:
     """Prior for (point, features, arm, kind): project levels, global levels, designed default."""
-    k = kappa(point, arm, kind, stores)
+    d = designed_default(point.name, arm, kind, stores.params)
+    k0 = max(EPS, stores.learn_param("kappa_default", DEFAULT_KAPPA))
     min_obs = stores.learn_param("min_parent_obs", 5.0)
-    keys = backoff_keys(point.name, features, stores.params)
     for scope in _CHAIN:
-        for bucket in keys:
-            parent = stores.get(point.name, bucket, arm, kind, scope)
-            if parent is not None and parent.n >= min_obs:
-                return _from_mean(parent.mean, k)
-    default_k = stores.learn_param("kappa_default", DEFAULT_KAPPA)  # designed defaults: fixed kappa
-    return _from_mean(designed_default(point.name, arm, kind, stores.params), default_k)
+        for bucket in backoff_keys(point.name, features, stores.params):
+            ev = stores.get(point.name, bucket, arm, kind, scope)
+            if ev is not None and ev.n >= min_obs:
+                m = (ev.ea + k0 * d) / (ev.ea + ev.eb + k0)
+                return _from_mean(m, kappa(point, arm, kind, stores))
+    return _from_mean(d, k0)

@@ -17,6 +17,14 @@ restore of the recorded original, Windows launcher deferred; §8 Claude row; §9
 CLI, interface version 1.0, session config layer; §10.6 and §11 defaults path and CI matrix.
 Later-milestone items (M2/M3) are unchanged and remain planned.
 
+**2026-11-26 (M2, Task 19 review).** §7.3/§7.4: the stores keep **evidence** (discounted, capped
+counts `ea, eb, n` per point/bucket/arm/kind, schema version 2), not posteriors; the posterior is
+`prior + evidence`, formed at decision time, so a prior is never folded in for good and the κ
+estimator sees data-only means (no feedback loop through its own priors). A parent with
+`n >= min_parent_obs` lends `m = (ea + κ0·d)/(ea + eb + κ0)` (its data shrunk toward the designed
+default d, κ0 = `kappa_default`); κ is method of moments on sibling data means with the sampling
+noise `mean(m_i(1−m_i)/(w_i+1))` subtracted from their variance (≤ 0 → `kappa_max`).
+
 ---
 
 ## 1. Intent and why
@@ -300,7 +308,8 @@ fractional pseudo-counts (no coin-flip discretisation), **discounted** (γ per o
 ### 7.4 Hierarchical priors (within session → project → global)
 Empirical-Bayes shrinkage: a bucket's prior = its parent's posterior mean with strength κ
 (learned by method-of-moments across siblings), parent chain
-`project-bucket → project-coarse → global-bucket → global-coarse → designed default`. Global stores
+`project-bucket → project-coarse → global-bucket → global-coarse → designed default`. Stores hold
+evidence, not posteriors; see the 2026-11-26 Task 19 revision note for the parent-mean and κ formulas. Global stores
 receive per-project **deltas** (not totals), weighted 0.3, and decay with age. This replaces
 Reference A's six overlapping prior layers with one principled mechanism.
 

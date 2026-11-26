@@ -201,7 +201,19 @@ def test_backoff_levels_from_params() -> None:
         features.FEATURE_KEYS["compression"]
     )
     worse = {"learn": {"backoff": {"compression": {"levels": [["ctype", 3]]}}}}
-    assert features.backoff_levels("compression", worse)[-1] == []
+    assert features.backoff_levels("compression", worse) == features.backoff_levels("compression")
+    # a params dict without the table falls back to the packaged defaults
+    assert features.backoff_levels("pretrim", {"learn": {}}) == [["ctype", "size"], ["ctype"], []]
+    no_star = {"learn": {"backoff": {"compression": {"levels": [["ctype"]]}}}}
+    assert features.backoff_levels("compression", no_star) == [["ctype"], []]
+
+
+@pytest.mark.parametrize(
+    "feats", [{"ctype": "a|b"}, {"ctype": "a=b"}, {"ct|ype": "x"}, {"ct=ype": "x"}]
+)
+def test_bucket_key_rejects_separators(feats: dict[str, str]) -> None:
+    with pytest.raises(ValueError):
+        features.bucket_key(feats, list(feats))
 
 
 def test_session_ctx_carries_recent_cats(tmp_path: Path) -> None:

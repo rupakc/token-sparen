@@ -43,10 +43,10 @@ def _posteriors(home: Path) -> None:
     assert len(buckets) == 200
     path = home / "projects" / KEY / "posteriors.json"
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"version": 1, "points": {"compression": buckets}}), "utf-8")
+    path.write_text(json.dumps({"version": 2, "points": {"compression": buckets}}), "utf-8")
     g = home / "global" / "posteriors.json"
     g.parent.mkdir(parents=True)
-    g.write_text(json.dumps({"version": 1, "points": {"compression": buckets}}), "utf-8")
+    g.write_text(json.dumps({"version": 2, "points": {"compression": buckets}}), "utf-8")
 
 
 def test_features_and_priors_under_one_ms(tmp_path: Path) -> None:

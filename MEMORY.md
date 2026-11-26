@@ -409,9 +409,20 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   edit loop is debugging), then reads+searches >= 60 % -> explore, else mixed; < 3 calls -> mixed.
   The overlay keeps `recent_cats` (last 10 tool categories, a failure as `<cat>!`), written by
   `tracking.record_paths` on every post-tool hook; `SessionCtx.recent_cats` carries it.
-- Prior chain: project levels (full -> `*`), then global levels, first parent with
-  `n >= min_parent_obs` (5) lends its mean at strength kappa; the session scope is the child, not
-  part of the chain. Designed defaults always use `kappa_default` (6); estimated kappa (method of
-  moments over full-level project siblings, population variance, clamp [2, 20], zero variance ->
-  20) applies to parent-derived priors only. A mean of 0 is stored as `Beta(1e-3, kappa)`.
-- Unknown point/arm default means: savings 0, regret 0.5. Designed defaults are hand-set, refit in M4.
+- Prior chain: project levels (full -> `*`), then global levels; the session scope is the child,
+  not part of the chain. Designed defaults always use `kappa_default` (6). A mean of 0 is
+  represented as `Beta(1e-3, kappa)`.
+- Unknown point/arm default means: savings 0, regret 0.5, deliberately conservative for undeclared
+  extension arms. Designed defaults are hand-set, refit in M4.
+- **Controller ruling (review round 1): store evidence, not posteriors.** A reviewer probe showed
+  kappa-hat biased high (stuck at kappa_max) because sibling posterior means contained their own
+  priors, and a prior folded into stored (a, b) could never be changed. Now `learn.beta.Evidence
+  (ea, eb, n)` is stored (`observe` discounts by gamma, adds (x, 1-x), caps mean-preserving;
+  `posterior(prior)` = prior + evidence); schema version 2 (version 1 files read as empty, logged
+  once). `Beta.update` stays for compatibility; the engine (Task 20) uses Evidence.
+  Parent mean `m = (ea + k0*d)/(ea + eb + k0)` (k0 = kappa_default, d = designed default; no
+  recursion); prior `Beta(m*kappa, (1-m)*kappa)`. Kappa: method of moments on data-only sibling
+  means with noise correction `var(m_i) - mean(m_i(1-m_i)/(w_i+1))`; < 3 siblings -> default,
+  <= 0 -> kappa_max, else clamp [2, 20]. Simulation test recovers true kappa 3 and 20.
+- `StoreChain(params=Config.data)`: every `learn.*` lookup falls back per key to the packaged
+  default, so user/project/env overrides apply. `bucket_key` rejects `|` or `=` in keys/values.
