@@ -531,6 +531,7 @@ def _mine_facts(
                 obs=observer.results(),
                 mined=fresh,
                 settings=settings,
+                now=now,
             )
 
         return miners.record(

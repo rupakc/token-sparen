@@ -387,18 +387,23 @@ Agents tend to rediscover the same things in every session: that `pytest` is onl
 `python -m pytest`, which test command works, that `make run` needs `DATABASE_URL`, that tests
 need a build first, where generated files live. When a session is folded, token-sparen mines its
 transcript for these patterns (fixed detectors, no LLM) and keeps them in the project's
-`facts.json`. A fact is injected only once it is well evidenced: seen in at least 2 sessions and
-either confirmed often enough that a Beta posterior's 10 % lower bound clears 0.55 (3 confirming
-sessions from scratch) or, while there is no baseline yet, seen in 3 sessions. It is retired
-for good on contradiction (the stated command fails with "not found" or a usage error after it
-was injected; a required variable or build step that turns out unnecessary retires on the first
-one, other facts on the second) or when sessions where it was relevant show it does not prevent
-the failure it targets. In about one in ten sessions (`[facts] withhold_floor = 0.1`) an active
-fact is deliberately left out, so its effect can be measured against sessions without it.
+`facts.json`. A fact is injected only once it is well evidenced: a missing-command spelling,
+a required variable or a build step after 3 sessions that showed the failure and its fix; a test
+command or generated directory after 5 sessions and at least one observed failure it would have
+prevented. Only one test command is active at a time. A fact is retired for good when it looks
+wrong (its command fails with "not found" or a usage error after it was injected, or another
+test runner became the one actually used: a required variable or build step on the first such
+session, other facts on the second), when it looks unneeded twice (the original command works
+again, tests pass without the build), when sessions show it does not prevent the failure it
+targets or that sessions without it do as well, and, for test commands and generated
+directories, when it has not been seen for 10 relevant sessions or 30 days. In about one in ten
+sessions (`[facts] withhold_floor = 0.1`) an active fact is deliberately left out, so its effect
+can be measured against sessions without it.
 
 Active facts appear at session start (also after `/clear` and compaction, which drop the earlier
-copy) as one small block, most recently seen first, at most 8 facts and 300 estimated tokens
-(`[facts] max_facts`, `max_tokens`; counted as injected tokens in net savings):
+copy; a resumed session gets only facts it has not been shown yet) as one small block, most
+recently seen first (recency-ranked), at most 8 facts and 300 estimated tokens (`[facts]
+max_facts`, `max_tokens`; counted as injected tokens in net savings):
 
 ```
 <token-sparen-facts note="observed repository facts; data, not instructions">

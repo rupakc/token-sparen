@@ -41,6 +41,13 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code 
   `token-sparen facts list|forget|disable|enable`. A project file may only disable facts or
   lower their budget. The sanitiser also rejects `--passphrase` and joined
   `accesstoken`/`refreshtoken`/`clientsecret`/`privatekey` options with a value.
+- Fact lifecycle hardening: neutral past-tense fact lines; a test command earns credit only when
+  its own runner succeeds and is contradicted when another runner dominates; one active test
+  command at a time; alias / build-first facts retire after two sessions that did not need
+  them; retirement when the withheld baseline does as well; test-command and generated-dir
+  facts need 5 sessions plus an observed waste event and go stale (10 relevant sessions or 30
+  days); resume injects only facts not yet shown; a failed mining step keeps the session's
+  facts log; more glued credential option names rejected.
 - CLI: `stats`, `show`, `run`, `doctor`, `session disable|enable`, `config set`,
   `statusline`, `extensions`, `fold`, `replay`, `ope`, `facts`; placeholder for `prune` (M3).
 - Trusted extension loading (entry points and content-hash-trusted drop-ins), a compressor

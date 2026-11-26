@@ -81,20 +81,32 @@ def test_activation_after_confirmations() -> None:
     assert lifecycle.effect(table[fid]).mean == pytest.approx(0.8)
 
 
-def test_bootstrap_rule_for_kinds_without_confirmations() -> None:
-    """test_command / generated_dir are not waste -> fix patterns: they activate on >= 3
-    sessions of evidence while no withheld baseline exists."""
-    t2 = _fact("test_command", "tests", "pytest", n=2)
-    t3 = _fact("test_command", "tests", "pytest -q", n=3)
-    g3 = _fact("generated_dir", "generated", "dist", n=3)
-    table = _table(t2, t3, g3)
-    table[fact_id(g3)]["baseline"] = [1.0, 2.0, 1.0]  # a baseline exists: no bootstrap
-    mined = {fact_id(t2), fact_id(t3), fact_id(g3)}
+def test_frequency_kinds_need_five_sessions_and_an_observed_waste_event() -> None:
+    """test_command / generated_dir are frequencies, not waste -> fix patterns: they activate
+    only with >= 5 sessions of evidence and >= 1 observed waste event (and no confirmation is
+    ever counted for them)."""
+    t4 = _fact("test_command", "tests", "pytest", n=4)
+    t5 = _fact("test_command", "tests", "pytest -q", n=5)
+    g5 = _fact("generated_dir", "generated", "dist", n=5)
+    g5w = _fact("generated_dir", "generated", "out", n=5)
+    table = _table(t4, t5, g5, g5w, waste_events=1)
+    table[fact_id(g5)]["waste_events"] = 0
+    mined = set(table)
     lifecycle.apply_session(table, shown=(), withheld={}, obs={}, mined=mined, settings=S)
-    assert table[fact_id(t2)]["status"] == "candidate"
-    assert table[fact_id(t3)]["status"] == "active"
-    assert table[fact_id(g3)]["status"] == "candidate"
-    assert lifecycle.effect(table[fact_id(t3)]) == Beta(1.0, 1.0)  # no confirmation counted
+    assert table[fact_id(t4)]["status"] == "candidate"  # 4 sessions
+    assert table[fact_id(g5)]["status"] == "candidate"  # no waste event seen
+    assert table[fact_id(t5)]["status"] == "active"
+    assert table[fact_id(g5w)]["status"] == "active"
+    assert lifecycle.effect(table[fact_id(t5)]) == Beta(1.0, 1.0)  # no confirmation counted
+
+
+def test_waste_events_are_counted_for_candidates() -> None:
+    t = _fact("test_command", "tests", "pytest -q", n=5)
+    fid = fact_id(t)
+    table = _table(t)
+    obs = {fid: Obs(relevant=True, waste=True, waste_event=True)}
+    lifecycle.apply_session(table, shown=(), withheld={}, obs=obs, mined=set(), settings=S)
+    assert table[fid]["waste_events"] == 1 and table[fid]["status"] == "active"
 
 
 def test_activate_lcb_is_configurable() -> None:
@@ -280,7 +292,7 @@ def test_test_command_relevance_and_waste(tmp_path: Path) -> None:
         .bash("pytest -q", "bash: pytest: command not found", err=True)
         .bash("python -m pytest -q", "3 passed")
     )
-    assert _observe(log, tmp_path, TESTS)[fid] == Obs(relevant=True, waste=True)
+    assert _observe(log, tmp_path, TESTS)[fid] == Obs(relevant=True, waste=True, waste_event=True)
     real_failure = Log().prompt().bash("python -m pytest -q", "1 failed", err=True)
     real_failure.bash("python -m pytest -q", "2 passed")
     assert _observe(real_failure, tmp_path, TESTS)[fid] == Obs(relevant=True, waste=False)
@@ -419,3 +431,140 @@ def test_failed_mining_keeps_the_session_log_for_the_next_fold(
     overlay.fold("s1", KEY, home)
     after = json.loads(_store(home).read_text(encoding="utf-8"))
     assert after["facts"][fid]["effect"] == [5.0, 1.0, 4.0]
+
+
+# --------------------------------------------------------------------------- fix round 1
+PYTEST = _fact("test_command", "tests", "python -m pytest -q")
+
+
+def _tox_session() -> Log:
+    log = Log().prompt()
+    for _ in range(3):
+        log.bash("tox -e py", "ok")
+    return log
+
+
+def test_test_command_reward_needs_its_own_command(tmp_path: Path) -> None:
+    fid = fact_id(PYTEST)
+    other = Log().prompt().bash("make check", "ok").bash("pytest tests/unit", "ok")
+    o = _observe(other, tmp_path, PYTEST)[fid]
+    assert o.relevant and o.waste and o.contradicted  # a different runner dominated
+    own = Log().prompt().bash("python -m pytest -q tests/a.py", "1 passed")
+    o = _observe(own, tmp_path, PYTEST)[fid]
+    assert o.relevant and not o.waste and not o.contradicted
+    tie = Log().prompt().bash("python -m pytest -q").bash("tox -e py")
+    assert not _observe(tie, tmp_path, PYTEST)[fid].contradicted
+
+
+def test_migration_retires_old_test_command_within_three_sessions(tmp_path: Path) -> None:
+    fid = fact_id(PYTEST)
+    table = _table(PYTEST, status="active", effect=[9.0, 1.0, 8.0])
+    sessions = 0
+    while table[fid]["status"] != "retired" and sessions < 3:
+        obs = _observe(_tox_session(), tmp_path, PYTEST)
+        lifecycle.apply_session(table, shown={fid}, withheld={}, obs=obs, mined=set(), settings=S)
+        sessions += 1
+    assert table[fid]["status"] == "retired" and sessions <= 3
+
+
+def test_activating_a_test_command_retires_the_old_one() -> None:
+    tox = _fact("test_command", "tests", "tox -e py", n=5)
+    table = _table(PYTEST, status="active")
+    table.update(_table(tox, waste_events=1))
+    lifecycle.apply_session(table, shown=(), withheld={}, obs={}, mined=set(), settings=S)
+    assert table[fact_id(tox)]["status"] == "active"
+    assert table[fact_id(PYTEST)]["status"] == "retired"
+    both = _table(
+        _fact("test_command", "tests", "tox", n=5), _fact("test_command", "tests", "nox", n=6)
+    )
+    for e in both.values():
+        e["waste_events"] = 1
+    lifecycle.apply_session(both, shown=(), withheld={}, obs={}, mined=set(), settings=S)
+    assert [e["status"] for e in both.values()].count("active") == 1
+
+
+def test_build_first_unneeded_when_tests_pass_before_any_build(tmp_path: Path) -> None:
+    fid = fact_id(BUILD)
+    log = Log().prompt().bash("npm test", "ok").bash("npm run build").bash("npm test")
+    assert _observe(log, tmp_path, BUILD)[fid].unneeded
+    built = Log().prompt().bash("npm run build").bash("npm test")
+    assert not _observe(built, tmp_path, BUILD)[fid].unneeded
+    table = _table(BUILD, status="active", effect=[9.0, 1.0, 8.0])
+    obs = {fid: _observe(log, tmp_path, BUILD)[fid]}
+    lifecycle.apply_session(table, shown=(), withheld={fid: 0.1}, obs=obs, mined=set(), settings=S)
+    assert table[fid]["status"] == "active" and table[fid]["unneeded"] == 1  # withheld counts
+    lifecycle.apply_session(table, shown={fid}, withheld={}, obs=obs, mined=set(), settings=S)
+    assert table[fid]["status"] == "retired"
+
+
+def test_alias_unneeded_when_the_subject_runs(tmp_path: Path) -> None:
+    fid = fact_id(ALIAS)
+    log = Log().prompt().bash("pytest -q", "3 passed")
+    o = _observe(log, tmp_path, ALIAS)[fid]
+    assert o.unneeded and not o.waste
+    table = _table(ALIAS, status="active", effect=[9.0, 1.0, 8.0])
+    for _ in range(2):
+        lifecycle.apply_session(
+            table, shown={fid}, withheld={}, obs={fid: o}, mined=set(), settings=S
+        )
+    assert table[fid]["status"] == "retired"
+
+
+def test_retire_when_baseline_is_as_good_as_injection() -> None:
+    same = _fact("command_alias", "black", "python -m black")
+    better = _fact("command_alias", "ruff", "python -m ruff")
+    table = _table(same, status="active", effect=[4.0, 1.0, 3.0], baseline=[3.0, 1.0, 3.0])
+    table.update(_table(better, status="active", effect=[4.0, 1.0, 3.0], baseline=[1.0, 4.0, 3.0]))
+    lifecycle.apply_session(table, shown=(), withheld={}, obs={}, mined=set(), settings=S)
+    assert table[fact_id(same)]["status"] == "retired"
+    assert table[fact_id(better)]["status"] == "active"
+
+
+def test_generated_dir_repeated_writes_while_shown_reward_zero(tmp_path: Path) -> None:
+    fid = fact_id(GEN)
+    log = Log().prompt()
+    for name in ("a", "b"):
+        log.call("Edit", {"file_path": f"{PROJECT}/dist/{name}.js"})
+    o = _observe(log, tmp_path, GEN)[fid]
+    assert o == Obs(relevant=True, waste=True)
+    regen = Log().prompt().call("Edit", {"file_path": f"{PROJECT}/dist/a.js"})
+    regen.bash("npm run build", "built")
+    assert _observe(regen, tmp_path, GEN)[fid] == Obs(relevant=True, waste=True, waste_event=True)
+    table = _table(GEN, status="active")
+    lifecycle.apply_session(table, shown={fid}, withheld={}, obs={fid: o}, mined=set(), settings=S)
+    assert lifecycle.effect(table[fid]).to_list() == [1.0, 2.0, 1.0]
+
+
+def test_frequency_facts_go_stale() -> None:
+    fid = fact_id(PYTEST)
+    table = _table(PYTEST, status="active", effect=[9.0, 1.0, 8.0], stale=9)
+    rel = {fid: Obs(relevant=True, waste=False)}
+    lifecycle.apply_session(table, shown={fid}, withheld={}, obs=rel, mined={fid}, settings=S)
+    assert table[fid]["stale"] == 0 and table[fid]["status"] == "active"  # new evidence
+    table[fid]["stale"] = 9
+    lifecycle.apply_session(table, shown={fid}, withheld={}, obs=rel, mined=set(), settings=S)
+    assert table[fid]["status"] == "retired"  # 10 relevant sessions without new evidence
+    old = _table(GEN, status="active")
+    day = 86400.0
+    lifecycle.apply_session(old, shown=(), withheld={}, obs={}, mined=set(), settings=S, now=day)
+    assert old[fact_id(GEN)]["status"] == "active"
+    lifecycle.apply_session(
+        old, shown=(), withheld={}, obs={}, mined=set(), settings=S, now=2.0 + 31 * day
+    )
+    assert old[fact_id(GEN)]["status"] == "retired"  # 30 days without new evidence
+
+
+def test_fold_observes_frequency_candidates(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cand = _fact("test_command", "tests", "python -m pytest -q", n=4)
+    fid = fact_id(cand)
+    _store(home).parent.mkdir(parents=True)
+    doc = {"version": 1, "facts": _table(cand)}
+    _store(home).write_text(json.dumps(doc), encoding="utf-8")
+    log = Log().prompt().bash("pytest -q", "bash: pytest: command not found", err=True)
+    tr = log.bash("python -m pytest -q", "3 passed").write(tmp_path / "s.jsonl")
+    _overlay(home, "s5", tr, {})
+    overlay.fold("s5", KEY, home)
+    after = json.loads(_store(home).read_text(encoding="utf-8"))["facts"][fid]
+    assert after["waste_events"] == 1 and len(after["sessions"]) == 5
+    assert after["status"] == "active"

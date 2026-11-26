@@ -1184,3 +1184,25 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - Sanitiser carry from Task 25 review: credential option names also `passphrase` and the joined
   `accesstoken`, `refreshtoken`, `clientsecret`, `privatekey` (plus `access-token`,
   `refresh_token` spellings).
+- Fix round 1 (coordinator rulings, same day): templates are neutral past-tense observations
+  (alias "`X` was not found here; `Y` worked", test "Tests were run with `Y`", env "`X` needed
+  the environment variable `V`", build "`X` needed `Y` to run first", generated "Files under
+  `D/` appear to be generated"). test_command: runner = (cd dir, program + subcommand); reward 1
+  only if its own runner succeeded without another runner failing first and no other runner
+  ran successfully strictly more often; a dominating other runner while shown = contradiction
+  (retire at 2); one active test_command per subject (newly activated wins; among several new,
+  most evidence then most recent). New `unneeded` counter (shown or withheld): alias subject
+  ran OK, build_first tests passed before any build; retire at 2 (separate from the hard
+  contradiction count, which keeps 1 for requires_env/build_first). Baseline retirement:
+  baseline.n >= 3 and baseline.mean >= effect.mean - 0.1. generated_dir: >= 2 writes or a write
+  followed by a successful build-family command = waste (0); a single write stays 0.5; the
+  write-then-build is the "regenerated" waste event. Frequency kinds (test_command,
+  generated_dir) need >= 5 sessions and >= 1 `waste_events` to activate (frequency candidates
+  with >= 2 sessions are observed at fold time for this); the lcb rule is unreachable for them
+  as candidates (no confirmations; posterior moves only when injected) - documented. Staleness
+  (active frequency kinds): `stale` +1 per relevant shown/withheld session without new evidence,
+  reset by new evidence; retire at 10 or 30 days since `last_seen` (fold passes `now`).
+  Resume: per-fact dedupe via overlay `facts_sent = {epoch, ids, tokens}` (clear/compact start
+  a new epoch; a resume sends only unsent ids within the remaining slots/tokens). Failed mining
+  restores the staged facts log into the overlay (`lifecycle.restore_log`). Docs: recency-ranked.
+  Glued credential names: api/auth/session token, secret/master/encryption key.
