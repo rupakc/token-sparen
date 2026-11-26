@@ -8,14 +8,19 @@ candidate facts, each passed through ``sanitize`` before it is kept:
   ``'X' is not recognized`` (program ``X``) or ``No module named X`` (for ``python -m X``), and
   within the next 3 tool calls of the same turn a Bash call succeeds whose argv tail is exactly
   the failed call's argv tail and whose head launches ``X`` differently (``python -m X``,
-  ``npx X``, ``uv run X``, ``./X``...). No fuzzy matching;
+  ``npx X``, ``uv run X``, ``./X``...). No fuzzy matching. A downloading launcher (``npx``,
+  ``uvx``, ``pipx``, ``bunx``, ``pnpx``, ``dlx``) only for a package the project declares in
+  ``package.json`` or ``pyproject.toml``;
 - ``requires_env``: an error names an ALL_CAPS variable (``KeyError: 'X'``, ``X is not set``,
   ``missing environment variable X``, ``Environment variable X``) and the same command later
   succeeds in the same turn with ``X=...`` in front of it or after ``export X=...``. The fact is
-  the variable **name** only; its value is never read into a fact;
-- ``test_command``: the normalised test-family command with the most successful runs;
+  the variable **name** only; its value is never read into a fact, and the subject is the
+  program + subcommand only (``mysql``, ``make run``), never its options or arguments;
+- ``test_command``: the normalised test-family command with the most successful runs (one
+  ``cd <project-relative dir> && `` prefix allowed);
 - ``build_first``: a test command that failed earlier succeeds right after a build-family
-  command succeeded (the Bash call immediately before it);
+  command succeeded (the Bash call immediately before it); both as program + subcommand, and
+  never a side-effect step (push, deploy, release, publish, upload, install);
 - ``generated_dir``: Write/Edit targets under ``dist|build|generated|gen|out|target|.next|
   __pycache__`` (relative to the project root) at least ``GEN_MIN_PER_SESSION`` times.
 
@@ -28,9 +33,11 @@ first_seen, last_seen, contradictions}}, "applied": [fold ids]}``. A fact needs 
 from __future__ import annotations
 
 import hashlib
+import json
 import posixpath
 import re
 import time
+import tomllib
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -97,6 +104,78 @@ _LAUNCHERS: frozenset[tuple[str, ...]] = frozenset(
         ("bundle", "exec"),
     }
 )
+
+
+# Launchers that may download and run a package that is not part of the project.
+_DOWNLOADERS = frozenset({"npx", "uvx", "pipx", "bunx", "pnpx", "dlx"})
+MANIFEST_MAX_BYTES = 1024 * 1024
+_REQ_NAME = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _pkg(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _read_small(path: Path) -> str | None:
+    try:
+        with path.open("rb") as fh:
+            data = fh.read(MANIFEST_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(data) > MANIFEST_MAX_BYTES:
+        return None
+    return data.decode("utf-8", errors="replace")
+
+
+def _req_names(items: object) -> set[str]:
+    out: set[str] = set()
+    for item in items if isinstance(items, list) else ():
+        if isinstance(item, str):
+            m = _REQ_NAME.match(item)
+            if m is not None:
+                out.add(_pkg(m.group(1)))
+    return out
+
+
+def _table(doc: object, *keys: str) -> dict[str, Any]:
+    for key in keys:
+        doc = doc.get(key) if isinstance(doc, dict) else None
+    return doc if isinstance(doc, dict) else {}
+
+
+def declared_packages(project_dir: str | None) -> set[str]:
+    """Package names the project declares: ``package.json`` dependencies / devDependencies and
+    ``pyproject.toml`` (PEP 621 dependencies and extras, dependency groups, Poetry)."""
+    names: set[str] = set()
+    if project_dir is None:
+        return names
+    root = Path(project_dir)
+    text = _read_small(root / "package.json")
+    if text is not None:
+        try:
+            doc = json.loads(text)
+        except (ValueError, RecursionError):
+            doc = None
+        for key in ("dependencies", "devDependencies"):
+            names.update(_pkg(k) for k in _table(doc, key))
+    text = _read_small(root / "pyproject.toml")
+    if text is not None:
+        try:
+            py: dict[str, Any] = tomllib.loads(text)
+        except (tomllib.TOMLDecodeError, RecursionError):
+            py = {}
+        project = _table(py, "project")
+        names.update(_req_names(project.get("dependencies")))
+        for extra in _table(project, "optional-dependencies").values():
+            names.update(_req_names(extra))
+        for group in _table(py, "dependency-groups").values():
+            names.update(_req_names(group))
+        poetry = _table(py, "tool", "poetry")
+        for key in ("dependencies", "dev-dependencies"):
+            names.update(_pkg(k) for k in _table(poetry, key))
+        for group in _table(poetry, "group").values():
+            names.update(_pkg(k) for k in _table(group, "dependencies"))
+    return names
 
 
 def session_digest(session_id: str) -> str:
@@ -239,6 +318,16 @@ class _Miner:
     prev: tuple[str, bool, str] | None = None  # previous Bash call: (norm, ok, family)
     tests_ok: Counter[str] = field(default_factory=Counter)
     gen: Counter[str] = field(default_factory=Counter)
+    declared: set[str] | None = None  # declared_packages, read on first need
+
+    def _allowed_launch(self, head: list[str], program: str) -> bool:
+        """A downloading launcher (``npx X``, ``uvx X``, ``pnpm dlx X``...) only for a package
+        the project declares; any other spelling is fine."""
+        if not any(w in _DOWNLOADERS for w in head[:-1]):
+            return True
+        if self.declared is None:
+            self.declared = declared_packages(self.project_dir)
+        return _pkg(program) in self.declared
 
     def emit(self, kind: FactKind, subject: str, value: str) -> None:
         if (kind, subject, value) not in self.found and len(self.found) < MAX_KEYS:
@@ -306,7 +395,8 @@ class _Miner:
             if len(words) > n and words[len(words) - n :] == a.tail:
                 head = words[: len(words) - n]
                 if head != a.head and _launches(head, a.program):
-                    self.emit("command_alias", " ".join(a.head), " ".join(head))
+                    if self._allowed_launch(head, a.program):
+                        self.emit("command_alias", " ".join(a.head), " ".join(head))
                     continue
             keep.append(a)
         self.aliases = keep
@@ -432,7 +522,7 @@ def record(
 ) -> int:
     """Merge candidate facts into ``facts.json`` (sessions unioned, idempotent per fold id).
     Returns the facts written; a future schema version is left untouched (logged)."""
-    if not facts:
+    if not facts and fold_id is None:
         return 0
     when = time.time() if now is None else now
     written: list[int] = [0]

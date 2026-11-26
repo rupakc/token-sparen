@@ -76,6 +76,8 @@ _ARGV_SECRET = re.compile(
 _PW_CLIENTS = frozenset({"mysql", "psql", "mariadb"})
 _SHORT_PW = re.compile(r"-p.+")
 _DRIVE = re.compile(r"^[A-Za-z]:")
+_SIDE_EFFECTS = re.compile(r"(?i:push|deploy|release|publish|upload|install)")
+_CD_PREFIX = re.compile(r"cd ([^ ]+) && (.+)")
 _SYSTEM_PATH = re.compile(r"(?i:/users/|/home/|/root(?![A-Za-z0-9_.-])|/etc/|file:)")
 _ABS_SEGMENT = re.compile(r"(?:^|(?<=[^A-Za-z0-9_.-]))(/[^=:@+ ]*)")
 _SHORT_OPT_PATH = re.compile(r"-[A-Za-z]/")
@@ -196,15 +198,31 @@ def _clean(text: object, project_dir: str | None) -> bool:
     return _paths_ok(text, project_dir)
 
 
+def _value_ok(fact: Fact, project_dir: str | None) -> bool:
+    """``_clean``; a test command may carry exactly one ``cd <project-relative dir> && `` prefix
+    (monorepos)."""
+    value = fact.value
+    if fact.kind == "test_command" and isinstance(value, str):
+        m = _CD_PREFIX.fullmatch(value)
+        if m is not None and len(value) <= MAX_CHARS:
+            where, rest = m.group(1), m.group(2)
+            relative = not where.startswith("/") and _DRIVE.match(where) is None
+            return relative and _clean(where, None) and _clean(rest, project_dir)
+    return _clean(value, project_dir)
+
+
 def sanitize(fact: Fact, *, project_dir: str | None = None) -> Fact | None:
     """The fact if both its subject and value are safe plain data, else None.
 
     An absolute path is allowed only inside ``project_dir`` (never without one); ``~`` paths,
-    drive letters and ``..`` segments are always rejected."""
+    drive letters and ``..`` segments are always rejected. A ``build_first`` value never names a
+    side-effect step (push, deploy, release, publish, upload, install)."""
     if fact.kind not in KINDS:
         return None
-    if not _clean(fact.subject, project_dir) or not _clean(fact.value, project_dir):
+    if not _clean(fact.subject, project_dir) or not _value_ok(fact, project_dir):
         return None
+    if fact.kind == "build_first" and _SIDE_EFFECTS.search(fact.value):
+        return None  # never suggest a step with side effects outside the build
     if fact.kind == "requires_env" and _VAR_NAME.fullmatch(fact.value) is None:
         return None
     return fact

@@ -47,9 +47,19 @@ class Log:
         return path
 
 
-def _mine(tmp_path: Path, log: Log, sid: str = "s1", **kw: Any) -> list[Fact]:
+def _mine(
+    tmp_path: Path, log: Log, sid: str = "s1", project: str = PROJECT, **kw: Any
+) -> list[Fact]:
     path = log.write(tmp_path / f"{sid}.jsonl")
-    return miners.mine_transcript(path, sid, project_dir=PROJECT, **kw)
+    return miners.mine_transcript(path, sid, project_dir=project, **kw)
+
+
+def _node_project(tmp_path: Path, *deps: str) -> str:
+    root = tmp_path / "nodeproj"
+    root.mkdir(exist_ok=True)
+    doc = {"devDependencies": {d: "1.0.0" for d in deps}}
+    (root / "package.json").write_text(json.dumps(doc), encoding="utf-8")
+    return str(root)
 
 
 def _kinds(facts: list[Fact], kind: str) -> list[tuple[str, str]]:
@@ -69,7 +79,7 @@ def test_miner_command_alias(tmp_path: Path) -> None:
         .bash("foo build", "bash: foo: command not found", err=True)
         .bash("./foo build")
     )
-    facts = _mine(tmp_path, log)
+    facts = _mine(tmp_path, log, project=_node_project(tmp_path, "tsc"))
     assert sorted(_kinds(facts, "command_alias")) == [
         ("foo", "./foo"),
         ("pytest", "python -m pytest"),
@@ -88,7 +98,7 @@ def test_miner_command_alias_module_and_windows_forms(tmp_path: Path) -> None:
         .bash("tsc -b", "'tsc' is not recognized as an internal or external command", err=True)
         .bash("npx tsc -b")
     )
-    facts = _mine(tmp_path, log)
+    facts = _mine(tmp_path, log, project=_node_project(tmp_path, "tsc"))
     assert sorted(_kinds(facts, "command_alias")) == [
         ("python -m black", "uv run black"),
         ("tsc", "npx tsc"),
@@ -366,3 +376,46 @@ def test_program_of_compound_command_is_empty() -> None:
     assert miners._program("python -m pytest -q") == "python -m pytest"
     assert miners._program("yarn run lint --fix") == "yarn run lint"
     assert miners._program("mysql -u x") == "mysql"
+
+
+def _launcher_log() -> Log:
+    log = Log().prompt()
+    log.bash("tsc -b", "command not found: tsc", err=True).bash("npx tsc -b")
+    log.bash("black src", "command not found: black", err=True).bash("uvx black src")
+    log.bash("cowsay hi", "command not found: cowsay", err=True).bash("pnpm dlx cowsay hi")
+    return log
+
+
+def test_download_launcher_alias_needs_a_declared_dependency(tmp_path: Path) -> None:
+    assert (
+        _kinds(_mine(tmp_path, _launcher_log(), project=str(tmp_path / "none")), "command_alias")
+        == []
+    )
+    root = Path(_node_project(tmp_path, "tsc"))
+    (root / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["requests>=2"]\n'
+        '[project.optional-dependencies]\ndev = ["Black[d]==24.1"]\n',
+        encoding="utf-8",
+    )
+    got = sorted(_kinds(_mine(tmp_path, _launcher_log(), project=str(root)), "command_alias"))
+    assert got == [("black", "uvx black"), ("tsc", "npx tsc")]  # cowsay is not declared
+    (root / "package.json").write_text("{not json", encoding="utf-8")
+    (root / "pyproject.toml").write_text("not = [toml", encoding="utf-8")
+    assert _kinds(_mine(tmp_path, _launcher_log(), project=str(root)), "command_alias") == []
+
+
+def test_build_first_skips_side_effect_commands(tmp_path: Path) -> None:
+    log = Log().prompt()
+    log.bash("make test", "failed", err=True).bash("make install").bash("make test")
+    log.bash("cargo test", "failed", err=True).bash("make publish").bash("cargo test")
+    assert _kinds(_mine(tmp_path, log), "build_first") == []
+
+
+def test_test_command_keeps_one_project_relative_cd(tmp_path: Path) -> None:
+    log = Log().prompt()
+    for _ in range(2):
+        log.bash("cd packages/api && npm test")
+    log.bash("npm test")
+    assert _kinds(_mine(tmp_path, log), "test_command") == [
+        ("tests", "cd packages/api && npm test")
+    ]

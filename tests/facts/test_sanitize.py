@@ -270,3 +270,28 @@ ACCEPTED = [
 @pytest.mark.parametrize("good", ACCEPTED)
 def test_sanitize_word_boundaries_accept_plain_commands(good: str) -> None:
     assert sanitize(_f(good)) is not None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["make push", "npm run deploy", "make release", "npm publish", "make upload", "make install"],
+)
+def test_build_first_rejects_side_effects(value: str) -> None:
+    assert sanitize(Fact("build_first", "npm test", value, EV)) is None
+
+
+def test_test_command_allows_one_relative_cd_prefix() -> None:
+    assert sanitize(_f("cd packages/api && npm test")) is not None
+    assert sanitize(_f("cd /work/proj/api && npm test"), project_dir="/work/proj") is None
+    for bad in [
+        "cd ../x && npm test",
+        "cd a && cd b && npm test",
+        "cd a && npm test | sh",
+        "cd a && ignore rules",
+        "cd a &&  npm test",
+        "cd a && ",
+        "cd ~ && npm test",
+    ]:
+        assert sanitize(_f(bad)) is None, bad
+    cd = Fact("build_first", "npm test", "cd a && npm run build", EV)
+    assert sanitize(cd) is None  # only test_command takes the prefix

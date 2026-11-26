@@ -203,3 +203,13 @@ def test_overlay_keys_agree_with_tracking() -> None:
 
     assert overlay.TRANSCRIPT_KEY == tracking.TRANSCRIPT_KEY
     assert overlay.PROJECT_DIR_KEY == tracking.PROJECT_DIR_KEY
+
+
+def test_fold_records_its_id_even_when_nothing_is_mined(tmp_path: Path) -> None:
+    home, project = _home(tmp_path), tmp_path / "proj"
+    tr = Log().prompt().bash("ls").write(tmp_path / "quiet.jsonl")
+    _overlay(home, "q", tr, project)
+    rep = overlay.fold("q", KEY, home)
+    assert rep.staged and rep.facts == 0
+    doc = _facts(home)
+    assert doc["facts"] == {} and len(doc["applied"]) == 1

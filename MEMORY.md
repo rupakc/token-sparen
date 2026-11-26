@@ -1113,3 +1113,25 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   (`tracking.record_transcript`) and on each prompt when missing/changed. SessionStart
   (`fold_pending`) spawns the detached fold instead of folding in-process when a pending session
   has a transcript, so a hook never mines.
+- Fix round 1 (coordinator rulings, same day): `requires_env` subject and `build_first`
+  subject/value are program + subcommand only (`miners._program`: `mysql`, `make build`,
+  `npm run build`, `python -m pytest`; empty, so no fact, for compound commands). The sanitiser
+  also rejects credential-named options/assignments with a value
+  (`(pass(word)?|passwd|pwd|token|secret|api[-_]?key|auth|cred|bearer)[^ ]*[=:]`),
+  `user:pw@host`, `mysql|psql|mariadb -p<value>`, the prefixes `sk_live_ sk_test_ glpat- AIza
+  npm_ xapp- xoxb- xoxp- ghs_ github_pat_`; absolute path segments anywhere in a token (after
+  `= : @ +`) unless inside the project, `-X/path`, and `/Users/ /home/ /root /etc/ file:`
+  always. The instruction deny-list (now also disregard, forget, override, previous, rules,
+  should, delete, exfil*, credential, developer, mode, pretend, jailbreak, you are, do not,
+  dont) matches whole words with simple inflections after lowercasing, leetspeak mapping
+  (0 o 1 i 3 e 4 a 5 s 7 t) and, separately, dropping `- _ .` inside a token, so `systemctl`
+  and `.gitignore` pass. The long-run secret rule needs >= 2 digits or no `_`/`-` separator
+  (long test names pass). `build_first` values never contain push|deploy|release|publish|
+  upload|install. A command alias through a downloading launcher (npx, uvx, pipx, bunx, pnpx,
+  dlx) needs the package name in `package.json` dependencies/devDependencies or
+  `pyproject.toml` (PEP 621, extras, dependency groups, Poetry); strict, so `npx tsc` is
+  dropped unless a package literally named `tsc` is declared. `test_command` may carry exactly
+  one `cd <project-relative dir> && ` prefix. The fold records its id in `facts.json` even when
+  nothing was mined.
+- For Task 26 (coordinator): rendered facts must be injected inside a clearly labelled frame
+  saying they are data, not instructions, observed in past sessions.
