@@ -159,6 +159,33 @@ def diff_cases():
             must_inline=sorted(set(must)),
         )
 
+    # `git log -p`: commit headers and messages between per-commit patches
+    r = random.Random(14)
+    shas = [f"{r.getrandbits(160):040x}" for _ in range(4)]
+    parts, needles, must = [], [], []
+    for c, sha in enumerate(shas):
+        path = f"src/app/service_{c}.py"
+        ctxn = 45
+        body = [f" value_{i} = compute_{i}(arg)  # {sentence(r, 4)}" for i in range(ctxn * 2)]
+        old, new = f"    retries = {1 + c}", f"    retries = {20 + c}"
+        lines = body[:ctxn] + [f"-{old}", f"+{new}"] + body[ctxn:]
+        parts.append(
+            f"commit {sha}\nAuthor: Dev {c} <dev{c}@example.com>\nDate:   Mon Jan {c + 1} 10:00:00 2026 +0000\n\n"
+            f"    Raise retry limit {c}\n\n    {sentence(r, 9)}\n\n"
+            f"diff --git a/{path} b/{path}\nindex 1a2b3c4..5d6e7f8 100644\n--- a/{path}\n+++ b/{path}\n"
+            f"@@ -10,{ctxn * 2 + 1} +10,{ctxn * 2 + 1} @@ def handler_{c}():\n" + "\n".join(lines)
+        )
+        needles += [f"commit {sha}", f"+{new}", f"-{old}", f"Raise retry limit {c}"]
+        must += [f"commit {sha}", f"+{new}", f"-{old}", f"Raise retry limit {c}"]
+    add(
+        "gitlog_patch.txt",
+        "\n".join(parts) + "\n",
+        ["diff"],
+        sorted(set(needles)),
+        must_inline=sorted(set(must)),
+        command="git log -p -n 4",
+    )
+
 
 # ------------------------------------------------------------------ stacktrace
 def stack_cases():

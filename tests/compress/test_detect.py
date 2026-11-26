@@ -11,7 +11,7 @@ import pytest
 
 from token_sparen import config as config_mod
 from token_sparen.compress import ContentType, detect
-from token_sparen.compress.detect import command_hint
+from token_sparen.compress.detect import command_hint, sniff
 from token_sparen.events import ToolCall
 
 
@@ -94,6 +94,22 @@ def test_detect_table() -> None:
         ("grep -rn foo src", "search"),
         ("pplx ask", "pplx"),
         ("git diff HEAD~1", "diff"),
+        ("git show HEAD~1", "diff"),
+        ("git show abc1234", "diff"),
+        ("git show --format=fuller abc1234 | head -500", "diff"),
+        ("git show abc1234 -- src/app.py", "diff"),
+        ("git show HEAD:src/app.py", None),
+        ("git show abc1234:README.md", None),
+        ("git show --stat HEAD", None),
+        ("git log -p", "diff"),
+        ("git log -p -n 300", "diff"),
+        ("git log --patch -5", "diff"),
+        ("git log", None),
+        ("git log --oneline -p", "diff"),
+        ("git stash show -p", "diff"),
+        ("git stash show -p stash@{1}", "diff"),
+        ("git stash show", None),
+        ("git stash list", None),
         ("uv run pytest -q", "test_report"),
         ("sudo time npm i", "build_log"),
         ("npm run build", None),
@@ -215,3 +231,29 @@ def test_sniff_linear_on_whitespace_heavy_heads(head: str) -> None:
         detect(head, None)
         best = min(best, time.perf_counter() - start)
     assert best < 0.005, f"{best * 1000:.1f} ms"
+
+
+_COMMIT = (
+    "commit 3f2a9c1d4e5b6a7c8d9e0f1a2b3c4d5e6f708192\n"
+    "Author: A Dev <dev@example.com>\n"
+    "Date:   Mon Jan 5 10:00:00 2026 +0000\n\n"
+    "    change the timeout\n\n"
+)
+_BODY = "diff --git a/x.py b/x.py\nindex 1..2 100644\n--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n"
+
+
+def test_sniff_commit_header_then_diff_is_diff() -> None:
+    assert sniff(_COMMIT + _BODY) == "diff"
+    assert sniff("  \n" + _COMMIT + _BODY) == "diff"
+    # several commits: the diff starts after the first message
+    assert sniff(_COMMIT + _BODY + "\n" + _COMMIT + _BODY) == "diff"
+
+
+def test_sniff_commit_without_diff_is_not_diff() -> None:
+    assert sniff(_COMMIT + "    only a message\n") != "diff"
+    assert sniff("commit not-a-sha\n" + _BODY.replace("diff --git", "diff --gat")) != "diff"
+
+
+def test_sniff_diff_must_start_within_the_first_4kb() -> None:
+    long_msg = "".join(f"    line {i} of a long message\n" for i in range(400))
+    assert sniff(_COMMIT + long_msg + _BODY) != "diff"

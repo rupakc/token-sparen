@@ -83,6 +83,28 @@ def _strip_prefix(tokens: list[str]) -> list[str]:
     return tokens
 
 
+_NO_PATCH_FLAGS = frozenset(
+    {"--stat", "--shortstat", "--numstat", "--name-only", "--name-status", "--no-patch", "-s"}
+)
+_PATCH_FLAGS = frozenset({"-p", "-u", "--patch", "--patch-with-stat"})
+
+
+def _git_hint(sub: str, rest: list[str]) -> ContentType | None:
+    """``git diff``, ``git show <commit>`` (not the ``<rev>:<path>`` file form, which is file
+    content), ``git log -p`` and ``git stash show -p`` print patches."""
+    if sub == "diff":
+        return "diff"
+    if sub == "show":
+        if any(":" in a and "://" not in a for a in rest if not a.startswith("-")):
+            return None
+        return None if _NO_PATCH_FLAGS & set(rest) else "diff"
+    if sub == "log":
+        return "diff" if _PATCH_FLAGS & set(rest) else None
+    if sub == "stash" and rest[:1] == ["show"]:
+        return "diff" if _PATCH_FLAGS & set(rest[1:]) else None
+    return None
+
+
 def _classify(tokens: list[str]) -> ContentType | None:
     name = tokens[0].rsplit("/", 1)[-1]
     args = tokens[1:]
@@ -112,8 +134,8 @@ def _classify(tokens: list[str]) -> ContentType | None:
         return "search"
     if name == "pplx":
         return "pplx"
-    if name == "git" and sub == "diff":
-        return "diff"
+    if name == "git":
+        return _git_hint(sub, args[1:])
     return None
 
 
@@ -132,6 +154,10 @@ def _tool_hint(tool: ToolCall) -> ContentType | None:
         return "search"
     cmd = tool.input.get("command")
     return command_hint(cmd) if isinstance(cmd, str) else None
+
+
+_COMMIT_HEAD = re.compile(r"commit [0-9a-f]{7,64}\b")
+_DIFF_LINE = re.compile(r"^diff --git ", re.MULTILINE)
 
 
 def _ratio(lines: list[str], pat: re.Pattern[str]) -> float:
@@ -165,6 +191,8 @@ def sniff(text: str) -> ContentType:
     stripped = head.lstrip()
     if stripped.startswith(("diff --git", "@@")):
         return "diff"
+    if _COMMIT_HEAD.match(stripped) and _DIFF_LINE.search(head):
+        return "diff"  # `git log -p` / `git show <commit>`: commit header(s), then a patch
     if _is_json(text, head):
         return "json"
     if _TEST_SNIFF.search(head):

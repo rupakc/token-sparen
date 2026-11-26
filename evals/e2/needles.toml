@@ -199,6 +199,47 @@ must_inline = [
 ]
 
 [[case]]
+file = "gitlog_patch.txt"
+command = "git log -p -n 4"
+types = ["diff"]
+needles = [
+  "+    retries = 20",
+  "+    retries = 21",
+  "+    retries = 22",
+  "+    retries = 23",
+  "-    retries = 1",
+  "-    retries = 2",
+  "-    retries = 3",
+  "-    retries = 4",
+  "Raise retry limit 0",
+  "Raise retry limit 1",
+  "Raise retry limit 2",
+  "Raise retry limit 3",
+  "commit a6ec39c1c15521b1b3dca50a9daa37e51b591d75",
+  "commit a8902e3212979bfcbbeb508f4a800646417a8105",
+  "commit bc3199944567ceb13f372617f0baef3a86f0ce2e",
+  "commit df7142dcaf29e6f877744cca4d909eb2732242fd",
+]
+must_inline = [
+  "+    retries = 20",
+  "+    retries = 21",
+  "+    retries = 22",
+  "+    retries = 23",
+  "-    retries = 1",
+  "-    retries = 2",
+  "-    retries = 3",
+  "-    retries = 4",
+  "Raise retry limit 0",
+  "Raise retry limit 1",
+  "Raise retry limit 2",
+  "Raise retry limit 3",
+  "commit a6ec39c1c15521b1b3dca50a9daa37e51b591d75",
+  "commit a8902e3212979bfcbbeb508f4a800646417a8105",
+  "commit bc3199944567ceb13f372617f0baef3a86f0ce2e",
+  "commit df7142dcaf29e6f877744cca4d909eb2732242fd",
+]
+
+[[case]]
 file = "stack_python_java_py.txt"
 types = ["stacktrace"]
 needles = [

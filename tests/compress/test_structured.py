@@ -129,6 +129,31 @@ def test_diff_golden() -> None:
     assert not res.lossless
 
 
+def test_diff_commit_headers_and_changed_lines_all_kept() -> None:
+    parts = []
+    for c in range(3):
+        ctx = [f" unchanged line {c}-{i}" for i in range(120)]
+        parts.append(
+            f"commit {c:040x}\nAuthor: A <a@example.com>\nDate:   Mon Jan 5 10:00:00 2026 +0000\n\n"
+            f"    message {c}\n\ndiff --git a/f{c} b/f{c}\n--- a/f{c}\n+++ b/f{c}\n"
+            "@@ -1,121 +1,121 @@\n" + "\n".join(ctx[:60] + [f"-old {c}", f"+new {c}"] + ctx[60:])
+        )
+    text = "\n".join(parts) + "\n"
+    for level in (LIGHT, STANDARD):
+        out = DiffCompressor().compress(text, level, NO_CTX).text
+        assert len(out) < len(text)
+        for c in range(3):
+            for want in (
+                f"commit {c:040x}",
+                "Author: A <a@example.com>",
+                f"    message {c}",
+                f"-old {c}",
+                f"+new {c}",
+            ):
+                assert want in out.split("\n"), want
+        assert out.count("Date:   Mon Jan 5 10:00:00 2026 +0000") == 3
+
+
 def test_diff_light_keeps_more_context() -> None:
     src, _ = _golden("diff_standard")
     out = DiffCompressor().compress(src, LIGHT, NO_CTX).text
