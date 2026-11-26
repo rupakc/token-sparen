@@ -7,10 +7,10 @@ shows a live token meter. Everything runs locally.
 
 ## Status
 
-Pre-release (`0.1.0.dev0`). The mechanisms below work today with fixed, conservative defaults.
+Pre-release (`0.1.0.dev0`). The mechanisms below work today; how strongly to trim is learned per
+project from your own sessions (see [How it learns](#how-it-learns)), starting conservatively.
 There are **no published benchmark numbers yet**, so this README makes no savings claims; measure
-on your own sessions with `/token-sparen` or `token-sparen stats`. Learning from past sessions is
-planned (M2/M3), see [How it learns](#how-it-learns-planned).
+on your own sessions with `/token-sparen` or `token-sparen stats`.
 
 ## Requirements
 
@@ -133,7 +133,8 @@ Everything stays on your machine, but some of it is plain text you should know a
     detection, the token ledger and read de-dupe memory, and, for each trim of the last few turns,
     the normalised command, up to 64 distinctive words of the trimmed part of the output stored
     **only as hashes** (not plain text) and up to 32 **file paths** it mentions, used to notice when
-    a trim hurt), `last_active.json`
+    a trim hurt; plus the learner's decisions awaiting their reward and the session's learned
+    evidence, ids, bucket labels and numbers only), `last_active.json`
     (the project's most recent session id), `savings_scale.json` (numbers only: recent savings
     sizes per bucket), `floor_warned.json`, `posteriors.json` and `breaker.json` (numbers only:
     learned evidence per bucket and recent regret values per decision point), `pending.json`
@@ -208,6 +209,7 @@ ignored and `doctor` flags it).
 | `governor.hard_stop` | false | deny context-adding tools at 100 % of the budget |
 | `boundary.enabled` | true | suggest `/compact` at task boundaries |
 | `subagent.enabled` | true | subagent brief decision point (its default arm is off) |
+| `learn.enabled` | true | learn how strongly to trim; `false` uses the fixed defaults |
 | `statusline.segments` | all six | which segments to show |
 | `statusline.ascii`, `statusline.color` | false, true | plain glyphs; colours |
 | `recovery.ttl_days`, `max_files`, `max_bytes` | 14, 200, 100 MB | recovery file retention |
@@ -248,12 +250,19 @@ files are plain text, though: recovered outputs, your last prompt, file paths an
 are stored as described in [What it writes to disk](#what-it-writes-to-disk). Delete
 `~/.token-sparen/` and `<project>/.token-sparen/` at any time.
 
-## How it learns (planned)
+## How it learns
 
-Planned for M2: a small constrained bandit chooses, per content type and project, how aggressively
-to trim, under a hard quality constraint (it never trades quality for tokens in a weighted sum).
-Until it ships, fixed conservative defaults apply and `learn` shows `cold`. Already in place:
-when a session ends, a background `token-sparen fold` merges what the session learned into the
+A small constrained bandit chooses, per decision point and context bucket (context fill, tool
+category, output size, content type, task phase), how strongly to trim, under a hard quality
+constraint: it never trades quality for tokens in a weighted sum. Each trim is watched for signs
+it hurt (the agent reading the saved full output, re-running the command, asking for trimmed
+content); a trimming level is used only while its plausible regret stays under a target (5 % for
+compression). A new project starts with the lightest level and unlocks stronger ones one at a time
+only after the previous one has been observed enough without regret, so early sessions trim less
+than later ones. A small share of decisions always keeps the output untouched, as a baseline. The
+subagent brief stays off (it is not learned until a benchmark shows it does not hurt quality).
+Turn learning off with `[learn] enabled = false` (fixed defaults: standard compression, read
+de-dupe pointers). When a session ends, a background `token-sparen fold` merges what the session learned into the
 project (and, weighted 0.3, into a cross-project global store that forgets after 90 idle days);
 sessions it missed are folded at the next session start. A circuit breaker pauses a decision point
 for the project for 3 sessions when the learner's recent trims clearly caused re-reads at more than

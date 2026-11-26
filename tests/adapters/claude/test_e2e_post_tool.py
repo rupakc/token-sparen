@@ -21,6 +21,7 @@ def _run(event: str, payload: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
             "TOKEN_SPAREN_HOME": str(tmp_path / "home"),
             "CLAUDE_PROJECT_DIR": str(tmp_path / "proj"),
             "TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS": "5000",  # slow CI runners
+            "TOKEN_SPAREN_TEST_SEED": "2",  # deterministic engine draws (non-default home only)
         }
     )
     proc = subprocess.run(
@@ -67,7 +68,9 @@ def test_e2e_post_tool(tmp_path: Path) -> None:
     assert [p.read_text(encoding="utf-8") for p in saved] == [text]
     (logged,) = (tmp_path / "home" / "projects").glob("*/decisions.jsonl")
     rec = json.loads(logged.read_text(encoding="utf-8"))
-    assert rec["tool_use_id"] == "tu-e2e" and rec["arm"] == "standard"
+    assert rec["tool_use_id"] == "tu-e2e"
+    # the learning engine decided: a cold bucket's ladder allows only its first trimming arm
+    assert rec["arm"] == "light" and rec["bucket"] != "static" and rec["propensity"] < 1
 
 
 def test_e2e_failure_event_is_noop_on_claude(tmp_path: Path) -> None:

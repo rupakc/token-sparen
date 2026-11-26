@@ -367,6 +367,27 @@ def cached(
     return _build(cache, cfg or Config(), os.environ if env is None else env, session_id)
 
 
+def ctx_pct(
+    overlay: Mapping[str, Any], cfg: Config, env: Mapping[str, str], session_id: str
+) -> float | None:
+    """Context fill (last call's context / window) from the overlay's incremental cache (no
+    transcript I/O); None when unknown: no cache or last call yet, or the resolved window is
+    wrong for this model (the last call exceeded it)."""
+    cache = overlay.get(CACHE)
+    if not isinstance(cache, dict) or not (_int(cache.get("last_ctx")) or 0) > 0:
+        return None
+    st = _build(cache, cfg, env, session_id)
+    return None if st.window_unknown else st.ctx_pct
+
+
+def decision_ctx(
+    event: Event, overlay: Mapping[str, Any], path: Path, cfg: Config, env: Mapping[str, str]
+) -> SessionCtx:
+    """``tracking.session_ctx`` with the context fill a decision point's ``band`` feature needs."""
+    pct = ctx_pct(overlay, cfg, env, event.session_id)
+    return tracking.session_ctx(event, overlay, path, ctx_pct=pct)
+
+
 def remaining_turns(overlay: Mapping[str, Any], cfg: Config | None = None) -> float | None:
     """Projected turns left in the session budget at the per-turn burn EWMA (no I/O), or None
     when unknown (no cache, no EWMA yet, burn unknown)."""

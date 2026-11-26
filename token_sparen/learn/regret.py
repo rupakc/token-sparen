@@ -579,7 +579,12 @@ def reward_fn(policy: object) -> Callable[[str, float | None, float | None], Non
 
 
 def pay(policy: object, payouts: Iterable[Payout]) -> None:
-    """Report regret values to a learning policy (no-op for the static policy)."""
+    """Report regret values to a learning policy (no-op for the static policy).
+
+    Nothing to pay -> the policy is not touched (a lazily built engine stays unbuilt)."""
+    payouts = list(payouts)
+    if not payouts:
+        return
     fn = reward_fn(policy)
     if fn is None:
         return

@@ -652,3 +652,49 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - Install secret: written to a 0600 temp file, then `os.link`ed into place (atomic, never over a
   racing winner; `os.replace` fallback without hard links). An empty/malformed file is re-read up
   to 5 times (10 ms apart), then replaced. Outcome rows with an empty bucket are not learned.
+
+## 2026-11-26 Task 23: engine drives every decision point
+- `learn/hookpolicy.py` `HookPolicy(cfg, env, project_key, session_id, salt)`: per hook, set in
+  `entry._respond` (ContextVar `HOOK_POLICY`); `entry.POLICY` (default None) still pins a fixed
+  policy for tests. The Engine (`StoreChain(project_key, home, session_id, params=cfg.data)`,
+  `random.Random(os.urandom)`) is built on the first `decide` or reward only; `regret.pay` with no
+  payouts no longer touches the policy, so prompt/start/pre-tool hooks never build it.
+  `[learn] enabled = false` -> `StaticPolicy`; build error -> static for the hook (logged once);
+  a decide error (engine logs it, bucket `error`) -> static for the rest of the hook. `reward` is
+  a property: None when disabled/unbuildable, so `regret.reward_fn` skips the savings scale.
+- `TOKEN_SPAREN_TEST_SEED` is honoured only with `TOKEN_SPAREN_HOME` set and not resolving to
+  `~/.token-sparen`; seed material `seed|session|<kind>|<tool use id>` (varies per hook).
+- `ctx_pct`: `governor.ctx_pct(overlay, cfg, env, sid)` from the overlay cache (no transcript I/O;
+  None without a last call or when the window is wrong); deciders build `SessionCtx` with
+  `governor.decision_ctx`. Compression's private size bands (cutoff 32k) are gone: every point uses
+  `features.for_point(..., tokens=before)`; buckets look like
+  `band=unk|cat=shell|size=sm|ctype=test_report|phase=mixed`.
+- **`[learn.hold] subagent_brief = true`** (builder call): spec 6.7 keeps the brief off until the
+  live benchmark and it has no reward signal; unheld, the engine would turn it on for ~half of the
+  subagent calls forever (cold `on` regret prior .05 = tau). Held points go through the engine
+  (bucket, breaker, pending) with no candidates: safe arm, propensity 1.
+- `token-sparen run` (`compression.compress_text`) keeps `StaticPolicy`: no session lifecycle, so
+  its trims could never be settled or folded honestly.
+- Compression: any no-op end of a trimming arm (nothing worth trimming, save deadline, never-larger
+  check) pays savings 0 + regret 0 at once; the safe arm is never rewarded (tests).
+- Measured (in-process PostToolUse, 50 KB pytest, 200 calls, this machine): static p50 15-16 ms /
+  p95 22-23 ms; engine p50 18.5-20 ms / p95 28.6-30 ms (cold: ~81 % light, rest off). Under the
+  50 ms gate, so the pending write is not batched. Perf test now runs with the engine (seeded) and
+  measures the compressing calls only.
+- Learning curves via `entry.main` (seeded, 10-27 KB pytest outputs; identical outputs saturate
+  every savings reward at 1 because the bucket p95 equals the value): recovery read after every
+  trim -> 3-4 light trims in the first 30, then 97-99 % off in the next 100 (5 seeds). Never
+  regretted (sessions of 40 rounds, folded): standard first chosen at round 30-35, aggressive at
+  81-169; last 80 of 400 rounds 46-63 of 80 standard/aggressive. Exploitation stays loose because
+  savings posteriors of the trimming arms are close (p95-normalised, capped at mass 50). Cross
+  project: after A's 6 folded sessions, fresh B chooses standard from its first decisions (5-10 of
+  20 standard/aggressive) via global back-off evidence; an untrained home: 0 of 20.
+- Existing tests that pin static arms through the hook (two pipeline tests) set
+  `TOKEN_SPAREN_LEARN__ENABLED=false`; the subprocess e2e test is seeded and expects `light`.
+- `doctor`'s synthetic hook round trip runs with `TOKEN_SPAREN_LEARN__ENABLED=false` (it checks
+  the pipeline; a cold learner draws `off` ~16 % of the time and doctor would report a broken
+  install). Tests: a suite-wide autouse fixture seeds the in-process engine per hook
+  (`"suite"` when a test sets no seed; marker `real_seed` opts out) so hook tests are deterministic.
+- Hook latency with a large store (~600 compression buckets, 263 KB project + 263 KB global
+  posteriors.json, parsed every deciding hook): p50 29 ms / p95 38 ms. Still under 50 ms; store
+  size is the next latency lever (compaction or a per-point split) if it grows further.

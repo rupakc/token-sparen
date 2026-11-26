@@ -31,13 +31,17 @@ def overlay_path(event: Event, env: Mapping[str, str] | None = None) -> Path:
     return session.session_path(home, event.project_key, event.session_id)
 
 
-def session_ctx(event: Event, overlay: Mapping[str, Any], path: Path) -> SessionCtx:
+def session_ctx(
+    event: Event, overlay: Mapping[str, Any], path: Path, *, ctx_pct: float | None = None
+) -> SessionCtx:
+    """``ctx_pct``: context fill fraction when known (``governor.ctx_pct``; decision points pass
+    it so the ``band`` feature is real), else None."""
     turn = overlay.get("turn")
     return SessionCtx(
         session_id=event.session_id,
         project_key=event.project_key,
         turn=turn if isinstance(turn, int) and not isinstance(turn, bool) else 0,
-        ctx_pct=None,
+        ctx_pct=ctx_pct,
         model=event.model,
         overlay_path=path,
         recent_cats=recent_cats(overlay),

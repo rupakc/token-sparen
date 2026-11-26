@@ -606,3 +606,25 @@ def test_governor_catch_up_parse_is_bounded(tmp_path: Path) -> None:
     governor.state(_ctx(tmp_path), t, cfg, env)
     # parse budget (150 ms) plus overlay I/O; never near the 400 ms hook cap
     assert time.perf_counter() - start < 0.3 * perf_factor()
+
+
+# --------------------------------------------------------------------------- ctx_pct (Task 23)
+
+
+def test_ctx_pct_from_cache_for_the_band_feature(tmp_path: Path) -> None:
+    cfg, env = _cfg(tmp_path), _env(tmp_path)
+    assert governor.ctx_pct({}, cfg, env, "s-1") is None  # no cache yet
+    assert governor.ctx_pct({"governor": {"last_ctx": 0}}, cfg, env, "s-1") is None
+    _state(tmp_path, _transcript(tmp_path, [_assistant("m1", 120_000)]))
+    ev = _event(tmp_path, "post_tool", None, tool="Bash")
+    path = tracking.overlay_path(ev, env)
+    overlay = session.read_session(path)
+    assert governor.ctx_pct(overlay, cfg, env, "s-1") == pytest.approx(0.6)
+    sctx = governor.decision_ctx(ev, overlay, path, cfg, env)
+    assert sctx.ctx_pct == pytest.approx(0.6) and sctx.turn == 0
+
+
+def test_ctx_pct_unknown_when_the_window_is_wrong(tmp_path: Path) -> None:
+    cfg, env = _cfg(tmp_path), _env(tmp_path)
+    overlay = {"governor": {"last_ctx": 900_000}}  # larger than the resolved 200k window
+    assert governor.ctx_pct(overlay, cfg, env, "s-1") is None

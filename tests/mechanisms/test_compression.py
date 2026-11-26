@@ -593,3 +593,51 @@ def test_floor_warning_once_per_project_across_processes(tmp_path: Path) -> None
     hook("800")  # the configured value changed: warn again
     rows = _floor_rows(tmp_path)
     assert len(rows) == 2 and "800" in rows[1]["error"]
+
+
+class _Learner:
+    """A learning policy stub: a fixed arm, records every reward."""
+
+    def __init__(self, arm: str) -> None:
+        self.arm = arm
+        self.rewards: list[tuple[str, float | None, float | None]] = []
+        self.features: list[dict[str, str]] = []
+
+    def decide(
+        self, point: DecisionPoint, features: Mapping[str, str], session: SessionCtx
+    ) -> Decision:
+        self.features.append(dict(features))
+        arm = self.arm if self.arm in point.arms else point.safe_arm
+        return Decision(f"d-{len(self.features)}", point.name, arm, 0.5, "b")
+
+    def reward(self, decision_id: str, savings: float | None, regret: float | None) -> None:
+        self.rewards.append((decision_id, savings, regret))
+
+
+def test_learning_policy_gets_the_shared_feature_buckets(tmp_path: Path) -> None:
+    pol = _Learner("standard")
+    ev = _bash(tmp_path, big_pytest())
+    compression.handle_post_tool(ev, pol, _cfg(tmp_path), env=_env(tmp_path))
+    assert pol.features == [
+        {"band": "unk", "cat": "shell", "size": "md", "ctype": "test_report", "phase": "mixed"}
+    ]
+    (reward,) = pol.rewards  # one savings reward for the trimming decision
+    assert reward[0] == "d-1" and reward[1] is not None and reward[1] > 0 and reward[2] is None
+
+
+def test_safe_arm_is_never_rewarded(tmp_path: Path) -> None:
+    pol = _Learner("off")
+    compression.handle_post_tool(
+        _bash(tmp_path, big_pytest()), pol, _cfg(tmp_path), env=_env(tmp_path)
+    )
+    assert pol.rewards == []
+
+
+def test_trimming_arm_past_the_deadline_gets_zero_rewards(tmp_path: Path) -> None:
+    pol = _Learner("standard")
+    cfg = _cfg(tmp_path, COMPRESSION__SAVE_DEADLINE_MS="0")
+    act = compression.handle_post_tool(
+        _bash(tmp_path, big_pytest()), pol, cfg, env=_env(tmp_path), started=0.0
+    )
+    assert act.replace_output is None
+    assert pol.rewards == [("d-1", 0.0, 0.0)]  # nothing removed, nothing to regret

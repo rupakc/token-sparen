@@ -525,3 +525,22 @@ def test_launcher_ships_inside_the_package() -> None:
 def test_check_wheel_script_installs_the_statusline() -> None:
     text = (ROOT / "scripts" / "check_wheel.py").read_text(encoding="utf-8")
     assert "statusline" in text and "--settings" in text and "uninstall" in text
+
+
+def test_doctor_round_trip_does_not_depend_on_learning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The synthetic round trip checks the pipeline: an engine that happened to draw its safe
+    arm must not make `doctor` report a broken install, so it runs with learning off."""
+    from token_sparen import cli
+
+    seen: dict[str, str] = {}
+
+    def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.update(kwargs["env"])  # type: ignore[arg-type]
+        return subprocess.CompletedProcess([], 0, "{}", "")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/python3")
+    cli._round_trip(Path(__file__).resolve().parents[1])
+    assert seen["TOKEN_SPAREN_LEARN__ENABLED"] == "false"

@@ -26,7 +26,7 @@ from typing import Any
 from token_sparen.config import Config, log_error, state_home
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event
-from token_sparen.learn import decisions, regret
+from token_sparen.learn import decisions, features, regret
 from token_sparen.learn.policy import READ_DEDUPE, DecisionRecord, Policy
 from token_sparen.mechanisms import governor, tracking
 from token_sparen.store import jsonstore, session
@@ -177,8 +177,9 @@ def handle_post_tool(
         return Action()
     overlay_file = tracking.overlay_path(event, env)
     overlay = session.read_session(overlay_file)
-    sctx = tracking.session_ctx(event, overlay, overlay_file)
-    decision = policy.decide(READ_DEDUPE, {"tool_category": tool.category}, sctx)
+    sctx = governor.decision_ctx(event, overlay, overlay_file, cfg, env)
+    feats = features.for_point(READ_DEDUPE, event, sctx, None, tokens=before)
+    decision = policy.decide(READ_DEDUPE, feats, sctx)
     pointer = POINTER.format(n=found["turn"])
     replaced = decision.arm == "pointer"
     after = estimate_tokens(pointer) if replaced else before

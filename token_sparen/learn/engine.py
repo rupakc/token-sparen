@@ -233,8 +233,17 @@ class Engine:
         )
         return isinstance(section, dict) and _truthy(section.get(name))
 
+    def held(self, point: DecisionPoint) -> bool:
+        """``[learn.hold] <point> = true``: the point is decided here (bucket, breaker, pending,
+        propensity 1) but never explores a trimming arm, e.g. the subagent brief, which spec 6.7
+        keeps off until the live benchmark shows non-inferior quality."""
+        value = lookup_param(
+            self.cfg.data, ("learn", "hold", point.name), lambda v: isinstance(v, bool)
+        )
+        return value is True
+
     def _candidates(self, point: DecisionPoint, features: Mapping[str, str]) -> list[Cand]:
-        if point.tier == "high" and not self.opted_in(point):
+        if self.held(point) or (point.tier == "high" and not self.opted_in(point)):
             return []
         tau = self._tau(point)
         posts = self.posteriors(point, features)

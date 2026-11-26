@@ -235,7 +235,11 @@ def _code(lines: int) -> str:
 def test_pipeline_read_dedupe_pointer_and_compact(tmp_path: Path) -> None:
     path = tmp_path / "mod.py"
     path.write_text(_code(800), encoding="utf-8")
-    env = _env(tmp_path, TOKEN_SPAREN_COMPRESSION__MIN_TOKENS="999999999")  # isolate dedupe
+    env = _env(  # isolate dedupe; static arms: the pointer is always served (no exploration)
+        tmp_path,
+        TOKEN_SPAREN_COMPRESSION__MIN_TOKENS="999999999",
+        TOKEN_SPAREN_LEARN__ENABLED="false",
+    )
     _run("UserPromptSubmit", {"session_id": "s-r", "prompt": "look"}, env)
     assert _run("PostToolUse", _read_payload(path), env) == {}
     _run("UserPromptSubmit", {"session_id": "s-r", "prompt": "again"}, env)
@@ -260,7 +264,7 @@ def test_pipeline_read_dedupe_pointer_and_compact(tmp_path: Path) -> None:
 def test_pipeline_compressed_read_is_not_deduped(tmp_path: Path) -> None:
     path = tmp_path / "big.py"
     path.write_text(_code(3000), encoding="utf-8")
-    env = _env(tmp_path)
+    env = _env(tmp_path, TOKEN_SPAREN_LEARN__ENABLED="false")  # static: both reads compressed
     first = _run("PostToolUse", _read_payload(path), env)["hookSpecificOutput"]
     assert "[token-sparen: kept " in first["updatedToolOutput"]["file"]["content"]
     # the model never saw the full file, so a re-read must not become a pointer

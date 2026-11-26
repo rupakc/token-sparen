@@ -22,7 +22,8 @@ from token_sparen.adapters.claude.translate import EVENT_KINDS, ClaudeAdapter
 from token_sparen.config import Config, load_config, log_error, state_home
 from token_sparen.events import Action, Event, EventKind
 from token_sparen.learn import breaker, overlay, regret
-from token_sparen.learn.policy import StaticPolicy
+from token_sparen.learn.hookpolicy import HookPolicy
+from token_sparen.learn.policy import Policy, StaticPolicy
 from token_sparen.mechanisms import (
     boundary,
     compression,
@@ -65,7 +66,23 @@ def register(kind: EventKind, fn: Handler, *, always: bool = False) -> None:
 HOOK_ENV: ContextVar[Mapping[str, str]] = ContextVar("HOOK_ENV", default=os.environ)
 # ``time.monotonic()`` at hook start (None outside a hook: handlers then use their own start).
 HOOK_STARTED: ContextVar[float | None] = ContextVar("HOOK_STARTED", default=None)
-POLICY = StaticPolicy({})
+# A fixed policy for every hook (tests); None (default): each hook gets its own ``HookPolicy``,
+# the learning Engine built on first use (``StaticPolicy`` when ``[learn] enabled = false``).
+POLICY: Policy | None = None
+_STATIC = StaticPolicy({})
+HOOK_POLICY: ContextVar[Policy | None] = ContextVar("HOOK_POLICY", default=None)
+
+
+def _policy() -> Policy:
+    if POLICY is not None:
+        return POLICY
+    return HOOK_POLICY.get() or _STATIC
+
+
+def _hook_policy(event: Event, cfg: Config, env: Mapping[str, str]) -> HookPolicy:
+    tool = event.tool
+    salt = f"{event.kind}|{tool.use_id if tool is not None else ''}"
+    return HookPolicy(cfg, env, event.project_key, event.session_id, salt=salt)
 
 
 def _contained(fn: Handler) -> Handler:
@@ -88,7 +105,7 @@ def _on_prompt(event: Event, cfg: Config) -> Action:
 
 
 def _on_regret(event: Event, cfg: Config) -> Action:
-    return regret.handle(event, cfg, POLICY, env=HOOK_ENV.get())
+    return regret.handle(event, cfg, _policy(), env=HOOK_ENV.get())
 
 
 def _on_track(event: Event, cfg: Config) -> Action:
@@ -98,7 +115,7 @@ def _on_track(event: Event, cfg: Config) -> Action:
 
 def _on_read_dedupe(event: Event, cfg: Config) -> Action:
     return read_dedupe.handle_post_tool(
-        event, POLICY, cfg, env=HOOK_ENV.get(), replaceable=ADAPTER.replaceable
+        event, _policy(), cfg, env=HOOK_ENV.get(), replaceable=ADAPTER.replaceable
     )
 
 
@@ -106,7 +123,7 @@ def _on_compress(event: Event, cfg: Config) -> Action:
     env = HOOK_ENV.get()
     action = compression.handle_post_tool(
         event,
-        POLICY,
+        _policy(),
         cfg,
         env=env,
         replaceable=ADAPTER.replaceable,
@@ -146,7 +163,7 @@ def _on_governor_stop(event: Event, cfg: Config) -> Action:
 
 
 def _on_subagent(event: Event, cfg: Config) -> Action:
-    return subagent.handle_pre_tool(event, POLICY, cfg, env=HOOK_ENV.get())
+    return subagent.handle_pre_tool(event, _policy(), cfg, env=HOOK_ENV.get())
 
 
 def _on_compact_instructions(event: Event, cfg: Config) -> Action:
@@ -391,9 +408,11 @@ def _respond(
         return NOOP, cfg, "disabled"
     token = HOOK_ENV.set(env)
     started = HOOK_STARTED.set(dog.started)
+    policy = HOOK_POLICY.set(_hook_policy(event, cfg, env))
     try:
         action = handle(event, cfg)
     finally:
+        HOOK_POLICY.reset(policy)
         HOOK_STARTED.reset(started)
         HOOK_ENV.reset(token)
     if action.is_noop():

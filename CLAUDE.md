@@ -2,10 +2,11 @@
 
 MIT open-source token optimizer plugin for coding agents (Claude Code first). Shipped (M0/M1):
 recoverable output compression, read de-dupe, guards, budget governor, boundary advice, live
-statusline, extensions. Planned (M2/M3): one learning engine (contextual Thompson-sampling bandit
-with a quality constraint), repo-fact learning, tool pruning; today the hooks use `StaticPolicy`
-(the engine, regret detection, session fold and circuit breaker exist) and `replay`/`facts`/
-`prune` are CLI stubs. North star: maximise tokens saved subject to no measurable quality loss.
+statusline, extensions. M2 (in progress): one learning engine (contextual Thompson-sampling bandit
+with a quality constraint) steers every hook decision (`learn/hookpolicy.py`, built lazily per
+hook; `[learn] enabled = false` -> `StaticPolicy`), with regret detection, session fold and
+circuit breaker. Planned (M3): repo-fact learning, tool pruning; `replay`/`facts`/`prune` are CLI
+stubs. North star: maximise tokens saved subject to no measurable quality loss.
 Spec: `docs/specs/2026-11-25-token-sparen-design.md`. Plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`.
 Decisions: `MEMORY.md`.
 

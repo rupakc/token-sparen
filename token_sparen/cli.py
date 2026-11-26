@@ -484,6 +484,8 @@ def _round_trip(root: Path) -> tuple[bool, str]:
             TOKEN_SPAREN_HOME=str(Path(tmp) / "home"),
             CLAUDE_PROJECT_DIR=str(project),
             TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS="5000",
+            # a pipeline check: the static arm always compresses, a cold learner may not
+            TOKEN_SPAREN_LEARN__ENABLED="false",
         )
         try:
             proc = subprocess.run(  # noqa: S603

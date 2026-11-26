@@ -6,9 +6,10 @@ equivalent is `CLAUDE.md`; the two must stay consistent.
 ## Project
 token-sparen is an MIT open-source token optimizer for coding agents (Claude Code first). Shipped
 (M0/M1): recoverable tool-output compression, read de-duplication, guards, budget governor,
-boundary advice, live statusline, trusted extensions. Planned (M2/M3): a learning engine
-(contextual Thompson-sampling bandit with a hard quality constraint), repo-fact learning and tool
-pruning; today the policy is static and `fold`/`replay`/`facts`/`prune` are stubs.
+boundary advice, live statusline, trusted extensions. M2 (in progress): a learning engine
+(contextual Thompson-sampling bandit with a hard quality constraint) now steers every hook
+decision (`learn/hookpolicy.py`; `[learn] enabled = false` -> static policy). Planned (M3):
+repo-fact learning and tool pruning; `replay`/`facts`/`prune` are stubs.
 Spec: `docs/specs/2026-11-25-token-sparen-design.md`; plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`;
 decisions: `MEMORY.md`.
 

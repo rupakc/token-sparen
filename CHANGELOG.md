@@ -37,6 +37,13 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations) and M1 (Claude Co
   a per-project circuit breaker that pauses a decision point after repeated regret. SessionEnd
   spawns the fold detached; SessionStart folds left-over sessions. The statusline `learn` segment
   shows `cold`, `adapting`, `exploiting` or `safe-mode`.
+- Learning engine drives every hook decision point (compression, pre-trim, read de-dupe, subagent
+  brief): built lazily per hook, falls back to the static policy on any engine/store error, and
+  `[learn] enabled = false` restores the fixed defaults. Decisions use the shared context buckets
+  (context fill band from the governor, tool category, size, content type, task phase). New
+  projects start with light compression and unlock stronger levels only after the lighter one has
+  been observed without regret. `[learn.hold]` keeps a point at its safe arm (the subagent brief,
+  until benchmarked).
 
 ### Changed
 - Compression never returns more than the model would have seen and enforces the 2000-token floor

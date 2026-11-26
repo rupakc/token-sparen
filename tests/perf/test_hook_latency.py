@@ -1,4 +1,5 @@
-"""Latency gate: p95 of the in-process PostToolUse hook on 50 KB pytest output."""
+"""Latency gate: p95 of the in-process PostToolUse hook on 50 KB pytest output, with the
+learning engine deciding (decide + pending write, savings reward, regret tracking)."""
 
 from __future__ import annotations
 
@@ -26,10 +27,10 @@ def test_hook_latency_p95(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
         "TOKEN_SPAREN_HOME": str(tmp_path / "home"),
         "CLAUDE_PROJECT_DIR": str(proj),
         "TOKEN_SPAREN_ADAPTER__LATENCY_SAMPLE_RATE": "0",
+        "TOKEN_SPAREN_TEST_SEED": "1",
     }
     text = big_pytest(50_000)
     times: list[float] = []
-    replaced = 0
     for i in range(CALLS):
         payload = {
             "session_id": "perf",
@@ -44,8 +45,12 @@ def test_hook_latency_p95(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
         stdout = io.StringIO()
         t0 = time.perf_counter()
         assert entry.main("PostToolUse", stdin, stdout, env) == 0
-        times.append((time.perf_counter() - t0) * 1000)
-        replaced += "updatedToolOutput" in stdout.getvalue()
-    assert replaced == CALLS  # the measured path is the compressing one
+        ms = (time.perf_counter() - t0) * 1000
+        if "updatedToolOutput" in stdout.getvalue():
+            times.append(ms)  # the measured path is the compressing one
+    assert len(times) >= CALLS * 0.7  # the engine chose a trimming arm for most calls
+    logs = list((tmp_path / "home" / "projects").glob("*/decisions.jsonl"))
+    recs = [json.loads(x) for x in logs[0].read_text(encoding="utf-8").splitlines()]
+    assert len(recs) == CALLS and all(r["bucket"] not in {"static", "error"} for r in recs)
     p95 = statistics.quantiles(times, n=100)[94]
     assert p95 < P95_BUDGET_MS * perf_factor(), f"p95 {p95:.1f} ms"

@@ -88,6 +88,17 @@ events per fresh bucket) and the Monte-Carlo propensity is unusable for IPS on r
 - Pre-trim candidates are learned at fold time from the decision log (>= 5 trimming
   compressions, mean kept ratio <= 0.4, never a regret).
 
+**2026-11-26 (M2, Task 23).** §7.1 the engine drives every hook decision point
+(`learn/hookpolicy.py`): one Engine per hook, built only when a decision point (or a reward) is
+reached; `[learn] enabled = false` -> the static arms; an engine build or decide error -> the
+static decision for the rest of that hook, logged. Every point uses `features.for_point` buckets;
+`ctx_pct` (the `band` feature) comes from the governor's incremental cache (`unk` only when
+unknown). §6.7: the subagent brief is decided by the engine but held at `off`
+(`[learn.hold] subagent_brief = true`) until the live benchmark; it has no reward signal yet.
+`token-sparen run` keeps the static policy (no session lifecycle to settle regret or fold).
+A trimming arm that ends as a no-op for any reason (nothing worth trimming, save deadline,
+never-larger check) gets savings 0 and regret 0 at once.
+
 ---
 
 ## 1. Intent and why

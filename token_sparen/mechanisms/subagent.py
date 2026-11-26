@@ -16,9 +16,9 @@ from collections.abc import Mapping
 from token_sparen.config import Config
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event
-from token_sparen.learn import decisions
+from token_sparen.learn import decisions, features
 from token_sparen.learn.policy import SUBAGENT_BRIEF, DecisionRecord, Policy
-from token_sparen.mechanisms import tracking
+from token_sparen.mechanisms import governor, tracking
 from token_sparen.store import session
 
 __all__ = ["BRIEF", "SUBAGENT_BRIEF", "brief", "handle_pre_tool"]
@@ -42,8 +42,10 @@ def handle_pre_tool(
     if not isinstance(prompt, str) or not prompt or BRIEF in prompt:
         return Action()
     overlay_file = tracking.overlay_path(event, env)
-    sctx = tracking.session_ctx(event, session.read_session(overlay_file), overlay_file)
-    decision = policy.decide(SUBAGENT_BRIEF, {"tool_category": tool.category}, sctx)
+    sctx = governor.decision_ctx(event, session.read_session(overlay_file), overlay_file, cfg, env)
+    decision = policy.decide(
+        SUBAGENT_BRIEF, features.for_point(SUBAGENT_BRIEF, event, sctx, None), sctx
+    )
     new_prompt = f"{prompt}\n\n{BRIEF}"
     on = decision.arm == "on"
     before = estimate_tokens(prompt)

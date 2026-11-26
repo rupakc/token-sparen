@@ -33,7 +33,7 @@ from token_sparen.compress import (
 from token_sparen.config import Config, log_error, state_home
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event, SessionCtx, ToolCall
-from token_sparen.learn import regret
+from token_sparen.learn import features, regret
 from token_sparen.learn.policy import (
     COMPRESSION,
     PRETRIM,
@@ -148,12 +148,6 @@ def _persisted_text(event: Event, cfg: Config) -> str | None:
         return None
 
 
-def _size_band(tokens: int) -> str:
-    if tokens < 8000:
-        return "s"
-    return "m" if tokens < 32000 else "l"
-
-
 def _command_sig(event: Event) -> str:
     tool = event.tool
     assert tool is not None
@@ -254,28 +248,31 @@ def handle_post_tool(
     tokens_full = None if full is None else estimate_tokens(full, est_type)
     overlay_file = tracking.overlay_path(event, env)
     overlay = session.read_session(overlay_file)
-    features = {
-        "tool_category": event.tool.category,
-        "content_type": ctype,
-        "size_band": _size_band(before),
-    }
-    sctx = tracking.session_ctx(event, overlay, overlay_file)
+    sctx = governor.decision_ctx(event, overlay, overlay_file, cfg, env)
     level: Level | None = None
     decision: Decision | None = None
     point: DecisionPoint = COMPRESSION
     store = paths.project_dir_for(state_home(env), event.project_key)
     pretrim_k = guards.pretrim_lines(event, store, cfg, env=env)
     if pretrim_k is not None:  # learned noisy command: maybe a tail-biased level
-        pre = policy.decide(PRETRIM, features, sctx)
+        pre_features = features.for_point(PRETRIM, event, sctx, ctype, tokens=before)
+        pre = policy.decide(PRETRIM, pre_features, sctx)
         if pre.arm == "bounded":
             decision, level, point = pre, guards.pretrim_level(cfg, pretrim_k), PRETRIM
         else:
             _log_decision(event, cfg, env, pre, ctype, before, before, None, tokens_full)
     if decision is None:
-        decision = policy.decide(COMPRESSION, features, sctx)
-    chosen_decision = decision
+        feats = features.for_point(COMPRESSION, event, sctx, ctype, tokens=before)
+        decision = policy.decide(COMPRESSION, feats, sctx)
+    chosen_decision, chosen_point = decision, point
 
     def no_op() -> Action:
+        """Nothing replaced. A trimming arm that ended as a no-op gets savings 0 and regret 0
+        at once (nothing was removed, so nothing can be regretted); the safe arm nothing."""
+        if chosen_decision.arm != chosen_point.safe_arm:
+            fn = regret.reward_fn(policy)
+            if fn is not None:
+                fn(chosen_decision.decision_id, 0.0, 0.0)
         _log_decision(event, cfg, env, chosen_decision, ctype, before, before, None, tokens_full)
         return Action()
 
@@ -304,11 +301,7 @@ def handle_post_tool(
         if len(probe) <= len(preview) and estimate_tokens(probe, est_type) <= max_after:
             chosen, chosen_source = result, source
             break
-    if chosen is None:
-        # a trimming arm that found nothing worth trimming: no savings, no possible regret
-        fn = regret.reward_fn(policy)
-        if fn is not None:
-            fn(decision.decision_id, 0.0, 0.0)
+    if chosen is None:  # a trimming arm that found nothing worth trimming
         return no_op()
     deadline = _num(cfg, "compression.save_deadline_ms", SAVE_DEADLINE_MS) / 1000
     if time.monotonic() - t0 > deadline:
