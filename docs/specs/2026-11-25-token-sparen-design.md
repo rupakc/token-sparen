@@ -35,6 +35,15 @@ Thompson rule trims aggressively in fresh buckets (aggressive 44 % of cold decis
 events per fresh bucket) and the Monte-Carlo propensity is unusable for IPS on rare arms.
 - §7.4: every regret prior (designed default and parent derived) has the fixed strength
   `kappa_regret = 20`; savings keep the estimated κ.
+- §7.6 safe-exploration ladder: arms are ordered (safe first, then increasingly aggressive). The
+  first trimming arm is always eligible; each next one only while every safer one is eligible and
+  the next-safer one is *established*: regret evidence n ≥ `ladder_obs = 20` (pooled project +
+  session full bucket, or any back-off level in project/global scope, max taken) and its regret
+  posterior mean ≤ τ. Ineligible arms are excluded before sampling (deterministic).
+- §7.6 high tier is opt-in by design: a high-tier point learns only with
+  `[learn.optin] <point> = true` set by the user (user config or env, never a project file, same
+  rule as `allow_override`); otherwise the safe arm always (propensity 1). With opt-in the ladder
+  and Thompson rule apply plus the gate regret `ucb(0.95) ≤ τ`.
 
 ---
 

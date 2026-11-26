@@ -468,3 +468,13 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - **Regret priors use `kappa_regret = 20`** (designed default and parent derived; savings keep the
   estimated kappa). Cold P(R~ <= .05) at kappa 6 -> 20: light (.02) .884 -> .879, standard (.04)
   .768 -> .712, aggressive (.08) .554 -> .374. It mostly slows aggressive; the ladder does the rest.
+- **Safe-exploration ladder** (`[learn] ladder_obs = 20`): trimming arms in declared order; the
+  first is always eligible; arm i only while arms < i are eligible (a chain: deliberately stricter
+  than "i-1 established" alone) and arm i-1 is established = regret evidence n >= ladder_obs (max
+  over pooled project+session full bucket and every back-off level in project/global scope) and
+  regret posterior mean <= tau. Excluded before sampling. `Engine.eligible(point, features)`.
+- **High tier is opt-in by design**: `[learn.optin] <point> = true` must be in the merged config
+  *and* set by the user (`~/.token-sparen/config.toml` or `TOKEN_SPAREN_LEARN__OPTIN__<POINT>`),
+  as `allow_override`; a project-only opt-in is ignored and logged. No opt-in -> safe arm,
+  propensity 1. With opt-in: ladder + Thompson + regret ucb(0.95) <= tau gate. `Engine(...,
+  env=None)` reads `os.environ` unless an env mapping is given.

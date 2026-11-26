@@ -126,21 +126,122 @@ def test_propensity_floor_observed(tmp_path: Path) -> None:
     assert all(d.propensity >= floor for d in safe)
 
 
+def _optin_user(home: Path) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.toml").write_text("[learn.optin]\nhp_test = true\n", encoding="utf-8")
+
+
 def test_high_tier_requires_ucb(tmp_path: Path) -> None:
     home = tmp_path / "h"
+    _optin_user(home)
     # Designed default: savings 0.9, regret 0.005 (mean < tau 0.01) but almost no evidence.
     extra = {"learn": {"defaults": {"hp_test": {"on": {"savings": 0.9, "regret": 0.005}}}}}
     eng = _engine(home, extra=extra)
     ctx = _ctx(home)
-    prior = Beta(0.005 * 6, 0.995 * 6)
+    prior = eng.posteriors(HIGH, {})["on"][1]
     assert prior.mean < 0.01 < prior.ucb(0.95)  # precondition: mean under tau, ucb over
     assert {eng.decide(HIGH, {}, ctx).arm for _ in range(300)} == {"off"}
 
     # Lots of zero-regret evidence: ucb clears tau, so "on" becomes feasible and wins.
     _project(home, {"hp_test": {"*": {"on": _entry(_ev(0.9), Evidence(0.0, 50.0, 50.0))}}})
     eng2 = _engine(home, extra=extra)
+    assert eng2.posteriors(HIGH, {})["on"][1].ucb(0.95) <= 0.01
     arms = Counter(eng2.decide(HIGH, {}, ctx).arm for _ in range(300))
     assert arms["on"] > 200
+
+
+def _high_ready(home: Path) -> dict[str, Any]:
+    _project(home, {"hp_test": {"*": {"on": _entry(_ev(0.9), Evidence(0.0, 50.0, 50.0))}}})
+    return {"learn": {"defaults": {"hp_test": {"on": {"savings": 0.9, "regret": 0.005}}}}}
+
+
+def test_high_tier_without_optin_is_always_safe(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    eng = _engine(home, extra=_high_ready(home))
+    ds = [eng.decide(HIGH, {}, _ctx(home)) for _ in range(100)]
+    assert {(d.arm, d.propensity) for d in ds} == {("off", 1.0)}
+
+
+def test_high_tier_optin_in_project_config_is_ignored(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    extra = _high_ready(home)
+    extra["learn"]["optin"] = {"hp_test": True}  # merged config only (e.g. a project file)
+    eng = _engine(home, extra=extra)
+    assert {eng.decide(HIGH, {}, _ctx(home)).arm for _ in range(50)} == {"off"}
+    assert any("optin" in line for line in _log_lines(home))
+
+
+def test_high_tier_optin_by_user_config_or_env(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    extra = _high_ready(home)
+    _optin_user(home)
+    eng = _engine(home, extra=extra)
+    assert Counter(eng.decide(HIGH, {}, _ctx(home)).arm for _ in range(200))["on"] > 150
+    home2 = tmp_path / "h2"
+    extra2 = _high_ready(home2)
+    extra2["learn"]["optin"] = {"hp_test": True}
+    cfg = _cfg(home2, extra2)
+    env = {"TOKEN_SPAREN_HOME": str(home2), "TOKEN_SPAREN_LEARN__OPTIN__HP_TEST": "true"}
+    eng2 = Engine(StoreChain(KEY, home2, SID, params=cfg.data), cfg, random.Random(1), env=env)
+    assert Counter(eng2.decide(HIGH, {}, _ctx(home2)).arm for _ in range(200))["on"] > 150
+
+
+def test_ladder_cold_bucket_only_first_arm(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    eng = _engine(home)
+    arms = Counter(eng.decide(COMPRESSION, FULL, _ctx(home)).arm for _ in range(500))
+    assert set(arms) <= {"off", "light"}
+    assert arms["light"] > 300
+
+
+def _reg_only(m: float, n: float) -> dict[str, Any]:
+    return {"savings": _ev(0.5, n, n).to_list(), "regret": _ev(m, n, n).to_list()}
+
+
+def test_ladder_unlocks_one_step_at_a_time(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    _project(home, {"compression": {FULL_KEY: {"light": _reg_only(0.0, 20)}}})
+    eng = _engine(home)
+    arms = Counter(eng.decide(COMPRESSION, FULL, _ctx(home)).arm for _ in range(500))
+    assert "standard" in arms and "aggressive" not in arms
+    assert eng.eligible(COMPRESSION, FULL) == ["light", "standard"]
+
+
+def test_ladder_needs_ladder_obs_and_low_regret(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    _project(home, {"compression": {FULL_KEY: {"light": _reg_only(0.0, 19)}}})
+    assert _engine(home).eligible(COMPRESSION, FULL) == ["light"]
+    assert _engine(home, extra={"learn": {"ladder_obs": 19}}).eligible(COMPRESSION, FULL) == [
+        "light",
+        "standard",
+    ]
+    _project(home, {"compression": {FULL_KEY: {"light": _reg_only(0.3, 50)}}})
+    assert _engine(home).eligible(COMPRESSION, FULL) == ["light"]  # established but too risky
+
+
+def test_ladder_counts_session_and_backoff_evidence(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    # 10 project + 10 session observations at the full bucket pool to 20
+    _project(home, {"compression": {FULL_KEY: {"light": _reg_only(0.0, 10)}}})
+    _write(_overlay(home), {"evidence": {"compression": {FULL_KEY: {"light": _reg_only(0.0, 10)}}}})
+    assert _engine(home).eligible(COMPRESSION, FULL) == ["light", "standard"]
+    # a global coarse bucket with 25 observations also establishes the arm
+    home2 = tmp_path / "h2"
+    _write(
+        home2 / "global" / "posteriors.json",
+        {"version": 2, "points": {"compression": {"*": {"light": _reg_only(0.0, 25)}}}},
+    )
+    assert _engine(home2).eligible(COMPRESSION, FULL) == ["light", "standard"]
+
+
+def test_ladder_is_a_chain(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    # standard is established and safe, but light is not established: aggressive stays locked
+    _project(
+        home,
+        {"compression": {FULL_KEY: {"light": _reg_only(0.0, 5), "standard": _reg_only(0.0, 50)}}},
+    )
+    assert _engine(home).eligible(COMPRESSION, FULL) == ["light"]
 
 
 def test_propensity_logged_and_in_unit_interval(tmp_path: Path) -> None:
@@ -356,5 +457,7 @@ def test_learn_defaults_present() -> None:
     assert learn["propensity_samples"] == 64
     assert learn["pending_max"] == 500
     assert learn["cold_obs"] == 3
+    assert learn["ladder_obs"] == 20
+    assert learn["optin"] == {}
     assert learn["tau"] == {"low": 0.10, "medium": 0.05, "high": 0.01, "none": 1.0}
     assert learn["floor"] == {"low": 0.05, "medium": 0.05, "high": 0.02, "none": 0.0}

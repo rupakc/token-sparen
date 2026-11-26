@@ -128,6 +128,9 @@ kappa_min_siblings = 3  # sibling buckets (each >= min_parent_obs) needed to est
 kappa_regret = 20  # fixed strength of every regret prior (designed default and parent derived)
 enabled = true  # false -> the static policy (no learning, propensity 1)
 propensity_samples = 64  # Monte-Carlo replays of the Thompson draw to estimate a logged propensity
+ladder_obs = 20  # a trimming arm unlocks the next more aggressive one only with >= this many
+# regret observations (pooled full bucket, or any back-off level in project/global scope) and a
+# regret posterior mean <= tau
 pending_max = 500  # decisions awaiting reward kept in the session overlay (oldest evicted)
 cold_obs = 3  # a bucket is "cold" below this many observations (learner state only; the engine
 # does not special-case cold buckets, the prior chain handles them)
@@ -139,6 +142,11 @@ low = 0.10
 medium = 0.05
 high = 0.01
 none = 1.0
+
+# High-tier decision points learn only when the user opts in per point: `<point> = true` here in
+# ~/.token-sparen/config.toml or TOKEN_SPAREN_LEARN__OPTIN__<POINT>=true (a project file cannot).
+# Without it the safe arm is always used. High tier is opt-in by design.
+[learn.optin]
 
 # Propensity floor per tier: probability of choosing the safe arm outright.
 [learn.floor]

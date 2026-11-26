@@ -20,17 +20,19 @@ it logs and returns the safe arm with propensity 1.0 and bucket ``error``.
 from __future__ import annotations
 
 import math
+import os
 import random
 import time
+import tomllib
 import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from token_sparen.config import Config, log_error
+from token_sparen.config import ENV_PREFIX, Config, log_error
 from token_sparen.events import SessionCtx
 from token_sparen.learn.beta import Beta, Evidence
-from token_sparen.learn.features import backoff_levels, bucket_key, lookup_param
+from token_sparen.learn.features import backoff_keys, backoff_levels, bucket_key, lookup_param
 from token_sparen.learn.hierarchy import SESSION_KEY, Kind, StoreChain, prior_for
 from token_sparen.learn.policy import Decision, DecisionPoint, StaticPolicy, get_point
 from token_sparen.store import jsonstore, session
@@ -52,6 +54,14 @@ def _is_num(value: object) -> bool:
     return not isinstance(value, bool) and isinstance(value, int | float) and math.isfinite(value)
 
 
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value == 1
+    return isinstance(value, str) and value.strip().lower() in {"1", "true"}
+
+
 def _draw(cands: list[Cand], tau: float, safe: str, rng: random.Random) -> str:
     """One constrained Thompson draw (no floor)."""
     best, best_s = safe, 0.0
@@ -69,8 +79,17 @@ def _draw(cands: list[Cand], tau: float, safe: str, rng: random.Random) -> str:
 class Engine:
     """Policy that learns per bucket; see the module docstring."""
 
-    def __init__(self, stores: StoreChain, cfg: Config, rng: random.Random) -> None:
+    def __init__(
+        self,
+        stores: StoreChain,
+        cfg: Config,
+        rng: random.Random,
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
         self.stores = stores
+        self._os_env: Mapping[str, str] = os.environ if env is None else env
+        self._optin: dict[str, bool] = {}
         self.cfg = cfg
         self.rng = rng
         self._env = {"TOKEN_SPAREN_HOME": str(stores.home)}
@@ -129,10 +148,82 @@ class Engine:
             out[arm] = (post[0], post[1])
         return out
 
-    def _candidates(self, point: DecisionPoint, features: Mapping[str, str]) -> list[Cand]:
+    def _established_n(self, point: DecisionPoint, features: Mapping[str, str], arm: str) -> float:
+        """Max regret observation count of ``arm``: pooled full bucket, or any back-off level in
+        project or global scope."""
+        bucket = self.bucket(point, features)
+        best = self._evidence(point.name, bucket, arm, "regret").n
+        for scope in ("project", "global"):
+            for key in backoff_keys(point.name, features, self.stores.params):
+                ev = self.stores.get(point.name, key, arm, "regret", scope)
+                if ev is not None and ev.n > best:
+                    best = ev.n
+        return best
+
+    def _ladder(
+        self,
+        point: DecisionPoint,
+        features: Mapping[str, str],
+        posts: Mapping[str, tuple[Beta, Beta]],
+    ) -> list[str]:
+        """Trimming arms the safe-exploration ladder allows, in declared order: the first is
+        always eligible; each next one only while every safer one is eligible and the next-safer
+        one is established (``n >= ladder_obs`` and regret posterior mean <= tau)."""
         tau = self._tau(point)
+        need = self._param(("ladder_obs",), 20.0)
+        out: list[str] = []
+        prev: str | None = None
+        for arm in posts:
+            if prev is not None and not (
+                posts[prev][1].mean <= tau and self._established_n(point, features, prev) >= need
+            ):
+                break
+            out.append(arm)
+            prev = arm
+        return out
+
+    def eligible(self, point: DecisionPoint, features: Mapping[str, str]) -> list[str]:
+        """Trimming arms allowed to compete (ladder, then the high-tier opt-in and ucb gate)."""
+        return [c[0] for c in self._candidates(point, features)]
+
+    def opted_in(self, point: DecisionPoint) -> bool:
+        """High-tier points learn only with ``[learn.optin] <point> = true`` in the merged config
+        *and* set by the user (``~/.token-sparen/config.toml`` or the env var), never a project."""
+        cached = self._optin.get(point.name)
+        if cached is not None:
+            return cached
+        ok = _truthy(self.cfg.get(f"learn.optin.{point.name}")) and self._user_optin(point.name)
+        if not ok and _truthy(self.cfg.get(f"learn.optin.{point.name}")):
+            log_error(
+                self._env,
+                "engine",
+                f"learn.optin.{point.name} ignored: set it in ~/.token-sparen/config.toml or "
+                f"{ENV_PREFIX}LEARN__OPTIN__{point.name.upper()}, not in a project file",
+            )
+        self._optin[point.name] = ok
+        return ok
+
+    def _user_optin(self, name: str) -> bool:
+        if _truthy(self._os_env.get(f"{ENV_PREFIX}LEARN__OPTIN__{name.upper()}")):
+            return True
+        try:
+            text = (self.stores.home / "config.toml").read_text(encoding="utf-8")
+            user = tomllib.loads(text)
+        except (OSError, ValueError):
+            return False
+        section = (
+            user.get("learn", {}).get("optin") if isinstance(user.get("learn"), dict) else None
+        )
+        return isinstance(section, dict) and _truthy(section.get(name))
+
+    def _candidates(self, point: DecisionPoint, features: Mapping[str, str]) -> list[Cand]:
+        if point.tier == "high" and not self.opted_in(point):
+            return []
+        tau = self._tau(point)
+        posts = self.posteriors(point, features)
         cands: list[Cand] = []
-        for arm, (s, r) in self.posteriors(point, features).items():
+        for arm in self._ladder(point, features, posts):
+            s, r = posts[arm]
             if point.tier == "high" and r.ucb(HIGH_UCB_Q) > tau:
                 continue  # high tier: never explore without the regret upper bound clearing
             cands.append((arm, s.a, s.b, r.a, r.b))
