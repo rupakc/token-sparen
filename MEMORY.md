@@ -644,3 +644,11 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - SessionStart order: `_on_fold_pending` before `_on_breaker_notice` (a trip found by the
   pending fold is announced in the same start).
 
+
+## 2026-11-26 Task 22 review round 2
+- Fold clears the overlay and removes its pending-index entry under one overlay lock, and only
+  when the re-read overlay holds no new evidence/outcomes (a racing hook either is seen or re-adds
+  its entry afterwards). Overlay -> pending.json matches `LOCK_ORDER`.
+- Install secret: written to a 0600 temp file, then `os.link`ed into place (atomic, never over a
+  racing winner; `os.replace` fallback without hard links). An empty/malformed file is re-read up
+  to 5 times (10 ms apart), then replaced. Outcome rows with an empty bucket are not learned.

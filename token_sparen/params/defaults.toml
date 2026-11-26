@@ -138,7 +138,8 @@ breaker_window = 50  # circuit breaker: rolling regret rate over the last N sett
 breaker_min_obs = 20  # ... evaluated only once at least this many are in the window
 breaker_every = 25  # ... re-evaluated only after this many new observations since the last
 breaker_lcb_q = 0.0005  # ... trips iff rate > 2 x tau AND this lower quantile of
-# Beta(1 + k, 1 + n - k) > tau (0.0005: ~3 % false trips at tau over 1000 trims; 0.05: ~74 %)
+# Beta(1 + k, 1 + n - k) > tau. Trips in 1000 trims (medium tier): 0.0005 -> ~2-3 % at tau,
+# ~39 % at 8 %, ~97 % at 12 %, 100 % at 3 x tau; 0.05 -> ~65 % at tau
 breaker_sessions = 3  # a tripped point uses its safe arm for this many folded sessions, then
 breaker_reentry_scale = 0.25  # re-enters with its trimming-arm project evidence scaled by this
 pretrim_min_decisions = 5  # a command becomes a pre-trim candidate after >= N trimming compressions

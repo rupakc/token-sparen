@@ -7,7 +7,7 @@
      "applied": [<fold id>, ...]}
 
 ``ring`` holds the last ``[learn] breaker_window`` (50) settled regret values of the point's
-*trimming* arms from **learned** decisions only (bucket not ``static``/``error``: the static
+*trimming* arms from **learned** decisions only (bucket not ``static``/``error``/empty: the static
 policy's trims say nothing about the learner), appended by the session fold
 (``learn.overlay``) from the overlay's ``regret_outcomes``. A point is evaluated only after
 ``breaker_every`` (25) new observations since its last evaluation, over the last 50 (at least
@@ -20,9 +20,10 @@ re-enters: the project evidence of its trimming arms is scaled by ``breaker_reen
 ``remaining`` is decremented once per *newly* folded session (a re-fold changes nothing).
 
 Calibration (simulated, medium tier tau = 0.05, 1000 trims at 10 per session, Bernoulli
-regret): with ``breaker_lcb_q = 0.05`` 74 % of runs trip at a true rate equal to tau; at
-``0.0005`` (about 0.05 over the ~40 evaluations of 1000 trims, a Bonferroni-style correction)
-2.9 % trip at tau and 100 % at 3 x tau.
+regret, 2000 runs, probability of at least one trip): with ``breaker_lcb_q = 0.05`` ~65 % of
+runs trip at a true rate equal to tau; at ``0.0005`` (about 0.05 over the ~40 evaluations of
+1000 trims, a Bonferroni-style correction) ~2-3 % trip at tau, ~39 % at 8 %, ~97 % at 12 % and
+100 % at 15 % (3 x tau).
 
 Everything here fails open: a corrupt or missing file reads as "ok".
 """

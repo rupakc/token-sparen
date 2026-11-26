@@ -871,3 +871,69 @@ def test_pretrim_lookup_truncates_like_the_decision_log(tmp_path: Path) -> None:
     env = {"TOKEN_SPAREN_HOME": str(home)}
     assert guards._normalise(ev.tool.input["command"], ev) == sig  # type: ignore[union-attr]
     assert guards.pretrim_lines(ev, _pdir(home), cfg, env=env) == 120
+
+
+# --------------------------------------------------------------------------- review round 2
+def test_hook_evidence_racing_the_fold_keeps_its_index_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from token_sparen.learn import pending
+
+    home = _home(tmp_path)
+    env = {"TOKEN_SPAREN_HOME": str(home)}
+    _session(home, evidence=ONE)
+    real_remove = pending.remove
+    hooks: list[threading.Thread] = []
+
+    def hook() -> None:  # what Engine.reward does: overlay write, then index add
+        def fn(state: dict[str, Any]) -> dict[str, Any]:
+            state["evidence"] = ONE
+            return state
+
+        jsonstore.update(_ov(home), fn, {}, env)
+        pending.add_overlay(_ov(home), env)
+
+    def racing_remove(*a: Any, **k: Any) -> None:
+        if not hooks:
+            t = threading.Thread(target=hook)
+            hooks.append(t)
+            t.start()
+            t.join(0.3)  # done unless the fold still holds the overlay lock
+        real_remove(*a, **k)
+
+    monkeypatch.setattr(pending, "remove", racing_remove)
+    _fold(home)
+    hooks[0].join(5)
+    assert _read(_ov(home))["evidence"] == ONE  # new evidence after the clear
+    assert SID in _read(_pdir(home) / "pending.json")  # still indexed: it will be folded
+
+
+def test_secret_empty_or_short_file_is_regenerated(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    home.mkdir(parents=True)
+    (home / "secret").write_text("", encoding="utf-8")  # a crash left an empty file
+    tag = overlay.project_tag(home, KEY)
+    secret = (home / "secret").read_text(encoding="utf-8")
+    assert len(secret) == 32 and int(secret, 16) >= 0
+    assert overlay.project_tag(home, KEY) == tag
+    (home / "secret").write_text("abc", encoding="utf-8")
+    assert len(overlay.project_tag(home, KEY)) == 16
+    assert len((home / "secret").read_text(encoding="utf-8")) == 32
+    assert [p.name for p in home.iterdir()] == ["secret"]  # no temp files left behind
+
+
+def test_secret_is_installed_atomically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = _home(tmp_path)
+    seen: list[str] = []
+    real_link = os.link
+
+    def link(src: Any, dst: Any, *a: Any, **k: Any) -> None:
+        seen.append(Path(src).read_text(encoding="utf-8"))  # complete before it appears
+        real_link(src, dst, *a, **k)
+
+    monkeypatch.setattr(overlay.os, "link", link)
+    overlay.project_tag(home, KEY)
+    assert len(seen) == 1 and len(seen[0]) == 32
+    assert (home / "secret").read_text(encoding="utf-8") == seen[0]

@@ -79,8 +79,10 @@ LOCK_ORDER = (
     "pending.json",
 )
 SECRET_FILE = "secret"
+SECRET_TRIES = 5
+_SECRET = re.compile(r"[0-9a-f]{32}")
 _SAFE_VALUE = re.compile(r"[A-Za-z0-9_.*-]+")
-UNLEARNED_BUCKETS = frozenset({"static", "error"})  # StaticPolicy / engine-error decisions
+UNLEARNED_BUCKETS = frozenset({"static", "error", ""})  # StaticPolicy / engine-error decisions
 FOLDING_KEY = "folding"
 FOLDED_AT = "folded_at"
 APPLIED_KEY = "applied"
@@ -395,15 +397,18 @@ def _fold(
         _global(rep, fid, cells, home, key, params, now, cap, env, timeout)
         _pretrim(rep, fid, outcomes, pdir, params, now, env, timeout)
 
-        def clear(state: dict[str, Any]) -> dict[str, Any]:
+        # Clear and un-index under one overlay lock: a hook that adds evidence either ran
+        # before (the re-check sees it and keeps the entry) or runs after (its own index add
+        # finds the entry gone and re-adds it). Overlay -> pending.json follows LOCK_ORDER.
+        with jsonstore.locked(ov, timeout):
+            state = jsonstore.read_locked(ov, {}, env)
             cur = state.get(FOLDING_KEY)
             if isinstance(cur, dict) and cur.get("id") == fid:
                 del state[FOLDING_KEY]
             state[FOLDED_AT] = now
-            return state
-
-        jsonstore.update(ov, clear, {}, env, timeout=timeout)
-        pending.remove(home, key, name, env, timeout=timeout)
+            jsonstore.write_locked(ov, state)
+            if not _unfolded(state):
+                pending.remove(home, key, name, env, timeout=timeout)
 
 
 def _breaker_and_project(
@@ -510,27 +515,55 @@ def _global(
         jsonstore.write_locked(gpath, gdoc)
 
 
+def _read_secret(path: Path) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    return text if _SECRET.fullmatch(text) else ""
+
+
+def _install_secret(path: Path, *, replace: bool) -> None:
+    """Write a fresh secret to a temp file (mode 0600), then link it into place (atomic,
+    never over a racing winner) or, for a broken file, replace it."""
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(secrets.token_hex(16))
+        if replace:
+            jsonstore.replace_with_retry(tmp, path)
+            return
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            pass  # a concurrent fold installed one first
+        except OSError:  # no hard links here: replace only while still absent
+            if not path.exists():
+                jsonstore.replace_with_retry(tmp, path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
 def project_tag(home: Path, project_key: str) -> str:
     """A per-install salted tag of a project (16 hex of sha256(secret:key)): keys the global
     store's applied fold ids without revealing the project key. The secret is 32 random hex in
-    ``<home>/secret`` (mode 0600), created on first use."""
+    ``<home>/secret`` (mode 0600), installed atomically on first use. An empty or malformed
+    file (e.g. left by a crash) is re-read a few times, then replaced."""
     path = home / SECRET_FILE
-    try:
-        secret = path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        secret = ""
-    if not secret:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fresh = secrets.token_hex(16)
-        try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:  # a concurrent fold won the race
-            secret = path.read_text(encoding="utf-8").strip()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in range(SECRET_TRIES):
+        secret = _read_secret(path)
+        if secret:
+            return hashlib.sha256(f"{secret}:{project_key}".encode()).hexdigest()[:16]
+        if secret is None:
+            _install_secret(path, replace=False)
+        elif attempt == SECRET_TRIES - 2:
+            _install_secret(path, replace=True)  # still broken: regenerate
         else:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(fresh)
-            secret = fresh
-    return hashlib.sha256(f"{secret}:{project_key}".encode()).hexdigest()[:16]
+            time.sleep(0.01)
+    raise OSError(f"{path}: cannot install the install secret")
 
 
 def _age(points: dict[str, Any], now: float, max_age: float) -> int:
