@@ -4,7 +4,7 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
 
 ## 2026-11-25 Owner decisions (spec section 17)
 - **Approach A**: one learning engine drives all mechanisms (not two bolted-together optimizers).
-- **Benchmarks are Claude-Code-only**, run under a Max 5x plan, calendar time unconstrained;
+- **Benchmarks are Claude-Code-only**, run under a Claude Max subscription, calendar time unconstrained;
   scheduler respects 5-hour windows and the weekly cap.
 - **Dogfooding**: about 2 weeks of real use to collect decision logs with propensities, needed for
   off-policy evaluation (E3).
@@ -29,7 +29,7 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
 
 ## 2026-11-25 Process
 - Development follows Elephant-Goldfish (spec section 13); see `.claude/skills/egm-cycle`.
-- Private inputs (owner's local sessions, E1 results) stay outside the repo and are only referred to generically.
+- Private inputs (the maintainer's local sessions, E1 results) stay outside the repo and are only referred to generically.
 
 ## 2026-11-25 Text compressor (Task 7)
 - Error lines (ERROR_PATTERNS) never take part in a fold run, so folding can never hide one.

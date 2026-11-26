@@ -482,4 +482,4 @@ token-sparen/
 ---
 
 ## Next plans (written after M3, informed by dogfooding data)
-M4 hill-climbing (dev/test split, OPE-gated) incl. LinTS challenger (§7.8) and the off-by-default output-style directive point (§6.6, enabled only via E4 evidence), M5 live benchmark harness (Harbor, Max 5x scheduler), M6 docs/wiki/gh-pages/release v1.0 + distribution, M7 v1.1 host adapters.
+M4 hill-climbing (dev/test split, OPE-gated) incl. LinTS challenger (§7.8) and the off-by-default output-style directive point (§6.6, enabled only via E4 evidence), M5 live benchmark harness (Harbor, a Claude Max subscription scheduler), M6 docs/wiki/gh-pages/release v1.0 + distribution, M7 v1.1 host adapters.

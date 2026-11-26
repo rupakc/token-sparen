@@ -80,7 +80,7 @@ a hard constraint, never a term traded off in a weighted sum.
 - C1 Core in **Python ≥ 3.11, standard library only** at runtime (3.10 is end-of-life and
   `tomllib` ships from 3.11; fast hook start-up, no install friction, auditable). Dev dependencies (pytest, ruff, mypy, hypothesis) are fine.
 - C2 OpenCode needs a small **TypeScript shim** (npm) that shells out to the Python core.
-- C3 Benchmarks run with **Claude Code only**, under the owner's **Claude Max subscription** (no API
+- C3 Benchmarks run with **Claude Code only**, under the maintainer's **Claude Max subscription** (no API
   keys): rate-limit-aware scheduling across 5-hour windows and weekly caps (§10.4).
 - C4 The owner's local sessions may contain confidential material: they are used only for local,
   offline evaluation; only **aggregate numbers** are ever published; no transcript text, paths, ids
@@ -381,12 +381,12 @@ the host version, capabilities and that hooks fire (synthetic event round-trip).
 ## 10. Evaluation, benchmarking and hill-climbing
 
 ### 10.0 Data sources
-E1 uses existing transcripts (≈48 top-level local sessions plus their subagent logs) — they carry no
+E1 uses existing transcripts (the maintainer's local sessions and their subagent logs) — they carry no
 propensities, so E1 measures savings and a *proxy* regret ("did the agent later reference content
 inside an elided span"). E3 (off-policy evaluation) needs **decision logs with propensities**, which
 only exist once token-sparen is installed; these come from a dogfooding period (§17).
 
-### 10.1 E1 — Offline replay on the owner's local sessions (free, private)
+### 10.1 E1 — Offline replay on the maintainer's local sessions (free, private)
 Replay transcripts (Claude Code JSONL) through the pipeline in each policy; measure tokens removed
 from re-sent context, projected billed tokens (cache-aware), and **information preservation**: for
 each elided span, whether the agent later referenced content inside it (strings, paths, line
@@ -419,7 +419,7 @@ compressor passes only if every needle survives or is reachable via the marker. 
   primary; Max quota % consumed is recorded as secondary.
 - Grading: official `swebench` harness; on the arm64 dev machine try locally built arm64 images first,
   fall back to the hosted `sb-cli` grader.
-- Budget plan (owner on **Max 5x, no deadline**): **screening** — baseline, concise-prompt control,
+- Budget plan (maintainer on **a Claude Max subscription, no deadline**): **screening** — baseline, concise-prompt control,
   token-sparen, RTK, Headroom, TokenEconomizer × 50 tasks × 1 seed on a cheaper model;
   Caveman and context-mode added if quota allows; **confirmation** — baseline + token-sparen + best
   two competitors × 50 × 3 seeds on the default model. Calendar time is unconstrained. Scheduler alternates arms inside each 5-hour
@@ -498,7 +498,7 @@ Exact module boundaries, file formats details, marker wording, compressor heuris
 CLI ergonomics, site visual design, wiki prose.
 
 ## 17. Decisions
-Owner: approach A; Claude Code-only benchmarks on Max 5x, unconstrained calendar; ~2-week dogfooding;
+Owner: approach A; Claude Code-only benchmarks on a Claude Max subscription, unconstrained calendar; ~2-week dogfooding;
 −5 pp non-inferiority gate; v1.0 = Claude Code, other hosts v1.1; hook-less clients deferred.
 
 Calls made by the designer (owner should check):
