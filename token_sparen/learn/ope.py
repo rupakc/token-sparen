@@ -57,7 +57,10 @@ NOTES = {
     "on support (rows = decisions it covers)",
     "in_sample": "engine-snapshot on the logs its own learner was trained on is in-sample and "
     "optimistic; use --holdout-after to evaluate only later decisions",
-    "regret": "decision logs carry no settled regret yet; regret_known_fraction shows coverage",
+    "regret": "settled regret joins from the log's outcome lines by decision id (recovery read, "
+    "re-run, asking for elided content: > 0; window expiry, session end, eviction, a trimming "
+    "no-op: 0); regret_known_fraction = evaluated decisions with a joined outcome; a decision "
+    "still unsettled (or whose outcome was lost) counts as regret 0",
 }
 N_BOOT = 1000
 DETERMINISTIC = 1.0 - 1e-9
@@ -377,11 +380,21 @@ def _record(row: Mapping[str, Any]) -> DecisionRecord | None:
     return rec if ok else None
 
 
+def _regret_value(value: object) -> float | None:
+    if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value):
+        return min(1.0, max(0.0, float(value)))
+    return None
+
+
 def load_log(paths: Iterable[Path]) -> tuple[list[DecisionRecord], dict[str, float]]:
-    """Decision records and the regret values some lines carry (``"regret"``); bad lines are
-    skipped silently (no line content is ever echoed)."""
+    """Decision records and their settled regret, joined by decision id: outcome lines
+    (``{"kind": "outcome", "decision_id", "regret", ...}``, ``learn.decisions``) anywhere in the
+    given logs (several per id: the largest), or a ``"regret"`` field on the decision line.
+    Outcomes of decisions not in the logs are dropped; bad lines are skipped silently (no line
+    content is ever echoed)."""
     log: list[DecisionRecord] = []
     regrets: dict[str, float] = {}
+    outcomes: dict[str, float] = {}
     for path in paths:
         try:
             fh = Path(path).open(encoding="utf-8", errors="replace")
@@ -395,14 +408,22 @@ def load_log(paths: Iterable[Path]) -> tuple[list[DecisionRecord], dict[str, flo
                     continue
                 if not isinstance(row, dict):
                     continue
+                if row.get("kind") == "outcome":
+                    did, got = row.get("decision_id"), _regret_value(row.get("regret"))
+                    if isinstance(did, str) and got is not None:
+                        outcomes[did] = max(got, outcomes.get(did, 0.0))
+                    continue
                 rec = _record(row)
                 if rec is None:
                     continue
                 log.append(rec)
-                value = row.get("regret")
-                if isinstance(value, int | float) and not isinstance(value, bool):
-                    if math.isfinite(value):
-                        regrets[rec.decision_id] = float(value)
+                value = _regret_value(row.get("regret"))
+                if value is not None:
+                    regrets[rec.decision_id] = value
+    for rec in log:
+        if rec.decision_id in outcomes:
+            joined = outcomes[rec.decision_id]
+            regrets[rec.decision_id] = max(joined, regrets.get(rec.decision_id, 0.0))
     return log, regrets
 
 

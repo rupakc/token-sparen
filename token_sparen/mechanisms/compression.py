@@ -37,7 +37,7 @@ from token_sparen.compress.filedump import is_file_dump, is_file_tool
 from token_sparen.config import Config, flag, log_error, state_home
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event, SessionCtx, ToolCall
-from token_sparen.learn import features, regret
+from token_sparen.learn import decisions, features, regret
 from token_sparen.learn.policy import (
     COMPRESSION,
     PRETRIM,
@@ -174,6 +174,19 @@ def _command_sig(event: Event) -> str:
     if tool.name == "Bash" and isinstance(cmd, str):
         return regret.event_signature(event)[:COMMAND_SIG_CHARS]
     return tool.name
+
+
+def _log_no_op(event: Event, cfg: Config, env: Mapping[str, str], decision_id: str) -> None:
+    """A trimming arm that replaced nothing: its regret is settled at 0 at once (an outcome
+    line after its decision line)."""
+    try:
+        pdir = paths.project_dir_for(state_home(env), event.project_key)
+    except ValueError as exc:
+        log_error(env, "compression", f"decision log: {exc}")
+        return
+    decisions.append_outcomes(
+        pdir, [decisions.outcome(decision_id, 0.0, "no_op")], cfg, env, "compression"
+    )
 
 
 def _log_decision(
@@ -391,6 +404,8 @@ def handle_post_tool(
             if fn is not None:
                 fn(chosen_decision.decision_id, 0.0, 0.0)
         _log_decision(event, cfg, env, chosen_decision, ctype, before, before, None, tokens_full)
+        if chosen_decision.arm != chosen_point.safe_arm:
+            _log_no_op(event, cfg, env, chosen_decision.decision_id)
         return Action()
 
     if level is None:

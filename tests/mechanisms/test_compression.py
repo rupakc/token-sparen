@@ -94,7 +94,8 @@ def _decisions(tmp_path: Path) -> list[dict[str, Any]]:
     path = tmp_path / "home" / "projects" / KEY / "decisions.jsonl"
     if not path.exists():
         return []
-    return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()]
+    rows = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()]
+    return [r for r in rows if "kind" not in r]  # outcome lines are not decisions
 
 
 def _overlay(tmp_path: Path, sid: str = "s-1") -> dict[str, Any]:

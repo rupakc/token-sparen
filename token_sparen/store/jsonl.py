@@ -16,8 +16,20 @@ def append(
     path: Path, record: dict[str, Any], max_bytes: int, env: Mapping[str, str] | None = None
 ) -> None:
     """Append one record; rotate ``path`` to ``path.1`` once it would exceed ``max_bytes``."""
+    append_many(path, [record], max_bytes, env)
+
+
+def append_many(
+    path: Path,
+    records: list[dict[str, Any]],
+    max_bytes: int,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    """Append records under one lock (rotation as ``append``, checked once for the batch)."""
+    if not records:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
-    line = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+    line = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records).encode("utf-8")
     with locked(path):
         try:
             size = path.stat().st_size

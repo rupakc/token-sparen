@@ -262,4 +262,4 @@ def test_regret_settlement_records_outcomes_in_overlay(tmp_path: Path) -> None:
     )
     det._apply(path, regret._Info(), 1, True, True)  # SessionEnd settles everything
     outs = session.read_session(path)["regret_outcomes"]
-    assert outs == [["d1", "compression", "standard", "pytest -q", 0.0, "b"]]
+    assert outs == [["d1", "compression", "standard", "pytest -q", 0.0, "b", "session_end"]]

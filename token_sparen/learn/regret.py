@@ -49,6 +49,7 @@ import os
 import posixpath
 import re
 import shlex
+import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,7 +59,7 @@ from token_sparen import recovery
 from token_sparen.config import Config, log_error, state_home
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event, SessionCtx
-from token_sparen.learn import pending
+from token_sparen.learn import decisions, pending
 from token_sparen.store import jsonstore, paths, session
 
 REGRET_KEY = "regret"  # the previous table format: {decision_id: {field: value}} (still read)
@@ -486,6 +487,7 @@ _FIELDS = (
     "best",
     "changed_since",  # 0 / 1
     "read_hash",
+    "best_sig",  # the signal that set ``best`` (absent in rows written before it existed)
 )
 
 
@@ -505,6 +507,7 @@ def _encode(entry: Mapping[str, Any]) -> list[Any]:
     )
     files = list(dict.fromkeys(f for f in _mentions(entry.get("files_in_span")) if "\n" not in f))
     read_hash = entry.get("read_hash")
+    best_sig = entry.get("best_sig")
     return [
         entry.get("point"),
         entry.get("bucket"),
@@ -520,6 +523,7 @@ def _encode(entry: Mapping[str, Any]) -> list[Any]:
         _best(entry),
         1 if entry.get("changed_since") is True else 0,
         read_hash if isinstance(read_hash, str) else None,
+        best_sig if isinstance(best_sig, str) else None,
     ]
 
 
@@ -543,9 +547,9 @@ def _decode(row: Any, *, expand: bool = False) -> dict[str, Any] | None:
     ``expand`` (the hot path checks them without splitting; ``_digests`` / ``_mentions``)."""
     if isinstance(row, dict):
         return row
-    if not isinstance(row, list) or len(row) != len(_FIELDS):
+    if not isinstance(row, list) or len(row) not in (len(_FIELDS) - 1, len(_FIELDS)):
         return None
-    entry = dict(zip(_FIELDS, row, strict=True))
+    entry = dict(zip(_FIELDS, [*row, None][: len(_FIELDS)], strict=True))
     if expand:
         entry["elided_tokens"] = _digests(entry["elided_tokens"])
         entry["files_in_span"] = _mentions(entry["files_in_span"])
@@ -557,6 +561,8 @@ def _decode(row: Any, *, expand: bool = False) -> dict[str, Any] | None:
         del entry["changed_since"]
     if entry["read_hash"] is None:
         del entry["read_hash"]
+    if entry["best_sig"] is None:
+        del entry["best_sig"]
     return entry
 
 
@@ -598,7 +604,18 @@ def read_table(overlay: Path) -> dict[str, dict[str, Any]]:
     return _load_table(jsonstore.read(side, {}), expand=True) if side.is_file() else {}
 
 
-def _outcome(did: str, entry: Any, value: float) -> list[Any]:
+def _signal(entry: Any, value: float, zero: str) -> str:
+    """The signal behind a settled value: the one that set ``best``, else ``zero`` (why a value
+    of 0 was settled: ``expiry``, ``session_end``, ``evicted``)."""
+    if value <= 0.0:
+        return zero
+    sig = entry.get("best_sig") if isinstance(entry, dict) else None
+    return sig if isinstance(sig, str) and sig else "unknown"  # a row from before best_sig
+
+
+def _outcome(did: str, entry: Any, value: float, signal: str) -> list[Any]:
+    """``[decision_id, point, arm, command_sig, value, bucket, signal]`` (the fold reads the
+    first six)."""
     e = entry if isinstance(entry, dict) else {}
     vals = [e.get("point"), e.get("arm"), e.get("command_sig")]
     bucket = e.get("bucket")
@@ -607,6 +624,7 @@ def _outcome(did: str, entry: Any, value: float) -> list[Any]:
         *(v if isinstance(v, str) else "" for v in vals),
         value,
         bucket if isinstance(bucket, str) else "",
+        signal,
     ]
 
 
@@ -807,8 +825,9 @@ class RegretDetector:
             while len(table) > MAX_TRACKED:
                 old = next(iter(table))
                 gone = table.pop(old)
-                evicted.append((old, _best(gone)))
-                rows.append(_outcome(old, gone, evicted[-1][1]))
+                value = _best(gone)
+                evicted.append((old, value))
+                rows.append(_outcome(old, gone, value, _signal(gone, value, "evicted")))
             _save_table(doc, table)
             return doc
 
@@ -818,8 +837,8 @@ class RegretDetector:
             pending.add_overlay(ctx.overlay_path, self.env)
         return evicted
 
-    @staticmethod
     def _overlay_after(
+        self,
         path: Path,
         rows: list[list[Any]],
         *,
@@ -828,9 +847,14 @@ class RegretDetector:
         forget: set[str] | None = None,
     ) -> None:
         """The overlay side of a table change: settled outcomes, ledger counters, forgotten
-        reads (one overlay lock, taken after the sidecar lock was released)."""
+        reads (one overlay lock, taken after the sidecar lock was released); then the settled
+        outcomes go to the project's decision log (its own lock, alone)."""
         if not (rows or regrets or read_tokens or forget):
             return
+        try:
+            self._log_outcomes(path, rows)
+        except Exception as exc:  # noqa: BLE001 - the overlay update must still happen
+            log_error(self.env, "regret", f"outcome log: {type(exc).__name__}: {exc}")
 
         def apply(state: dict[str, Any]) -> dict[str, Any]:
             _record_outcomes(state, rows)
@@ -843,6 +867,18 @@ class RegretDetector:
             return state
 
         session.update_session(path, apply)
+
+    def _log_outcomes(self, overlay: Path, rows: list[list[Any]]) -> None:
+        """Settled ``rows`` as outcome lines of ``projects/<key>/decisions.jsonl`` (the
+        overlay lives in ``projects/<key>/sessions/``), so the decision id -> regret link
+        outlives the fold, which consumes the overlay's rows."""
+        now = time.time()
+        recs = [
+            decisions.outcome(row[0], float(row[4]), str(row[6]) if len(row) > 6 else "", now)
+            for row in rows
+            if isinstance(row[0], str) and isinstance(row[4], int | float)
+        ]
+        decisions.append_outcomes(overlay.parent.parent, recs, self.cfg, self.env, "regret")
 
     # --- signals ----------------------------------------------------------------------------
 
@@ -872,10 +908,10 @@ class RegretDetector:
                 del table[did]
                 changed = True
                 continue
-            value = 0.0
+            value, sig = 0.0, ""
             decided = _int(entry.get("decided_turn"))
             if info.recovery_ids and entry.get("recovery_id") in info.recovery_ids:
-                value = FULL
+                value, sig = FULL, "recovery_read"
             edited = _strs(entry.get("edited_paths_since"))
             if info.edit_path is not None:
                 files = entry.get("files_in_span")
@@ -898,7 +934,9 @@ class RegretDetector:
                         and age <= FULL_WITHIN_TURNS
                         and entry.get("changed_since") is not True
                     )
-                    value = max(value, FULL if full else PARTIAL)
+                    got = FULL if full else PARTIAL
+                    if got > value:
+                        value, sig = got, "rerun"
             elif not rerun and info.state_change and entry.get("changed_since") is not True:
                 entry["changed_since"] = True
                 changed = True
@@ -911,7 +949,8 @@ class RegretDetector:
                     if tok in info.tokens:
                         hits += 1
                         if hits >= MIN_TOKEN_HITS:
-                            value = max(value, PARTIAL)
+                            if PARTIAL > value:
+                                value, sig = PARTIAL, "elided_ask"
                             break
             best = _best(entry)
             if value > 0.0:
@@ -921,11 +960,13 @@ class RegretDetector:
                     forget.add(read_hash)
                 if value > best:
                     entry["best"] = best = value
+                    entry["best_sig"] = sig
                     changed = True
             if settle and (best >= FULL or final or turn - decided > window):
                 payouts.append((did, best))
                 if outcomes is not None:
-                    outcomes.append(_outcome(did, entry, best))
+                    zero = "session_end" if final else "expiry"
+                    outcomes.append(_outcome(did, entry, best, _signal(entry, best, zero)))
                 del table[did]
                 changed = True
         return signals, payouts, changed, forget
@@ -1009,7 +1050,8 @@ class RegretDetector:
                     continue
                 if _int(entry.get("decided_turn")) != ctx.turn:
                     continue
-                entry["best"] = max(_best(entry), PARTIAL)
+                if PARTIAL > _best(entry):
+                    entry["best"], entry["best_sig"] = PARTIAL, "failure_loop"
                 out.append((did, PARTIAL))
             _save_table(state, table)
             return state
@@ -1061,14 +1103,14 @@ def record_recovery_read(
             table = _load_table(doc)
             for entry in table.values():
                 if entry.get("recovery_id") == recovery_id:
-                    entry["best"] = FULL
+                    entry["best"], entry["best_sig"] = FULL, "recovery_read"
             _save_table(doc, table)
             return doc
 
         side = table_path(overlay)
         if side.is_file():
             jsonstore.update(side, mark, {})
-        RegretDetector._overlay_after(overlay, [], read_tokens=max(0, tokens))
+        RegretDetector(env=env)._overlay_after(overlay, [], read_tokens=max(0, tokens))
     except Exception as exc:  # noqa: BLE001 - never break `show`
         log_error(env, "regret", f"show: {type(exc).__name__}: {exc}")
 

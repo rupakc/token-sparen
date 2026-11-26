@@ -102,7 +102,7 @@ def decisions(home: Path) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for path in sorted(home.glob("projects/*/decisions.jsonl")):
         out += [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x]
-    return out
+    return [r for r in out if "kind" not in r]  # outcome lines are not decisions
 
 
 def project_key(home: Path, proj: Path) -> str:

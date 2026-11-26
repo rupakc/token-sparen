@@ -1037,3 +1037,14 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   logged (safe arm, propensity 1). `compression.allow_ctypes = []` is the config-only switch
   (gated before any decision; tested). `replay --policy static` and `ope --target static`
   evaluate the plain static arms (hypothetical policies, not the user's config).
+- C1: settled regret reaches the decision log. Each settlement appends
+  `{"kind": "outcome", "decision_id", "regret", "signal", "ts"}` to `projects/<key>/decisions.jsonl`
+  (`learn.decisions.outcome` / `append_outcomes`, same size cap and rotation, one lock per
+  batch). Written live by `RegretDetector._overlay_after` (signals, window `expiry`,
+  `session_end`, `evicted`; the regret table row gained `best_sig`, 14-field rows still decode,
+  signal `unknown`), by `token-sparen show` via the next settle, and by a trimming `no_op`
+  (compression). The fold still consumes the overlay's `regret_outcomes` (rows now carry a 7th
+  element, the signal; 5-7 accepted) and never writes outcome lines, so nothing is duplicated.
+  `ope.load_log` joins outcomes by id (max per id; orphans dropped); `regret_known_fraction` =
+  evaluated decisions with a joined outcome (safe-arm decisions have none: their reward is 0 by
+  definition). Readers that want decisions only skip lines with a `kind`.

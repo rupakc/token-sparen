@@ -340,14 +340,14 @@ class Outcome(NamedTuple):
 
 
 def _outcomes(raw: object) -> list[Outcome]:
-    """Well-formed ``[id, point, arm, command_sig, value(, bucket)]`` rows (a row without a
-    bucket predates its recording and is not known to be learned)."""
+    """Well-formed ``[id, point, arm, command_sig, value(, bucket(, signal))]`` rows (a row
+    without a bucket predates its recording and is not known to be learned)."""
     out: list[Outcome] = []
     for row in raw if isinstance(raw, list) else []:
-        if not isinstance(row, list) or len(row) not in (5, 6):
+        if not isinstance(row, list) or len(row) not in (5, 6, 7):
             continue
         point, arm, sig, value = row[1:5]
-        bucket = row[5] if len(row) == 6 else None
+        bucket = row[5] if len(row) >= 6 else None
         if isinstance(point, str) and isinstance(arm, str) and isinstance(sig, str):
             x = _num(value)
             if x is not None:
