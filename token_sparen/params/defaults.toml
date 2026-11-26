@@ -86,7 +86,7 @@ econ_notice = 0.50  # share of the budget
 econ_advise = 0.80
 ctx_notice = 0.60  # risk: share of the context window used by the last call
 ctx_advise = 0.80
-hard_stop = false  # true: at >= 100 % of the budget, deny Read/Bash/WebFetch/WebSearch/Task/Agent
+hard_stop = false  # true: at >= 100 % of the budget, deny Read/Bash/WebFetch/WebSearch/Grep/Glob/LS/Task/Agent and mcp__* tools
 ewma_alpha = 0.3  # per-turn burn smoothing
 max_unparsed_bytes = 50000000  # first contact with a larger unparsed transcript: burn unknown
 tail_scan_bytes = 1000000  # then the last call is looked up in this many trailing bytes

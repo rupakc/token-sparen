@@ -46,10 +46,11 @@ A trimmed output ends with:
 - Error lines, failures and stack-trace edges are never elided.
 - To see everything, run `token-sparen show <id>` (12 hex characters), or read the `<path>` file.
 - Recover only what you need: lines you can see are enough in most cases.
-- Full outputs live in `<project>/.token-sparen/outputs/` and expire after 14 days.
+- Full outputs live in `<project>/.token-sparen/outputs/` and are pruned after 14 days (checked whenever a new output is saved).
 
 ## Commands
-- `token-sparen stats [--session ID] [--json]`: tokens saved, decisions per arm, recovery reads.
+- `token-sparen stats [--session ID] [--json]`: tokens saved (gross: recovery reads are not yet
+  subtracted, planned M2), decisions per arm.
 - `token-sparen doctor [--fix]`: verifies Python, state home, hooks and a synthetic round-trip.
 - `token-sparen run -- <command>`: run a command and print its compressed output.
 - `token-sparen statusline install|uninstall`: opt-in live statusline (backs up settings).

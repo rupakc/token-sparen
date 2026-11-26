@@ -132,8 +132,8 @@ a hard constraint, never a term traded off in a weighted sum.
   `render_tool_output(...)`, and mechanisms never import an adapter. Adapters declare
   **capabilities**; today the adapter's `replaceable` predicate, not the flags, decides what a
   mechanism may replace. Hook events handled on Claude Code: SessionStart, UserPromptSubmit,
-  PreToolUse, PostToolUse, PostToolUseFailure, PreCompact, SessionEnd (the detached `fold` at
-  session end is planned, M2). There is no per-batch event; no mechanism needs one.
+  PreToolUse, PostToolUse, PostToolUseFailure, PreCompact, SessionEnd (SessionEnd is registered but
+  has no handler yet; the detached `fold` it will start is planned, M2). There is no per-batch event; no mechanism needs one.
 - **Fail-open everywhere**: every hook entrypoint wraps the pipeline; on exception or a
   latency-budget overrun it returns the host's no-op response and logs to
   `~/.token-sparen/logs/errors.jsonl`.

@@ -55,7 +55,10 @@ Use the repo `.venv`. All must pass before a commit.
 - Config precedence: defaults < `~/.token-sparen/config.toml` < `<project>/token-sparen.toml` < env
   `TOKEN_SPAREN_*` < session overrides (`token-sparen config set`).
 - State root `~/.token-sparen/` (override `TOKEN_SPAREN_HOME`); project key = first 16 hex of
-  sha256(normalised git remote), else sha256(realpath). Never store raw paths in shared stores.
+  sha256(normalised git remote), else sha256(realpath). Never store raw paths in shared/global stores
+  (`projects/`, `global/`); user-local bookkeeping (trusted extensions, statusline install record) may.
+- Local files are plain text (session overlay keeps the last prompt <= 2000 chars and file paths;
+  `decisions.jsonl` keeps 500 chars of Bash commands): keep README's disk disclosure accurate.
 - Hook commands reference files only via `${CLAUDE_PLUGIN_ROOT}`; no top-level `bin/`, no unpinned
   `npx`/`uvx`, no non-image plugin file > 256 KiB.
 - Settings writes (statusline, tool pruning) are opt-in, backed up, reversible, disclosed in README.

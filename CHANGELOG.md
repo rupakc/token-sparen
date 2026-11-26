@@ -36,7 +36,7 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations) and M1 (Claude Co
 - Compression never returns more than the model would have seen and enforces the 2000-token floor
   (a lower `compression.min_tokens` is ignored with a one-time warning).
 - Mechanisms are host-neutral: tool-output shapes live behind the host adapter.
-- Pre-trim is a PostToolUse compression arm; commands are never rewritten.
+- Pre-trim is a PostToolUse compression arm (inert until M2 learns candidates); commands are never rewritten.
 - `/token-sparen` is a plugin skill with only read-only subcommands pre-approved.
 - The hard stop also covers Grep, Glob, LS and MCP tools.
 - `doctor` suggests `py -3`/`python` on Windows when `python3` is missing.
