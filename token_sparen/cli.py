@@ -103,6 +103,10 @@ def build_parser() -> argparse.ArgumentParser:
     ope_p.add_argument("--target", choices=["static", "engine-snapshot"], required=True)
     ope_p.add_argument("--n-boot", type=int, default=1000, help="bootstrap resamples")
     ope_p.add_argument("--seed", type=int, default=0)
+    ope_p.add_argument(
+        "--holdout-after",
+        help="YYYY-MM-DD: evaluate only decisions logged on or after this date (UTC)",
+    )
     ope_p.add_argument("--out", type=Path, required=True, help="report file outside any repository")
     for name in _STUBS:
         stub = sub.add_parser(name, help="available after M3")
@@ -826,12 +830,23 @@ def _ope_target(
 
 def _ope_cmd(args: argparse.Namespace) -> int:
     """E3. Prints aggregates only."""
+    from datetime import UTC, datetime
+
     from token_sparen.learn import ope
     from token_sparen.replay import report
 
     out = _private_out(args.out)
+    since: float | None = None
+    if args.holdout_after:
+        try:
+            day = datetime.strptime(args.holdout_after, "%Y-%m-%d").replace(tzinfo=UTC)
+        except ValueError:
+            raise CliError("--holdout-after must be YYYY-MM-DD") from None
+        since = day.timestamp()
     try:
         target, log, regrets = _ope_target(args, list(args.log))
+        if since is not None:
+            log = [r for r in log if isinstance(r.ts, int | float) and r.ts >= since]
         points = ope.evaluate(
             log, target, regrets=regrets, n_boot=max(1, args.n_boot), seed=args.seed
         )
@@ -843,6 +858,8 @@ def _ope_cmd(args: argparse.Namespace) -> int:
                 "target": args.target,
                 "n_boot": max(1, args.n_boot),
                 "clip": ope.CLIP,
+                "holdout_after": args.holdout_after,
+                "notes": ope.NOTES,
                 "points": points,
             },
         )

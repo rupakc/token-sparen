@@ -16,18 +16,23 @@ propensity <= 0 is unsupported as a whole (contributes 0, its target mass is uns
 decision whose logging propensity is 1 had no other arm available, so the target's mass on any
 other arm (``1 - pi(a_log|x)``) is unsupported; DR does not extrapolate the reward model onto it.
 ``unsupported_mass`` is the mean over evaluated decisions; estimates cover the supported mass
-only and never fill the rest in. Ladder-locked arms have target probability exactly 0
+only and never fill the rest in (SNIPS is reported conditional on support, over fully supported
+rows). Caveat: for a stochastic logger the log cannot show which other arms it could have
+chosen, so ``unsupported_mass`` is a lower bound there. Evaluating ``engine-snapshot`` on the
+logs its own learner was trained on is in-sample (optimistic); hold out later decisions
+(``holdout_after``). Ladder-locked arms have target probability exactly 0
 (``Engine.action_probs`` is unclamped). Decisions whose context cannot be recovered (bucket
 ``static`` / ``error`` for an engine target, unknown point) are counted in ``no_context``.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import random
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -43,6 +48,16 @@ from token_sparen.learn.policy import (
 )
 
 CLIP = 20.0
+NOTES = {
+    "reward": "savings = fraction of the output's estimated tokens removed; minus regret / tau",
+    "support": "unsupported_mass counts target mass the log cannot support (logging propensity "
+    "0, or 1 with the target elsewhere); a lower bound for stochastic loggers, which do not log "
+    "the arms they could not choose; IPS and DR cover supported mass only; SNIPS is conditional "
+    "on support (rows = decisions it covers)",
+    "in_sample": "engine-snapshot on the logs its own learner was trained on is in-sample and "
+    "optimistic; use --holdout-after to evaluate only later decisions",
+    "regret": "decision logs carry no settled regret yet; regret_known_fraction shows coverage",
+}
 N_BOOT = 1000
 DETERMINISTIC = 1.0 - 1e-9
 _CTX = SessionCtx("ope", "ope", 0, None, None, Path("ope"))
@@ -58,9 +73,18 @@ class Estimate:
     unsupported: int  # decisions with logging propensity <= 0
     no_context: int
     regret_known: int
+    rows: int = -1  # decisions the value is normalised over (-1: all n)
+    conditional: bool = False  # SNIPS: value conditional on support (not the target's value)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"value": round(self.value, 6), "ci95": [round(x, 6) for x in self.ci95]}
+        out: dict[str, Any] = {
+            "value": round(self.value, 6),
+            "ci95": [round(x, 6) for x in self.ci95],
+        }
+        if self.conditional:
+            out["conditional_on_support"] = True
+            out["rows"] = self.rows
+        return out
 
 
 class Target(Protocol):
@@ -104,6 +128,8 @@ class EngineTarget:
 
     def probs(self, rec: DecisionRecord) -> Mapping[str, float] | None:
         point = get_point(rec.point)
+        if point is not None and not self.engine.enabled():
+            return StaticTarget(StaticPolicy({})).probs(rec)  # `[learn] enabled = false`
         feats = bucket_features(rec.bucket)
         if point is None or feats is None:
             return None
@@ -177,6 +203,7 @@ class _Terms:
     ips: list[float]
     weights: list[float]
     dr: list[float]
+    full: list[bool] = field(default_factory=list)  # row has no unsupported target mass
     n: int = 0
     clipped: int = 0
     unsupported: int = 0
@@ -210,6 +237,7 @@ def _terms(
             t.ips.append(0.0)
             t.weights.append(0.0)
             t.dr.append(0.0)
+            t.full.append(False)
             continue
         r = reward(rec, known, tau)
         w = pi_a / p
@@ -218,6 +246,7 @@ def _terms(
             t.clipped += 1
         t.ips.append(w * r)
         t.weights.append(w)
+        t.full.append(p < DETERMINISTIC or pi_a >= DETERMINISTIC)
         if p >= DETERMINISTIC:  # the logger could choose nothing else here
             t.unsupported_mass += max(0.0, 1.0 - pi_a)
             if model is not None:
@@ -289,9 +318,13 @@ def snips(
     seed: int = 0,
     tau: Mapping[str, float] | None = None,
 ) -> Estimate:
-    """Self-normalised IPS: sum(w r) / sum(w)."""
+    """Self-normalised IPS, **conditional on support**: sum(w r) / sum(w) over the decisions
+    whose target mass is fully supported (a deterministic logger's row where the target also
+    puts mass elsewhere is left out, so unsupported mass is never filled in with the supported
+    rows' value). ``rows`` says how many decisions it covers; logs from a stochastic logger
+    cannot show which other arms it could choose, so their rows always count as supported."""
     t = _terms(log, as_target(target), regrets or {}, None, clip, tau)
-    pairs = list(zip(t.ips, t.weights, strict=True))
+    pairs = [(x, w) for x, w, ok in zip(t.ips, t.weights, t.full, strict=True) if ok]
 
     def ratio(sample: Sequence[tuple[float, float]]) -> float:
         den = sum(w for _, w in sample)
@@ -299,7 +332,8 @@ def snips(
 
     rng = random.Random(seed)
     boots = [ratio(rng.choices(pairs, k=len(pairs))) for _ in range(n_boot)] if pairs else []
-    return _estimate(t, ratio(pairs), _percentiles(boots))
+    est = _estimate(t, ratio(pairs), _percentiles(boots))
+    return dataclasses.replace(est, rows=len(pairs), conditional=True)
 
 
 def doubly_robust(

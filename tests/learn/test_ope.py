@@ -292,3 +292,58 @@ def test_empty_log_estimate() -> None:
     est = ope.ips([], TableTarget())
     assert est.n == 0 and est.value == 0.0 and est.ci95 == (0.0, 0.0)
     assert ope.snips([], TableTarget()).value == 0.0
+
+
+def test_snips_is_conditional_on_support_mixed_logger() -> None:
+    """Half the decisions come from a static logger (standard, p = 1), half from a uniform one.
+    The target splits standard/aggressive; SNIPS must not fill the unsupported aggressive mass
+    of the static rows with the supported rows' value."""
+    rng = random.Random(5)
+    log: list[DecisionRecord] = []
+    for i in range(400):
+        if i % 2:
+            log.append(_rec(f"s{i}", "standard", 1.0, CTX[0], 10_000, 5_000))
+        else:
+            arm = rng.choice(ARMS)
+            after = {"off": 10_000, "light": 8_000, "standard": 5_000, "aggressive": 2_000}[arm]
+            log.append(_rec(f"u{i}", arm, 0.25, CTX[1], 10_000, after))
+
+    class Half:
+        def probs(self, rec: DecisionRecord) -> Mapping[str, float]:
+            return {"standard": 0.5, "aggressive": 0.5}
+
+    est = ope.snips(log, Half(), n_boot=50)
+    assert est.rows == 200  # normalised over fully supported rows only
+    assert est.value == pytest.approx(0.5 * 0.5 + 0.5 * 0.8, abs=0.08)
+    assert est.to_dict()["conditional_on_support"] is True
+    assert est.unsupported_mass == pytest.approx(0.25)
+
+
+def test_engine_target_honours_learn_disabled(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cfg = load_config(home.parent / "proj", {"TOKEN_SPAREN_HOME": str(home)})
+    cfg.data.setdefault("learn", {})["enabled"] = False
+    engine = Engine(StoreChain(KEY, home, None, params=cfg.data), cfg, random.Random(0))
+    probs = ope.as_target(engine).probs(_rec("a", "light", 0.5, CTX[0]))
+    assert probs == {"standard": 1.0}
+
+
+def test_ope_cli_holdout_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import UTC, datetime
+
+    monkeypatch.setenv("TOKEN_SPAREN_HOME", str(tmp_path / "home"))
+    early = datetime(2026, 11, 1, tzinfo=UTC).timestamp()
+    late = datetime(2026, 11, 20, tzinfo=UTC).timestamp()
+    rows = [{**asdict(_rec(f"e{i}", "light", 0.5, CTX[0])), "ts": early} for i in range(5)]
+    rows += [{**asdict(_rec(f"l{i}", "light", 0.5, CTX[0])), "ts": late} for i in range(3)]
+    log = tmp_path / "decisions.jsonl"
+    log.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    out = tmp_path / "priv" / "e3.json"
+    args = ["ope", "--log", str(log), "--target", "static", "--out", str(out)]
+    assert cli.main([*args, "--holdout-after", "2026-11-10"]) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["points"]["compression"]["logged"] == 3
+    assert data["holdout_after"] == "2026-11-10" and "in-sample" in json.dumps(data["notes"])
+    assert cli.main([*args, "--holdout-after", "bad"]) == 2
