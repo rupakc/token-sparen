@@ -13,5 +13,8 @@
     "compression",
     "hooks",
     "context"
-  ]
+  ],
+  "engines": {
+    "claude-code": ">=2.1.121"
+  }
 }

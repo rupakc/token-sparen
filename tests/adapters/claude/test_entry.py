@@ -361,3 +361,10 @@ def test_pipeline_wiring_vetoes_failure_events(tmp_path: Path) -> None:
     assert _run("PostToolUseFailure", payload, _env(tmp_path)) == (0, "{}\n")
     assert not (tmp_path / ".token-sparen").exists()
     assert not list((tmp_path / "home").glob("projects/*/decisions.jsonl"))
+
+
+def test_plugin_manifest_states_the_minimum_claude_code() -> None:
+    """PostToolUse `updatedToolOutput` replaces built-in tool output from Claude Code 2.1.121
+    (earlier: MCP tools only), which compression needs; older hosts must not load the plugin."""
+    plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    assert plugin["engines"] == {"claude-code": ">=2.1.121"}

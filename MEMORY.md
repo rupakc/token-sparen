@@ -1060,3 +1060,8 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   its trims are real); JSON adds `gross_saved`, `net_saved`, `recovery_read_tokens`,
   `injected_tokens` and per-session `gross_saved`/`net_saved`; the old `tokens_before`,
   `tokens_after`, `saved` stay (decision log, current generation; text labels them so).
+- C6: `plugin.json` `engines["claude-code"] = ">=2.1.121"`. Source: the installed CLI's
+  changelog (Claude Code 2.1.332): 2.1.121 "PostToolUse hooks can now replace tool output for
+  all tools via `hookSpecificOutput.updatedToolOutput` (previously MCP-only)"; the `engines`
+  key itself is honoured from 2.1.323 (older hosts ignore it). `claude plugin validate`
+  passes (no engines warning). Tested with Claude Code 2.1.332.
