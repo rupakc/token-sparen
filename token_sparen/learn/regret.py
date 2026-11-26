@@ -3,9 +3,10 @@
 Regret signals are the only way the learner finds out that a trim hurt the agent. Every trimming
 decision is tracked in the session overlay under ``regret`` (bounded to the last 200 decisions)
 with what is needed to recognise regret later: the recovery id, the *normalised* command
-signature (``cd`` target kept, resolved against the project) and its filter-free base, up to 64
-distinctive tokens of the elided span (8+ characters, absent from the kept text), stored only as
-8-byte blake2b digests, and up to 32 file paths the output mentions (kept text first). Signals:
+signature (prefixed with the effective run directory unless it is the project root) and its
+filter-free base, up to 64 distinctive tokens of the elided span (8+ characters, absent from the
+kept text), stored only as 8-byte blake2b digests, and up to 32 file paths the output mentions
+(kept text first). Signals:
 
 1. recovery read of its saved full output (``Read`` of the file, ``cat``/``head``/``tail``/
    ``less``/``sed``/``grep`` of the path, any other tool input ending in the path,
@@ -166,11 +167,10 @@ def read_only(cmd: str) -> bool:
     return True
 
 
-def _resolve_cd(dirs: list[str], project_dir: str | None, cwd: str | None) -> str | None:
-    """The directory a chain of ``cd``s ends in, relative to the project when inside it; None
-    when it is the project dir or the hook's cwd (the command runs where it would anyway)."""
-    base = cwd or project_dir
-    cur = base
+def _run_dir(dirs: list[str], project_dir: str | None, cwd: str | None) -> str | None:
+    """The effective directory a command runs in (the hook's cwd, then any leading ``cd``s),
+    relative to the project when inside it; None when it is the project root (or unknown)."""
+    cur = cwd or project_dir
     for d in dirs:
         if cur is None or os.path.isabs(d) or d.startswith("~") or d == "-":
             cur = d
@@ -178,13 +178,13 @@ def _resolve_cd(dirs: list[str], project_dir: str | None, cwd: str | None) -> st
             cur = os.path.join(cur, d)
     if cur is None:
         return None
-    cur = os.path.normpath(cur) if not cur.startswith(("~", "-")) else cur
-    for anchor in (project_dir, cwd):
-        if anchor and os.path.normpath(anchor) == cur:
-            return None
-    if project_dir and os.path.isabs(cur):
+    if not cur.startswith(("~", "-")):
+        cur = os.path.normpath(cur)
+    if project_dir:
         root = os.path.normpath(project_dir)
-        if cur.startswith(root.rstrip(os.sep) + os.sep):
+        if cur == root:
+            return None
+        if os.path.isabs(cur) and cur.startswith(root.rstrip(os.sep) + os.sep):
             return os.path.relpath(cur, root)
     return cur
 
@@ -192,10 +192,11 @@ def _resolve_cd(dirs: list[str], project_dir: str | None, cwd: str | None) -> st
 def normalize_command(
     cmd: str, *, project_dir: str | os.PathLike[str] | None = None, cwd: str | None = None
 ) -> str:
-    """Signature of a shell command: whitespace collapsed; leading ``cd <p> &&`` (repeatedly)
-    collapsed to one resolved target (relative to ``project_dir``; dropped when it is the project
-    dir or ``cwd``); ``A=b`` assignments and ``env A=b`` removed; a trailing ``| tail -n N`` and
-    ``2>&1`` dropped; every other argument kept (``sudo`` too). At most 500 characters."""
+    """Signature of a shell command: whitespace collapsed; ``A=b`` assignments and ``env A=b``
+    removed; a trailing ``| tail -n N`` and ``2>&1`` dropped; every other argument kept (``sudo``
+    too); prefixed with ``cd <dir> &&`` for the effective run directory (the hook's ``cwd`` plus
+    any leading ``cd``s, relative to ``project_dir``), omitted only at the project root. Without
+    context, leading ``cd``s are kept as written (collapsed to one). At most 500 characters."""
     text = _WS.sub(" ", cmd).strip()
     dirs: list[str] = []
     while True:
@@ -209,11 +210,11 @@ def normalize_command(
             break
         text = stripped
     text = _strip_all(text, (_TRAIL_TAIL, _TRAIL_REDIR))
-    if dirs:
-        root = None if project_dir is None else os.fspath(project_dir)
-        target = _resolve_cd(dirs, root, cwd)
-        if target is not None:
-            text = f"cd {target} && {text}"
+    root = None if project_dir is None else os.fspath(project_dir)
+    if dirs or cwd:
+        where = _run_dir(dirs, root, cwd)
+        if where is not None:
+            text = f"cd {where} && {text}"
     return text[:MAX_SIG_CHARS]
 
 
@@ -328,6 +329,8 @@ def _files(text: str) -> Iterator[str]:
         path = m.group()
         if "/" not in path and m.group(1).lower() not in _FILE_EXTS:
             continue
+        if _REC_PATH.search(path):
+            continue  # our own recovery files are not part of the agent's code
         yield path[2:] if path.startswith("./") else path
 
 
@@ -352,7 +355,8 @@ def _path_match(edited: str, mentioned: str) -> bool:
     m = mentioned.replace("\\", "/")
     if e == m or e.endswith("/" + m.lstrip("/")):
         return True
-    return e.rsplit("/", 1)[-1] == m.rsplit("/", 1)[-1]  # same file name: likely the same file
+    # a bare file name (no directory in the mention) matches any file of that name
+    return "/" not in m and e.rsplit("/", 1)[-1] == m
 
 
 # --------------------------------------------------------------------------- recovery reads
@@ -631,11 +635,16 @@ class RegretDetector:
                 elif entry.get("changed_since") is not True:
                     entry["changed_since"] = True  # an edit elsewhere: a re-run may be a check
                     changed = True
-            rerun = info.sig is not None and self._same_command(entry, info)
+            match = self._same_command(entry, info) if info.sig is not None else None
+            rerun = match is not None
             if rerun and not edited:
                 age = turn - decided
                 if 0 <= age <= window:
-                    full = age <= FULL_WITHIN_TURNS and entry.get("changed_since") is not True
+                    full = (
+                        match == "exact"  # a different filter on the same output: partial
+                        and age <= FULL_WITHIN_TURNS
+                        and entry.get("changed_since") is not True
+                    )
                     value = max(value, FULL if full else PARTIAL)
             elif not rerun and info.state_change and entry.get("changed_since") is not True:
                 entry["changed_since"] = True
@@ -664,14 +673,15 @@ class RegretDetector:
         return signals, payouts, changed, forget
 
     @staticmethod
-    def _same_command(entry: Mapping[str, Any], info: _Info) -> bool:
+    def _same_command(entry: Mapping[str, Any], info: _Info) -> str | None:
+        """ "exact" (same signature), "base" (same once trailing filters are stripped) or None."""
         sig = entry.get("command_sig")
         if not isinstance(sig, str):
-            return False
+            return None
         if sig == info.sig:
-            return True
+            return "exact"
         base = entry.get("command_base")
-        return (base if isinstance(base, str) else sig) == info.base
+        return "base" if (base if isinstance(base, str) else sig) == info.base else None
 
     def _apply(self, path: Path, info: _Info, turn: int | None, settle: bool, final: bool) -> Any:
         """Lock-free pre-check, then (only if something changes) one locked update.
@@ -692,12 +702,10 @@ class RegretDetector:
             cur = _int(state.get("turn")) if turn is None else turn
             table = _table(state)
             sig, payouts, _, forget = self._process(table, info, cur, settle=settle, final=final)
-            reads = state.get("reads")
-            if forget and isinstance(reads, dict):
-                for key in [
-                    k for k, v in reads.items() if isinstance(v, dict) and v.get("p") in forget
-                ]:
-                    del reads[key]
+            if forget:
+                from token_sparen.mechanisms import read_dedupe  # it owns the `reads` schema
+
+                read_dedupe.drop_reads(state, forget)
             _bump(state, "recovery_read_tokens", info.read_tokens)
             _bump(state, "regrets", sum(1 for _, v in payouts if v > 0))
             out["signals"], out["payouts"] = sig, payouts

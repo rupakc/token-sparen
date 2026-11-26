@@ -31,7 +31,7 @@ from token_sparen.learn.policy import READ_DEDUPE, DecisionRecord, Policy
 from token_sparen.mechanisms import governor, tracking
 from token_sparen.store import jsonstore, session
 
-__all__ = ["POINTER", "READ_DEDUPE", "forget", "handle_post_tool", "invalidate"]
+__all__ = ["POINTER", "READ_DEDUPE", "drop_reads", "forget", "handle_post_tool", "invalidate"]
 
 POINTER = (
     "[token-sparen: unchanged since turn {n} — content already in context above; "
@@ -244,6 +244,16 @@ def _count(event: Event, env: Mapping[str, str], removed: int, key: str) -> None
         _update(event, env, apply)
     except (jsonstore.StoreBusy, OSError) as exc:  # statusline counters are best effort
         log_error(env, "read_dedupe", f"ledger: {type(exc).__name__}: {exc}")
+
+
+def drop_reads(state: dict[str, Any], path_hashes: set[str]) -> None:
+    """Drop every recorded read of these files (path hashes) from an overlay ``state`` in place;
+    used when a pointer turned out to be regret, so the next read is delivered in full."""
+    reads = state.get("reads")
+    if not isinstance(reads, dict):
+        return
+    for key in [k for k, v in reads.items() if isinstance(v, dict) and v.get("p") in path_hashes]:
+        del reads[key]
 
 
 def forget(event: Event, *, env: Mapping[str, str] | None = None) -> None:

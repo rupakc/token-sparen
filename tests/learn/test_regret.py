@@ -66,7 +66,10 @@ def _event(
     tool_input: Mapping[str, Any] | None = None,
     text: str | None = "ok",
     prompt: str | None = None,
+    cwd: str | None = None,
 ) -> Event:
+    from types import MappingProxyType
+
     from token_sparen.adapters.claude.translate import tool_category
 
     call = None
@@ -87,6 +90,7 @@ def _event(
         tool=call,
         output_text=text,
         prompt=prompt,
+        extra=MappingProxyType({} if cwd is None else {"cwd": cwd}),
     )
 
 
@@ -136,6 +140,7 @@ def _track(
     full: str = FULL,
     kept: str = KEPT,
     files: list[str] | None = None,
+    cwd: str | None = None,
 ) -> RegretDetector:
     _set_turn(tmp_path, turn)
     det = RegretDetector(_cfg(tmp_path), _env(tmp_path))
@@ -146,7 +151,7 @@ def _track(
         bucket="b1",
         arm="standard",
         recovery_id=recovery_id,
-        command_sig=normalize_command(command, project_dir=_proj(tmp_path)),
+        command_sig=normalize_command(command, project_dir=_proj(tmp_path), cwd=cwd),
         full=full,
         kept=kept,
         ctype=ctype,
@@ -163,15 +168,15 @@ def _state(tmp_path: Path) -> dict[str, Any]:
     return session.read_session(_overlay(tmp_path))
 
 
-def _bash(tmp_path: Path, command: str, text: str = "ok") -> Event:
-    return _event(tmp_path, tool_input={"command": command}, text=text)
+def _bash(tmp_path: Path, command: str, text: str = "ok", cwd: str | None = None) -> Event:
+    return _event(tmp_path, tool_input={"command": command}, text=text, cwd=cwd)
 
 
 # --------------------------------------------------------------------------- normalize_command
 def test_normalize_strips_cd_and_env() -> None:
     app = "/srv/app"
     assert normalize_command("cd /srv/app && pytest -x tests", project_dir=app) == "pytest -x tests"
-    assert normalize_command("cd /srv/app && pytest -x tests", cwd=app) == "pytest -x tests"
+    assert normalize_command("pytest -x tests", project_dir=app, cwd=app) == "pytest -x tests"
     got = normalize_command("cd a && cd 'b c' && FOO=1 BAR='x y' make  build")
     assert got == "cd a/b c && make build"  # chained cds collapse to one resolved target
     assert normalize_command("env A=b B=c npm   test") == "npm test"
@@ -201,7 +206,8 @@ def test_normalize_drops_tail_and_redirect_and_caps_length() -> None:
 def test_signature_by_tool(tmp_path: Path) -> None:
     f = tmp_path / "a.py"
     f.write_text("x", encoding="utf-8")
-    assert regret.signature("Bash", {"command": "cd /w/x && ls -la"}, cwd="/w/x") == "ls -la"
+    got = regret.signature("Bash", {"command": "cd /w/x && ls -la"}, project_dir="/w/x", cwd="/w/x")
+    assert got == "ls -la"
     assert regret.signature("Read", {"file_path": str(f), "offset": 5}).startswith("Read:")
     assert regret.signature("Read", {"file_path": str(f)}) == regret.signature(
         "Read", {"file_path": str(f), "limit": 10}
@@ -763,7 +769,7 @@ def test_large_suite_keeps_failing_file_and_fix_rerun_is_not_regret(tmp_path: Pa
 
 
 def test_edit_matches_mentioned_file_by_basename(tmp_path: Path) -> None:
-    _track(tmp_path, files=["lib/widget_store.py"])
+    _track(tmp_path, files=["widget_store.py"])  # a bare name: matched by file name
     rec = Recorder()
     edit = _event(tmp_path, tool="Edit", tool_input={"file_path": "/repo/src/widget_store.py"})
     _handle(tmp_path, edit, rec)
@@ -778,9 +784,10 @@ def test_normalize_keeps_cd_target_relative_to_project() -> None:
     assert a == "cd packages/a && npm test" and a != b
     assert normalize_command("cd /repo/packages/a && npm test", project_dir=repo) == a
     assert normalize_command("cd a && npm test", project_dir=repo, cwd="/repo/packages") == a
-    assert normalize_command("cd /repo/packages/a && npm test", cwd="/repo/packages/a") == (
-        "npm test"
-    )
+    # the effective run directory counts, with or without a cd
+    assert normalize_command("npm test", project_dir=repo, cwd="/repo/packages/a") == a
+    assert normalize_command("npm test", project_dir=repo, cwd="/repo") == "npm test"
+    assert normalize_command("cd /repo && npm test", project_dir=repo, cwd="/repo/x") == "npm test"
     assert normalize_command("cd /tmp/x && ls", project_dir=repo) == "cd /tmp/x && ls"
     assert normalize_command("cd .. && cd repo && make", project_dir=repo) == "make"
 
@@ -828,12 +835,23 @@ def test_recovery_path_not_at_end_of_input_is_not_a_read(tmp_path: Path) -> None
         ("make 2>&1 | grep error", "make | head -n 50"),
         ("make", "make 2>&1 | sed -n '1,40p' | awk '{print $1}'"),
         ("npm test | less", "npm test | tail -5"),
+        ("cat app.log | grep ERROR", "cat app.log | grep WARN"),
     ],
 )
-def test_rerun_with_other_filter_pipeline_is_regret(tmp_path: Path, first: str, again: str) -> None:
+def test_rerun_with_other_filter_pipeline_is_partial_regret(
+    tmp_path: Path, first: str, again: str
+) -> None:
     _track(tmp_path, command=first)
     rec = Recorder()
     _handle(tmp_path, _bash(tmp_path, again), rec)
+    assert rec.regrets() == []  # only the filter-free base matches: 0.5, paid at expiry
+    assert _state(tmp_path)["regret"]["d1"]["best"] == 0.5
+
+
+def test_rerun_with_same_filter_pipeline_is_full_regret(tmp_path: Path) -> None:
+    _track(tmp_path, command="cat app.log | grep ERROR")
+    rec = Recorder()
+    _handle(tmp_path, _bash(tmp_path, "cat app.log | grep ERROR 2>&1"), rec)
     assert rec.regrets() == [("d1", 1.0)]
 
 
@@ -912,3 +930,84 @@ def test_elided_tokens_are_stored_hashed(tmp_path: Path) -> None:
     toks = _state(tmp_path)["regret"]["d1"]["elided_tokens"]
     assert toks and all(len(t) == 16 and int(t, 16) >= 0 for t in toks)
     assert regret.token_digest("abc") == regret.token_digest("abc") != regret.token_digest("abd")
+
+
+def test_plain_command_in_another_package_cwd_is_not_rerun(tmp_path: Path) -> None:
+    proj = _proj(tmp_path)
+    _track(tmp_path, command="npm test", cwd=f"{proj}/packages/a")
+    rec = Recorder()
+    _handle(tmp_path, _bash(tmp_path, "npm test", cwd=f"{proj}/packages/b"), rec)
+    assert rec.regrets() == []
+    assert _state(tmp_path)["regret"]["d1"]["best"] == 0.0
+
+
+def test_cd_then_plain_command_from_that_cwd_is_rerun(tmp_path: Path) -> None:
+    proj = _proj(tmp_path)
+    _track(tmp_path, command="cd packages/a && npm test", cwd=str(proj))
+    rec = Recorder()
+    _handle(tmp_path, _bash(tmp_path, "npm test", cwd=f"{proj}/packages/a"), rec)
+    assert rec.regrets() == [("d1", 1.0)]
+
+
+def test_compression_signature_uses_effective_run_dir(tmp_path: Path) -> None:
+    from types import MappingProxyType
+
+    proj = _proj(tmp_path)
+    ev = _bash_event(tmp_path, big_pytest(), command="pytest -v")
+    ev = Event(**{**ev.__dict__, "extra": MappingProxyType({"cwd": f"{proj}/sub"})})
+    compression.handle_post_tool(ev, StaticPolicy({}), _cfg(tmp_path), env=_env(tmp_path))
+    assert _decisions(tmp_path)[-1]["command_sig"] == "cd sub && pytest -v"
+
+
+def test_pretrim_lookup_uses_effective_run_dir(tmp_path: Path) -> None:
+    from types import MappingProxyType
+
+    from token_sparen.mechanisms import guards
+
+    proj = _proj(tmp_path)
+    store = tmp_path / "home" / "projects" / KEY
+    store.mkdir(parents=True)
+    (store / "pretrim.json").write_text(
+        json.dumps({"candidates": {"cd web && npm test": {"lines": 40}}}), encoding="utf-8"
+    )
+    ev = _bash_event(tmp_path, "x", command="npm test")
+    cfg = _cfg(tmp_path)
+    assert guards.pretrim_lines(ev, store, cfg, env=_env(tmp_path)) is None
+    ev = Event(**{**ev.__dict__, "extra": MappingProxyType({"cwd": f"{proj}/web"})})
+    assert guards.pretrim_lines(ev, store, cfg, env=_env(tmp_path)) == 40
+
+
+def test_basename_fallback_only_for_bare_mentions() -> None:
+    assert not regret._path_match("/p/b/index.ts", "packages/a/src/index.ts")
+    assert not regret._path_match("/x/pkg_b/__init__.py", "pkg_a/__init__.py")
+    assert regret._path_match("/x/packages/a/src/index.ts", "packages/a/src/index.ts")
+    assert regret._path_match("/x/tests/conftest.py", "conftest.py")
+    assert regret._path_match("/abs/a.py", "/abs/a.py")
+
+
+def test_edit_of_same_named_file_elsewhere_does_not_exempt(tmp_path: Path) -> None:
+    _track(tmp_path, files=["packages/a/src/index.ts"])
+    rec = Recorder()
+    edit = _event(tmp_path, tool="Edit", tool_input={"file_path": "/p/b/index.ts"})
+    _handle(tmp_path, edit, rec)
+    _handle(tmp_path, _bash(tmp_path, "pytest -q tests"), rec)
+    assert _state(tmp_path)["regret"]["d1"]["best"] == 0.5  # an edit elsewhere: partial
+
+
+def test_recovery_paths_are_not_files_in_span(tmp_path: Path) -> None:
+    kept = (
+        KEPT + "\n[token-sparen: kept 2 of 5 lines · full output: "
+        "/w/proj/.token-sparen/outputs/abcdef012345.txt · `token-sparen show abcdef012345`]"
+    )
+    _track(tmp_path, kept=kept)
+    files = _state(tmp_path)["regret"]["d1"]["files_in_span"]
+    assert files and not any(".token-sparen" in f for f in files)
+
+
+def test_drop_reads_owned_by_read_dedupe() -> None:
+    state = {"reads": {"k1": {"p": "aa"}, "k2": {"p": "bb"}, "k3": "junk"}}
+    read_dedupe.drop_reads(state, {"aa"})
+    assert set(state["reads"]) == {"k2", "k3"}
+    empty: dict[str, Any] = {}
+    read_dedupe.drop_reads(empty, {"aa"})
+    assert empty == {}

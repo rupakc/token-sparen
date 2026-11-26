@@ -57,7 +57,8 @@ events per fresh bucket) and the Monte-Carlo propensity is unusable for IPS on r
 - Re-run exemption: an edit since the decision to a file the output mentions (kept text first,
   then the elided span; matched by path or file name) exempts a re-run; any other edit or a
   state-changing command since the decision lowers a quick re-run to 0.5. Signatures keep the
-  resolved `cd` target; re-runs also match with a trailing filter pipeline stripped; distinctive
+  effective run directory (hook cwd + leading `cd`s, relative to the project, omitted at the
+  root); a match only after stripping a trailing filter pipeline is a partial regret; re-runs also match with a trailing filter pipeline stripped; distinctive
   tokens are stored hashed. Exempting only elided-span files was too narrow (fixing a failure
   the agent could see and re-running is normal; counting it would make every test-fix loop a
   regret). Read de-dupe serves a pointer once per stored read; a regret forgets the read.

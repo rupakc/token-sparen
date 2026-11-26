@@ -549,3 +549,23 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   (`read_hash` in its regret entry) drops that file's `reads` entries.
 - Known limitation: regret state is per session, shared by the main agent and its subagents
   (a subagent re-running the main agent's command counts as a re-run).
+
+## 2026-11-26 Task 21 review round 2 (controller rulings)
+- Command signatures always carry the **effective run directory**: payload `cwd` plus any
+  leading `cd`s, resolved, relative to the project dir, prefixed as `cd <dir> && …`, omitted
+  only at the project root (`npm test` in packages/a vs packages/b differ; `cd packages/a && npm
+  test` equals `npm test` run from packages/a). Same function for the decision log, regret
+  tracking and the pretrim lookup (`regret.event_signature` / `guards._normalise(cmd, event)`).
+- Edit-to-mention matching: path equality or path suffix; the basename fallback applies only
+  when the mention has no directory (`conftest.py` bare matches; `pkg_a/__init__.py` does not
+  match `pkg_b/__init__.py`).
+- Recovery-file paths (`.token-sparen/outputs/<id>.txt`, e.g. from our own marker) are never in
+  `files_in_span`.
+- A re-run that matches only after stripping trailing filters (`| grep ERROR` vs `| grep WARN`)
+  scores 0.5; the exact signature keeps the 1.0 rule.
+- `read_dedupe.drop_reads(state, path_hashes)` owns the `reads` schema; regret calls it (lazy
+  import) when a read_dedupe decision is regretted.
+- Known bias: any state-changing command (outside the read-only allowlist) that is not the
+  tracked command itself lowers a later quick re-run of *every* open decision to 0.5, even when
+  unrelated (e.g. `cd packages/b && npm test` before re-running packages/a). Slight
+  under-reporting of regret, accepted.
