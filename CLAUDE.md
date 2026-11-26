@@ -58,11 +58,20 @@ Use the repo `.venv`. All must pass before a commit.
 - `TOKEN_SPAREN_DISABLE=1` makes every hook a no-op.
 - Config precedence: defaults < `~/.token-sparen/config.toml` < `<project>/token-sparen.toml` < env
   `TOKEN_SPAREN_*` < session overrides (`token-sparen config set`).
+- The project file is deny-by-default: it may only make token-sparen intervene less or keep more
+  (never trim more, recover less or block more); an unlisted key is user-only (`PROJECT_POLICY`
+  in `config.py`).
+- Quality first: file contents are never trimmed by default (`compression.trim_file_contents` is
+  false) and only `compression.allow_ctypes` are offered for compression. The user may widen
+  both; a project may only narrow them.
+- `[learn.hold] compression = true` stops every output trim (pre-trim included), with learning on
+  or off; `compression.allow_ctypes = []` is the config-only switch.
 - State root `~/.token-sparen/` (override `TOKEN_SPAREN_HOME`); project key = first 16 hex of
-  sha256(normalised git remote), else sha256(realpath). Never store raw paths in shared/global stores
-  (`projects/`, `global/`); user-local bookkeeping (trusted extensions, statusline install record) may.
-- Local files are plain text (session overlay keeps the last prompt <= 2000 chars and file paths;
-  `decisions.jsonl` keeps 500 chars of Bash commands): keep README's disk disclosure accurate.
+  sha256(normalised git remote), else sha256(realpath). `global/` and project keys hold no raw paths,
+  commands or session ids. Per-project files under `projects/<key>/` are plain text and may hold
+  user-local data (last prompt <= 2000 chars, file paths, normalised commands, 500 chars of Bash
+  commands in `decisions.jsonl`), as does user-local bookkeeping (trusted extensions, statusline
+  install record). Keep README's disk disclosure ("What it writes to disk") accurate.
 - Hook commands reference files only via `${CLAUDE_PLUGIN_ROOT}`; no top-level `bin/`, no unpinned
   `npx`/`uvx`, no non-image plugin file > 256 KiB.
 - Settings writes (statusline, tool pruning) are opt-in, backed up, reversible, disclosed in README.
