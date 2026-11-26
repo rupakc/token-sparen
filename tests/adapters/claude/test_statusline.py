@@ -417,3 +417,42 @@ def test_render_p95_under_50ms(tmp_path: Path) -> None:
         if best < budget:
             break
     assert best < budget, f"p95 {best * 1000:.1f} ms"
+
+
+# --------------------------------------------------------------------------- fix round 1
+
+
+def _deep() -> bytes:
+    return b'{"session_id": "s-1", "x": ' + b"[" * 200_000 + b"]" * 200_000 + b"}"
+
+
+def test_deeply_nested_payload_prints_one_line(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    out = io.StringIO()
+    stdin = io.TextIOWrapper(io.BytesIO(_deep()), encoding="utf-8")
+    assert statusline.main([], stdin, out, env) == 0
+    assert out.getvalue() == "⛁ ts\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="compose mode runs the original with sh")
+def test_compose_forwards_exact_stdin_bytes(tmp_path: Path) -> None:
+    env = {**os.environ, **_env(tmp_path, NO_COLOR="1")}
+    raw = _deep() + b"\xff\xfe not utf-8 \r\n"
+    sink = tmp_path / "got.bin"
+    out = io.StringIO()
+    stdin = io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8")
+    cmd = f"cat > {sink}; echo ok"
+    assert statusline.main(["--compose", "--", cmd], stdin, out, env) == 0
+    assert out.getvalue() == "ok │ ⛁ ts\n"
+    assert sink.read_bytes() == raw
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="compose mode runs the original with sh")
+def test_compose_deep_payload_slow_original_is_killed(tmp_path: Path) -> None:
+    env = {**os.environ, **_env(tmp_path)}
+    out = io.StringIO()
+    stdin = io.TextIOWrapper(io.BytesIO(_deep()), encoding="utf-8")
+    started = time.monotonic()
+    statusline.main(["--compose", "--", "sleep 5; echo late"], stdin, out, env)
+    assert time.monotonic() - started < 3
+    assert out.getvalue() == "⛁ ts\n"

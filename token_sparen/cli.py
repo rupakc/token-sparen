@@ -67,7 +67,12 @@ def _statusline(args: argparse.Namespace) -> int:
         except ValueError as exc:
             print(f"token-sparen: {exc}", file=sys.stderr)
             return 1
-        result = settings.install_statusline(target, str(_write_launcher()))
+        try:
+            launcher = _write_launcher()
+        except OSError as exc:
+            print(f"token-sparen: cannot write the launcher ({exc})", file=sys.stderr)
+            return 1
+        result = settings.install_statusline(target, str(launcher))
     else:
         result = settings.uninstall_statusline(target, launcher=str(_launcher_path()))
         if result.action in {"removed", "restored"} and not settings.has_installs(os.environ):

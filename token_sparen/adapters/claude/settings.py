@@ -79,22 +79,53 @@ def has_installs(env: Mapping[str, str] | None = None) -> bool:
     return isinstance(installs, dict) and bool(installs)
 
 
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"non-finite number {name} is not strict JSON")
+
+
 def _load(path: Path) -> tuple[dict[str, Any], bool]:
-    """(settings, existed); raises _Invalid for anything but a JSON object."""
+    """(settings, existed); raises _Invalid for anything but a strict JSON object."""
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}, False
+    except (OSError, UnicodeDecodeError) as exc:
+        raise _Invalid(f"{path} cannot be read ({exc}); nothing was changed") from exc
     try:
-        data = json.loads(text)
-    except ValueError as exc:
+        data = json.loads(text, parse_constant=_reject_constant)
+    except (ValueError, RecursionError) as exc:
         raise _Invalid(f"{path} is not valid JSON ({exc}); nothing was changed") from exc
     if not isinstance(data, dict):
         raise _Invalid(f"{path} is not valid JSON settings (not an object); nothing was changed")
     return data, True
 
 
-def _write(path: Path, data: Mapping[str, Any]) -> None:
+Stamp = tuple[int, int, int] | None
+
+
+def _stamp(path: Path) -> Stamp:
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    return st.st_mtime_ns, st.st_size, st.st_ino
+
+
+class _Changed(RuntimeError):
+    """The settings file changed between our read and the replace."""
+
+
+def _before_replace(path: Path) -> None:
+    """Test seam: runs after the temp file is written, just before the stamp check."""
+
+
+def _write(path: Path, data: Mapping[str, Any], expected: Stamp | bool = False) -> None:
+    """Atomic strict-JSON write keeping the file mode.
+
+    With ``expected`` (a stamp taken when the file was read), the file must be unchanged just
+    before the replace, else ``_Changed`` is raised and nothing is written.
+    """
+    text = json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         mode: int | None = path.stat().st_mode & 0o7777
@@ -102,9 +133,13 @@ def _write(path: Path, data: Mapping[str, Any]) -> None:
         mode = None
     tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}")
     try:
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.write_text(text, encoding="utf-8")
         if mode is not None:
             os.chmod(tmp, mode)
+        if expected is not False:
+            _before_replace(path)
+            if _stamp(path) != expected:
+                raise _Changed(str(path))
         jsonstore.replace_with_retry(tmp, path)
     finally:
         with contextlib.suppress(OSError):
@@ -157,20 +192,14 @@ def composed_command(launcher: str, original: str) -> str:
     return f"{plain_command(launcher)} --compose -- {shlex.quote(original)}"
 
 
-def install_statusline(
-    settings_file: Path, launcher: str, env: Mapping[str, str] | None = None
-) -> InstallResult:
-    env = os.environ if env is None else env
-    target = _target(settings_file)
-    try:
-        data, existed = _load(target)
-    except _Invalid as exc:
-        return InstallResult(False, "error", str(exc))
-    had = KEY in data
+def _plan_install(
+    data: dict[str, Any], launcher: str
+) -> tuple[Outcome, str, dict[str, Any] | None]:
+    """(action, command, new statusLine value or None when already installed)."""
     current = data.get(KEY)
     if _ours(current, launcher) is not None:
         cmd = current.get("command") if isinstance(current, dict) else None
-        return InstallResult(True, "already", "token-sparen statusline already installed", cmd)
+        return "already", cmd if isinstance(cmd, str) else "", None
     original_cmd = current.get("command") if isinstance(current, dict) else None
     if (
         isinstance(current, dict)
@@ -179,49 +208,95 @@ def install_statusline(
         and original_cmd.strip()
     ):
         command = composed_command(launcher, original_cmd)
-        new_value: dict[str, Any] = {**current, "command": command}
-        action: Outcome = "composed"
-    else:
-        command = plain_command(launcher)
-        new_value = {"type": "command", "command": command, "padding": 0}
-        action = "installed"
-    backup = target.with_name(target.name + BACKUP_SUFFIX)
-    if existed and not backup.exists():
-        shutil.copy2(target, backup)
-    record = {
-        "had_statusline": had,
-        "original": current if had else None,
-        "installed_command": command,
-        "ts": time.time(),
-    }
+        return "composed", command, {**current, "command": command}
+    command = plain_command(launcher)
+    return "installed", command, {"type": "command", "command": command, "padding": 0}
+
+
+def _set_record(env: Mapping[str, str], slot: str, record: Any) -> Any:
+    """Store (or with None remove) the install record; returns the previous one."""
+    previous: list[Any] = [None]
 
     def put(meta: dict[str, Any]) -> dict[str, Any]:
         installs = meta.get("installs")
         installs = dict(installs) if isinstance(installs, dict) else {}
-        installs[_slot(target)] = record
+        previous[0] = installs.pop(slot, None)
+        if record is not None:
+            installs[slot] = record
         return {**meta, "version": 1, "installs": installs}
 
-    jsonstore.update(_meta_path(env), put, {}, env)
-    data[KEY] = new_value  # replaces in place (order kept) or appends
-    _write(target, data)
-    what = "composed with your existing statusline" if action == "composed" else "installed"
-    return InstallResult(
-        True, action, f"token-sparen statusline {what} in {settings_file}", command
-    )
-
-
-def _forget(env: Mapping[str, str], slot: str) -> None:
     path = _meta_path(env)
-    if not path.is_file():
-        return
+    if record is None and not path.is_file():
+        return None
+    jsonstore.update(path, put, {}, env)
+    return previous[0]
 
-    def drop(meta: dict[str, Any]) -> dict[str, Any]:
-        installs = meta.get("installs")
-        if isinstance(installs, dict):
-            meta["installs"] = {k: v for k, v in installs.items() if k != slot}
-        return meta
 
-    jsonstore.update(path, drop, {}, env)
+def _failure(exc: BaseException) -> InstallResult:
+    if isinstance(exc, _Changed):
+        reason = f"{exc} kept changing while we wrote it; nothing was changed, try again"
+    else:
+        reason = f"{type(exc).__name__}: {exc}"
+    return InstallResult(False, "error", f"token-sparen: {reason}")
+
+
+def install_statusline(
+    settings_file: Path, launcher: str, env: Mapping[str, str] | None = None
+) -> InstallResult:
+    env = os.environ if env is None else env
+    target = _target(settings_file)
+    slot = _slot(target)
+    for attempt in (0, 1):
+        stamp = _stamp(target)
+        try:
+            data, existed = _load(target)
+        except _Invalid as exc:
+            return InstallResult(False, "error", str(exc))
+        action, command, new_value = _plan_install(data, launcher)
+        if new_value is None:
+            return InstallResult(True, action, "token-sparen statusline already installed", command)
+        had = KEY in data
+        record = {
+            "had_statusline": had,
+            "original": data.get(KEY) if had else None,
+            "installed_command": command,
+            "ts": time.time(),
+        }
+        recorded = False
+        previous: Any = None
+        try:
+            backup = target.with_name(target.name + BACKUP_SUFFIX)
+            if existed and not backup.exists():
+                shutil.copy2(target, backup)
+            previous = _set_record(env, slot, record)
+            recorded = True
+            data[KEY] = new_value  # replaces in place (order kept) or appends
+            _write(target, data, stamp)
+        except (OSError, jsonstore.StoreBusy, ValueError, _Changed) as exc:
+            if recorded:
+                with contextlib.suppress(OSError, jsonstore.StoreBusy):
+                    _set_record(env, slot, previous)  # roll the record back
+            if isinstance(exc, _Changed) and attempt == 0:
+                continue  # re-read and re-apply once
+            return _failure(exc)
+        what = "composed with your existing statusline" if action == "composed" else "installed"
+        return InstallResult(
+            True, action, f"token-sparen statusline {what} in {settings_file}", command
+        )
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _restore_value(current: Any, args: list[str], record: Any) -> tuple[bool, Any]:
+    """(had a statusLine before install, value to restore)."""
+    composed = len(args) == 5 and args[2:4] == ["--compose", "--"] and isinstance(current, dict)
+    if isinstance(record, dict):
+        command = current.get("command") if isinstance(current, dict) else None
+        if composed and command != record.get("installed_command"):
+            return True, {**current, "command": args[4]}  # the user edited inside our wrapper
+        return record.get("had_statusline") is True, record.get("original")
+    if composed:
+        return True, {**current, "command": args[4]}  # no record: unwrap the command
+    return False, None
 
 
 def uninstall_statusline(
@@ -229,40 +304,45 @@ def uninstall_statusline(
 ) -> InstallResult:
     env = os.environ if env is None else env
     target = _target(settings_file)
-    try:
-        data, _ = _load(target)
-    except _Invalid as exc:
-        return InstallResult(False, "error", str(exc))
     slot = _slot(target)
-    meta = jsonstore.read(_meta_path(env), {}, env)
-    installs = meta.get("installs")
-    record = installs.get(slot) if isinstance(installs, dict) else None
-    current = data.get(KEY)
-    recorded_cmd = record.get("installed_command") if isinstance(record, dict) else None
-    recorded_args = _split(recorded_cmd) or []
-    recorded_launcher = recorded_args[1] if len(recorded_args) > 1 else ""
-    args = _ours(current, launcher or recorded_launcher) or _ours(current, recorded_launcher)
-    if args is None:
-        if isinstance(record, dict):
-            _forget(env, slot)
-            return InstallResult(
-                True, "unchanged", "statusline was changed since install; left as it is"
-            )
-        return InstallResult(True, "not-installed", "token-sparen statusline is not installed")
-    if isinstance(record, dict):
-        had = record.get("had_statusline") is True
-        original = record.get("original")
-    elif len(args) == 5 and args[2:4] == ["--compose", "--"] and isinstance(current, dict):
-        had, original = True, {**current, "command": args[4]}  # no record: unwrap the command
-    else:
-        had, original = False, None
-    if had:
-        data[KEY] = original
-        action: Outcome = "restored"
-    else:
-        data.pop(KEY, None)
-        action = "removed"
-    _write(target, data)
-    _forget(env, slot)
-    what = "original statusline restored" if had else "statusline removed"
-    return InstallResult(True, action, f"token-sparen: {what} in {settings_file}")
+    for attempt in (0, 1):
+        stamp = _stamp(target)
+        try:
+            data, _ = _load(target)
+            meta = jsonstore.read(_meta_path(env), {}, env)
+        except _Invalid as exc:
+            return InstallResult(False, "error", str(exc))
+        except OSError as exc:
+            return _failure(exc)
+        installs = meta.get("installs")
+        record = installs.get(slot) if isinstance(installs, dict) else None
+        current = data.get(KEY)
+        recorded_cmd = record.get("installed_command") if isinstance(record, dict) else None
+        recorded_args = _split(recorded_cmd) or []
+        recorded_launcher = recorded_args[1] if len(recorded_args) > 1 else ""
+        args = _ours(current, launcher or recorded_launcher) or _ours(current, recorded_launcher)
+        try:
+            if args is None:
+                if isinstance(record, dict):
+                    _set_record(env, slot, None)
+                    return InstallResult(
+                        True, "unchanged", "statusline was changed since install; left as it is"
+                    )
+                return InstallResult(
+                    True, "not-installed", "token-sparen statusline is not installed"
+                )
+            had, original = _restore_value(current, args, record)
+            if had:
+                data[KEY] = original
+            else:
+                data.pop(KEY, None)
+            _write(target, data, stamp)
+            _set_record(env, slot, None)
+        except (OSError, jsonstore.StoreBusy, ValueError, _Changed) as exc:
+            if isinstance(exc, _Changed) and attempt == 0:
+                continue
+            return _failure(exc)
+        action: Outcome = "restored" if had else "removed"
+        what = "original statusline restored" if had else "statusline removed"
+        return InstallResult(True, action, f"token-sparen: {what} in {settings_file}")
+    raise AssertionError("unreachable")  # pragma: no cover

@@ -247,3 +247,166 @@ def test_uninstall_recognises_recorded_launcher(tmp_path: Path) -> None:
     result = settings.uninstall_statusline(path, launcher="/elsewhere/statusline.sh")
     assert result.action == "restored"
     assert _read(path) == {"statusLine": {"type": "command", "command": "echo mine"}}
+
+
+# --------------------------------------------------------------------------- fix round 1
+
+
+def test_uninstall_keeps_user_edit_inside_compose_wrapper(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    _write(path, {"statusLine": {"type": "command", "command": "echo mine", "padding": 1}})
+    settings.install_statusline(path, LAUNCHER)
+    data = _read(path)
+    data["statusLine"]["command"] = settings.composed_command(LAUNCHER, "echo edited")
+    data["statusLine"]["padding"] = 4
+    _write(path, data)
+    assert settings.uninstall_statusline(path).action == "restored"
+    assert _read(path) == {
+        "statusLine": {"type": "command", "command": "echo edited", "padding": 4}
+    }
+
+
+@pytest.mark.parametrize("const", ["NaN", "Infinity", "-Infinity"])
+def test_refuses_non_finite_constants(tmp_path: Path, const: str) -> None:
+    path = tmp_path / "settings.json"
+    text = '{"x": ' + const + "}"
+    path.write_text(text, encoding="utf-8")
+    for fn in (
+        lambda: settings.install_statusline(path, LAUNCHER),
+        lambda: settings.uninstall_statusline(path),
+    ):
+        result = fn()
+        assert not result.ok and result.action == "error"
+    assert path.read_text(encoding="utf-8") == text
+    assert not _meta(tmp_path).exists()
+
+
+def test_write_is_strict_json(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        settings._write(tmp_path / "s.json", {"x": float("nan")})
+    assert not (tmp_path / "s.json").exists()
+
+
+needs_perms = pytest.mark.skipif(
+    sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="POSIX permissions (not root)",
+)
+
+
+@needs_perms
+def test_install_write_failure_rolls_back_record(tmp_path: Path) -> None:
+    cfg = tmp_path / "cfg"
+    path = cfg / "settings.json"
+    _write(path, {"a": 1})
+    (cfg / "settings.json.token-sparen.bak").write_text("{}", encoding="utf-8")  # backup exists
+    before = path.read_text(encoding="utf-8")
+    os.chmod(cfg, 0o500)
+    try:
+        result = settings.install_statusline(path, LAUNCHER)
+    finally:
+        os.chmod(cfg, 0o700)
+    assert not result.ok and result.action == "error"
+    assert "Traceback" not in result.message
+    assert path.read_text(encoding="utf-8") == before
+    meta = _read(_meta(tmp_path)) if _meta(tmp_path).exists() else {}
+    assert str(path.resolve()) not in meta.get("installs", {})
+
+
+@needs_perms
+def test_install_backup_failure_is_an_error(tmp_path: Path) -> None:
+    cfg = tmp_path / "cfg"
+    path = cfg / "settings.json"
+    _write(path, {"a": 1})
+    os.chmod(cfg, 0o500)
+    try:
+        result = settings.install_statusline(path, LAUNCHER)
+    finally:
+        os.chmod(cfg, 0o700)
+    assert not result.ok and result.action == "error"
+    assert _read(path) == {"a": 1}
+    assert not _meta(tmp_path).exists()
+
+
+@needs_perms
+def test_install_record_failure_is_an_error(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    _write(path, {"a": 1})
+    state = tmp_path / "state"
+    state.mkdir()
+    os.chmod(state, 0o500)
+    try:
+        result = settings.install_statusline(path, LAUNCHER)
+    finally:
+        os.chmod(state, 0o700)
+    assert not result.ok and result.action == "error"
+    assert _read(path) == {"a": 1}
+
+
+@needs_perms
+def test_uninstall_write_failure_keeps_record(tmp_path: Path) -> None:
+    cfg = tmp_path / "cfg"
+    path = cfg / "settings.json"
+    _write(path, {"statusLine": {"type": "command", "command": "echo mine"}})
+    settings.install_statusline(path, LAUNCHER)
+    before = path.read_text(encoding="utf-8")
+    os.chmod(cfg, 0o500)
+    try:
+        result = settings.uninstall_statusline(path)
+    finally:
+        os.chmod(cfg, 0o700)
+    assert not result.ok and result.action == "error"
+    assert path.read_text(encoding="utf-8") == before
+    assert str(path.resolve()) in _read(_meta(tmp_path))["installs"]
+    assert settings.uninstall_statusline(path).action == "restored"  # retry works later
+
+
+def test_concurrent_edit_is_reapplied_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "settings.json"
+    _write(path, {"a": 1})
+    calls = []
+
+    def edit_once(target: Path) -> None:
+        if not calls:
+            calls.append(1)
+            _write(target, {"a": 1, "user": "edit"})
+
+    monkeypatch.setattr(settings, "_before_replace", edit_once)
+    result = settings.install_statusline(path, LAUNCHER)
+    assert result.ok
+    data = _read(path)
+    assert data["user"] == "edit" and "statusLine" in data
+
+
+def test_persistent_concurrent_edits_abort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "settings.json"
+    _write(path, {"a": 1})
+    n = [0]
+
+    def edit_always(target: Path) -> None:
+        n[0] += 1
+        _write(target, {"a": 1, "edit": n[0]})
+
+    monkeypatch.setattr(settings, "_before_replace", edit_always)
+    result = settings.install_statusline(path, LAUNCHER)
+    assert not result.ok and result.action == "error"
+    data = _read(path)
+    assert "statusLine" not in data and data["edit"] == 2
+    meta = _read(_meta(tmp_path)) if _meta(tmp_path).exists() else {}
+    assert str(path.resolve()) not in meta.get("installs", {})
+
+
+@needs_perms
+def test_cli_launcher_write_failure_is_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "s.json"
+    _write(target, {"a": 1})
+    state = tmp_path / "state"
+    state.mkdir()
+    os.chmod(state, 0o500)
+    try:
+        assert cli.main(["statusline", "install", "--settings", str(target)]) == 1
+    finally:
+        os.chmod(state, 0o700)
+    assert "cannot write the launcher" in capsys.readouterr().err
+    assert _read(target) == {"a": 1}

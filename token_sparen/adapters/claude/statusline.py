@@ -370,6 +370,18 @@ def _original_line(proc: subprocess.Popen[bytes], stdin: bytes, deadline: float)
     return first or None
 
 
+def _read_bytes(stdin: TextIO) -> bytes:
+    """The exact stdin bytes (forwarded unchanged to a composed original)."""
+    try:
+        buffer = getattr(stdin, "buffer", None)
+        if buffer is not None:
+            data = buffer.read()
+            return data if isinstance(data, bytes) else b""
+        return stdin.read().encode("utf-8", "surrogateescape")
+    except Exception:  # noqa: BLE001
+        return b""
+
+
 def _compose_command(argv: list[str]) -> str | None:
     if argv[:1] != ["--compose"]:
         return None
@@ -391,19 +403,16 @@ def main(
     stdout = sys.stdout if stdout is None else stdout
     env = os.environ if env is None else env
     started = time.monotonic()
-    try:
-        raw = stdin.read()
-    except Exception:  # noqa: BLE001
-        raw = ""
+    raw = _read_bytes(stdin)
     command = _compose_command(argv)
     proc = _start_original(command, env) if command else None
     try:
-        payload = json.loads(raw)
-    except ValueError:
+        payload = json.loads(raw.decode("utf-8", "replace"))
+    except Exception:  # noqa: BLE001 - incl. RecursionError on absurdly nested input
         payload = {}
     line, ascii_ = _render_safe(payload if isinstance(payload, dict) else {}, env)
     if proc is not None:
-        first = _original_line(proc, raw.encode("utf-8"), started + COMPOSE_TIMEOUT_S)
+        first = _original_line(proc, raw, started + COMPOSE_TIMEOUT_S)
         if first is not None:
             line = f"{first}{SEP_ASCII if ascii_ else SEP}{line}"
     with contextlib.suppress(Exception):
