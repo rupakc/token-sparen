@@ -323,6 +323,8 @@ def _fake_home(tmp_path: Path) -> dict[str, str]:
     env = {
         k: v for k, v in os.environ.items() if k not in {"CLAUDE_CONFIG_DIR", "TOKEN_SPAREN_ROOT"}
     }
+    # Only HOME is faked: on Windows, Python's expanduser reads USERPROFILE instead, so the
+    # HOME-based launcher tests are POSIX-only (CLAUDE_CONFIG_DIR works everywhere).
     env.update(HOME=str(home), TOKEN_SPAREN_HOME=str(home / ".token-sparen"), NO_COLOR="1")
     return env
 
@@ -343,6 +345,9 @@ def _launch(
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX sh")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX launcher; Windows launcher planned for v1.1"
+)
 def test_launcher_missing_plugin_prints_empty(tmp_path: Path) -> None:
     proc = _launch([], _fake_home(tmp_path))
     assert proc.returncode == 0
@@ -351,6 +356,9 @@ def test_launcher_missing_plugin_prints_empty(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX sh")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX launcher; Windows launcher planned for v1.1"
+)
 def test_launcher_missing_plugin_compose_keeps_original(tmp_path: Path) -> None:
     proc = _launch(["--compose", "--", "echo mine; echo two"], _fake_home(tmp_path))
     assert proc.returncode == 0
@@ -364,6 +372,9 @@ def _plugin_copy(dest: Path) -> Path:
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX sh")
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX launcher; Windows launcher planned for v1.1"
+)
 def test_launcher_resolves_installed_plugin(tmp_path: Path) -> None:
     env = _fake_home(tmp_path)
     claude = Path(env["HOME"]) / ".claude" / "plugins"
