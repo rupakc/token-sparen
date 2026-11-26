@@ -7,13 +7,22 @@
      "applied": [<fold id>, ...]}
 
 ``ring`` holds the last ``[learn] breaker_window`` (50) settled regret values of the point's
-*trimming* arms (safe-arm decisions are never tracked), appended by the session fold
-(``learn.overlay``) from the overlay's ``regret_outcomes``. Once it holds at least
-``breaker_min_obs`` (20) values, a mean above ``2 * tau[tier]`` trips the point: for the next
-``breaker_sessions`` (3) folded sessions the engine returns the safe arm for it (propensity 1),
-and the next SessionStart shows one user message. When the count reaches 0 the point re-enters:
-the project evidence of its trimming arms is deleted (``reset``) so the designed priors apply
-again. ``remaining`` is decremented once per *newly* folded session (a re-fold changes nothing).
+*trimming* arms from **learned** decisions only (bucket not ``static``/``error``: the static
+policy's trims say nothing about the learner), appended by the session fold
+(``learn.overlay``) from the overlay's ``regret_outcomes``. A point is evaluated only after
+``breaker_every`` (25) new observations since its last evaluation, over the last 50 (at least
+``breaker_min_obs``, 20): with regret sum k of n it trips iff ``k / n > 2 * tau`` and the
+``breaker_lcb_q`` lower bound of Beta(1 + k, 1 + n - k) exceeds ``tau``. Tripped, the engine
+returns the safe arm for it (propensity 1) for the next ``breaker_sessions`` (3) folded
+sessions, and the next SessionStart shows one user message. When the count reaches 0 the point
+re-enters: the project evidence of its trimming arms is scaled by ``breaker_reentry_scale``
+(0.25, all four fields), so the priors weigh in again without forgetting everything.
+``remaining`` is decremented once per *newly* folded session (a re-fold changes nothing).
+
+Calibration (simulated, medium tier tau = 0.05, 1000 trims at 10 per session, Bernoulli
+regret): with ``breaker_lcb_q = 0.05`` 74 % of runs trip at a true rate equal to tau; at
+``0.0005`` (about 0.05 over the ~40 evaluations of 1000 trims, a Bonferroni-style correction)
+2.9 % trip at tau and 100 % at 3 x tau.
 
 Everything here fails open: a corrupt or missing file reads as "ok".
 """
@@ -26,6 +35,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from token_sparen.config import log_error
+from token_sparen.learn.beta import Beta
 from token_sparen.learn.features import lookup_param
 from token_sparen.learn.policy import DEFAULT_TAU, DecisionPoint
 from token_sparen.store import jsonstore
@@ -35,6 +45,9 @@ BREAKER_FILE = "breaker.json"
 WINDOW = 50
 MIN_OBS = 20
 SESSIONS = 3
+EVERY = 25  # evaluate once this many new observations have arrived since the last evaluation
+LCB_Q = 0.0005  # lower-bound quantile; see the module docstring for the calibration
+REENTRY_SCALE = 0.25
 MESSAGE = (
     "token-sparen: {point} paused for this project after repeated re-reads; "
     "it will retry in {n} sessions."
@@ -83,8 +96,9 @@ def check(
     tau: float | None = None,
     params: Mapping[str, Any] | None = None,
 ) -> Literal["ok", "tripped"]:
-    """``tripped`` if the point is paused, or its rolling regret rate over the last
-    ``breaker_window`` observations (at least ``breaker_min_obs``) exceeds ``2 * tau``."""
+    """``tripped`` if the point is paused, or over the last ``breaker_window`` observations
+    (at least ``breaker_min_obs``) with regret sum k of n: ``k / n > 2 * tau`` **and** the
+    ``breaker_lcb_q`` lower bound of Beta(1 + k, 1 + n - k) exceeds ``tau``."""
     if not isinstance(project_stats, Mapping):
         return "ok"
     if _remaining(project_stats) > 0:
@@ -94,8 +108,12 @@ def check(
     ring = ring_of(project_stats)[-window:]
     if len(ring) < min(min_obs, window):
         return "ok"
-    limit = 2.0 * (tau_for(point, params) if tau is None else tau)
-    return "tripped" if sum(ring) / len(ring) > limit else "ok"
+    t = tau_for(point, params) if tau is None else tau
+    k, n = sum(ring), len(ring)
+    if k / n <= 2.0 * t:
+        return "ok"
+    q = min(0.49, max(1e-9, param(params, "breaker_lcb_q", LCB_Q)))
+    return "tripped" if Beta(1.0 + k, 1.0 + n - k).lcb(q) > t else "ok"
 
 
 def is_tripped(doc: Mapping[str, Any], point: str) -> bool:
@@ -131,11 +149,13 @@ def apply_session(
     params: Mapping[str, Any] | None = None,
 ) -> tuple[list[str], list[str]]:
     """One newly folded session, in place: decrement paused points (0 -> re-entry with
-    ``reset``), append the trimming-arm outcomes to the rings, then trip points whose rate is
-    over the limit. Returns (tripped, reentered) point names."""
+    ``reset``), append the trimming-arm outcomes to the rings, then evaluate (``check``) each
+    point that has gathered ``breaker_every`` new observations since its last evaluation.
+    Returns (tripped, reentered) point names."""
     points = _points(doc)
     window = max(1, int(param(params, "breaker_window", WINDOW)))
     sessions = max(1, int(param(params, "breaker_sessions", SESSIONS)))
+    every = max(1, int(param(params, "breaker_every", EVERY)))
     reentered: list[str] = []
     for name, stats in list(points.items()):
         if isinstance(stats, dict) and _remaining(stats) > 0:
@@ -153,6 +173,14 @@ def apply_session(
         if _remaining(stats) > 0:
             continue  # paused: only safe-arm decisions are being made
         stats["ring"] = [*ring_of(stats), *values][-window:]
+        since = stats.get("since")
+        since = (since if isinstance(since, int) and not isinstance(since, bool) else 0) + len(
+            values
+        )
+        if since < every:
+            stats["since"] = since
+            continue
+        stats["since"] = 0
         if check(point, stats, params=params) == "tripped":
             stats.update(ring=[], remaining=sessions, notified=False, tripped_at=now)
             tripped.append(name)

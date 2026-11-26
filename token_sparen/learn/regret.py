@@ -56,7 +56,8 @@ from token_sparen.learn import pending
 from token_sparen.store import jsonstore, paths, session
 
 REGRET_KEY = "regret"
-OUTCOMES_KEY = "regret_outcomes"  # settled [decision_id, point, arm, command_sig, value], for fold
+# settled [decision_id, point, arm, command_sig, value, bucket], for the fold
+OUTCOMES_KEY = "regret_outcomes"
 MAX_OUTCOMES = 1000
 WINDOW_TURNS = 6
 FULL_WITHIN_TURNS = 2
@@ -456,7 +457,13 @@ def _table(state: dict[str, Any]) -> dict[str, Any]:
 def _outcome(did: str, entry: Any, value: float) -> list[Any]:
     e = entry if isinstance(entry, dict) else {}
     vals = [e.get("point"), e.get("arm"), e.get("command_sig")]
-    return [did, *(v if isinstance(v, str) else "" for v in vals), value]
+    bucket = e.get("bucket")
+    return [
+        did,
+        *(v if isinstance(v, str) else "" for v in vals),
+        value,
+        bucket if isinstance(bucket, str) else "",
+    ]
 
 
 def _record_outcomes(state: dict[str, Any], rows: list[list[Any]]) -> None:
@@ -664,7 +671,7 @@ class RegretDetector:
     ) -> tuple[list[Payout], list[Payout], bool, set[str]]:
         """Apply one event to the table in place: (signals, payouts, changed, read hashes of
         regretted read de-dupe decisions). Settled payouts are also appended to ``outcomes``
-        as ``[decision_id, point, arm, command_sig, value]``."""
+        as ``[decision_id, point, arm, command_sig, value, bucket]``."""
         forget: set[str] = set()
         signals: list[Payout] = []
         payouts: list[Payout] = []

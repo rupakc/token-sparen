@@ -44,9 +44,12 @@ def _bpath(home: Path) -> Path:
 
 
 def _outcomes(
-    values: list[float], arm: str = "aggressive", point: str = "compression"
+    values: list[float],
+    arm: str = "aggressive",
+    point: str = "compression",
+    bucket: str = FULL_KEY,
 ) -> list[Any]:
-    return [[f"d{i}", point, arm, "pytest", v] for i, v in enumerate(values)]
+    return [[f"d{i}", point, arm, "pytest", v, bucket] for i, v in enumerate(values)]
 
 
 def _session(home: Path, sid: str, outcomes: list[Any] | None = None, **extra: Any) -> None:
@@ -79,22 +82,72 @@ def _good_arms(home: Path) -> None:
 # --------------------------------------------------------------------------- check
 def test_check_ok_and_tripped() -> None:
     tau = 0.05
-    assert breaker.check(COMPRESSION, {}, tau=tau) == "ok"
-    assert breaker.check(COMPRESSION, {"ring": [0.0] * 50}, tau=tau) == "ok"
-    assert breaker.check(COMPRESSION, {"ring": [1.0] * 5 + [0.0] * 45}, tau=tau) == "ok"  # = 2 tau
-    assert breaker.check(COMPRESSION, {"ring": [1.0] * 6 + [0.0] * 44}, tau=tau) == "tripped"
+    ok = "ok"
+    assert breaker.check(COMPRESSION, {}, tau=tau) == ok
+    assert breaker.check(COMPRESSION, {"ring": [0.0] * 50}, tau=tau) == ok
+    # rate > 2 tau is not enough: the regret rate's lower bound must clear tau too
+    assert breaker.check(COMPRESSION, {"ring": [1.0] * 6 + [0.0] * 44}, tau=tau) == ok
+    assert breaker.check(COMPRESSION, {"ring": [1.0] * 8 + [0.0] * 42}, tau=tau) == ok
+    assert breaker.check(COMPRESSION, {"ring": [1.0] * 9 + [0.0] * 41}, tau=tau) == "tripped"
+    assert breaker.check(COMPRESSION, {"ring": [1.0] * 5 + [0.0] * 15}, tau=tau) == "tripped"
     # only the last 50 count
-    assert breaker.check(COMPRESSION, {"ring": [1.0] * 30 + [0.0] * 50}, tau=tau) == "ok"
-    # too few observations: no verdict yet
-    assert breaker.check(COMPRESSION, {"ring": [1.0] * 5}, tau=tau) == "ok"
+    assert breaker.check(COMPRESSION, {"ring": [1.0] * 30 + [0.0] * 50}, tau=tau) == ok
+    # too few observations (< breaker_min_obs = 20): no verdict yet
+    assert breaker.check(COMPRESSION, {"ring": [1.0] * 19}, tau=tau) == ok
     assert breaker.check(COMPRESSION, {"remaining": 2}, tau=tau) == "tripped"
-    assert breaker.check(COMPRESSION, {"ring": "junk", "remaining": "x"}, tau=tau) == "ok"
+    assert breaker.check(COMPRESSION, {"ring": "junk", "remaining": "x"}, tau=tau) == ok
+    # the lower-bound quantile is a parameter (the review's lcb(0.05) trips at 6 of 50)
+    loose = {"learn": {"breaker_lcb_q": 0.05}}
+    ring = {"ring": [1.0] * 6 + [0.0] * 44}
+    assert breaker.check(COMPRESSION, ring, tau=tau, params=loose) == "tripped"
 
 
 def test_check_uses_tier_tau_from_params() -> None:
     stats = {"ring": [1.0] * 15 + [0.0] * 35}  # rate 0.3
     assert breaker.check(READ_DEDUPE, stats) == "tripped"  # low tier: tau 0.10
     assert breaker.check(READ_DEDUPE, stats, params={"learn": {"tau": {"low": 0.2}}}) == "ok"
+
+
+def test_evaluated_only_after_25_new_observations() -> None:
+    doc: dict[str, Any] = {}
+    bad = [(COMPRESSION, 1.0)] * 20
+    assert breaker.apply_session(doc, bad, now=1.0) == ([], [])  # 20 new: not evaluated yet
+    assert breaker.apply_session(doc, [(COMPRESSION, 1.0)] * 4, now=2.0) == ([], [])
+    assert breaker.apply_session(doc, [(COMPRESSION, 1.0)], now=3.0) == (["compression"], [])
+
+
+def _sim(p: float, runs: int, seed: int) -> float:
+    rng = random.Random(seed)
+    trips = 0
+    for _ in range(runs):
+        doc: dict[str, Any] = {}
+        for _ in range(100):  # 1000 trims, 10 per session
+            obs = [(COMPRESSION, 1.0 if rng.random() < p else 0.0) for _ in range(10)]
+            tripped, _ = breaker.apply_session(doc, obs, now=0.0)
+            if tripped:
+                trips += 1
+                break
+    return trips / runs
+
+
+def test_false_trip_rate_at_tau_and_power_at_three_tau() -> None:
+    assert _sim(0.05, 300, 11) <= 0.08  # simulated 0.029 over 4000 runs
+    assert _sim(0.15, 100, 12) >= 0.9  # simulated 1.000
+
+
+def test_static_policy_outcomes_never_trip(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    _session(home, "s", _outcomes([1.0] * 50, bucket="static"))
+    assert overlay.fold("s", KEY, home).tripped == []
+    _session(home, "e", _outcomes([1.0] * 50, bucket="error"))
+    legacy = [[f"x{i}", "compression", "aggressive", "pytest", 1.0] for i in range(50)]
+    _session(home, "l", legacy)  # no bucket recorded: not known to be learned
+    overlay.fold("e", KEY, home)
+    overlay.fold("l", KEY, home)
+    points = _read(_bpath(home)).get("points", {})
+    assert not points.get("compression", {}).get("ring")
+    assert breaker.notices(KEY, home) == []
+    assert overlay.learner_state(KEY, home) == "cold"
 
 
 # --------------------------------------------------------------------------- end to end
@@ -104,7 +157,7 @@ def test_breaker_trips_and_recovers(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     ctx = SessionCtx(SID, KEY, 1, None, None, session.session_path(home, KEY, SID))
     assert any(_engine(home).decide(COMPRESSION, FULL, ctx).arm != "off" for _ in range(20))
 
-    _session(home, "bad", _outcomes([1.0] * 10 + [0.0] * 40))
+    _session(home, "bad", _outcomes([1.0] * 20 + [0.0] * 30))
     rep = overlay.fold("bad", KEY, home)
     assert rep.tripped == ["compression"]
     state = _read(_bpath(home))["points"]["compression"]
@@ -129,10 +182,13 @@ def test_breaker_trips_and_recovers(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         rep = overlay.fold(f"later-{i}", KEY, home)
     assert rep.reentered == ["compression"]
     assert not breaker.is_tripped(_read(_bpath(home)), "compression")
-    # re-entry: non-safe project evidence of the point is gone; designed priors apply again
+    # re-entry: the trimming arms' project evidence shrinks x 0.25 (priors weigh in again)
     doc = _read(home / "projects" / KEY / "posteriors.json")
-    for bucket in doc["points"].get("compression", {}).values():
-        assert set(bucket) <= {"off"}
+    for bucket in (FULL_KEY, "*"):
+        for arm in ("light", "standard", "aggressive"):
+            node = doc["points"]["compression"][bucket][arm]
+            assert Evidence.from_list(node["savings"]).to_list() == [10.0, 2.5, 12.5, 8.0]
+            assert Evidence.from_list(node["regret"]).to_list() == [0.0, 12.5, 12.5, 0.0]
     assert any(_engine(home).decide(COMPRESSION, FULL, ctx).arm != "off" for _ in range(20))
 
 
@@ -206,4 +262,4 @@ def test_regret_settlement_records_outcomes_in_overlay(tmp_path: Path) -> None:
     )
     det._apply(path, regret._Info(), 1, True, True)  # SessionEnd settles everything
     outs = session.read_session(path)["regret_outcomes"]
-    assert outs == [["d1", "compression", "standard", "pytest -q", 0.0]]
+    assert outs == [["d1", "compression", "standard", "pytest -q", 0.0, "b"]]

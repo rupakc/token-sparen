@@ -135,9 +135,12 @@ regret_window_turns = 6  # a trim is watched for regret this many turns, then cr
 global_weight = 0.3  # a folded session's evidence enters global/posteriors.json times this (the delta)
 global_age_days = 90  # global entries untouched this long are halved at the next fold
 breaker_window = 50  # circuit breaker: rolling regret rate over the last N settled trims of a point
-breaker_min_obs = 20  # ... evaluated once at least this many are in the window; > 2 x tau trips
+breaker_min_obs = 20  # ... evaluated only once at least this many are in the window
+breaker_every = 25  # ... re-evaluated only after this many new observations since the last
+breaker_lcb_q = 0.0005  # ... trips iff rate > 2 x tau AND this lower quantile of
+# Beta(1 + k, 1 + n - k) > tau (0.0005: ~3 % false trips at tau over 1000 trims; 0.05: ~74 %)
 breaker_sessions = 3  # a tripped point uses its safe arm for this many folded sessions, then
-# re-enters with its trimming-arm project evidence reset (designed priors apply again)
+breaker_reentry_scale = 0.25  # re-enters with its trimming-arm project evidence scaled by this
 pretrim_min_decisions = 5  # a command becomes a pre-trim candidate after >= N trimming compressions
 pretrim_max_ratio = 0.4  # ... with mean tokens_after / tokens_before <= this and no regret ever
 pretrim_lines = 120  # tail lines kept for a new candidate

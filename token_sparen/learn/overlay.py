@@ -49,7 +49,7 @@ import uuid
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from token_sparen.config import log_error, state_home
 from token_sparen.learn import breaker, pending
@@ -76,6 +76,7 @@ LOCK_ORDER = (
     "overlay",
     "pending.json",
 )
+UNLEARNED_BUCKETS = frozenset({"static", "error"})  # StaticPolicy / engine-error decisions
 FOLDING_KEY = "folding"
 FOLDED_AT = "folded_at"
 APPLIED_KEY = "applied"
@@ -293,17 +294,30 @@ def _stage(
     return out[0] if out else None
 
 
-def _outcomes(raw: object) -> list[tuple[str, str, str, float]]:
-    """(point, arm, command_sig, value) of well-formed outcome rows."""
-    out: list[tuple[str, str, str, float]] = []
+class Outcome(NamedTuple):
+    """One settled regret outcome of the session."""
+
+    point: str
+    arm: str
+    sig: str
+    value: float
+    learned: bool  # decided by the learner (bucket recorded and not static/error)
+
+
+def _outcomes(raw: object) -> list[Outcome]:
+    """Well-formed ``[id, point, arm, command_sig, value(, bucket)]`` rows (a row without a
+    bucket predates its recording and is not known to be learned)."""
+    out: list[Outcome] = []
     for row in raw if isinstance(raw, list) else []:
-        if not isinstance(row, list) or len(row) != 5:
+        if not isinstance(row, list) or len(row) not in (5, 6):
             continue
-        _, point, arm, sig, value = row
+        point, arm, sig, value = row[1:5]
+        bucket = row[5] if len(row) == 6 else None
         if isinstance(point, str) and isinstance(arm, str) and isinstance(sig, str):
             x = _num(value)
             if x is not None:
-                out.append((point, arm, sig, min(1.0, max(0.0, x))))
+                learned = isinstance(bucket, str) and bucket not in UNLEARNED_BUCKETS
+                out.append(Outcome(point, arm, sig, min(1.0, max(0.0, x)), learned))
     return out
 
 
@@ -362,7 +376,7 @@ def _breaker_and_project(
     rep: FoldReport,
     fid: str,
     cells: list[tuple[str, str, str, Kind, Evidence]],
-    outcomes: list[tuple[str, str, str, float]],
+    outcomes: list[Outcome],
     pdir: Path,
     params: Mapping[str, Any] | None,
     now: float,
@@ -378,16 +392,17 @@ def _breaker_and_project(
         fresh = fid not in _applied(bdoc)
         if fresh:
             obs: list[tuple[DecisionPoint, float]] = []
-            for point, arm, _, value in outcomes:
-                known = _trimming(point, arm)
-                if known is not None:
-                    obs.append((known, value))
+            for o in outcomes:
+                known = _trimming(o.point, o.arm) if o.learned else None
+                if known is not None:  # the breaker judges the learner, not the static policy
+                    obs.append((known, o.value))
             rep.tripped, rep.reentered = breaker.apply_session(bdoc, obs, now=now, params=params)
         resets = breaker.pending_resets(bdoc)
         pdoc = _evidence_doc(jsonstore.read_locked(post, {}, env), env, "project")
         points: dict[str, Any] = pdoc["points"]
+        scale = min(1.0, max(0.0, _param(params, "breaker_reentry_scale", breaker.REENTRY_SCALE)))
         for name in resets:
-            _reset(points, name)
+            _reset(points, name, scale)
         merge = fid not in _applied(pdoc)
         if merge:
             for point, bucket, arm, kind, ev in cells:
@@ -404,22 +419,22 @@ def _breaker_and_project(
             jsonstore.write_locked(bpath, bdoc)
 
 
-def _reset(points: dict[str, Any], name: str) -> None:
-    """Delete the project evidence of ``name``'s trimming arms (re-entry after a trip)."""
+def _reset(points: dict[str, Any], name: str, scale: float) -> None:
+    """Re-entry after a trip: scale the project evidence of ``name``'s trimming arms by
+    ``scale`` (all four fields), in every bucket."""
     known = get_point(name)
     buckets = points.get(name)
     if not isinstance(buckets, dict):
         return
-    for bucket in list(buckets):
-        arms = buckets[bucket]
-        if isinstance(arms, dict):
-            for arm in list(arms):
-                if known is None or arm != known.safe_arm:
-                    del arms[arm]
-        if not arms:
-            del buckets[bucket]
-    if not buckets:
-        del points[name]
+    for arms in buckets.values():
+        if not isinstance(arms, dict):
+            continue
+        for arm, node in arms.items():
+            if not isinstance(node, dict) or (known is not None and arm == known.safe_arm):
+                continue
+            for kind in _KINDS:
+                if node.get(kind) is not None:
+                    node[kind] = _get(node, kind).scaled(scale).to_list()
 
 
 def _global(
@@ -531,7 +546,7 @@ def _ratio(rec: Mapping[str, Any]) -> tuple[str, float, float] | None:
 def _pretrim(
     rep: FoldReport,
     fid: str,
-    outcomes: list[tuple[str, str, str, float]],
+    outcomes: list[Outcome],
     pdir: Path,
     params: Mapping[str, Any] | None,
     now: float,
@@ -570,9 +585,9 @@ def _pretrim(
                 row[1] += ratio
                 row[3] = max(row[3], ts)
         if fid not in _applied(doc):
-            for _, _, sig, value in outcomes:
-                if sig and value > 0.0:
-                    row = entry(sig)
+            for o in outcomes:
+                if o.sig and o.value > 0.0:
+                    row = entry(o.sig)
                     row[2] += 1.0
                     row[3] = max(row[3], now)
             _mark(doc, fid)
