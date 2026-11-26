@@ -15,9 +15,10 @@ returns more than the model would have seen, and savings are booked against the 
 from __future__ import annotations
 
 import os
+import re
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -33,10 +34,17 @@ from token_sparen.compress import (
 )
 from token_sparen.config import Config, log_error, state_home
 from token_sparen.estimate import estimate_tokens
-from token_sparen.events import Action, Event
-from token_sparen.learn.policy import COMPRESSION, PRETRIM, Decision, DecisionRecord, Policy
+from token_sparen.events import Action, Event, ToolCall
+from token_sparen.learn.policy import (
+    COMPRESSION,
+    PRETRIM,
+    Decision,
+    DecisionRecord,
+    Policy,
+    StaticPolicy,
+)
 from token_sparen.mechanisms import guards, tracking
-from token_sparen.store import jsonl, jsonstore, paths, session
+from token_sparen.store import jsonl, jsonstore, keycache, paths, session
 
 PERSISTED_MAX_BYTES = 5_000_000
 SAVE_DEADLINE_MS = 250
@@ -285,3 +293,43 @@ def handle_post_tool(
     _count_trim(overlay_file, before - after, env)
     _log_decision(event, cfg, env, decision, ctype, before, after, ref.id, tokens_full)
     return Action(replace_output=body)
+
+
+_SHOW_ID = re.compile(r"`token-sparen show ([0-9a-f]{12})`\]\s*$")
+
+
+@dataclass(frozen=True)
+class CompressInfo:
+    """What a successful ``compress_text`` did."""
+
+    recovery_id: str
+
+
+def compress_text(
+    text: str,
+    tool: ToolCall,
+    cfg: Config,
+    project_dir: Path,
+    env: Mapping[str, str],
+) -> tuple[str, CompressInfo | None]:
+    """Run ``text`` through the hook's detect -> policy -> compress -> save -> marker path.
+
+    Used by ``token-sparen run``. Returns the original text and ``None`` when nothing was elided.
+    """
+    event = Event(
+        host="cli",
+        kind="post_tool",
+        session_id=env.get("CLAUDE_SESSION_ID") or "cli",
+        project_dir=project_dir,
+        project_key=keycache.cached_project_key(project_dir, env),
+        transcript_path=None,
+        tool=tool,
+        output_text=text,
+        raw_response=text,
+    )
+    action = handle_post_tool(event, StaticPolicy({}), cfg, env=env, replaceable=lambda _e: True)
+    body = action.replace_output
+    if body is None:
+        return text, None
+    found = _SHOW_ID.search(body)
+    return body, CompressInfo(found.group(1) if found else "")

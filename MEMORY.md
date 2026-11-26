@@ -268,3 +268,11 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   `NO_COLOR` / `[statusline] color = false` -> no ANSI; `ascii = true` -> `ts | x r`. Kill switch
   and any failure -> `⛁ ts`. Compose: original runs concurrently (`sh -c`, own process group,
   killed at 1 s); non-zero exit, timeout or empty output -> ours only.
+
+## 2026-11-26 User surface (Task 17)
+- `run` reuses the hook path through `compression.compress_text` (synthetic Bash event, static
+  policy, same decision log and ledger); a single argument with shell syntax runs via `/bin/sh -c`.
+- Per-session kill switch: overlay flag `disabled: true` (`token-sparen session disable|enable`),
+  honoured by `entry.main` for every event. Session id from `CLAUDE_SESSION_ID`, else `--session`.
+- The slash command also allows `Bash(python3:*)` so it can fall back to `hooks/run_cli.py`.
+- pyproject `packages` now lists `token_sparen.mechanisms` and `token_sparen.learn` (were missing).

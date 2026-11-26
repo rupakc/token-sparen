@@ -32,7 +32,7 @@ from token_sparen.mechanisms import (
     subagent,
     tracking,
 )
-from token_sparen.store import jsonl
+from token_sparen.store import jsonl, session
 
 Handler = Callable[[Event, Config], Action]
 # Ordered handler chain per event kind; see ``handle`` for how the actions are composed.
@@ -305,6 +305,12 @@ def _log_latency(
         log_error(env, "claude.entry", f"latency log: {type(exc).__name__}: {exc}")
 
 
+def _session_disabled(event: Event, env: Mapping[str, str]) -> bool:
+    """The per-session kill switch (``token-sparen session disable``) lives in the overlay."""
+    overlay = session.read_session(tracking.overlay_path(event, env))
+    return overlay.get("disabled") is True
+
+
 def _respond(
     event_name: str, stdin: TextIO, env: Mapping[str, str], dog: _Watchdog
 ) -> tuple[str, Config | None, str]:
@@ -321,7 +327,7 @@ def _respond(
     budget = _budget_ms(cfg)
     if budget != dog.budget_ms:
         dog.arm(budget)
-    if cfg.disabled:
+    if cfg.disabled or _session_disabled(event, env):
         return NOOP, cfg, "disabled"
     token = HOOK_ENV.set(env)
     started = HOOK_STARTED.set(dog.started)

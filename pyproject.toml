@@ -24,6 +24,8 @@ packages = [
   "token_sparen",
   "token_sparen.store",
   "token_sparen.compress",
+  "token_sparen.mechanisms",
+  "token_sparen.learn",
   "token_sparen.adapters",
   "token_sparen.adapters.claude",
 ]
