@@ -110,7 +110,10 @@ cooldown_turns = 10
 enabled = true  # the brief is still a decision point (static default arm: off)
 
 [statusline]
-# filled by later tasks
+segments = ["ctx", "burn", "rate", "saved", "trims", "learn"]
+ascii = false  # true: ASCII glyphs (ts, |, x, r) instead of the symbols
+color = true  # NO_COLOR in the environment also turns colours off
+parse_budget_ms = 20  # transcript catch-up per render (the governor's cache keeps the rest)
 
 [learn]
 decision_log_max_bytes = 20000000  # projects/<key>/decisions.jsonl rotates past this size

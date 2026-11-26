@@ -238,3 +238,33 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   or edited files; otherwise the JSON no-op. Instruction text uses no nested backticks.
 - Advisories check `governor_advised` in the lock-free overlay read first; no lock when every
   wanted level was already said.
+
+## 2026-11-26 Live statusline (Task 16)
+- **Launcher** `scripts/statusline.sh` (POSIX sh, `python3 -I -c`) is copied by `statusline install`
+  to `~/.token-sparen/statusline.sh` (plugin updates move the versioned plugin dir) with
+  `FALLBACK_ROOT` baked to the installing package root. Root resolution per run:
+  `$TOKEN_SPAREN_ROOT` -> `installed_plugins.json` (recursive search for `installPath` containing
+  `token-sparen`, newest mtime) -> `plugins/cache/*/token-sparen/*` (newest) -> `FALLBACK_ROOT`;
+  `CLAUDE_CONFIG_DIR` respected. Nothing found: empty line (compose: the original's first line).
+  The repo copy has an empty `FALLBACK_ROOT`. No `statusline.cmd` for Windows in v1 (doctor will
+  report it; compose mode needs `sh`).
+- **Settings**: only `statusLine` changes; JSON object required (else refused, nothing written);
+  backup `settings.json.token-sparen.bak` only if absent; original recorded in
+  `statusline_install.json` under `installs[<realpath of settings>]`; composed command
+  `sh '<launcher>' --compose -- '<original>'` (shlex-quoted, other statusLine fields kept);
+  re-install idempotent; atomic write keeping file mode; a symlinked settings file is written
+  through (link kept). Uninstall restores the recorded value in place or removes the key; if the
+  statusline was changed by the user since install it is left alone (`unchanged`); with no record,
+  a composed command is unwrapped. Launcher copy removed when no install remains.
+- **Render**: bound to stdin `session_id`/`transcript_path`; project dir = `CLAUDE_PROJECT_DIR` ->
+  `workspace.project_dir` -> `cwd` (same key as hooks). Sensor writes `windows.json`
+  `{sid: {window, model, ts}}` only for a positive int `context_window_size`, skips the write if
+  unchanged and < 1 h old, prunes entries older than 7 days. Burn/EWMA via `governor.state` with
+  `[statusline] parse_budget_ms = 20`. ctx % from stdin `used_percentage`, else the governor.
+  `rate` segment = `+EWMA/turn` and `5h N%` from `rate_limits` when present. Net = `tokens_removed`
+  - `recovery_read_tokens` - `injected_tokens`; `≈$` = net x total_cost_usd / (input+output tokens)
+  only when both known (no model price table). Regrets = ledger `regrets` (0 until Task 21); learn
+  = `token_sparen.learn.overlay.learner_state(project_key)` if importable, else `cold`.
+  `NO_COLOR` / `[statusline] color = false` -> no ANSI; `ascii = true` -> `ts | x r`. Kill switch
+  and any failure -> `⛁ ts`. Compose: original runs concurrently (`sh -c`, own process group,
+  killed at 1 s); non-zero exit, timeout or empty output -> ours only.
