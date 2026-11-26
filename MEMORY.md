@@ -395,3 +395,5 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   skipped as `requires api 1.5 (host 1.0)`. `extensions list` shows an entry point's api status
   read with `ast` from the distribution's installed source file (`ep.dist.files`, no import);
   if that is not determinable it shows `api unknown (checked at load)`.
+- **Layering test resolves relative imports**: `from ..adapters`, `from ...adapters`,
+  `from .. import adapters` are resolved against the module's package before the check.
