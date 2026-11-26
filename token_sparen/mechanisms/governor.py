@@ -44,7 +44,16 @@ MAX_IDS = 64
 CHUNK = 4 << 20
 CACHE = "governor"
 ADVISED = "governor_advised"
-STOP_TOOLS = frozenset({"Read", "Bash", "WebFetch", "WebSearch", "Task", "Agent"})
+# Context-adding tools the opt-in hard stop denies (plus every MCP tool); never edit tools.
+STOP_TOOLS = frozenset(
+    {"Read", "Bash", "WebFetch", "WebSearch", "Task", "Agent", "Grep", "Glob", "LS"}
+)
+
+
+def _stops(name: str) -> bool:
+    return name in STOP_TOOLS or name.startswith("mcp__")
+
+
 # The parse-budget clock (module level so tests can drive the deadline deterministically).
 _monotonic = time.monotonic
 _RANK: dict[Level, int] = {"ok": 0, "notice": 1, "advise": 2, "stop": 3}
@@ -548,7 +557,7 @@ def on_post_tool(event: Event, cfg: Config, *, env: Mapping[str, str] | None = N
 def check_pre_tool(event: Event, cfg: Config, *, env: Mapping[str, str] | None = None) -> Action:
     """Opt-in hard stop: deny a context-adding tool once the economy budget is used up."""
     env = os.environ if env is None else env
-    if not _hard_stop(cfg) or event.tool is None or event.tool.name not in STOP_TOOLS:
+    if not _hard_stop(cfg) or event.tool is None or not _stops(event.tool.name):
         return Action()
     try:
         got = _session_state(event, cfg, env)

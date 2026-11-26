@@ -418,3 +418,34 @@ def test_explicit_session_beats_last_active(env: dict[str, str]) -> None:
     assert main(["session", "disable", "--session", "other-5"]) == 0
     assert _overlay(env, "other-5")["disabled"] is True
     assert "disabled" not in _overlay(env, "live-4")
+
+
+@pytest.mark.parametrize(
+    ("platform", "found", "needles"),
+    [
+        ("win32", {"py", "python"}, ("py -3 -m token_sparen", "python3")),
+        ("win32", {"python"}, ("python -m token_sparen", "python3")),
+        ("win32", set(), ("python.org", "python3")),
+        ("linux", set(), ("hooks run python3",)),
+    ],
+)
+def test_python3_missing_hint(platform: str, found: set[str], needles: tuple[str, ...]) -> None:
+    import token_sparen.cli as cli
+
+    text = cli.python3_missing_hint(platform, lambda name: f"/x/{name}" if name in found else None)
+    for needle in needles:
+        assert needle in text
+    if platform != "win32":
+        assert "py -3" not in text
+
+
+def test_doctor_windows_hint(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import token_sparen.cli as cli
+
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "C:/py.exe" if name == "py" else None)
+    monkeypatch.setattr(cli, "_host_platform", lambda: "win32")
+    main(["doctor"])
+    captured = capsys.readouterr()
+    assert "py -3 -m token_sparen" in captured.out, captured.err

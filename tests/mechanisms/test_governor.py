@@ -501,7 +501,8 @@ def test_hard_stop_off_by_default(tmp_path: Path) -> None:
 
 def test_hard_stop_blocks_context_adding_tools(tmp_path: Path) -> None:
     t, cfg, env = _over_budget(tmp_path, TOKEN_SPAREN_GOVERNOR__HARD_STOP="true")
-    for tool in ("Read", "Bash", "WebFetch", "WebSearch", "Task", "Agent"):
+    stop = ("Read", "Bash", "WebFetch", "WebSearch", "Task", "Agent", "Grep", "Glob", "LS")
+    for tool in (*stop, "mcp__srv__fetch_docs"):
         ev = _event(tmp_path, "pre_tool", t, tool=tool)
         reason = governor.check_pre_tool(ev, cfg, env=env).block_reason
         assert reason is not None and reason.startswith("token-sparen:")
@@ -512,7 +513,7 @@ def test_hard_stop_blocks_context_adding_tools(tmp_path: Path) -> None:
 
 def test_hard_stop_never_blocks_edits(tmp_path: Path) -> None:
     t, cfg, env = _over_budget(tmp_path, TOKEN_SPAREN_GOVERNOR__HARD_STOP="true")
-    for tool in ("Edit", "Write", "MultiEdit", "NotebookEdit", "Grep", "TodoWrite"):
+    for tool in ("Edit", "Write", "MultiEdit", "NotebookEdit", "TodoWrite", "AskUserQuestion"):
         ev = _event(tmp_path, "pre_tool", t, tool=tool, tool_input={"file_path": "x"})
         assert governor.check_pre_tool(ev, cfg, env=env).is_noop()
 

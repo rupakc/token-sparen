@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -357,10 +357,32 @@ def _check_hooks_json(root: Path) -> tuple[bool, str]:
     return True, f"{root} ({len(commands)} hook commands)"
 
 
+def _host_platform() -> str:
+    return sys.platform
+
+
+def python3_missing_hint(platform: str, which: Callable[[str], str | None] | None = None) -> str:
+    """Why ``python3`` matters and, on Windows, what to use instead for the CLI."""
+    which = shutil.which if which is None else which
+    text = "python3 not found on PATH; hooks run python3"
+    if platform != "win32":
+        return text
+    if which("py") is not None:
+        other = "py -3"
+    elif which("python") is not None:
+        other = "python"
+    else:
+        return f"{text}. Install Python >= 3.11 (python.org or the Microsoft Store) with PATH set"
+    return (
+        f"{text}. `{other}` exists: run the CLI as `{other} -m token_sparen`, and make `python3` "
+        "resolve (Microsoft Store Python provides it) so the hooks can start"
+    )
+
+
 def _round_trip(root: Path) -> tuple[bool, str]:
     py = shutil.which("python3")
     if py is None:
-        return False, "python3 not found on PATH (hooks run python3)"
+        return False, python3_missing_hint(_host_platform())
     with tempfile.TemporaryDirectory(prefix="token-sparen-doctor-") as tmp:
         project = Path(tmp) / "proj"
         project.mkdir()
@@ -419,7 +441,7 @@ def _doctor(args: argparse.Namespace) -> int:
     add(_OK if ok else _BAD, "python", f"{ver.major}.{ver.minor}.{ver.micro} (need >= 3.11)")
     path_py = _python3_version()
     if path_py is None:
-        add(_WARN, "python3 on PATH", "not found; hooks run python3")
+        add(_WARN, "python3 on PATH", python3_missing_hint(_host_platform()))
     elif path_py < (3, 11):
         add(_WARN, "python3 on PATH", f"{path_py[0]}.{path_py[1]} < 3.11; hooks use python3")
     home = state_home(env)

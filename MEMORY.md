@@ -349,3 +349,12 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   1.x)` in `extensions list`, never executed); a computed value fails at import (disabled,
   logged); an entry point is skipped after load with one log line (its listing loads nothing,
   so it shows no api status).
+- **Hard stop tool set** (supersedes Task 15): Read, Bash, WebFetch, WebSearch, Task, Agent,
+  Grep, Glob, LS and every `mcp__*` tool. Edit tools and interaction tools are never denied.
+- **Windows doctor hint** (Task 12 follow-up done): when `python3` is missing, doctor on Windows
+  names `py -3` or `python` (whichever exists) for the CLI (`<it> -m token_sparen`) and says the
+  hooks need `python3` to resolve; with neither, it says to install Python >= 3.11 with PATH set.
+- **Dropped (YAGNI)**: the spec §6.5 idle-gap boundary signal is not implemented; containment of
+  identifiers is the only boundary signal (spec to drop it). No dedicated table/csv compressor:
+  `table` content goes to the text compressor, which is safe (error pinning, marker, recovery);
+  revisit only if replay shows tables are a large share of tokens.
