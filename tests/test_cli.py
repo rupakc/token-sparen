@@ -347,13 +347,19 @@ def test_slash_command_is_a_skill() -> None:
         if not ln.startswith("  - "):
             break
         tools.append(ln[4:].strip().strip("'"))
-    assert tools == [
-        "Bash(token-sparen:*)",
-        'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py":*)',
+    # Model-invocable skill: pre-approve only read-only / low-risk subcommands.
+    safe = ("stats", "show", "doctor", "session")
+    boot = 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"'
+    assert tools == [f"Bash(token-sparen {c}:*)" for c in safe] + [
+        f"Bash({boot} {c}:*)" for c in safe
     ]
     assert "argument-hint:" in front
-    for bare in ("python3:*", "python:*", "sh:*", "bash:*"):
+    for bare in ("python3:*", "python:*", "sh:*", "bash:*", "token-sparen:*", 'run_cli.py":*'):
         assert bare not in front
+    for risky in ("extensions", "config", "statusline", "prune", "trust", "run"):
+        assert not any(f" {risky}" in t.split("run_cli.py")[-1] for t in tools), risky
+    assert "permission prompt" in body
+    assert "explicitly" in body and "/token-sparen" in body
     assert "$ARGUMENTS" in body
     assert "session disable --session ${CLAUDE_SESSION_ID}" in body
     assert 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"' in body

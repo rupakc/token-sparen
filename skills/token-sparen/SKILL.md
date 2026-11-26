@@ -3,8 +3,14 @@ name: token-sparen
 description: Use when the user asks about token usage, trimmed outputs, recovering elided output, or token-sparen settings. Also the /token-sparen command (stats, statusline, disable, enable).
 argument-hint: "[stats | statusline | disable | enable]"
 allowed-tools:
-  - Bash(token-sparen:*)
-  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py":*)'
+  - Bash(token-sparen stats:*)
+  - Bash(token-sparen show:*)
+  - Bash(token-sparen doctor:*)
+  - Bash(token-sparen session:*)
+  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" stats:*)'
+  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" show:*)'
+  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" doctor:*)'
+  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" session:*)'
 ---
 
 # token-sparen
@@ -15,11 +21,18 @@ results) before the model sees them, and keeps the full text on disk so nothing 
 ## Running the CLI
 Use `token-sparen <args>`. If that is not installed (command not found), run exactly
 `python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>` instead (same arguments). Run nothing else.
+Only `stats`, `show`, `doctor` and `session` are pre-approved. Every other subcommand
+(`statusline install`, `config set`, `extensions trust`, `prune`, ...) goes through the normal
+permission prompt: run it only when the user asked for it, and let the user approve it.
 
 ## /token-sparen
-Argument given: `$ARGUMENTS` (empty when the skill was not invoked as a command).
-1. No argument or `stats`: run `token-sparen stats --session ${CLAUDE_SESSION_ID}` and summarise
-   tokens saved and trims in two or three lines, then give the recovery help below.
+Argument given: `$ARGUMENTS`. Follow these steps only when the user explicitly typed
+`/token-sparen`; if this skill was loaded for a question (e.g. how to recover a trimmed output),
+answer from the sections below; do not run `stats` (run `token-sparen show <id>` only if the
+user needs the full output).
+1. `/token-sparen` with no argument, or `stats`: run
+   `token-sparen stats --session ${CLAUDE_SESSION_ID}` and summarise tokens saved and trims in
+   two or three lines, then give the recovery help below.
 2. `statusline`: offer `token-sparen statusline install` (edits Claude Code settings, keeps a
    backup; `token-sparen statusline uninstall` reverses it). Run it only if the user agrees.
 3. `disable`: run `token-sparen session disable --session ${CLAUDE_SESSION_ID}` and confirm that

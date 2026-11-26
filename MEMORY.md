@@ -383,3 +383,10 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   `projects/<key>/floor_warned.json` keeps `{min_tokens: <value warned about>}`; the warning is
   logged again only when the configured value changes. `doctor` shows a `!` line for any
   `compression.min_tokens` / `read_dedupe.min_tokens` below 2000 in the current directory's config.
+- **Skill permissions narrowed (security, supersedes the C3 rule list)**: the skill is
+  model-invocable, so a blanket `Bash(token-sparen:*)` let a prompt-injected model run
+  `extensions trust --yes`, `config set`, `statusline install` without asking. `allowed-tools` now
+  pre-approves only `stats`, `show`, `doctor`, `session`, each as `Bash(token-sparen <sub>:*)` and
+  `Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <sub>:*)`; everything else goes through
+  the normal permission prompt (the body says so). `stats` runs only when the user explicitly
+  typed `/token-sparen`, not when the skill is auto-loaded for a question.
