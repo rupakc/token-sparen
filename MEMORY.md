@@ -358,3 +358,10 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   identifiers is the only boundary signal (spec to drop it). No dedicated table/csv compressor:
   `table` content goes to the text compressor, which is safe (error pinning, marker, recovery);
   revisit only if replay shows tables are a large share of tokens.
+- **Supersedes Task 17 "the slash command also allows `Bash(python3:*)`"**: that rule was removed
+  in the least-privilege fix (`b7b2aa1`); since this wave the only rules are the two in the
+  `token-sparen` skill (see above). No bare interpreter rule exists anywhere.
+- **Defaults file location**: the packaged defaults live at `token_sparen/params/defaults.toml`
+  (package data, read via `importlib.resources`), not a top-level `params/`, so wheels and plugin
+  installs carry them. Docs that say `params/defaults.toml` mean this file.
+- `uv.lock` is ignored: the project uses pip with the `dev` extra; no lock file is committed.
