@@ -23,6 +23,16 @@ and best-effort: a false positive leaves an output untouched, a false negative m
   ``watch``, ``unbuffer``, ``ionice``, ``strace``, ``chroot``, ``busybox``, ``coreutils``,
   ``powershell|pwsh -Command`` (plus the shared wrappers: sudo, env, timeout, nice, ...).
 
+Fix round 3 adds: ``kubectl|oc exec POD CMD`` without ``--``, ``oc rsh``, ``docker-compose``,
+``fd -x|-X CMD`` (implicit path operand), nsenter, flock (``-c``), setsid, taskset, sshpass,
+``sg -c``, ``vagrant ssh -c``, ``gcloud compute ssh --command``, ``multipass exec``, lima,
+``parallel CMD :::``; ``docker|kubectl cp SRC -|/dev/stdout``, ``hg cat``, ``openssl -in`` to
+stdout, iconv, brotli/lz4/lzma, zless-likes, ``dos2unix f /dev/stdout``; php ``-r``
+``file_get_contents``/``fopen``, lua ``io.open``, awk ``getline < f``; here-document bodies of
+interpreters (a shell body is classified, other bodies searched for reads; a ``cat <<EOF`` body is
+data); match-everything searches (grep/rg/ag/ack/zgrep with ``''``, ``.``, ``^``, ``$`` or
+``rg --passthru``, and a file/dir operand; not with -l/-c/-q/-o).
+
 ``is_file_tool(name)`` is the tool-name rule (MCP tools included). ``families.command_family``
 (E1) keeps classifying by the first program only.
 """
@@ -37,8 +47,20 @@ from token_sparen.compress import families as fam
 MAX_DEPTH = 4
 # --------------------------------------------------------------------------- tool names
 
-_VERBS = ("read", "get", "fetch", "download", "view", "open", "cat")
-_NOUNS = ("file", "files", "document", "documents", "media", "resource", "resources", "content")
+# The single source of the tool-name rule.
+_VERBS = ("read", "get", "fetch", "download", "view", "open", "cat", "load", "show")
+_NOUNS = (
+    "file",
+    "files",
+    "document",
+    "documents",
+    "media",
+    "resource",
+    "resources",
+    "content",
+    "blob",
+    "raw",
+)
 _BARE = frozenset({"read", "cat", "view", "open"})
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
@@ -100,18 +122,38 @@ _ARGS: dict[str, tuple[frozenset[str], int, frozenset[str]]] = {
     "highlight": (frozenset({"-O", "-S", "-s", "--out-format", "--syntax"}), 0, frozenset()),
     "pygmentize": (frozenset({"-l", "-f", "-O", "-P", "-o", "-x"}), 0, frozenset()),
     "glow": (frozenset({"-s", "-w", "--style", "--width"}), 0, frozenset()),
+    "iconv": (frozenset({"-f", "-t", "-o", "--from-code", "--to-code"}), 0, frozenset()),
 }
 _PLAIN = frozenset(
     {"cat", "less", "more", "rev", "zcat", "xzcat", "bzcat", "zstdcat", "view", "most", "mdcat"}
+    | {"zless", "zmore", "bzless", "bzmore", "xzless", "xzmore", "zstdless", "lzcat", "gzcat"}
 )
 _DUMPS = frozenset(_ARGS) | _PLAIN
 _GPREFIXED = frozenset(f"g{p}" for p in _DUMPS if p not in ("awk",))
-_DECOMPRESS = frozenset({"gzip", "gunzip", "xz", "unxz", "bzip2", "bunzip2", "zstd", "unzstd"})
+_DECOMPRESS = frozenset(
+    {"gzip", "gunzip", "xz", "unxz", "bzip2", "bunzip2", "zstd", "unzstd", "brotli", "lz4"}
+    | {"lzma", "unlzma", "lzip"}
+)
+_GREPS = frozenset(
+    {"grep", "egrep", "fgrep", "rg", "ag", "ack", "zgrep", "zegrep", "bzgrep", "xzgrep"}
+)
+_GREP_ARGS = frozenset(
+    {"-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "-g", "-t", "-T", "-M", "-E", "-j"}
+    | {"--regexp", "--file", "--max-count", "--glob", "--type", "--type-not", "--context"}
+)
+_GREP_NOT_CONTENT = frozenset(
+    {"-l", "-L", "-c", "-q", "-o", "--count", "--files-with-matches", "--files-without-match"}
+    | {"--quiet", "--only-matching", "--files", "--count-matches"}
+)
+_MATCH_ALL = frozenset({"", ".", "^", "$", ".*", "^.*$", "^.*"})
+_HEREDOC_LINE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+_HEREDOC_INTERP = re.compile(r"\b(python[\d.]*|node|deno|ruby|perl|php|lua|bash|sh|zsh|dash|ksh)\b")
 _PS_DUMP = frozenset({"get-content", "gc", "type"})
 _PS_READ = re.compile(r"\[(?:system\.)?io\.file\]::read", re.IGNORECASE)
 _CODE_READS = re.compile(
     r"\bopen\s*\(|read_text\s*\(|read_bytes\s*\(|readFileSync|readFile\s*\(|createReadStream"
     r"|\bfileinput\b|File\.(?:read|readlines|open|foreach|binread)\b|IO\.(?:read|readlines)\b"
+    r"|file_get_contents|\bfopen\s*\(|\bio\.(?:open|lines)\b|getline(?:\s+[A-Za-z_]\w*)?\s*<"
 )
 _KEYWORDS = frozenset({"do", "then", "else", "elif", "if", "while", "until", "{", "}", "!", "done"})
 _LOOP_HEADS = frozenset({"for", "select", "case"})
@@ -167,6 +209,7 @@ _DOCKER_ARGS = frozenset(
     }
 )
 _CONTAINERS = frozenset({"docker", "podman", "nerdctl"})
+_KUBE_ARGS = frozenset({"-c", "--container", "-n", "--namespace", "-f", "--filename", "--context"})
 
 
 def _skip_opts(words: list[str], takes: frozenset[str]) -> list[str]:
@@ -261,6 +304,10 @@ def _interpreter(prog: str, words: list[str]) -> bool:
         found = _script_code(words, "c")
     elif prog in ("node", "deno", "bun"):
         found = _script_code(words, "e") or _script_code(words, "p")
+    elif prog == "php":
+        found = _script_code(words, "r")
+    elif prog in ("lua", "luajit"):
+        found = _script_code(words, "e")
     elif prog in ("perl", "ruby"):
         found = _script_code(words, "e")
         if found is not None and _file_operand(["x", *found[1]], frozenset()):
@@ -292,6 +339,17 @@ def _special(prog: str, words: list[str]) -> bool:
     if prog == "cp":
         operands = [a for a in args if not a.startswith("-") or a == "-"]
         return len(operands) >= 2 and operands[-1] in _STDOUT
+    if prog in _CONTAINERS or prog == "kubectl" or prog == "oc":  # docker cp C:f -
+        operands = [a for a in args if not a.startswith("-") or a == "-"]
+        return operands[:1] == ["cp"] and len(operands) >= 3 and operands[-1] in _STDOUT
+    if prog in ("dos2unix", "unix2dos"):
+        operands = [a for a in args if not a.startswith("-") or a == "-"]
+        return len(operands) >= 2 and operands[-1] in _STDOUT
+    if prog == "hg":
+        return fam._sub(words) == "cat"
+    if prog == "openssl":
+        outs = [args[i + 1] for i, a in enumerate(args[:-1]) if a == "-out"]
+        return "-in" in args and all(o in _STDOUT for o in outs)
     if prog == "gsutil":
         return fam._sub(words) == "cat"
     if prog == "gcloud":
@@ -348,18 +406,54 @@ def _unwrap(words: list[str], depth: int) -> tuple[list[str], bool] | str | None
         elif prog == "adb":
             rest = _skip_opts(words[1:], frozenset({"-s", "-H", "-P"}))
             return " ".join(rest[1:]) if rest[:1] == ["shell"] else None
-        elif prog in _CONTAINERS:
+        elif prog in _CONTAINERS or prog == "docker-compose":
             rest = _skip_opts(words[1:], frozenset({"-H", "--host", "--context", "-c"}))
-            if rest[:1] == ["compose"]:
+            if prog == "docker-compose":
+                rest = _skip_opts(words[1:], _DOCKER_ARGS)
+            elif rest[:1] == ["compose"]:
                 rest = _skip_opts(rest[1:], _DOCKER_ARGS)
             if rest[:1] not in (["exec"], ["run"]):
                 return words, piped
             rest = _skip_opts(rest[1:], _DOCKER_ARGS)
             words = rest[1:]  # drop the container / image / service
-        elif prog == "kubectl" and "exec" in words:
-            if "--" not in words:
-                return None
-            words = words[words.index("--") + 1 :]
+        elif prog in ("kubectl", "oc") and ("exec" in words or "rsh" in words):
+            if "--" in words:
+                words = words[words.index("--") + 1 :]
+            else:  # deprecated form: kubectl exec POD CMD
+                sub = "exec" if "exec" in words else "rsh"
+                words = _skip_opts(words[words.index(sub) + 1 :], _KUBE_ARGS)[1:]
+        elif prog == "multipass" and fam._sub(words) == "exec":
+            rest = words[words.index("exec") + 1 :]
+            words = rest[rest.index("--") + 1 :] if "--" in rest else rest[1:]
+        elif prog in ("lima", "setsid"):
+            words = _skip_opts(words[1:], frozenset())
+        elif prog == "nsenter":
+            takes = frozenset({"-t", "--target", "-S", "--setuid", "-G", "--setgid", "-w", "-r"})
+            words = _skip_opts(words[1:], takes)
+        elif prog == "flock":
+            rest = _skip_opts(words[1:], frozenset({"-w", "--timeout", "-E"}))[1:]
+            if rest[:1] in (["-c"], ["--command"]):
+                return rest[1] if len(rest) > 1 else None
+            words = rest
+        elif prog == "taskset":
+            words = _skip_opts(words[1:], frozenset())[1:]  # drop the mask / cpu list
+        elif prog == "sshpass":
+            words = _skip_opts(words[1:], frozenset({"-p", "-f", "-d", "-P"}))
+        elif prog == "sg":
+            code = _script_code(words, "c")
+            return code[0] if code is not None else " ".join(words[2:])
+        elif prog in ("vagrant", "gcloud"):
+            for i, w in enumerate(words):
+                if w.startswith("--command="):
+                    return w.split("=", 1)[1]
+                if w in ("--command", "-c") and i + 1 < len(words):
+                    return words[i + 1]
+            return words, piped
+        elif prog == "parallel":
+            takes = frozenset({"-j", "--jobs", "-S", "--sshlogin", "-I", "--colsep", "-d", "-n"})
+            rest = _skip_opts(words[1:], takes)
+            cut = next((i for i, w in enumerate(rest) if w in (":::", "::::")), len(rest))
+            words, piped = rest[:cut], True
         else:
             return words, piped
     return None
@@ -383,9 +477,18 @@ def _segment(words: list[str], depth: int) -> bool:
         return True
     if prog in ("find", "fd"):
         for i, w in enumerate(words):
-            if w in _EXEC and _segment(words[i + 1 :], depth):
+            if w not in _EXEC:
+                continue
+            run = words[i + 1 :]
+            if prog == "fd":  # fd appends the path when the command has no `{}`
+                run = ["xargs", *run]
+            if _segment(run, depth):
                 return True
         return False
+    if prog in _GREPS:
+        return _match_all(prog, words)
+    if prog in ("awk", "gawk", "mawk") and _awk_reads(words):
+        return True
     if prog in _DUMPS:
         if piped:
             return True  # `xargs cat`: the operands come from the pipe
@@ -396,6 +499,80 @@ def _segment(words: list[str], depth: int) -> bool:
     return fam._classify(words, depth) == "file_dump"  # git show <rev>:<path>, git cat-file -p
 
 
+def _match_all(prog: str, words: list[str]) -> bool:
+    """A search whose pattern matches every line (``''``, ``.``, ``^``, ``$``) or ``rg
+    --passthru``, with a file or directory operand: it prints whole files."""
+    args = words[1:]
+    if any(a in _GREP_NOT_CONTENT for a in args):
+        return False
+    if any(
+        a.startswith("-") and not a.startswith("--") and set(a[1:]) & set("lLcqo") for a in args
+    ):
+        return False
+    patterns: list[str] = []
+    operands: list[str] = []
+    rest, only = args, False
+    while rest:
+        a, rest = rest[0], rest[1:]
+        if a == "--" and not only:
+            only = True
+        elif not only and a.startswith("--regexp="):
+            patterns.append(a.split("=", 1)[1])
+        elif not only and a in ("-e", "--regexp") and rest:
+            patterns.append(rest[0])
+            rest = rest[1:]
+        elif not only and a.startswith("-") and len(a) > 1:
+            if a in _GREP_ARGS and rest:
+                rest = rest[1:]
+        else:
+            operands.append(a)
+    passthru = prog == "rg" and ("--passthru" in args or "--passthrough" in args)
+    if not patterns and operands:
+        patterns, operands = [operands[0]], operands[1:]
+    if not operands:
+        return False
+    return passthru or any(p in _MATCH_ALL for p in patterns)
+
+
+def _awk_reads(words: list[str]) -> bool:
+    """awk program text that reads a file itself (``getline < "f"``)."""
+    rest = _skip_opts(words[1:], frozenset({"-F", "-v"}))
+    return bool(rest) and bool(_CODE_READS.search(rest[0]))
+
+
+def _heredocs(cmd: str) -> tuple[str, bool]:
+    """(the command without here-document bodies, whether an interpreter's body reads a file).
+    A shell's body is classified as commands; another interpreter's is searched for file
+    reads; any other body (``cat <<EOF``) is data and dropped."""
+    lines = cmd.split("\n")
+    kept: list[str] = []
+    reads = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        kept.append(line)
+        m = _HEREDOC_LINE.search(line)
+        i += 1
+        if m is None or "<<<" in line[max(0, m.start() - 1) : m.start() + 3]:
+            continue
+        delim = m.group(2)
+        body: list[str] = []
+        while i < len(lines) and lines[i].strip() != delim:
+            body.append(lines[i])
+            i += 1
+        i += 1  # the delimiter line
+        text = "\n".join(body)
+        interp = _HEREDOC_INTERP.search(line[: m.start()])
+        if interp is None:
+            continue
+        name = interp.group(1)
+        if name in fam._SHELLS:
+            reads = reads or _any(text, MAX_DEPTH - 1)
+        else:
+            reads = reads or bool(_CODE_READS.search(text))
+    return "\n".join(kept), reads
+
+
 def _segments(cmd: str) -> list[list[str]]:
     return [words for words, _sep in fam._segments(cmd.replace("\n", " ; "))]
 
@@ -403,6 +580,10 @@ def _segments(cmd: str) -> list[list[str]]:
 def _any(cmd: str, depth: int) -> bool:
     if _PS_READ.search(cmd):
         return True
+    if "<<" in cmd:
+        cmd, reads = _heredocs(cmd)
+        if reads:
+            return True
     if depth < MAX_DEPTH and any(_any(inner, depth + 1) for inner in _substitutions(cmd)):
         return True
     return any(_segment(words, depth) for words in _segments(cmd))

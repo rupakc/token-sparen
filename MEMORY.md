@@ -1005,3 +1005,18 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   (`readfile`), or a bare last MCP part `cat`/`view`/`read`/`open`.
 - README: detection is best effort; opt out with `[learn.hold] compression = true` or
   `TOKEN_SPAREN_DISABLE=1`.
+
+## 2026-11-26 Task 24b fix round 3 (controller rulings)
+- `filedump` also: `kubectl|oc exec POD CMD` without `--` (options -c/-n/-f/--context skipped,
+  pod dropped), `oc rsh`, `docker-compose exec|run`; `fd -x|-X|--exec|--exec-batch CMD` gets an
+  implicit path operand (treated like `xargs CMD`); wrappers nsenter, flock (`-c`), setsid,
+  taskset (mask dropped), sshpass, `sg G -c`, `vagrant ssh -c`, `gcloud compute ssh --command`,
+  `multipass exec I --`, lima, `parallel CMD :::` (implicit operands); reads `docker|kubectl cp
+  SRC -|/dev/stdout`, `hg cat`, `openssl ... -in f` (no -out or -out to stdout), iconv, brotli/
+  lz4/lzma -dc, zless/zmore/bzless/xzless/..., `dos2unix f /dev/stdout`; php `-r`, lua `-e`, awk
+  `getline [var] < f`; here-documents: a shell interpreter's body is classified as commands,
+  python/node/ruby/perl/php/lua bodies are searched for reads, any other body is data (dropped:
+  fixes the round-2 `cat <<EOF` body false positive); match-everything searches (grep, egrep,
+  fgrep, rg, ag, ack, z/bz/xz-grep with pattern `''`, `.`, `^`, `$`, `.*`, or `rg --passthru`,
+  and at least one file/dir operand; -l/-L/-c/-q/-o excluded). Tool-name verbs add load, show;
+  nouns add blob, raw. README: scripts you run are not inspected.

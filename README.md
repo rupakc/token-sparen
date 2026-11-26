@@ -75,7 +75,8 @@ All of this is on by default. Nothing is sent anywhere.
   allow_ctypes = ["diff", "search", "test_report", "compiler", "build_log", "json", "pplx", "log", "text"]
   ```
 
-  File-content detection is best effort: an unusual binary or wrapper may slip through. To rule
+  File-content detection is best effort: an unusual binary or wrapper may slip through, and
+  scripts you run (`./x.sh`, `bash x.sh`) are not inspected. To rule
   out trimming entirely, set `[learn.hold] compression = true` (keeps compression at its safe
   arm) or launch with `TOKEN_SPAREN_DISABLE=1` (every hook a no-op).
 

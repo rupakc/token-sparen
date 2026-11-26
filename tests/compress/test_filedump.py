@@ -187,3 +187,113 @@ def test_file_reading_tool_names(name: str) -> None:
 )
 def test_other_tool_names(name: str) -> None:
     assert filedump.is_file_tool(name) is False
+
+
+# --------------------------------------------------------------------------- fix round 3
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # 1. kubectl/oc/docker-compose
+        "kubectl exec pod-1 cat /app/app.log",
+        "kubectl exec -n prod -c app pod-1 cat /app/app.log",
+        "oc exec pod-1 -- cat /app/app.log",
+        "oc exec pod-1 cat /app/app.log",
+        "oc rsh pod-1 cat /app/app.log",
+        "docker-compose exec api cat /app/settings.py",
+        "docker-compose -f dc.yml run --rm api head -n 900 /app/app.log",
+        # 2. fd -x without {}
+        "fd -e log -x cat",
+        "fd . logs -X tail -n 100",
+        "fd -e py --exec cat",
+        "fd -e py --exec-batch head",
+        # 3. wrappers
+        "nsenter -t 1 -m -u -i -n -p cat /etc/hosts",
+        "flock /tmp/lock cat app.log",
+        "flock -w 5 /tmp/lock -c 'cat app.log'",
+        "setsid cat app.log",
+        "taskset -c 0-3 cat app.log",
+        "taskset 0x3 cat app.log",
+        "sshpass -p secret ssh host cat /var/log/app.log",
+        "sg docker -c 'cat app.log'",
+        "vagrant ssh -c 'cat /vagrant/app.log'",
+        "gcloud compute ssh vm-1 --zone z --command='cat /var/log/app.log'",
+        "gcloud compute ssh vm-1 --command 'tail -n 900 /var/log/app.log'",
+        "multipass exec vm1 -- cat /home/ubuntu/app.log",
+        "lima cat app.log",
+        # 3. reads
+        "docker cp web:/app/app.log -",
+        "kubectl cp prod/pod-1:/app/app.log /dev/stdout",
+        "hg cat -r tip src/app.py",
+        "parallel cat ::: a.log b.log",
+        "openssl enc -d -aes-256-cbc -in secret.enc -pass pass:x",
+        "iconv -f latin1 -t utf-8 notes.txt",
+        "brotli -dc bundle.js.br",
+        "zless app.log.gz",
+        "dos2unix -n notes.txt /dev/stdout",
+        "php -r 'echo file_get_contents(\"app.log\");'",
+        'lua -e \'print(io.open("app.log"):read("a"))\'',
+        "awk 'BEGIN { while ((getline line < \"app.log\") > 0) print line }'",
+        "python3 <<'EOF'\nprint(open('app.log').read())\nEOF",
+        "node <<EOF\nconsole.log(require('fs').readFileSync('a.json', 'utf8'))\nEOF",
+        "bash <<'EOF'\ncd /srv && cat app.log\nEOF",
+        # 4. match-all searches
+        "grep '' app.log",
+        'grep "" app.log',
+        "grep . app.log",
+        "grep -r '^' src",
+        "grep -e '' app.log",
+        "rg '$' app.log",
+        "rg --passthru foo app.log",
+        "rg -N '' src",
+        "ag . src",
+        "ack '' src",
+        "zgrep '' app.log.gz",
+    ],
+)
+def test_file_dump_round3(cmd: str) -> None:
+    assert filedump.is_file_dump(cmd) is True
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "kubectl exec pod-1 -- env",
+        "kubectl exec pod-1 env",
+        "oc rsh pod-1 uptime",
+        "fd -e py -x wc -l",
+        "fd -e py",
+        "flock /tmp/lock make build",
+        "taskset -c 0 pytest -q",
+        "docker cp web:/app/app.log ./app.log",
+        "hg log",
+        "parallel wc -l ::: a.log b.log",
+        "openssl enc -d -in secret.enc -out plain.txt",
+        "php -r 'echo 1;'",
+        "awk '{print $1}'",
+        "python3 <<'EOF'\nprint(1 + 1)\nEOF",
+        "grep foo app.log",
+        "grep -c '' app.log",
+        "grep -l '' -r src",
+        "rg foo src",
+        "rg ''",
+        "grep . ",
+    ],
+)
+def test_not_a_file_dump_round3(cmd: str) -> None:
+    assert filedump.is_file_dump(cmd) is False
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "mcp__x__load_file",
+        "mcp__x__show_file",
+        "mcp__gh__get_blob",
+        "mcp__gh__get_raw",
+        "mcp__gh__read_blob",
+    ],
+)
+def test_file_reading_tool_names_round3(name: str) -> None:
+    assert filedump.is_file_tool(name) is True
