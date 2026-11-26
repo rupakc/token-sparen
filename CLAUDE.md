@@ -20,7 +20,8 @@ Decisions: `MEMORY.md`.
   - `adapters/` host protocol; `adapters/claude/` Claude Code (entry, translate, statusline, settings)
   - `testing/conformance.py` compressor conformance kit
   - `params/defaults.toml` every tunable (hill-climbing surface; packaged inside the package)
-  - Planned, not present yet: `facts/` (M3)
+  - `facts/` (M3) repo-fact sanitiser (`sanitize`) and fold-time miners + `facts.json` store
+    (`miners`); injection at SessionStart is not wired yet
 - `hooks/` plugin hooks (`hooks.json`, `run.py`, `run_cli.py`); `skills/token-sparen/` is the
   `/token-sparen` skill (there is no `commands/` directory)
 - `evals/e2/` fact-preservation suite (corpus, `needles.toml`, `run.py`)

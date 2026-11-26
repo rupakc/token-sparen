@@ -172,6 +172,16 @@ missing ones. `stats` reports net savings (gross minus recovery reads minus inje
 the statusline does. The plugin manifest requires Claude Code >= 2.1.121 (`updatedToolOutput` on
 PostToolUse for all tools).
 
+**2026-11-26 (M3, Task 25).** §6.8/§6.9: deterministic miners run at fold time only, over the
+session transcript (path recorded in the session overlay at SessionStart; at most 50 MB read);
+candidates go to `projects/<key>/facts.json` (v1) with session-id digests (blake2b-8) as
+evidence, and a fact needs >= 2 distinct sessions to be eligible for activation. The §6.9
+template is realised as one fixed rendering template per fact kind (test command, command alias,
+required env var name, build first, generated dir); subject and value must be a single plain
+command-token sequence (allow-listed characters, <= 120 chars, ASCII) with no URLs, shell
+operators, instruction words, secret-like strings or paths outside the project. Details in
+`MEMORY.md`.
+
 ---
 
 ## 1. Intent and why

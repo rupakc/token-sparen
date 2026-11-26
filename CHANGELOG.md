@@ -26,6 +26,11 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code 
   PreCompact recovery-path preservation, subagent brief arm (off by default).
 - Live statusline (opt-in install/uninstall that composes with an existing statusline, backs up
   settings and restores the original exactly).
+- M3 start: repository-fact sanitiser (facts are data, never instructions: allow-listed
+  characters, no URLs, shell operators, instruction words, secrets or outside paths; fixed
+  render templates) and deterministic miners run at fold time over the session transcript
+  (command alias, required env var name, test command, build-first, generated dir) into
+  `projects/<key>/facts.json` with session-id digests as evidence (not injected yet).
 - CLI: `stats`, `show`, `run`, `doctor`, `session disable|enable`, `config set`,
   `statusline`, `extensions`, `fold`, `replay`, `ope`; placeholders for `facts` and `prune` (M3).
 - Trusted extension loading (entry points and content-hash-trusted drop-ins), a compressor

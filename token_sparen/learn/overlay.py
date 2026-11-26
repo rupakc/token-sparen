@@ -24,6 +24,11 @@
    stats; a normalised command (``regret.event_signature``) with >= 5 trimming compression
    decisions, mean ``tokens_after / tokens_before`` <= 0.4 and no regret ever becomes
    ``{"lines": 120}`` (at most 200, least recently seen dropped); a regret removes it;
+5a. **repository facts** (``facts.miners``): the session's transcript (path recorded in the
+   overlay at SessionStart) is mined, at most 50 MB, for candidate facts; the sanitised ones are
+   merged into ``projects/<key>/facts.json`` (session-id digests as evidence, fold id applied
+   once). Mining never runs in a hook: SessionStart spawns the fold of a session that has a
+   transcript instead of folding it in-process. A mining failure is logged, the fold goes on;
 5b. **outcome backfill**: staged outcome rows whose live ``decisions.jsonl`` outcome line was
    lost (busy or failing log) are appended, deduplicated by decision id against both log
    generations (the log's lock is taken alone, after the pre-trim step);
@@ -33,7 +38,8 @@ Idempotent and crash-safe: every target document records the fold ids it applied
 so a re-run after a crash between steps applies nothing twice; re-folding a folded session
 finds nothing staged. **Lock order** (``LOCK_ORDER``), the same everywhere: the project's
 ``posteriors.json`` lock is held for the whole fold (it serialises folds of a project); under
-it ``breaker.json``, then ``global/posteriors.json``, then ``pretrim.json``, then the session
+it ``breaker.json``, then ``global/posteriors.json``, then ``pretrim.json``, then
+``facts.json``, then the session
 overlay, then ``pending.json`` (the pending-fold index, ``learn.pending``) are taken one at a
 time, each innermost. Hooks only ever take the overlay or the index lock alone, so no cycle is
 possible.
@@ -57,6 +63,7 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
 from token_sparen.config import Config, log_error, state_home
+from token_sparen.facts import miners
 from token_sparen.learn import breaker, decisions, pending
 from token_sparen.learn.beta import Beta, Evidence
 from token_sparen.learn.features import ANY_BUCKET, FEATURE_KEYS, backoff_keys
@@ -78,6 +85,7 @@ LOCK_ORDER = (
     "breaker.json",
     "global/posteriors.json",
     "pretrim.json",
+    "facts.json",
     "overlay",
     "pending.json",
 )
@@ -87,6 +95,8 @@ _SECRET = re.compile(r"[0-9a-f]{32}")
 _SAFE_VALUE = re.compile(r"[A-Za-z0-9_.*-]+")
 UNLEARNED_BUCKETS = frozenset({"static", "error", ""})  # StaticPolicy / engine-error decisions
 FOLDING_KEY = "folding"
+TRANSCRIPT_KEY = "transcript"  # the session's transcript path (``tracking.record_transcript``)
+PROJECT_DIR_KEY = "project_dir"
 FOLDED_AT = "folded_at"
 APPLIED_KEY = "applied"
 APPLIED_MAX = 200
@@ -132,6 +142,7 @@ class FoldReport:
     candidates: int = 0  # pre-trim candidates after the fold
     aged: int = 0  # global entries halved for age
     skipped: int = 0  # invalid session evidence entries (point / bucket / arm) not merged
+    facts: int = 0  # candidate repository facts mined from the session and recorded
     tripped: list[str] = field(default_factory=list)
     reentered: list[str] = field(default_factory=list)
 
@@ -142,6 +153,8 @@ class FoldReport:
             f"fold {self.session_id}: merged {self.cells} cells (global {self.global_cells}), "
             f"{self.outcomes} regret outcomes, {self.candidates} pretrim candidates"
         )
+        if self.facts:
+            text += f", {self.facts} fact candidates"
         if self.aged:
             text += f", {self.aged} global entries aged"
         if self.tripped:
@@ -323,6 +336,9 @@ def _stage(
             "outcomes": outcomes if isinstance(outcomes, list) else [],
             "t": now,
         }
+        for key in (TRANSCRIPT_KEY, PROJECT_DIR_KEY):
+            if isinstance(state.get(key), str):
+                staged[key] = state[key]
         state[FOLDING_KEY] = staged
         state[SESSION_KEY] = {}
         state[OUTCOMES_KEY] = []
@@ -401,6 +417,7 @@ def _fold(
         _breaker_and_project(rep, fid, cells, outcomes, pdir, params, now, cap, env, timeout)
         _global(rep, fid, cells, home, key, params, now, cap, env, timeout)
         _pretrim(rep, fid, outcomes, pdir, params, now, env, timeout)
+        rep.facts = _mine_facts(rep.session_id, fid, staged, pdir, now, env, timeout)
         rep.backfilled = _backfill(staged.get("outcomes"), pdir, params, env)
 
         # Clear and un-index under one overlay lock: a hook that adds evidence either ran
@@ -462,6 +479,38 @@ def _breaker_and_project(
             _mark(bdoc, fid)
         if fresh or resets:
             jsonstore.write_locked(bpath, bdoc)
+
+
+def _mine_facts(
+    sid: str,
+    fid: str,
+    staged: Mapping[str, Any],
+    pdir: Path,
+    now: float,
+    env: Mapping[str, str],
+    timeout: float | None,
+) -> int:
+    """Step 5a: mine the session transcript into ``facts.json``; never raises."""
+    raw = staged.get(TRANSCRIPT_KEY)
+    if not isinstance(raw, str) or not raw:
+        return 0
+    try:
+        doc = jsonstore.read(pdir / miners.FACTS_FILE, {}, env)
+        if fid in _applied(doc):
+            return 0  # a resumed fold: already mined
+        path = Path(raw)
+        if not path.is_file():
+            return 0
+        root = staged.get(PROJECT_DIR_KEY)
+        found = miners.mine_transcript(
+            path, sid, project_dir=root if isinstance(root, str) else None, env=env
+        )
+        return miners.record(pdir, found, now=now, env=env, fold_id=fid, timeout=timeout)
+    except jsonstore.StoreBusy:
+        raise
+    except Exception as exc:  # noqa: BLE001 - fail open: facts are optional
+        log_error(env, "fold", f"facts: {type(exc).__name__}: {exc}")
+        return 0
 
 
 def _reset(points: dict[str, Any], name: str, scale: float) -> None:
@@ -853,6 +902,17 @@ def _bytes(paths: list[Path]) -> int:
     return total
 
 
+def _has_transcript(home: Path, project_key: str, sids: list[str], env: Mapping[str, str]) -> bool:
+    for sid in sids:
+        doc = jsonstore.read(session.session_path(home, project_key, sid), {}, env)
+        if isinstance(doc.get(TRANSCRIPT_KEY), str):
+            return True
+        staged = doc.get(FOLDING_KEY)
+        if isinstance(staged, dict) and isinstance(staged.get(TRANSCRIPT_KEY), str):
+            return True
+    return False
+
+
 def fold_pending(
     project_key: str,
     home: Path,
@@ -883,8 +943,8 @@ def fold_pending(
             "--project",
             str(project_dir),
         ]
-        if size > INPROCESS_MAX_BYTES:
-            spawn_fold(spawn_args, env)
+        if size > INPROCESS_MAX_BYTES or _has_transcript(home, project_key, sids, env):
+            spawn_fold(spawn_args, env)  # fact mining reads the transcript: never in a hook
             return []
         out: list[FoldReport] = []
         start = _monotonic()

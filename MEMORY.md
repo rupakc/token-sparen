@@ -1085,3 +1085,31 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   `[ope] min_trims = 60` (user-only) else `insufficient`. Stochastic-logger support: a trimming
   arm is supported only if the log shows it chosen with propensity > 0 in the same (point,
   bucket); otherwise its target mass is unsupported.
+
+## 2026-11-26 Task 25: fact sanitiser and deterministic miners (M3 start)
+- `token_sparen/facts/sanitize.py`: `Fact(kind, subject, value, evidence_sessions)`,
+  `sanitize(fact, project_dir=None)`, `render` (fixed templates; raises on an unsafe fact),
+  `fact_id` = sha1(kind|subject|value)[:12]. Both subject and value must fullmatch the
+  single-space command-token regex, <= 120 chars, printable ASCII; rejected: `://`, backticks,
+  `$(`, the instruction words (substring, case-insensitive, so `systemctl`/`.gitignore` are
+  rejected too: conservative), secret-like text (`[A-Za-z0-9_-]{32,}`, `sk-`, `gh[pousr]_`,
+  `github_pat_`, `AKIA`/`ASIA`, `xox`), `~`, drive letters, `..` segments, absolute paths unless
+  inside `project_dir`. `requires_env` values must be an ALL_CAPS name. The store re-sanitises
+  without a project dir, so stored facts never hold absolute paths.
+- `token_sparen/facts/miners.py`: miners per the coordinator rulings; mining is fold-only
+  (`overlay` step 5a, between pre-trim and outcome backfill; lock `facts.json` after
+  `pretrim.json`); transcript read with `transcript.iter_tool_results(max_bytes=50 MB)`
+  (bounded binary reader, the cut is logged). Command alias needs an exact argv-tail match and a
+  head that launches the missing program (launcher allow-list, `python -m X`, or a path ending
+  in `/X`), so `echo X ...` or `pip install X` never qualify. `generated_dir` needs >= 2
+  Write/Edit hits per session (so >= 2 sessions give >= 4 >= 3 hits) - the store keeps no hit
+  counts, which keeps re-folds idempotent. `decisions.jsonl` carries no session id or success
+  flag, so the miners read only the transcript.
+- `facts.json` v1: `{version, facts: {id: {kind, subject, value, sessions (blake2b-8 digests,
+  last 64), first_seen, last_seen, contradictions}}, applied: [fold ids]}`, at most 500 facts
+  (least recently seen dropped); a newer version is left untouched. `eligible(doc)` = >= 2
+  distinct sessions (activation is Task 26).
+- The session overlay records `transcript` and `project_dir` at SessionStart
+  (`tracking.record_transcript`) and on each prompt when missing/changed. SessionStart
+  (`fold_pending`) spawns the detached fold instead of folding in-process when a pending session
+  has a transcript, so a hook never mines.

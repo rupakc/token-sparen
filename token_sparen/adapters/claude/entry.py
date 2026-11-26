@@ -202,6 +202,7 @@ def _on_fold_spawn(event: Event, cfg: Config) -> Action:
 
 def _on_session_active(event: Event, cfg: Config) -> Action:
     tracking.record_active(event, env=HOOK_ENV.get())
+    tracking.record_transcript(event, env=HOOK_ENV.get())
     return Action()
 
 

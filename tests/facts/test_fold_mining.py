@@ -1,0 +1,205 @@
+"""Facts are mined at fold time only, from the transcript recorded in the session overlay."""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+import pytest
+from test_miners import Log
+
+from token_sparen.adapters.claude import entry
+from token_sparen.config import Config
+from token_sparen.events import Event
+from token_sparen.facts import miners
+from token_sparen.learn import overlay
+from token_sparen.store import session
+
+KEY = "0123456789abcdef"
+
+
+def _home(tmp_path: Path) -> Path:
+    return tmp_path / "home"
+
+
+def _overlay(home: Path, sid: str, transcript: Path | None, project: Path) -> Path:
+    path = session.session_path(home, KEY, sid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc: dict[str, Any] = {"evidence": {}}
+    if transcript is not None:
+        doc["transcript"] = str(transcript)
+        doc["project_dir"] = str(project)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
+
+
+def _alias_log(project: Path) -> Log:
+    log = Log().prompt()
+    log.bash("pytest tests", "zsh: command not found: pytest", err=True)
+    log.bash("python -m pytest tests")
+    log.call("Write", {"file_path": str(project / "gen" / "a.py")})
+    log.call("Write", {"file_path": str(project / "gen" / "b.py")})
+    return log
+
+
+def _facts(home: Path) -> dict[str, Any]:
+    path = home / "projects" / KEY / miners.FACTS_FILE
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def test_fold_mines_the_session_transcript(tmp_path: Path) -> None:
+    home, project = _home(tmp_path), tmp_path / "proj"
+    for sid in ("s1", "s2"):
+        tr = _alias_log(project).write(tmp_path / f"{sid}.jsonl")
+        _overlay(home, sid, tr, project)
+        rep = overlay.fold(sid, KEY, home)
+        assert rep.staged and rep.facts > 0
+    doc = _facts(home)
+    values = {(e["kind"], e["value"]) for e in doc["facts"].values()}
+    assert ("command_alias", "python -m pytest") in values
+    assert ("generated_dir", "gen") in values
+    assert ("test_command", "python -m pytest tests") in values
+    got = miners.eligible(doc)
+    assert {f.kind for f in got} == {"command_alias", "generated_dir", "test_command"}
+    before = (home / "projects" / KEY / miners.FACTS_FILE).read_text(encoding="utf-8")
+    assert not overlay.fold("s2", KEY, home).staged  # re-fold: nothing new
+    assert (home / "projects" / KEY / miners.FACTS_FILE).read_text(encoding="utf-8") == before
+
+
+def test_fold_is_idempotent_for_facts_after_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, project = _home(tmp_path), tmp_path / "proj"
+    tr = _alias_log(project).write(tmp_path / "s1.jsonl")
+    _overlay(home, "s1", tr, project)
+
+    def boom(*a: Any, **k: Any) -> None:
+        raise RuntimeError("crash after mining")
+
+    with monkeypatch.context() as m:
+        m.setattr(overlay, "_backfill", boom)
+        overlay.fold("s1", KEY, home)
+    first = _facts(home)
+    assert first["facts"]
+    calls: list[int] = []
+    real = miners.mine_transcript
+
+    def counting(*a: Any, **k: Any) -> Any:
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(miners, "mine_transcript", counting)
+    rep = overlay.fold("s1", KEY, home)  # resumes the staged fold
+    assert rep.staged and calls == []  # already applied: not mined again
+    assert _facts(home)["facts"] == first["facts"]
+
+
+def test_fold_without_transcript_or_with_missing_file(tmp_path: Path) -> None:
+    home, project = _home(tmp_path), tmp_path / "proj"
+    _overlay(home, "a", None, project)
+    assert overlay.fold("a", KEY, home).facts == 0
+    _overlay(home, "b", tmp_path / "gone.jsonl", project)
+    assert overlay.fold("b", KEY, home).facts == 0
+    assert not (home / "projects" / KEY / miners.FACTS_FILE).exists()
+
+
+def test_fold_mining_failure_is_logged_not_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, project = _home(tmp_path), tmp_path / "proj"
+    tr = _alias_log(project).write(tmp_path / "s1.jsonl")
+    _overlay(home, "s1", tr, project)
+
+    def boom(*a: Any, **k: Any) -> None:
+        raise RuntimeError("miner bug")
+
+    monkeypatch.setattr(miners, "mine_transcript", boom)
+    rep = overlay.fold("s1", KEY, home)
+    assert rep.staged and rep.facts == 0
+    doc = json.loads(session.session_path(home, KEY, "s1").read_text(encoding="utf-8"))
+    assert "folded_at" in doc  # the rest of the fold completed
+    errors = (home / "logs" / "errors.jsonl").read_text(encoding="utf-8")
+    assert "miner bug" in errors
+
+
+class _Popen:
+    calls: list[tuple[Any, Any]] = []
+
+    def __init__(self, args: Any, **kw: Any) -> None:
+        _Popen.calls.append((args, kw))
+
+
+def test_session_start_never_mines_in_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, project = _home(tmp_path), tmp_path / "proj"
+    project.mkdir()
+    tr = _alias_log(project).write(tmp_path / "old.jsonl")
+    path = _overlay(home, "old", tr, project)
+    t = time.time() - 7200
+    os.utime(path, (t, t))
+    (home / "projects" / KEY / "pending.json").write_text(json.dumps({"old": 1.0}), "utf-8")
+    _Popen.calls = []
+    monkeypatch.setattr(overlay, "POPEN", _Popen)
+
+    def never(*a: Any, **k: Any) -> None:
+        raise AssertionError("mining must not run in a hook")
+
+    monkeypatch.setattr(miners, "mine_transcript", never)
+    reps = overlay.fold_pending(
+        KEY, home, project, exclude="now", env={"TOKEN_SPAREN_HOME": str(home)}
+    )
+    assert reps == []
+    ((args, _),) = _Popen.calls
+    assert "fold" in args and "--all" in args
+
+
+def _event(tmp_path: Path, kind: str, payload: dict[str, Any]) -> Event:
+    env = {"TOKEN_SPAREN_HOME": str(_home(tmp_path)), "CLAUDE_PROJECT_DIR": str(tmp_path / "proj")}
+    (tmp_path / "proj").mkdir(exist_ok=True)
+    ev = entry.ADAPTER.parse(kind, {"session_id": "s9", **payload}, env)
+    return dataclasses.replace(ev, project_key=KEY)
+
+
+def _run(tmp_path: Path, fn: Any, ev: Event) -> None:
+    token = entry.HOOK_ENV.set({"TOKEN_SPAREN_HOME": str(_home(tmp_path))})
+    try:
+        fn(ev, Config())
+    finally:
+        entry.HOOK_ENV.reset(token)
+
+
+def test_session_start_records_transcript_path(tmp_path: Path) -> None:
+    tr = tmp_path / "t.jsonl"
+    _run(
+        tmp_path,
+        entry._on_session_active,
+        _event(tmp_path, "SessionStart", {"transcript_path": str(tr)}),
+    )
+    doc = json.loads(session.session_path(_home(tmp_path), KEY, "s9").read_text(encoding="utf-8"))
+    assert doc["transcript"] == str(tr)
+    assert doc["project_dir"] == str(tmp_path / "proj")
+
+
+def test_prompt_records_transcript_path_when_missing(tmp_path: Path) -> None:
+    tr = tmp_path / "t.jsonl"
+    ev = _event(tmp_path, "UserPromptSubmit", {"transcript_path": str(tr), "prompt": "hi"})
+    _run(tmp_path, entry._on_prompt, ev)
+    doc = json.loads(session.session_path(_home(tmp_path), KEY, "s9").read_text(encoding="utf-8"))
+    assert doc["transcript"] == str(tr) and doc["turn"] == 1
+
+
+def test_session_start_without_transcript_writes_nothing(tmp_path: Path) -> None:
+    _run(tmp_path, entry._on_session_active, _event(tmp_path, "SessionStart", {}))
+    assert not session.session_path(_home(tmp_path), KEY, "s9").exists()
+
+
+def test_overlay_keys_agree_with_tracking() -> None:
+    from token_sparen.mechanisms import tracking
+
+    assert overlay.TRANSCRIPT_KEY == tracking.TRANSCRIPT_KEY
+    assert overlay.PROJECT_DIR_KEY == tracking.PROJECT_DIR_KEY

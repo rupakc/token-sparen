@@ -32,7 +32,35 @@ class ToolResultRecord:
     sidechain: bool = False
 
 
-def _records(path: Path) -> Iterator[dict[str, Any]]:
+def _bounded_lines(
+    path: Path, max_bytes: int, on_limit: Callable[[], None] | None
+) -> Iterator[str]:
+    """Lines of the first ``max_bytes`` bytes (memory bounded: a longer line is cut and ends the
+    read); ``on_limit`` is called once if the file has more."""
+    try:
+        fh = path.open("rb")
+    except OSError:
+        return
+    with fh:
+        used = 0
+        while True:
+            try:
+                room = max_bytes - used
+                raw = fh.readline(room) if room > 0 else b""
+                more = not raw and room <= 0 and fh.read(1) != b""
+            except (OSError, ValueError):
+                return
+            if more or (raw and not raw.endswith(b"\n") and used + len(raw) >= max_bytes):
+                if on_limit is not None:
+                    on_limit()
+                return
+            if not raw:
+                return
+            used += len(raw)
+            yield raw.decode("utf-8", errors="replace")
+
+
+def _text_lines(path: Path) -> Iterator[str]:
     try:
         fh = path.open(encoding="utf-8", errors="replace")
     except OSError:
@@ -43,15 +71,23 @@ def _records(path: Path) -> Iterator[dict[str, Any]]:
                 line = next(fh)
             except (StopIteration, OSError, ValueError):
                 return
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except (ValueError, RecursionError):
-                continue
-            if isinstance(rec, dict):
-                yield rec
+            yield line
+
+
+def _records(
+    path: Path, max_bytes: int | None = None, on_limit: Callable[[], None] | None = None
+) -> Iterator[dict[str, Any]]:
+    lines = _text_lines(path) if max_bytes is None else _bounded_lines(path, max_bytes, on_limit)
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(rec, dict):
+            yield rec
 
 
 def _int(value: Any) -> int:
@@ -170,12 +206,16 @@ def _results(
         yield ToolResultRecord(tid, name, inp, text, turn, b.get("is_error") is True, raw, side)
 
 
-def iter_tool_results(path: Path) -> Iterator[ToolResultRecord]:
+def iter_tool_results(
+    path: Path, *, max_bytes: int | None = None, on_limit: Callable[[], None] | None = None
+) -> Iterator[ToolResultRecord]:
     """Yield tool results joined with their tool_use; turn_index counts user prompts so far
-    (``is_prompt``: sidechain, meta and compaction-summary records do not start a turn)."""
+    (``is_prompt``: sidechain, meta and compaction-summary records do not start a turn).
+    ``max_bytes`` stops after that many bytes of the file (``on_limit`` is called if it had
+    more), bounding memory too: a cut line is never decoded."""
     uses = _Uses()
     turn = 0
-    for rec in _records(path):
+    for rec in _records(path, max_bytes, on_limit):
         kind = rec.get("type")
         content = _message(rec).get("content")
         if kind == "assistant":

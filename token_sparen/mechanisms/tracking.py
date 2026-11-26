@@ -3,7 +3,9 @@ recent tool categories.
 
 The overlay is a per-session local file (never a shared store); it holds the last user prompt
 and the recently touched file paths so compressors can score relevance, and the last tool
-categories (``recent_cats``) from which the learning engine infers the task phase.
+categories (``recent_cats``) from which the learning engine infers the task phase. It also keeps
+the session's transcript path and project directory (``record_transcript``), which the fold mines
+for repository facts (``facts.miners``; never read by a hook).
 """
 
 from __future__ import annotations
@@ -98,11 +100,40 @@ def handle_prompt(event: Event, cfg: Config, *, env: Mapping[str, str] | None = 
         prior = turn if isinstance(turn, int) and not isinstance(turn, bool) else 0
         state["turn"] = prior + 1
         state["last_prompt"] = prompt
+        _set_transcript(state, event)
         return state
 
     _update(overlay_path(event, env), apply, env)
     record_active(event, env=env)
     return Action()
+
+
+TRANSCRIPT_KEY = "transcript"  # read by learn.overlay (fold) only
+PROJECT_DIR_KEY = "project_dir"
+
+
+def _set_transcript(state: dict[str, Any], event: Event) -> bool:
+    """Record the transcript path and project dir; True if the overlay changed."""
+    if event.transcript_path is None:
+        return False
+    path, root = str(event.transcript_path), str(event.project_dir)
+    if state.get(TRANSCRIPT_KEY) == path and state.get(PROJECT_DIR_KEY) == root:
+        return False
+    state[TRANSCRIPT_KEY] = path
+    state[PROJECT_DIR_KEY] = root
+    return True
+
+
+def record_transcript(event: Event, *, env: Mapping[str, str] | None = None) -> None:
+    """SessionStart: remember where the session's transcript lives, for fold-time fact mining."""
+    if event.transcript_path is None or event.session_id == "unknown":
+        return
+
+    def apply(state: dict[str, Any]) -> dict[str, Any]:
+        _set_transcript(state, event)
+        return state
+
+    _update(overlay_path(event, env), apply, env)
 
 
 def last_active_path(home: Path, project_key: str) -> Path:

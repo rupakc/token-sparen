@@ -208,9 +208,17 @@ Everything stays on your machine, but some of it is plain text you should know a
     sizes per bucket), `floor_warned.json`, `posteriors.json` and `breaker.json` (numbers only:
     learned evidence per bucket and recent regret values per decision point), `pending.json`
     (ids of sessions waiting to be folded) and `pretrim.json`
-    (**normalised Bash commands** with per-command counts, and the learned pre-trim candidates).
-    The session overlay also keeps the settled regret values of its trims, each with the
-    normalised command, until the session is folded. Project folders are named by a hash, but the
+    (**normalised Bash commands** with per-command counts, and the learned pre-trim candidates),
+    `facts.json` (candidate repository facts mined when a session is folded: **normalised
+    commands** such as the test command or a working spelling of a missing command,
+    **environment variable names** a command needed (never their values), **directory names**
+    relative to the project root where generated files live, and for each fact short hashes of
+    the session ids that showed it; every entry passes a strict data-only filter that rejects
+    URLs, shell operators, absolute paths, instruction-like words and anything that looks like a
+    secret). The session overlay also keeps the settled regret values of its trims, each with the
+    normalised command, until the session is folded, and the **path of the session's Claude Code
+    transcript** and the project directory, which only the background fold reads (at most 50 MB
+    per session) to mine those facts. Project folders are named by a hash, but the
     files inside hold the plain text above.
   - `global/posteriors.json`: numbers only (evidence pooled across projects, keyed by decision
     point, feature bucket and arm, plus recent fold ids per salted project tag); no paths,
