@@ -823,3 +823,48 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   container (1 CPU): before 1.35/1.54, 2.55/2.70, 1.37/1.64; after 0.97/1.91, 0.98/1.23,
   0.97/1.12. Table 484 KB -> 385 KB. Reads per hook: one lock-free read, plus one locked
   read-modify-write only when something changes (minimal for the lock-free fast path).
+
+## 2026-11-26 Task 24: E1 offline replay and E3 off-policy evaluation
+- `token-sparen replay <paths...> --policy static|engine|<arm> [--split] [--cutoff] --out` and
+  `token-sparen ope --log <decisions.jsonl...> --target static|engine-snapshot --out`. Paths must be
+  explicit (directories recurse `*.jsonl`). `replay/report.py`: `--out` is refused under the git
+  top-level of the cwd, under the package's own checkout, and anywhere inside a git work tree
+  (`git -C <nearest existing ancestor> rev-parse` succeeds, or an ancestor holds `.git`, so it
+  also works without git). Atomic write, mode 0600, new parent dirs 0700. Stdout and errors carry
+  aggregates only: failures print `replay failed (<ExceptionType>)`, never a message; a failing
+  session is counted (`sessions_failed`) without details. `config.redacted_logs()` (ContextVar)
+  makes `log_error` keep only `where` during replay (compressor exception texts could quote
+  transcripts).
+- Replay reuses the hook path: the same gates (`compression.skipped`, recovery reads, Claude
+  Code `translate.replaceable` on the record's `toolUseResult`, failed results, 2000-token floor),
+  `detect`, `features.for_point`, `load_level`, and `compression.pick_candidate` (extracted from
+  `handle_post_tool`: never-larger rule, marker of the real length). Built-in and entry-point
+  compressors only (`registry.for_type`); project drop-ins are never executed offline.
+  `--policy engine` = `FrozenEngine`: `Engine.choose` (new, side-effect free; `_decide` uses it)
+  per project key (from the session's `cwd`), no pending entries, rewards or writes.
+- Heuristics (in the report's `heuristics`): re-sends = later API calls (new message ids of the
+  file's own chain) before the next compaction (`compact_boundary` system record or
+  `isCompactSummary` user record; `type: summary` title records ignored). Cost: the first later
+  call prices removed tokens as cache_write, each further one as cache_read; a result followed by
+  no call saves nothing; baseline = every call's context priced the same way (output excluded).
+  Proxy regret: >= 2 distinctive elided-span tokens (`regret.distinctive_tokens`, excluding kept
+  text and the tool input; digests) in one later assistant text block or tool input within
+  `regret_window_turns` user turns; <= `MAX_WATCHED` (200) spans, oldest evicted unregretted
+  (`evicted`). Split by the first record `timestamp` (else mtime); default cutoff 2026-11-01.
+- `transcript.py`: turn counting skips sidechain, `isMeta` and compaction-summary records
+  (`is_prompt`); a read error mid-file ends iteration; a too-deep line (RecursionError) is
+  skipped; `ToolResultRecord` gained `is_error`, `raw` (`toolUseResult` only when the record holds
+  a single result), `sidechain`; tool uses are dropped once answered (cap 1024). `iter_events`
+  streams one chain (the first record's `isSidechain`: subagent files replay as sessions, inline
+  sidechain records of a main file are skipped).
+- OPE (`learn/ope.py`): reward = removed/before - regret/tau[tier] (safe arm 0); the log line's
+  optional `regret` value, missing = 0 and reported as `regret_known_fraction` (decision logs do
+  not carry settled regret yet: today E3 sees savings only; joining regret outcomes to decisions
+  is a follow-up). Weights clipped at 20 (`clipped_fraction`). Support: logging propensity <= 0
+  -> the decision is unsupported (contributes 0); propensity 1 -> the target's mass on other arms
+  is `unsupported_mass`, and DR does not extrapolate its model there. Engine targets use
+  `Engine.action_probs` (new: exact, unclamped; ladder-locked arms 0; breaker-paused -> safe 1);
+  buckets `static`/`error` have no recoverable context (`no_context`). Percentile bootstrap, 1000
+  resamples. Synthetic coverage: with rare regret events (x20) small-n percentile intervals
+  under-cover (31/50 at n = 200), so the unbiasedness test uses n = 1000 (46/50); bias over 400
+  seeds is within one standard error.

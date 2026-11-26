@@ -284,6 +284,28 @@ class Engine:
         """Probability that ``decide`` picks ``arm`` for these features (exact)."""
         return self._propensity(point, self._candidates(point, features), arm)
 
+    def action_probs(self, point: DecisionPoint, features: Mapping[str, str]) -> dict[str, float]:
+        """Exact (unclamped) probability of every arm of ``point`` as ``decide`` would choose
+        for these features: ladder-locked and filtered arms get exactly 0; a point paused by
+        the circuit breaker gives the safe arm 1. Used by off-policy evaluation."""
+        if self.stores.tripped(point.name):
+            return {a: float(a == point.safe_arm) for a in point.arms}
+        cands = self._candidates(point, features)
+        return {a: self._propensity(point, cands, a) for a in point.arms}
+
+    def choose(self, point: DecisionPoint, features: Mapping[str, str]) -> tuple[str, float]:
+        """One draw ``(arm, logged propensity)`` with no side effects (no pending entry, no
+        store write): ``decide`` uses it, and offline replay uses it as a frozen snapshot."""
+        if self.stores.tripped(point.name):
+            return point.safe_arm, 1.0  # circuit breaker: paused for this project
+        cands = self._candidates(point, features)
+        floor = self._floor(point)
+        if floor > 0.0 and self.rng.random() < floor:
+            arm = point.safe_arm
+        else:
+            arm = _draw(cands, self._tau(point), point.safe_arm, self.rng)
+        return arm, min(1.0, max(MIN_PROPENSITY, self._propensity(point, cands, arm)))
+
     # --- Policy -------------------------------------------------------------------------------
 
     def decide(
@@ -304,16 +326,7 @@ class Engine:
     ) -> Decision:
         bucket = self.bucket(point, features)
         decision_id = uuid.uuid4().hex
-        if self.stores.tripped(point.name):
-            arm, p = point.safe_arm, 1.0  # circuit breaker: paused for this project
-        else:
-            cands = self._candidates(point, features)
-            floor = self._floor(point)
-            if floor > 0.0 and self.rng.random() < floor:
-                arm = point.safe_arm
-            else:
-                arm = _draw(cands, self._tau(point), point.safe_arm, self.rng)
-            p = min(1.0, max(MIN_PROPENSITY, self._propensity(point, cands, arm)))
+        arm, p = self.choose(point, features)
         self._points[point.name] = point
         if self._overlay is None:
             self._overlay = ctx.overlay_path

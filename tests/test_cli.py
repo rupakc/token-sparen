@@ -300,10 +300,10 @@ def test_session_id_from_env_and_missing(
     assert session.read_session(ov)["disabled"] is True
 
 
-@pytest.mark.parametrize("cmd", ["replay", "facts", "prune"])
+@pytest.mark.parametrize("cmd", ["facts", "prune"])
 def test_stubs(cmd: str, capsys: pytest.CaptureFixture[str]) -> None:
     assert main([cmd]) == 0
-    assert "available after M2/M3" in capsys.readouterr().out
+    assert "available after M3" in capsys.readouterr().out
 
 
 def test_errors_never_traceback(

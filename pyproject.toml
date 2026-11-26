@@ -29,6 +29,7 @@ packages = [
   "token_sparen.adapters",
   "token_sparen.adapters.claude",
   "token_sparen.testing",
+  "token_sparen.replay",
 ]
 
 [tool.setuptools.package-data]

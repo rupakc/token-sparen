@@ -1,0 +1,440 @@
+"""E1 offline replay on synthetic transcripts only (never the real home or real sessions)."""
+
+from __future__ import annotations
+
+import json
+import os
+import random
+import stat
+import subprocess
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from token_sparen import cli
+from token_sparen.replay import replay
+from token_sparen.replay.report import OutPathError, check_out_path
+
+MARKERS = ("quokkamarker77", "zebrafinch99x", "okapibravo12")
+_WORDS = "alpha beta gamma delta lorem ipsum dolor amet copy move sync file slot node tree".split()
+CUTOFF = date(2026, 11, 1)
+
+
+@pytest.fixture(autouse=True)
+def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    home = tmp_path / "state"
+    monkeypatch.setenv("TOKEN_SPAREN_HOME", str(home))
+    return home
+
+
+def big_output(seed: int = 7, at: int = 200) -> str:
+    """~4300 estimated tokens of varied lines; the markers sit in the elided middle."""
+    rng = random.Random(seed)
+    lines = [" ".join(rng.choice(_WORDS) for _ in range(8)) for _ in range(400)]
+    lines[at] = f"note {MARKERS[0]} linked with {MARKERS[1]} and {MARKERS[2]}"
+    return "\n".join(lines)
+
+
+class Session:
+    """Builder for a synthetic Claude Code transcript."""
+
+    def __init__(self, sid: str = "sess-1", ts: str = "2026-11-20T10:00:00.000Z") -> None:
+        self.sid = sid
+        self.ts = ts
+        self.records: list[dict[str, Any]] = []
+        self.n = 0
+
+    def _base(self, kind: str, **extra: Any) -> dict[str, Any]:
+        self.n += 1
+        rec = {
+            "type": kind,
+            "sessionId": self.sid,
+            "timestamp": self.ts,
+            "uuid": f"u{self.n}",
+            "isSidechain": False,
+            "cwd": "/nonexistent/project-dir",
+        }
+        rec.update(extra)
+        return rec
+
+    def prompt(self, text: str = "please sync the files") -> Session:
+        self.records.append(self._base("user", message={"role": "user", "content": text}))
+        return self
+
+    def call(
+        self,
+        mid: str,
+        *,
+        text: str | None = None,
+        tool: tuple[str, str, Any] | None = None,
+        sidechain: bool = False,
+    ) -> Session:
+        content: list[dict[str, Any]] = []
+        if text is not None:
+            content.append({"type": "text", "text": text})
+        if tool is not None:
+            content.append({"type": "tool_use", "id": tool[0], "name": tool[1], "input": tool[2]})
+        usage = {
+            "input_tokens": 10,
+            "cache_creation_input_tokens": 100,
+            "cache_read_input_tokens": 1000,
+            "output_tokens": 50,
+        }
+        msg = {
+            "id": mid,
+            "model": "model-x",
+            "role": "assistant",
+            "content": content,
+            "usage": usage,
+        }
+        self.records.append(self._base("assistant", message=msg, isSidechain=sidechain))
+        return self
+
+    def result(
+        self,
+        tid: str,
+        text: str,
+        *,
+        raw: Any = None,
+        is_error: bool = False,
+        sidechain: bool = False,
+    ) -> Session:
+        block: dict[str, Any] = {"type": "tool_result", "tool_use_id": tid, "content": text}
+        if is_error:
+            block["is_error"] = True
+        rec = self._base(
+            "user", message={"role": "user", "content": [block]}, isSidechain=sidechain
+        )
+        rec["toolUseResult"] = (
+            raw
+            if raw is not None
+            else {"stdout": text, "stderr": "", "interrupted": False, "isImage": False}
+        )
+        self.records.append(rec)
+        return self
+
+    def compact(self) -> Session:
+        self.records.append(self._base("system", subtype="compact_boundary", content="compacted"))
+        self.records.append(
+            self._base("user", isCompactSummary=True, message={"role": "user", "content": "sum"})
+        )
+        return self
+
+    def write(self, path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(r) + "\n" for r in self.records), encoding="utf-8")
+        return path
+
+
+def _bash(tid: str) -> tuple[str, str, Any]:
+    return (tid, "Bash", {"command": "make sync"})
+
+
+def resend_session(sid: str = "sess-1", ts: str = "2026-11-20T10:00:00.000Z") -> Session:
+    s = Session(sid, ts).prompt()
+    s.call("m1", tool=_bash("t1")).result("t1", big_output())
+    s.call("m2", text="done one").call("m3", text="done two").call("m4", text="done three")
+    s.compact().call("m5", text="after compaction").call("m6", text="still after")
+    return s
+
+
+def test_replay_counts_resends(tmp_path: Path) -> None:
+    path = resend_session().write(tmp_path / "proj" / "a.jsonl")
+    rep = replay.run([path], "static", "all", CUTOFF)
+    assert rep.sessions == 1 and rep.tool_results == 1 and rep.eligible == 1 and rep.trimmed == 1
+    removed = rep.tokens_removed
+    assert removed > 1000
+    assert rep.tokens_resent_removed == 3 * removed  # m2..m4; nothing after the compaction
+    expected = removed * (1.25 + 2 * 0.1)  # first send writes the cache, re-sends read it
+    assert rep.projected_cost_weighted_saved == pytest.approx(expected)
+    assert rep.per_ctype["text"]["tokens_removed"] == removed
+
+
+def test_result_never_sent_saves_nothing(tmp_path: Path) -> None:
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output()).compact()
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.trimmed == 1 and rep.tokens_resent_removed == 0
+    assert rep.projected_cost_weighted_saved == 0
+
+
+def test_repeated_records_of_one_response_count_once(tmp_path: Path) -> None:
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    s.call("m2", text="a").call("m2", text="b").call("m3", text="c")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.tokens_resent_removed == 2 * rep.tokens_removed
+
+
+def test_proxy_regret_detects_elided_reference(tmp_path: Path) -> None:
+    hit = Session("sess-hit").prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    hit.call("m2", text=f"The run mentions {MARKERS[0]} and {MARKERS[1]}.")
+    one = Session("sess-one").prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    one.call("m2", text=f"Only {MARKERS[0]} here.")
+    via_input = Session("sess-in").prompt().call("m1", tool=_bash("t1"))
+    via_input.result("t1", big_output())
+    via_input.call("m2", tool=("t2", "Grep", {"pattern": f"{MARKERS[1]}|{MARKERS[2]}"}))
+    paths = [
+        hit.write(tmp_path / "h.jsonl"),
+        one.write(tmp_path / "o.jsonl"),
+        via_input.write(tmp_path / "i.jsonl"),
+    ]
+    rep = replay.run(paths, "static", "all", CUTOFF)
+    assert rep.trimmed == 3
+    assert rep.proxy_regrets == 2
+    assert rep.proxy_regret_rate == pytest.approx(2 / 3)
+
+
+def test_proxy_regret_window_expires(tmp_path: Path) -> None:
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    for i in range(8):
+        s.prompt(f"prompt {i}").call(f"mx{i}", text="ok")
+    s.call("late", text=f"{MARKERS[0]} {MARKERS[1]}")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.trimmed == 1 and rep.proxy_regrets == 0
+
+
+def test_kept_tokens_are_not_regret(tmp_path: Path) -> None:
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output(at=0))
+    s.call("m2", text=f"{MARKERS[0]} and {MARKERS[1]} are in the kept head")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.proxy_regrets == 0
+
+
+def test_split_by_date(tmp_path: Path) -> None:
+    old = resend_session("old", "2026-10-01T09:00:00.000Z").write(tmp_path / "old.jsonl")
+    new = resend_session("new", "2026-11-20T09:00:00.000Z").write(tmp_path / "new.jsonl")
+    dev = replay.run([old, new], "static", "dev", CUTOFF)
+    test = replay.run([old, new], "static", "test", CUTOFF)
+    both = replay.run([old, new], "static", "all", CUTOFF)
+    assert (dev.sessions, test.sessions, both.sessions) == (1, 1, 2)
+    assert both.by_split["dev"]["sessions"] == 1 and both.by_split["test"]["sessions"] == 1
+    assert both.by_split["dev"]["tokens_removed"] == dev.tokens_removed
+    assert set(dev.by_split) == {"dev"}
+
+
+def test_ineligible_results(tmp_path: Path) -> None:
+    s = Session().prompt()
+    s.call("m1", tool=_bash("t1")).result("t1", "tiny output")
+    s.call("m2", tool=_bash("t2")).result("t2", big_output(), is_error=True)
+    s.call("m3", tool=("t3", "Write", {"file_path": "x.py", "content": "y"}))
+    s.result("t3", big_output(), raw={"type": "create"})
+    s.call("m4", tool=("t4", "mcp__x__y", {})).result("t4", big_output(), raw=[{"type": "text"}])
+    s.call("m5", text="end")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.tool_results == 4 and rep.eligible == 0 and rep.trimmed == 0
+
+
+def test_off_arm_trims_nothing(tmp_path: Path) -> None:
+    path = resend_session().write(tmp_path / "a.jsonl")
+    rep = replay.run([path], "off", "all", CUTOFF)
+    assert rep.eligible == 1 and rep.trimmed == 0 and rep.tokens_removed == 0
+    light = replay.run([path], "light", "all", CUTOFF)
+    aggressive = replay.run([path], "aggressive", "all", CUTOFF)
+    assert 0 < light.tokens_removed < aggressive.tokens_removed
+
+
+def test_unknown_policy_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        replay.run([], "bogus", "all", CUTOFF)
+
+
+def test_subagent_file_and_inline_sidechain(tmp_path: Path) -> None:
+    sub = Session("sub")
+    sub.records.append(sub._base("user", message={"content": "brief"}, isSidechain=True))
+    sub.call("s1", tool=_bash("t1"), sidechain=True).result("t1", big_output(), sidechain=True)
+    sub.call("s2", text="x", sidechain=True).call("s3", text="y", sidechain=True)
+    main = Session("main").prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    main.call("side", text="z", sidechain=True)  # an inline sidechain call is not a re-send
+    main.call("m2", text="w")
+    paths = [sub.write(tmp_path / "sub.jsonl"), main.write(tmp_path / "main.jsonl")]
+    reps = [replay.run([p], "static", "all", CUTOFF) for p in paths]
+    assert reps[0].tokens_resent_removed == 2 * reps[0].tokens_removed
+    assert reps[1].tokens_resent_removed == reps[1].tokens_removed
+
+
+def test_directories_recurse(tmp_path: Path) -> None:
+    resend_session("a").write(tmp_path / "p1" / "a.jsonl")
+    resend_session("b").write(tmp_path / "p2" / "deep" / "b.jsonl")
+    (tmp_path / "p2" / "notes.txt").write_text("ignored", encoding="utf-8")
+    rep = replay.run([tmp_path], "static", "all", CUTOFF)
+    assert rep.sessions == 2
+
+
+def test_garbage_files_are_tolerated(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text("not json\n" + "[" * 50_000 + "\n{}\n", encoding="utf-8")
+    good = resend_session().write(tmp_path / "good.jsonl")
+    rep = replay.run([bad, good], "static", "all", CUTOFF)
+    assert rep.trimmed == 1
+
+
+def test_watch_window_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(replay, "MAX_WATCHED", 2)
+    s = Session().prompt()
+    for i in range(4):
+        s.call(f"m{i}", tool=_bash(f"t{i}")).result(f"t{i}", big_output(seed=i))
+    s.call("end", text=f"{MARKERS[0]} {MARKERS[1]}")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.trimmed == 4
+    assert rep.proxy_regrets == 2  # the two oldest spans were evicted unregretted
+    assert rep.evicted == 2
+
+
+def test_engine_policy_is_frozen(tmp_path: Path, _home: Path) -> None:
+    path = resend_session().write(tmp_path / "a.jsonl")
+    rep = replay.run([path], "engine", "all", CUTOFF)
+    assert rep.eligible == 1
+    written = [p for p in _home.rglob("*") if p.is_file()] if _home.exists() else []
+    assert not [p for p in written if "sessions" in p.parts or p.name == "posteriors.json"]
+
+
+def test_report_dict_is_aggregate_only(tmp_path: Path) -> None:
+    path = resend_session("sess-SECRET-ID").write(tmp_path / "secretdir" / "a.jsonl")
+    data = replay.run([path], "static", "all", CUTOFF).to_dict()
+    dumped = json.dumps(data)
+    for needle in ("SECRET", "secretdir", str(tmp_path), *MARKERS, "make sync", "nonexistent"):
+        assert needle not in dumped
+    assert data["totals"]["sessions"] == 1 and "per_ctype" in data["totals"]
+
+
+# ------------------------------------------------------------------ CLI and out-path rules
+
+
+def _git_init(where: Path) -> None:
+    where.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(where)], check=True)
+
+
+def test_report_refuses_repo_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = resend_session().write(tmp_path / "a.jsonl")
+    target = cli.PACKAGE_ROOT / "e1-should-not-exist.json"
+    code = cli.main(["replay", str(path), "--policy", "static", "--out", str(target)])
+    assert code != 0 and not target.exists()
+    assert "outside" in capsys.readouterr().err
+    with pytest.raises(OutPathError):
+        check_out_path(cli.PACKAGE_ROOT / "reports" / "x.json")
+
+
+def test_report_refuses_cwd_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = tmp_path / "work"
+    _git_init(repo)
+    monkeypatch.chdir(repo)
+    with pytest.raises(OutPathError):
+        check_out_path(repo / "sub" / "r.json")
+
+
+def test_report_refuses_any_git_work_tree(tmp_path: Path) -> None:
+    other = tmp_path / "other"
+    _git_init(other)
+    with pytest.raises(OutPathError):
+        check_out_path(other / "deeper" / "r.json")
+    nogit = tmp_path / "plain"
+    (nogit / ".git").mkdir(parents=True)  # a .git marker without git available still refuses
+    with pytest.raises(OutPathError):
+        check_out_path(nogit / "r.json")
+
+
+def test_report_written_0600_with_aggregates(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = resend_session().write(tmp_path / "in" / "a.jsonl")
+    out = tmp_path / "private" / "reports" / "e1.json"
+    code = cli.main(["replay", str(tmp_path / "in"), "--policy", "static", "--out", str(out)])
+    assert code == 0
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    assert stat.S_IMODE(out.parent.stat().st_mode) == 0o700
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["totals"]["trimmed"] == 1 and data["policy"] == "static"
+    assert path.exists()
+
+
+def test_stdout_has_no_paths_or_ids(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    s = resend_session("sess-SECRET-ID")
+    s.call("m9", text=f"{MARKERS[0]} {MARKERS[1]}")
+    path = s.write(tmp_path / "secretproject" / "sess-SECRET-ID.jsonl")
+    out = tmp_path / "outdirxyz" / "report.json"
+    assert cli.main(["replay", str(path), "--policy", "static", "--out", str(out)]) == 0
+    captured = capsys.readouterr()
+    text = captured.out + captured.err
+    assert "tool_results" in captured.out
+    for needle in ("SECRET", "secretproject", str(tmp_path), "outdirxyz", *MARKERS, "make sync"):
+        assert needle not in text
+
+
+def test_replay_requires_explicit_paths_and_out(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["replay", "--policy", "static", "--out", str(tmp_path / "r.json")]) != 0
+    assert cli.main(["replay", str(tmp_path), "--policy", "static"]) != 0
+    assert not (tmp_path / "r.json").exists()
+
+
+def test_replay_errors_never_leak_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError(f"cannot read {tmp_path}/secret-session.jsonl")
+
+    monkeypatch.setattr(replay, "run", boom)
+    code = cli.main(["replay", str(tmp_path), "--policy", "static", "--out", str(tmp_path / "x")])
+    assert code != 0
+    err = capsys.readouterr().err
+    assert "secret-session" not in err and str(tmp_path) not in err
+
+
+def test_existing_report_keeps_0600(tmp_path: Path) -> None:
+    path = resend_session().write(tmp_path / "in" / "a.jsonl")
+    out = tmp_path / "rep.json"
+    out.write_text("{}", encoding="utf-8")
+    os.chmod(out, 0o644)
+    assert cli.main(["replay", str(path), "--policy", "light", "--out", str(out)]) == 0
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+
+def test_error_log_is_redacted_during_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _home: Path
+) -> None:
+    from token_sparen import config
+    from token_sparen.compress import detect as real_detect
+
+    def leaky_detect(text: str, tool: Any = None) -> Any:
+        config.log_error(os.environ, "compress.detect", f"failed on {MARKERS[0]}")
+        return real_detect(text, tool)
+
+    monkeypatch.setattr(replay, "detect", leaky_detect)
+    replay.run([resend_session().write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    log = (_home / "logs" / "errors.jsonl").read_text(encoding="utf-8")
+    assert "compress.detect" in log and MARKERS[0] not in log
+    config.log_error(os.environ, "after", "visible again")
+    assert "visible again" in (_home / "logs" / "errors.jsonl").read_text(encoding="utf-8")
+
+
+def test_failing_session_counted_without_details(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("secret content")
+
+    monkeypatch.setattr(replay._Session, "on_result", boom)
+    rep = replay.run([resend_session().write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.sessions_failed == 1 and rep.sessions == 0
+    assert "secret" not in json.dumps(rep.to_dict())
+
+
+def test_summary_lines_are_aggregates(tmp_path: Path) -> None:
+    rep = replay.run([resend_session().write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    lines = replay.summary_lines(rep)
+    assert any("tokens_removed" in ln for ln in lines) and any("[test]" in ln for ln in lines)
+    assert all(str(tmp_path) not in ln for ln in lines)
+
+
+def test_cli_rejects_bad_cutoff_and_policy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = str(tmp_path / "r.json")
+    assert cli.main(["replay", str(tmp_path), "--cutoff", "nope", "--out", out]) == 2
+    assert cli.main(["replay", str(tmp_path), "--policy", "wild", "--out", out]) == 2
+    assert not Path(out).exists()

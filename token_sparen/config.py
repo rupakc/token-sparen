@@ -7,7 +7,9 @@ import json
 import math
 import time
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
@@ -40,8 +42,25 @@ def state_home(env: Mapping[str, str]) -> Path:
     return Path(override) if override else Path.home() / ".token-sparen"
 
 
+_REDACT: ContextVar[bool] = ContextVar("token_sparen_redact_logs", default=False)
+REDACTED = "(details withheld: offline evaluation of private transcripts)"
+
+
+@contextmanager
+def redacted_logs() -> Iterator[None]:
+    """While active, ``log_error`` keeps only where an error happened, never its message: offline
+    evaluation runs compressors over private transcripts, and an exception text could quote them."""
+    token = _REDACT.set(True)
+    try:
+        yield
+    finally:
+        _REDACT.reset(token)
+
+
 def log_error(env: Mapping[str, str], where: str, message: str) -> None:
     """Append one JSON line to errors.jsonl; never raises."""
+    if _REDACT.get():
+        message = REDACTED
     try:
         path = state_home(env) / "logs" / "errors.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)

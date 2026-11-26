@@ -287,8 +287,23 @@ the fixed standard compression), so a project that wants less trimming sets
 project (and, weighted 0.3, into a cross-project global store that forgets after 90 idle days);
 sessions it missed are folded at the next session start. A circuit breaker pauses a decision point
 for the project for 3 sessions when the learner's recent trims clearly caused re-reads at more than
-twice the target rate, and tells you once. Repo-fact injection and tool pruning are planned for M3; `prune`, `facts`
-and `replay` CLI commands are placeholders.
+twice the target rate, and tells you once. Repo-fact injection and tool pruning are planned for M3; `prune` and
+`facts` CLI commands are placeholders.
+
+### Measuring it on your own sessions (offline, private)
+
+`token-sparen replay <transcript files or dirs> --policy static|engine|<arm> --out <file>` replays
+your past Claude Code transcripts through the same compression path the hook uses (nothing is
+saved or learned) and estimates tokens removed, projected re-sends until the next compaction,
+cache-aware cost-weighted savings and a proxy regret rate (the agent later used distinctive words
+that only the trimmed part contained). `--split dev|test|all` and `--cutoff YYYY-MM-DD` split
+sessions by date. `token-sparen ope --log <decisions.jsonl...> --target static|engine-snapshot
+--out <file>` estimates how another policy would have done on your logged decisions (IPS,
+self-normalised IPS, doubly robust, with bootstrap intervals, clipped importance weights and the
+share of the target's choices the log cannot support). Both read only what you point them at,
+print aggregate numbers only (no paths, ids or text), and write a JSON report with mode 0600; the
+report path must be outside any git work tree, so a report can never be committed by accident.
+While they run, error log lines keep only where an error happened, never its message.
 
 ## Credits and licence
 

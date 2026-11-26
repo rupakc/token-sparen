@@ -5,8 +5,8 @@ recoverable output compression, read de-dupe, guards, budget governor, boundary 
 statusline, extensions. M2 (in progress): one learning engine (contextual Thompson-sampling bandit
 with a quality constraint) steers every hook decision (`learn/hookpolicy.py`, built lazily per
 hook; `[learn] enabled = false` -> `StaticPolicy`), with regret detection, session fold and
-circuit breaker. Planned (M3): repo-fact learning, tool pruning; `replay`/`facts`/`prune` are CLI
-stubs. North star: maximise tokens saved subject to no measurable quality loss.
+circuit breaker; `replay` (E1) and `ope` (E3) evaluate offline into private reports. Planned (M3):
+repo-fact learning, tool pruning; `facts`/`prune` are CLI stubs. North star: maximise tokens saved subject to no measurable quality loss.
 Spec: `docs/specs/2026-11-25-token-sparen-design.md`. Plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`.
 Decisions: `MEMORY.md`.
 
@@ -14,11 +14,13 @@ Decisions: `MEMORY.md`.
 - `token_sparen/` core (stdlib only): `cli.py events.py config.py estimate.py transcript.py emit.py recovery.py extensions.py`
   - `store/` JSON+JSONL state, `compress/` compressors, `mechanisms/` decision-point mechanisms
     (compression, guards, read_dedupe, governor, boundary, subagent, tracking)
-  - `learn/` policy, decision log, engine, regret, session fold (`overlay`), circuit `breaker`
+  - `learn/` policy, decision log, engine, regret, session fold (`overlay`), circuit `breaker`,
+    `ope` (off-policy evaluation)
+  - `replay/` E1 offline replay and the private report writer (`--out` outside any git tree)
   - `adapters/` host protocol; `adapters/claude/` Claude Code (entry, translate, statusline, settings)
   - `testing/conformance.py` compressor conformance kit
   - `params/defaults.toml` every tunable (hill-climbing surface; packaged inside the package)
-  - Planned, not present yet: `facts/` (M3), `replay/` (M2)
+  - Planned, not present yet: `facts/` (M3)
 - `hooks/` plugin hooks (`hooks.json`, `run.py`, `run_cli.py`); `skills/token-sparen/` is the
   `/token-sparen` skill (there is no `commands/` directory)
 - `evals/e2/` fact-preservation suite (corpus, `needles.toml`, `run.py`)

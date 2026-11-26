@@ -25,6 +25,7 @@ from typing import Any
 from token_sparen import extensions, recovery
 from token_sparen.compress import (
     CompressContext,
+    Compressor,
     CompressResult,
     Level,
     detect,
@@ -214,6 +215,61 @@ def _marker_len_ref(project_dir: Path) -> recovery.RecoveryRef:
     return recovery.RecoveryRef(rid, (project_dir / ".token-sparen" / "outputs" / f"{rid}.txt"))
 
 
+@dataclass(frozen=True)
+class Candidate:
+    """A compression the never-larger rule accepts: ``result`` of ``source`` (the persisted full
+    output or the preview); ``tokens_after`` counts the body plus a marker of the real length."""
+
+    result: CompressResult
+    source: str
+    tokens_after: int
+
+
+def est_type(ctype: str) -> str:
+    """The token-estimation type of a content type."""
+    return _EST_TYPE.get(ctype, "text")
+
+
+def pick_candidate(
+    full: str | None,
+    preview: str,
+    level: Level,
+    compressor: Compressor,
+    ctx: CompressContext,
+    cfg: Config,
+    est: str,
+    before: int,
+    project_dir: Path,
+) -> Candidate | None:
+    """Compress the full output first, then the preview; the first candidate that is lossy, no
+    longer than the preview (marker included) and saves >= ``min_saving_ratio`` of ``before``
+    wins. None when no candidate qualifies. Pure: nothing is saved or logged (the hook path and
+    offline replay share it)."""
+    max_after = before * (1 - _num(cfg, "compression.min_saving_ratio", 0.15))
+    stand_in = _marker_len_ref(project_dir)
+    for source in (full, preview):
+        if source is None:
+            continue
+        result = compressor.compress(source, level, ctx)
+        if result.lossless or result.kept_lines >= result.total_lines:
+            continue
+        probe = f"{result.text}\n{recovery.marker(result.kept_lines, result.total_lines, stand_in)}"
+        after = estimate_tokens(probe, est)
+        if len(probe) <= len(preview) and after <= max_after:
+            return Candidate(result, source, after)
+    return None
+
+
+def min_tokens(cfg: Config) -> float:
+    """``compression.min_tokens`` floored at the 2000-token invariant (no warning, no I/O)."""
+    return max(float(MIN_TOKENS), _num(cfg, "compression.min_tokens", MIN_TOKENS))
+
+
+def skipped(event: Event, cfg: Config) -> bool:
+    """Never compressed: no tool, the edit category, ``skip_tools`` or the hard skip floor."""
+    return _skipped(event, cfg)
+
+
 def handle_post_tool(
     event: Event,
     policy: Policy,
@@ -243,9 +299,9 @@ def handle_post_tool(
     if full == preview:
         full = None
     ctype = detect(preview, event.tool)
-    est_type = _EST_TYPE.get(ctype, "text")
-    before = estimate_tokens(preview, est_type)
-    tokens_full = None if full is None else estimate_tokens(full, est_type)
+    est = est_type(ctype)
+    before = estimate_tokens(preview, est)
+    tokens_full = None if full is None else estimate_tokens(full, est)
     overlay_file = tracking.overlay_path(event, env)
     overlay = session.read_session(overlay_file)
     sctx = governor.decision_ctx(event, overlay, overlay_file, cfg, env)
@@ -287,22 +343,12 @@ def handle_post_tool(
     )
     home = state_home(env)
     compressor = extensions.load_extensions(event.project_dir, home, cfg, env).compressor_for(ctype)
-    max_after = before * (1 - _num(cfg, "compression.min_saving_ratio", 0.15))
-    stand_in = _marker_len_ref(event.project_dir)
-    chosen: CompressResult | None = None
-    chosen_source = preview
-    for source in (full, preview):
-        if source is None:
-            continue
-        result = compressor.compress(source, level, ctx)
-        if result.lossless or result.kept_lines >= result.total_lines:
-            continue
-        probe = f"{result.text}\n{recovery.marker(result.kept_lines, result.total_lines, stand_in)}"
-        if len(probe) <= len(preview) and estimate_tokens(probe, est_type) <= max_after:
-            chosen, chosen_source = result, source
-            break
-    if chosen is None:  # a trimming arm that found nothing worth trimming
+    picked = pick_candidate(
+        full, preview, level, compressor, ctx, cfg, est, before, event.project_dir
+    )
+    if picked is None:  # a trimming arm that found nothing worth trimming
         return no_op()
+    chosen, chosen_source = picked.result, picked.source
     deadline = _num(cfg, "compression.save_deadline_ms", SAVE_DEADLINE_MS) / 1000
     if time.monotonic() - t0 > deadline:
         log_error(env, "compression", "save deadline exceeded; output left untouched")
@@ -318,7 +364,7 @@ def handle_post_tool(
         max_files=int(_num(cfg, "recovery.max_files", 200)),
         max_bytes=int(_num(cfg, "recovery.max_bytes", 100_000_000)),
     )
-    after = estimate_tokens(body, est_type)
+    after = estimate_tokens(body, est)
     _count_trim(overlay_file, before - after, env)
     _log_decision(event, cfg, env, decision, ctype, before, after, ref.id, tokens_full)
     _learn(event, policy, cfg, env, decision, point, sctx, ref.id, chosen_source, body, ctype)

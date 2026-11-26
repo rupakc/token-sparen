@@ -668,6 +668,17 @@ class _Info:
         )
 
 
+def text_digests(text: str) -> set[str]:
+    """Digests of the distinctive tokens in the first ``INPUT_SCAN_CHARS`` of ``text`` (how a
+    prompt or tool input is matched against an elided span's ``token_digest`` values)."""
+    return {token_digest(t) for t in set(_tokens(text[:INPUT_SCAN_CHARS]))}
+
+
+def input_text(tool_input: Mapping[str, Any]) -> str:
+    """The string fields of a tool input, up to ``INPUT_SCAN_CHARS`` in all."""
+    return _input_text(tool_input)
+
+
 def _input_text(tool_input: Mapping[str, Any]) -> str:
     parts: list[str] = []
     size = 0
@@ -684,7 +695,7 @@ def _info(event: Event) -> _Info:
     info = _Info()
     tool = event.tool
     if event.kind == "prompt" and event.prompt:
-        info.tokens = {token_digest(t) for t in set(_tokens(event.prompt[:INPUT_SCAN_CHARS]))}
+        info.tokens = text_digests(event.prompt)
         return info
     if tool is None or event.kind not in ("post_tool", "post_tool_failure"):
         return info
@@ -701,7 +712,7 @@ def _info(event: Event) -> _Info:
     info.recovery_ids = direct | shown
     if direct and event.output_text:  # `token-sparen show` counts its own tokens
         info.read_tokens = estimate_tokens(event.output_text)
-    info.tokens = {token_digest(t) for t in set(_tokens(_input_text(tool.input)))}
+    info.tokens = text_digests(_input_text(tool.input))
     return info
 
 

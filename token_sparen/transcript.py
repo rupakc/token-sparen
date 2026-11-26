@@ -1,14 +1,23 @@
-"""Streaming parser for Claude Code JSONL transcripts. Never raises on bad input."""
+"""Streaming parser for Claude Code JSONL transcripts. Never raises on bad input.
+
+Every reader streams one record at a time (transcripts can be hundreds of MB). A read error
+mid-file ends the iteration; a line that is not JSON, or nests too deeply to decode
+(RecursionError), is skipped.
+"""
 
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from token_sparen.estimate import Usage
+
+MAX_OPEN_USES = 1024  # tool_use inputs awaiting their result (oldest dropped beyond this)
+SYNTHETIC_MODEL = "<synthetic>"
 
 
 @dataclass
@@ -18,6 +27,9 @@ class ToolResultRecord:
     input: dict[str, Any] = field(default_factory=dict)
     text: str = ""
     turn_index: int = 0
+    is_error: bool = False
+    raw: Any = None  # the record's ``toolUseResult`` (the host's raw response), when present
+    sidechain: bool = False
 
 
 def _records(path: Path) -> Iterator[dict[str, Any]]:
@@ -26,13 +38,17 @@ def _records(path: Path) -> Iterator[dict[str, Any]]:
     except OSError:
         return
     with fh:
-        for line in fh:
+        while True:
+            try:
+                line = next(fh)
+            except (StopIteration, OSError, ValueError):
+                return
             line = line.strip()
             if not line:
                 continue
             try:
                 rec = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 continue
             if isinstance(rec, dict):
                 yield rec
@@ -92,36 +108,217 @@ def _result_text(content: Any) -> str:
     return ""
 
 
+def _blocks(content: Any) -> list[dict[str, Any]]:
+    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+
+
+def is_prompt(rec: dict[str, Any]) -> bool:
+    """A user prompt that starts a turn: a main-chain user record with text and no tool result.
+
+    Sidechain (subagent) records, ``isMeta`` records (local-command caveats and the like) and
+    compaction summaries are not prompts.
+    """
+    if rec.get("type") != "user" or rec.get("isSidechain") or rec.get("isMeta"):
+        return False
+    if rec.get("isCompactSummary"):
+        return False
+    content = _message(rec).get("content")
+    if isinstance(content, str):
+        return True
+    blocks = _blocks(content)
+    if any(b.get("type") == "tool_result" for b in blocks):
+        return False
+    return any(b.get("type") == "text" for b in blocks)
+
+
+class _Uses:
+    """tool_use id -> (name, input), bounded; an entry is dropped once its result is seen."""
+
+    def __init__(self) -> None:
+        self._uses: OrderedDict[str, tuple[str, dict[str, Any]]] = OrderedDict()
+
+    def add(self, block: dict[str, Any]) -> tuple[str, str, dict[str, Any]] | None:
+        bid = block.get("id")
+        if not isinstance(bid, str):
+            return None
+        name = block.get("name")
+        inp = block.get("input")
+        entry = (name if isinstance(name, str) else "", inp if isinstance(inp, dict) else {})
+        self._uses[bid] = entry
+        self._uses.move_to_end(bid)
+        while len(self._uses) > MAX_OPEN_USES:
+            self._uses.popitem(last=False)
+        return bid, entry[0], entry[1]
+
+    def take(self, tid: str) -> tuple[str, dict[str, Any]]:
+        return self._uses.pop(tid, ("", {}))
+
+
+def _results(
+    rec: dict[str, Any], blocks: list[dict[str, Any]], uses: _Uses, turn: int
+) -> Iterator[ToolResultRecord]:
+    results = [b for b in blocks if b.get("type") == "tool_result"]
+    # One raw response per record: it belongs to a result only when the record holds one.
+    raw = rec.get("toolUseResult") if len(results) == 1 else None
+    side = bool(rec.get("isSidechain"))
+    for b in results:
+        tid = b.get("tool_use_id")
+        if not isinstance(tid, str):
+            continue
+        name, inp = uses.take(tid)
+        text = _result_text(b.get("content"))
+        yield ToolResultRecord(tid, name, inp, text, turn, b.get("is_error") is True, raw, side)
+
+
 def iter_tool_results(path: Path) -> Iterator[ToolResultRecord]:
-    """Yield tool results joined with their tool_use; turn_index counts user prompts so far."""
-    uses: dict[str, tuple[str, dict[str, Any]]] = {}
+    """Yield tool results joined with their tool_use; turn_index counts user prompts so far
+    (``is_prompt``: sidechain, meta and compaction-summary records do not start a turn)."""
+    uses = _Uses()
     turn = 0
     for rec in _records(path):
         kind = rec.get("type")
         content = _message(rec).get("content")
-        if kind == "assistant" and isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    bid = block.get("id")
-                    if isinstance(bid, str):
-                        name = block.get("name")
-                        inp = block.get("input")
-                        uses[bid] = (
-                            name if isinstance(name, str) else "",
-                            inp if isinstance(inp, dict) else {},
-                        )
+        if kind == "assistant":
+            for block in _blocks(content):
+                if block.get("type") == "tool_use":
+                    uses.add(block)
         elif kind == "user":
-            blocks = (
-                [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
-            )
-            results = [b for b in blocks if b.get("type") == "tool_result"]
-            if not results:
-                if isinstance(content, str) or any(b.get("type") == "text" for b in blocks):
-                    turn += 1
+            if is_prompt(rec):
+                turn += 1
                 continue
-            for b in results:
-                tid = b.get("tool_use_id")
-                if not isinstance(tid, str):
-                    continue
-                name, inp = uses.get(tid, ("", {}))
-                yield ToolResultRecord(tid, name, inp, _result_text(b.get("content")), turn)
+            yield from _results(rec, _blocks(content), uses, turn)
+
+
+# --------------------------------------------------------------------------- session events
+
+
+@dataclass(frozen=True)
+class Prompt:
+    """A user prompt of the session's chain (starts a turn)."""
+
+    text: str
+    turn: int
+
+
+@dataclass(frozen=True)
+class Compaction:
+    """The context was compacted: everything before it is no longer re-sent."""
+
+
+@dataclass(frozen=True)
+class AssistantRecord:
+    """One assistant record of the chain. ``new_call`` marks the first record of an API response
+    (Claude Code writes one record per content block, all with the same message id)."""
+
+    new_call: bool
+    usage: Usage | None
+    model: str | None
+    texts: tuple[str, ...]
+    tool_uses: tuple[tuple[str, str, dict[str, Any]], ...]
+
+
+SessionEvent = Prompt | Compaction | AssistantRecord | ToolResultRecord
+
+
+def is_compaction(rec: dict[str, Any]) -> bool:
+    """Heuristic: a ``system`` record with subtype ``compact_boundary`` or a user record flagged
+    ``isCompactSummary`` (Claude Code writes both around a compaction; consecutive markers merge
+    because nothing is sent between them). ``type: summary`` records are session titles, not
+    compactions, and are ignored."""
+    if rec.get("type") == "system" and rec.get("subtype") == "compact_boundary":
+        return True
+    return rec.get("type") == "user" and rec.get("isCompactSummary") is True
+
+
+def _usage(msg: dict[str, Any]) -> Usage | None:
+    usage = msg.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    return Usage(
+        input=_int(usage.get("input_tokens")),
+        cache_read=_int(usage.get("cache_read_input_tokens")),
+        cache_write=_int(usage.get("cache_creation_input_tokens")),
+        output=_int(usage.get("output_tokens")),
+    )
+
+
+def _prompt_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        b["text"]
+        for b in _blocks(content)
+        if b.get("type") == "text" and isinstance(b.get("text"), str)
+    )
+
+
+def iter_events(path: Path, recent_ids: int = 4096) -> Iterator[SessionEvent]:
+    """Stream one session's events in file order, for the file's own chain only.
+
+    The chain is the ``isSidechain`` value of the first user/assistant record: a subagent
+    transcript (all sidechain) replays as its own session, and inline sidechain records of a
+    main transcript are skipped. Memory is bounded: open tool uses (``MAX_OPEN_USES``) and the
+    last ``recent_ids`` message ids.
+    """
+    chain: bool | None = None
+    uses = _Uses()
+    seen: OrderedDict[str, None] = OrderedDict()
+    turn = 0
+    for rec in _records(path):
+        kind = rec.get("type")
+        if is_compaction(rec):
+            yield Compaction()
+            continue
+        if kind not in ("user", "assistant"):
+            continue
+        side = bool(rec.get("isSidechain"))
+        if chain is None:
+            chain = side
+        if side != chain:
+            continue
+        msg = _message(rec)
+        content = msg.get("content")
+        if kind == "assistant":
+            mid = msg.get("id")
+            model = msg.get("model")
+            new = False
+            if isinstance(mid, str) and model != SYNTHETIC_MODEL and mid not in seen:
+                seen[mid] = None
+                if len(seen) > recent_ids:
+                    seen.popitem(last=False)
+                new = True
+            blocks = _blocks(content)
+            texts = tuple(
+                b["text"]
+                for b in blocks
+                if b.get("type") == "text" and isinstance(b.get("text"), str)
+            )
+            added = [uses.add(b) for b in blocks if b.get("type") == "tool_use"]
+            yield AssistantRecord(
+                new,
+                _usage(msg) if new else None,
+                model if isinstance(model, str) else None,
+                texts,
+                tuple(u for u in added if u is not None),
+            )
+            continue
+        if rec.get("isMeta") or rec.get("isCompactSummary"):
+            continue
+        blocks = _blocks(content)
+        if any(b.get("type") == "tool_result" for b in blocks):
+            yield from _results(rec, blocks, uses, turn)
+        elif isinstance(content, str) or any(b.get("type") == "text" for b in blocks):
+            turn += 1
+            yield Prompt(_prompt_text(content), turn)
+
+
+def first_field(path: Path, key: str, max_records: int = 50) -> Any:
+    """The first non-empty value of ``key`` among the first ``max_records`` records (e.g. the
+    session's ``timestamp`` or ``cwd``), else None."""
+    for i, rec in enumerate(_records(path)):
+        value = rec.get(key)
+        if value not in (None, ""):
+            return value
+        if i + 1 >= max_records:
+            break
+    return None

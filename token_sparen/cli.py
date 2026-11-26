@@ -89,13 +89,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fold.add_argument("--max", type=int, default=0, help="--all: at most this many (0 = no limit)")
     _project_opt(fold)
+    rep = sub.add_parser(
+        "replay", help="E1: replay transcripts offline; private aggregate report (--out)"
+    )
+    rep.add_argument("paths", nargs="+", type=Path, help="transcript files or directories")
+    rep.add_argument("--policy", default="static", help="static, engine or a compression arm")
+    rep.add_argument("--split", choices=["dev", "test", "all"], default="all")
+    rep.add_argument("--cutoff", help="YYYY-MM-DD: sessions before are dev, the rest test")
+    rep.add_argument("--seed", type=int, default=0, help="engine policy: sampling seed")
+    rep.add_argument("--out", type=Path, required=True, help="report file outside any repository")
+    ope_p = sub.add_parser("ope", help="E3: off-policy evaluation of decision logs (--out)")
+    ope_p.add_argument("--log", nargs="+", type=Path, required=True, help="decisions.jsonl files")
+    ope_p.add_argument("--target", choices=["static", "engine-snapshot"], required=True)
+    ope_p.add_argument("--n-boot", type=int, default=1000, help="bootstrap resamples")
+    ope_p.add_argument("--seed", type=int, default=0)
+    ope_p.add_argument("--out", type=Path, required=True, help="report file outside any repository")
     for name in _STUBS:
-        stub = sub.add_parser(name, help="available after M2/M3")
+        stub = sub.add_parser(name, help="available after M3")
         stub.add_argument("rest", nargs="*")
     return parser
 
 
-_STUBS = ("replay", "facts", "prune")
+_STUBS = ("facts", "prune")
+_KEY_RE = re.compile(r"[0-9a-f]{16}")
 _FOLD_TRIES = 5
 _ID_RE = re.compile(r"[0-9a-f]{12}")
 _SHELL_SYNTAX = re.compile(r"[\s|&;<>()$`\\*?{}~!#]")
@@ -736,11 +752,123 @@ def _fold_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def _private_out(path: Path) -> Path:
+    from token_sparen.replay import report
+
+    try:
+        return report.check_out_path(path)
+    except report.OutPathError as exc:
+        raise CliError(str(exc)) from None
+
+
+def _replay_cmd(args: argparse.Namespace) -> int:
+    """E1. Prints aggregates only: no paths, ids or transcript text (errors included)."""
+    from datetime import date
+
+    from token_sparen.replay import replay, report
+
+    out = _private_out(args.out)
+    try:
+        cutoff = date.fromisoformat(args.cutoff) if args.cutoff else replay.DEFAULT_CUTOFF
+    except ValueError:
+        raise CliError("--cutoff must be YYYY-MM-DD") from None
+    try:
+        replay.resolve_policy(args.policy, load_config(Path.cwd(), os.environ))
+    except ValueError as exc:
+        raise CliError(str(exc)) from None
+    try:
+        result = replay.run(args.paths, args.policy, args.split, cutoff, seed=args.seed)
+        report.write_private(out, result.to_dict())
+    except Exception as exc:  # noqa: BLE001 - never echo a message that could quote a path
+        raise CliError(f"replay failed ({type(exc).__name__})", 1) from None
+    for line in replay.summary_lines(result):
+        print(line)
+    print("token-sparen replay: private report written (mode 0600)")
+    return 0
+
+
+def _ope_target(
+    args: argparse.Namespace, logs: list[Path]
+) -> tuple[Any, list[Any], dict[str, float]]:
+    import random
+
+    from token_sparen.learn import ope
+    from token_sparen.learn.engine import Engine
+    from token_sparen.learn.hierarchy import StoreChain
+    from token_sparen.learn.policy import StaticPolicy
+
+    if args.target == "static":
+        log, regrets = ope.load_log(logs)
+        return ope.StaticTarget(StaticPolicy({})), log, regrets
+    cfg = load_config(Path.cwd(), os.environ)
+    home = state_home(os.environ)
+    by_id: dict[str, Any] = {}
+    log_all: list[Any] = []
+    regrets_all: dict[str, float] = {}
+    for path in logs:
+        key = path.resolve().parent.name
+        if not _KEY_RE.fullmatch(key):
+            raise CliError("engine-snapshot needs logs at <state>/projects/<key>/decisions.jsonl")
+        engine = Engine(StoreChain(key, home, None, params=cfg.data), cfg, random.Random(0))
+        target = ope.EngineTarget(engine)
+        log, regrets = ope.load_log([path])
+        for rec in log:
+            by_id[rec.decision_id] = target
+        log_all.extend(log)
+        regrets_all.update(regrets)
+
+    class _ByProject:
+        def probs(self, rec: Any) -> Any:
+            return by_id[rec.decision_id].probs(rec)
+
+    return _ByProject(), log_all, regrets_all
+
+
+def _ope_cmd(args: argparse.Namespace) -> int:
+    """E3. Prints aggregates only."""
+    from token_sparen.learn import ope
+    from token_sparen.replay import report
+
+    out = _private_out(args.out)
+    try:
+        target, log, regrets = _ope_target(args, list(args.log))
+        points = ope.evaluate(
+            log, target, regrets=regrets, n_boot=max(1, args.n_boot), seed=args.seed
+        )
+        report.write_private(
+            out,
+            {
+                "version": 1,
+                "kind": "e3-off-policy-evaluation",
+                "target": args.target,
+                "n_boot": max(1, args.n_boot),
+                "clip": ope.CLIP,
+                "points": points,
+            },
+        )
+    except CliError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - never echo a message that could quote a path
+        raise CliError(f"ope failed ({type(exc).__name__})", 1) from None
+    for name, agg in points.items():
+        print(
+            f"{name}: n {agg['n']} (no context {agg['no_context']}), "
+            f"unsupported mass {agg['unsupported_mass']:.3f}, "
+            f"clipped {agg['clipped_fraction']:.3f}, "
+            f"regret known {agg['regret_known_fraction']:.3f}"
+        )
+        for est in ("ips", "snips", "dr"):
+            lo, hi = agg[est]["ci95"]
+            print(f"  {est} {agg[est]['value']:.4f} [{lo:.4f}, {hi:.4f}]")
+    print("token-sparen ope: private report written (mode 0600)")
+    return 0
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "statusline":
         return _statusline(args)
     if args.command in _STUBS:
-        print(f"token-sparen {args.command}: available after M2/M3")
+        print(f"token-sparen {args.command}: available after M3")
         return 0
     handlers = {
         "show": _show,
@@ -751,6 +879,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         "extensions": _extensions,
         "config": _config_set,
         "fold": _fold_cmd,
+        "replay": _replay_cmd,
+        "ope": _ope_cmd,
     }
     return handlers[args.command](args)
 
