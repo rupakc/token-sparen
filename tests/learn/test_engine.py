@@ -205,6 +205,10 @@ def test_ladder_unlocks_one_step_at_a_time(tmp_path: Path) -> None:
     arms = Counter(eng.decide(COMPRESSION, FULL, _ctx(home)).arm for _ in range(500))
     assert "standard" in arms and "aggressive" not in arms
     assert eng.eligible(COMPRESSION, FULL) == ["light", "standard"]
+    assert eng.propensity(COMPRESSION, FULL, "aggressive") == 0.0
+    assert sum(eng.propensity(COMPRESSION, FULL, a) for a in COMPRESSION.arms) == pytest.approx(
+        1.0, abs=1e-6
+    )
 
 
 def test_ladder_needs_ladder_obs_and_low_regret(tmp_path: Path) -> None:

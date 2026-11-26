@@ -240,7 +240,8 @@ class Engine:
 
     def _propensity(self, point: DecisionPoint, cands: list[Cand], arm: str) -> float:
         """Exact probability that ``decide`` picks ``arm`` (floor mixed with the sampling branch;
-        see ``learn.propensity``), clamped to [1e-3, 1]."""
+        see ``learn.propensity``); 0 for an ineligible arm. ``decide`` logs it clamped to
+        [1e-3, 1]."""
         tau = self._tau(point)
         safe, ps = win_probabilities(
             [
@@ -252,7 +253,7 @@ class Engine:
         branch[point.safe_arm] = safe
         floor = self._floor(point)
         p = floor * (arm == point.safe_arm) + (1.0 - floor) * branch.get(arm, 0.0)
-        return min(1.0, max(MIN_PROPENSITY, p))
+        return min(1.0, max(0.0, p))
 
     def propensity(self, point: DecisionPoint, features: Mapping[str, str], arm: str) -> float:
         """Probability that ``decide`` picks ``arm`` for these features (exact)."""
@@ -284,7 +285,7 @@ class Engine:
             arm = point.safe_arm
         else:
             arm = _draw(cands, self._tau(point), point.safe_arm, self.rng)
-        p = self._propensity(point, cands, arm)
+        p = min(1.0, max(MIN_PROPENSITY, self._propensity(point, cands, arm)))
         self._points[point.name] = point
         if self._overlay is None:
             self._overlay = ctx.overlay_path

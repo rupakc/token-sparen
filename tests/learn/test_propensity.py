@@ -93,3 +93,16 @@ def test_beta_cdf() -> None:
     assert beta_cdf(1 - 1e-12, 2, 2, xc=1e-12) == pytest.approx(1 - 3e-24, abs=1e-15)
     b = Beta(3, 7)
     assert beta_cdf(b.quantile(0.9), 3, 7) == pytest.approx(0.9, abs=1e-9)
+
+
+def test_degenerate_windows_use_tail_terms() -> None:
+    # a or b this small puts the logit window beyond +-700: the tail mass is added analytically
+    for arms in (
+        [(Beta(0.01, 5.0), 1.0), (Beta(2.0, 2.0), 0.5)],
+        [(Beta(5.0, 0.01), 0.7), (Beta(2.0, 2.0), 0.5)],
+    ):
+        safe, ps = win_probabilities(arms)
+        assert safe + sum(ps) == pytest.approx(1.0, abs=1e-6)
+    # an arm with S ~ 0 almost never beats a Beta(2, 2) arm that is feasible half the time
+    _, ps = win_probabilities([(Beta(0.01, 5.0), 1.0), (Beta(2.0, 2.0), 0.5)])
+    assert ps[1] == pytest.approx(0.5, abs=0.01)
