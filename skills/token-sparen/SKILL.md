@@ -15,8 +15,9 @@ allowed-tools:
 
 # token-sparen
 
-token-sparen shortens large tool outputs (test runs, logs, JSON, diffs, searches, subagent
-results) before the model sees them, and keeps the full text on disk so nothing is lost.
+token-sparen shortens large tool outputs (test runs, build logs, JSON, diffs, searches) before
+the model sees them, and keeps the full text on disk so nothing is lost. File contents (Read,
+`cat`, ...) and plain text such as subagent replies are shown in full by default.
 
 ## Running the CLI
 Use `token-sparen <args>`. If that is not installed (command not found), run exactly
@@ -31,8 +32,9 @@ Argument given: `$ARGUMENTS`. Follow these steps only when the user explicitly t
 answer from the sections below; do not run `stats` (run `token-sparen show <id>` only if the
 user needs the full output).
 1. `/token-sparen` with no argument, or `stats`: run
-   `token-sparen stats --session ${CLAUDE_SESSION_ID}` and summarise tokens saved and trims in
-   two or three lines, then give the recovery help below.
+   `token-sparen stats --session ${CLAUDE_SESSION_ID}` and summarise net tokens saved (gross
+   minus recovery reads minus injected tokens) and trims in two or three lines, then give the
+   recovery help below.
 2. `statusline`: offer `token-sparen statusline install` (edits Claude Code settings, keeps a
    backup; `token-sparen statusline uninstall` reverses it). Run it only if the user agrees.
 3. `disable`: run `token-sparen session disable --session ${CLAUDE_SESSION_ID}` and confirm that
@@ -50,8 +52,8 @@ A trimmed output ends with:
 - Full outputs live in `<project>/.token-sparen/outputs/` and are pruned after 14 days (checked whenever a new output is saved).
 
 ## Commands
-- `token-sparen stats [--session ID] [--json]`: tokens saved (gross: recovery reads are not yet
-  subtracted, planned M2), decisions per arm.
+- `token-sparen stats [--session ID] [--json]`: net tokens saved (gross minus recovery reads minus
+  injected tokens; as in the statusline, can be negative), its parts, decisions per arm.
 - `token-sparen doctor [--fix]`: verifies Python, state home, hooks and a synthetic round-trip.
 - `token-sparen run -- <command>`: run a command and print its compressed output.
 - `token-sparen statusline install|uninstall`: opt-in live statusline (backs up settings).
@@ -62,7 +64,13 @@ A trimmed output ends with:
 
 ## Switching it off
 - This session only: `token-sparen session disable --session ${CLAUDE_SESSION_ID}` (`enable` undoes).
-- Everywhere: set `TOKEN_SPAREN_DISABLE=1` in the environment.
+- Everywhere: `TOKEN_SPAREN_DISABLE=1` in the environment Claude Code is launched from, or
+  `claude plugin disable token-sparen`.
+- All trimming: `[learn.hold] compression = true` in `~/.token-sparen/config.toml` (one session:
+  `token-sparen config set learn.hold.compression true --session ${CLAUDE_SESSION_ID}`) or
+  `[compression] allow_ctypes = []`. Read pointers: `[learn.hold] read_dedupe = true`.
+- Change config only when the user asks. Needs Claude Code >= 2.1.121; trimmed output is never
+  lost (marker path or `show <id>`).
 
 ## Configuration
 Precedence, lowest first: packaged defaults, `~/.token-sparen/config.toml`,
