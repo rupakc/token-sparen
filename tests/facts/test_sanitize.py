@@ -124,15 +124,16 @@ def test_sanitize_rejects_unknown_kind_and_non_str() -> None:
 
 
 def test_render_uses_fixed_templates() -> None:
-    assert render(_f("python -m pytest")) == "Run tests with: `python -m pytest`"
+    """Neutral past-tense observations, never imperatives."""
+    assert render(_f("python -m pytest")) == "Tests were run with `python -m pytest`"
     alias = Fact("command_alias", "pytest", "python -m pytest", EV)
-    assert render(alias) == "Use `python -m pytest` instead of `pytest` here"
+    assert render(alias) == "`pytest` was not found here; `python -m pytest` worked"
     env = Fact("requires_env", "npm test", "DATABASE_URL", EV)
-    assert render(env) == "`npm test` requires the environment variable `DATABASE_URL`"
+    assert render(env) == "`npm test` needed the environment variable `DATABASE_URL`"
     build = Fact("build_first", "npm test", "npm run build", EV)
-    assert render(build) == "Build first with `npm run build` before `npm test`"
+    assert render(build) == "`npm test` needed `npm run build` to run first"
     gen = Fact("generated_dir", "generated", "dist", EV)
-    assert render(gen) == "Generated files live in `dist`"
+    assert render(gen) == "Files under `dist/` appear to be generated"
 
 
 def test_render_refuses_unsanitised_fact() -> None:
@@ -354,6 +355,14 @@ def test_sanitize_option_names_use_word_boundaries(good: str) -> None:
         "app --privatekey k1",
         "app --gh-accesstoken abc",
         "app --refreshtoken=abc",
+        "app --apitoken abc",
+        "app --authtoken abc",
+        "app --sessiontoken abc",
+        "app --secretkey abc",
+        "app --masterkey abc",
+        "app --encryptionkey abc",
+        "app --api-token abc",
+        "app --master_key abc",
     ],
 )
 def test_sanitize_rejects_joined_credential_names(bad: str) -> None:

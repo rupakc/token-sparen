@@ -81,7 +81,7 @@ _CRED_OPTION = re.compile(
     r"-{1,2}(?:[a-z0-9]+[-_])*"
     r"(?:pass(?:word|phrase)?|passwd|pwd|pw|token|secret|key|api[-_]?key|apikey|auth"
     r"|cred(?:ential)?s?|bearer|private[-_]?key|client[-_]?secret|access[-_]?key"
-    r"|access[-_]?token|refresh[-_]?token)"
+    r"|(?:access|refresh|api|auth|session)[-_]?token|(?:secret|master|encryption)[-_]?key)"
     r"(?:[-_][a-z0-9]+)*",
     re.IGNORECASE,
 )
@@ -96,12 +96,13 @@ _PATH_SPLIT = re.compile(r"[/=:@+]")
 _VALUE_SPLIT = re.compile(r"[=@+]")
 _VAR_NAME = re.compile(r"[A-Z][A-Z0-9_]{2,}")
 
+# Neutral past-tense observations (never imperatives): what earlier sessions saw.
 TEMPLATES: dict[str, str] = {
-    "test_command": "Run tests with: `{value}`",
-    "command_alias": "Use `{value}` instead of `{subject}` here",
-    "requires_env": "`{subject}` requires the environment variable `{value}`",
-    "build_first": "Build first with `{value}` before `{subject}`",
-    "generated_dir": "Generated files live in `{value}`",
+    "test_command": "Tests were run with `{value}`",
+    "command_alias": "`{subject}` was not found here; `{value}` worked",
+    "requires_env": "`{subject}` needed the environment variable `{value}`",
+    "build_first": "`{subject}` needed `{value}` to run first",
+    "generated_dir": "Files under `{value}/` appear to be generated",
 }
 
 
