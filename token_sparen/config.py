@@ -199,7 +199,8 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     (("learn", "breaker_lcb_q"), "max", (0.0, 0.49)),  # trips more readily
     (("learn", "breaker_sessions"), "max", COUNT),  # paused longer
     # learn.enabled: switching learning off would fall back to the static arms (standard
-    # compression), ignoring the user's holds, tau and floor; a project uses learn.hold instead.
+    # compression), ignoring the user's tau and floor (holds still bind); a project uses
+    # learn.hold instead.
     # breaker_window / breaker_reentry_scale: neither direction is uniformly safer.
     (("learn", "**"), "user_only", None),
     (("extensions", "**"), "user_only", None),

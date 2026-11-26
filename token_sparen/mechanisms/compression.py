@@ -45,7 +45,6 @@ from token_sparen.learn.policy import (
     DecisionPoint,
     DecisionRecord,
     Policy,
-    StaticPolicy,
 )
 from token_sparen.mechanisms import governor, guards, tracking
 from token_sparen.store import jsonl, jsonstore, keycache, paths, session
@@ -510,7 +509,8 @@ def compress_text(
         output_text=text,
         raw_response=text,
     )
-    action = handle_post_tool(event, StaticPolicy({}), cfg, env=env, replaceable=lambda _e: True)
+    policy = features.static_policy(cfg.data)  # honours [learn.hold]
+    action = handle_post_tool(event, policy, cfg, env=env, replaceable=lambda _e: True)
     body = action.replace_output
     if body is None:
         return text, None

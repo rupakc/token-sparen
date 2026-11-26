@@ -38,6 +38,7 @@ from typing import Any, Protocol
 
 from token_sparen.events import SessionCtx
 from token_sparen.learn.engine import ERROR_BUCKET, Engine
+from token_sparen.learn.features import static_policy
 from token_sparen.learn.policy import (
     DEFAULT_TAU,
     STATIC_BUCKET,
@@ -129,7 +130,8 @@ class EngineTarget:
     def probs(self, rec: DecisionRecord) -> Mapping[str, float] | None:
         point = get_point(rec.point)
         if point is not None and not self.engine.enabled():
-            return StaticTarget(StaticPolicy({})).probs(rec)  # `[learn] enabled = false`
+            # `[learn] enabled = false`: the static arms, holds honoured
+            return StaticTarget(static_policy(self.engine.cfg.data)).probs(rec)
         feats = bucket_features(rec.bucket)
         if point is None or feats is None:
             return None

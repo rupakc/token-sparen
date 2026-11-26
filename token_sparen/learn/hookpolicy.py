@@ -23,8 +23,9 @@ from pathlib import Path
 from token_sparen.config import Config, flag_off, log_error, state_home
 from token_sparen.events import SessionCtx
 from token_sparen.learn.engine import ERROR_BUCKET, Engine
+from token_sparen.learn.features import static_policy
 from token_sparen.learn.hierarchy import StoreChain
-from token_sparen.learn.policy import Decision, DecisionPoint, StaticPolicy
+from token_sparen.learn.policy import Decision, DecisionPoint
 
 TEST_SEED_ENV = "TOKEN_SPAREN_TEST_SEED"
 Reward = Callable[[str, float | None, float | None], None]
@@ -73,7 +74,7 @@ class HookPolicy:
         self.project_key = project_key
         self.session_id = session_id
         self.salt = salt
-        self.static = StaticPolicy({})
+        self.static = static_policy(cfg.data)  # honours [learn.hold] (the fail-open path too)
         self._engine: Engine | None = None
         self._unavailable = not learning_enabled(cfg)  # disabled, or the engine failed to build
         self._decide_failed = False

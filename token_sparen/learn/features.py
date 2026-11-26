@@ -14,7 +14,7 @@ from typing import Any
 from token_sparen.config import flag_off, flag_on, packaged_defaults
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Event, SessionCtx
-from token_sparen.learn.policy import DecisionPoint
+from token_sparen.learn.policy import DecisionPoint, StaticPolicy
 
 UNKNOWN = "unk"
 ANY_BUCKET = "*"
@@ -156,11 +156,27 @@ def lookup_param(
     return None
 
 
+# A hold on the key point also holds these: ``[learn.hold] compression = true`` rules out every
+# output trim, the learned pre-trim arm included.
+HOLD_IMPLIES: dict[str, tuple[str, ...]] = {"pretrim": ("compression",)}
+
+
 def held(params: Mapping[str, Any] | None, point: str) -> bool:
-    """``[learn.hold] <point>`` in any on spelling (``config.flag_on``); an unrecognised value
-    falls back to the packaged default (the subagent brief is held there)."""
-    value = lookup_param(params, ("learn", "hold", point), lambda v: flag_on(v) or flag_off(v))
-    return flag_on(value)
+    """``[learn.hold] <point>`` (or a point that implies it, ``HOLD_IMPLIES``) in any on
+    spelling (``config.flag_on``); an unrecognised value falls back to the packaged default (the
+    subagent brief is held there)."""
+    for name in (point, *HOLD_IMPLIES.get(point, ())):
+        value = lookup_param(params, ("learn", "hold", name), lambda v: flag_on(v) or flag_off(v))
+        if flag_on(value):
+            return True
+    return False
+
+
+def static_policy(
+    params: Mapping[str, Any] | None, arms: dict[str, str] | None = None
+) -> StaticPolicy:
+    """The static policy that honours ``[learn.hold]`` of ``params`` (merged config data)."""
+    return StaticPolicy(arms or {}, held=lambda name: held(params, name))
 
 
 def backoff_levels(point: str, params: Mapping[str, Any] | None = None) -> list[list[str]]:

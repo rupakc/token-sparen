@@ -1029,3 +1029,11 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   `TOKEN_SPAREN_DISABLE`, every `*.enabled`, `governor.hard_stop`,
   `compression.trim_file_contents`, `statusline.ascii/color`. The project-file policy stays
   strict (`true_only`/`false_only` accept only real booleans; a string is dropped and logged).
+- C2: `[learn.hold] compression = true` (any on spelling) is one off switch for output trimming.
+  `StaticPolicy(arms, held=...)` gives a held point its safe arm; `features.static_policy(cfg)`
+  builds it from the merged config and is used by `HookPolicy` (learning disabled, engine
+  build/decide error), `Engine` (disabled), `token-sparen run` and OPE's disabled-engine
+  target. `features.HOLD_IMPLIES`: a compression hold also holds `pretrim`. Decisions are still
+  logged (safe arm, propensity 1). `compression.allow_ctypes = []` is the config-only switch
+  (gated before any decision; tested). `replay --policy static` and `ope --target static`
+  evaluate the plain static arms (hypothetical policies, not the user's config).

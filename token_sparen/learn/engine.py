@@ -43,13 +43,13 @@ from token_sparen.learn.features import (
     bucket_key,
     held,
     lookup_param,
+    static_policy,
 )
 from token_sparen.learn.hierarchy import SESSION_KEY, Kind, StoreChain, prior_for
 from token_sparen.learn.policy import (
     DEFAULT_TAU,
     Decision,
     DecisionPoint,
-    StaticPolicy,
     get_point,
 )
 from token_sparen.learn.propensity import win_probabilities
@@ -120,7 +120,7 @@ class Engine:
         self.cfg = cfg
         self.rng = rng
         self._env = {"TOKEN_SPAREN_HOME": str(stores.home)}
-        self._static = StaticPolicy({})
+        self._static = static_policy(cfg.data)
         self._points: dict[str, DecisionPoint] = {}
         self._overlay: Path | None = (
             None

@@ -8,7 +8,7 @@ with the propensity of the chosen arm so later off-policy evaluation stays unbia
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -127,15 +127,24 @@ _DEFAULT_ARMS = {
 
 
 class StaticPolicy:
-    """Always the configured arm (propensity 1.0); unknown or invalid arms fall back to safe."""
+    """Always the configured arm (propensity 1.0); unknown or invalid arms fall back to safe.
 
-    def __init__(self, arms_by_point: dict[str, str]) -> None:
+    ``held(point_name)`` (``learn.features.held`` over the merged config, when given): a held
+    point always gets its safe arm, as with the Engine, so ``[learn.hold]`` also binds when
+    learning is disabled or the engine fails."""
+
+    def __init__(
+        self, arms_by_point: dict[str, str], *, held: Callable[[str], bool] | None = None
+    ) -> None:
         self._arms = {**_DEFAULT_ARMS, **arms_by_point}
+        self._held = held
 
     def decide(
         self, point: DecisionPoint, features: Mapping[str, str], session: SessionCtx
     ) -> Decision:
         arm = self._arms.get(point.name, point.safe_arm)
+        if self._held is not None and self._held(point.name):
+            arm = point.safe_arm
         if arm not in point.arms:
             arm = point.safe_arm
         return Decision(
