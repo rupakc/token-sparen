@@ -1077,3 +1077,4 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   `[ope]` is user-only. `regret_upper` is gone (replaced by `constraint_upper`); the
   per-decision `regret` part stays as information only.
 - `regret_known_fraction` denominator = evaluated non-safe-arm decisions (1.0 when none).
+- `ope --target engine-snapshot` reads every log once for the outcome join (global by decision id, across rotation generations and files), then maps each decision to its project's engine.

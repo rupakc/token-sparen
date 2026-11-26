@@ -832,20 +832,21 @@ def _ope_target(
         return ope.StaticTarget(StaticPolicy({})), log, regrets
     cfg = load_config(Path.cwd(), os.environ)
     home = state_home(os.environ)
+    # Every file is read once and outcomes join globally by decision id (a decision and its
+    # outcome may sit in different rotation generations); decisions are then grouped by the
+    # project their file belongs to, one engine per project.
     by_id: dict[str, Any] = {}
-    log_all: list[Any] = []
-    regrets_all: dict[str, float] = {}
+    engines: dict[str, Any] = {}
     for path in logs:
         key = path.resolve().parent.name
         if not _KEY_RE.fullmatch(key):
             raise CliError("engine-snapshot needs logs at <state>/projects/<key>/decisions.jsonl")
-        engine = Engine(StoreChain(key, home, None, params=cfg.data), cfg, random.Random(0))
-        target = ope.EngineTarget(engine)
-        log, regrets = ope.load_log([path])
-        for rec in log:
-            by_id[rec.decision_id] = target
-        log_all.extend(log)
-        regrets_all.update(regrets)
+        if key not in engines:
+            engine = Engine(StoreChain(key, home, None, params=cfg.data), cfg, random.Random(0))
+            engines[key] = ope.EngineTarget(engine)
+        for rec in ope.load_log([path])[0]:
+            by_id[rec.decision_id] = engines[key]
+    log_all, regrets_all = ope.load_log(logs)
 
     class _ByProject:
         def probs(self, rec: Any) -> Any:

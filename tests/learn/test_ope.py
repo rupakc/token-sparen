@@ -578,3 +578,27 @@ def test_ope_cli_reads_the_thresholds(tmp_path: Path, monkeypatch: pytest.Monkey
     assert cli.main(["ope", "--log", str(log), "--target", "static", "--out", str(out)]) == 0
     point = json.loads(out.read_text(encoding="utf-8"))["points"]["compression"]
     assert point["constraint_status"] == "insufficient"
+
+
+def test_ope_cli_engine_snapshot_joins_outcomes_across_rotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Decisions in the rotated generation, their outcomes in the current one: 12/12 joined."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("TOKEN_SPAREN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    pdir = home / "projects" / KEY
+    pdir.mkdir(parents=True)
+    old = [json.dumps(asdict(_rec(f"r{i}", "light", 0.5, CTX[0]))) for i in range(12)]
+    new = [
+        json.dumps({"kind": "outcome", "decision_id": f"r{i}", "regret": 0.0, "signal": "expiry"})
+        for i in range(12)
+    ]
+    (pdir / "decisions.jsonl.1").write_text("\n".join(old) + "\n", encoding="utf-8")
+    (pdir / "decisions.jsonl").write_text("\n".join(new) + "\n", encoding="utf-8")
+    out = tmp_path / "priv" / "e3.json"
+    for target in ("engine-snapshot", "static"):
+        args = ["ope", "--log", str(pdir / "decisions.jsonl.1"), str(pdir / "decisions.jsonl")]
+        assert cli.main([*args, "--target", target, "--out", str(out)]) == 0
+        point = json.loads(out.read_text(encoding="utf-8"))["points"]["compression"]
+        assert point["logged"] == 12 and point["regret_known_fraction"] == 1.0, target
