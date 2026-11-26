@@ -43,6 +43,11 @@ _ARGV_SECRET = re.compile(
 _PW_CLIENTS = frozenset({"mysql", "psql", "mariadb"})
 _SHORT_PW = re.compile(r"-p.+")
 _DRIVE = re.compile(r"^[A-Za-z]:")
+_SYSTEM_PATH = re.compile(r"(?i:/users/|/home/|/root(?![A-Za-z0-9_.-])|/etc/|file:)")
+_ABS_SEGMENT = re.compile(r"(?:^|(?<=[^A-Za-z0-9_.-]))(/[^=:@+ ]*)")
+_SHORT_OPT_PATH = re.compile(r"-[A-Za-z]/")
+_PATH_SPLIT = re.compile(r"[/=:@+]")
+_VALUE_SPLIT = re.compile(r"[=@+]")
 _VAR_NAME = re.compile(r"[A-Z][A-Z0-9_]{2,}")
 
 TEMPLATES: dict[str, str] = {
@@ -81,13 +86,18 @@ def _inside(path: str, project_dir: str | None) -> bool:
 
 
 def _paths_ok(text: str, project_dir: str | None) -> bool:
+    """No absolute path segment anywhere in a token unless inside the project, no well-known
+    system or home locations, no ``file:``, drive letters or ``..`` segments."""
+    if _SYSTEM_PATH.search(text):
+        return False
     for token in text.split(" "):
-        for part in token.split("="):  # PY=/usr/bin/python is a path too
-            if _DRIVE.match(part):
-                return False
-            if part.startswith("/") and not _inside(part, project_dir):
-                return False
-            if ".." in part.split("/"):
+        if _SHORT_OPT_PATH.match(token):
+            return False  # -o/tmp/x
+        parts = _PATH_SPLIT.split(token)
+        if ".." in parts or any(_DRIVE.match(p) for p in _VALUE_SPLIT.split(token)):
+            return False
+        for m in _ABS_SEGMENT.finditer(token):
+            if not _inside(m.group(1), project_dir):
                 return False
     return True
 

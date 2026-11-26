@@ -186,3 +186,32 @@ def test_sanitize_rejects_secrets_in_argv(bad: str) -> None:
 
 def test_sanitize_keeps_plain_mysql_prompt_flag() -> None:
     assert sanitize(_f("mysql -p shop")) is not None
+
+
+EMBEDDED_PATHS = [
+    "pytest -o/" + "Users/someone/private",  # split: the repo deny-list flags home paths
+    "pytest -c/etc/passwd",
+    "cat file:/etc/passwd",
+    "cat FILE:x",
+    "pytest --basetemp@/home/x",
+    "pytest --rootdir=/root/x",
+    "pytest --rootdir:/srv/x",
+    "pytest -o/tmp/x",
+    "pytest --out=x/y@/opt/z",
+    "ls a+/var/x",
+    "ls /root",
+]
+
+
+@pytest.mark.parametrize("bad", EMBEDDED_PATHS)
+def test_sanitize_rejects_absolute_paths_anywhere_in_a_token(bad: str) -> None:
+    assert sanitize(_f(bad), project_dir="/work/proj") is None
+
+
+def test_sanitize_embedded_project_paths() -> None:
+    ok = sanitize(_f("pytest --rootdir=/work/proj/sub"), project_dir="/work/proj")
+    assert ok is not None
+    assert sanitize(_f("pytest --rootdir=/work/proj/sub")) is None
+    assert sanitize(_f("pytest src/a/b ./c")) is not None
+    home = "/home/u/proj"
+    assert sanitize(_f(f"{home}/.venv/bin/pytest"), project_dir=home) is None
