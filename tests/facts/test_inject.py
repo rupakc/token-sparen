@@ -243,3 +243,19 @@ def test_cli_disable_and_enable(
     assert main(["facts", "enable"]) == 0
     doc = json.loads((pdir / miners.FACTS_FILE).read_text(encoding="utf-8"))
     assert "disabled" not in doc
+
+
+def test_resume_offers_only_facts_not_yet_shown(tmp_path: Path, proj: Path) -> None:
+    env = _env(tmp_path, proj, TOKEN_SPAREN_FACTS__WITHHOLD_FLOOR="0")
+    _write_facts(env, proj, ALIAS)
+    first = _start(env) or ""
+    assert "python -m pytest" in first
+    _write_facts(env, proj, ALIAS, ENV)  # a new fact became active meanwhile
+    again = _start(env, "resume") or ""
+    assert "DATABASE_URL" in again and "python -m pytest" not in again
+    tokens = _overlay(env, proj)["injected_tokens"]
+    assert tokens == estimate_tokens(first) + estimate_tokens(again)
+    assert _start(env, "resume") is None  # nothing new: nothing re-sent or re-counted
+    assert _overlay(env, proj)["injected_tokens"] == tokens
+    log = _overlay(env, proj)[lifecycle.SESSION_KEY]
+    assert set(log["shown"]) == {fact_id(ALIAS), fact_id(ENV)}

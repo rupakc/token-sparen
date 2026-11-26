@@ -391,3 +391,31 @@ def test_record_keeps_lifecycle_state_and_forgotten_ids(tmp_path: Path) -> None:
     assert after["facts"][fid]["effect"] == [4.0, 1.0, 3.0]
     assert fact_id(ENV) not in after["facts"]  # forgotten: never re-learned
     assert after["disabled"] is True and after["forgotten"] == [fact_id(ENV)]
+
+
+def test_failed_mining_keeps_the_session_log_for_the_next_fold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    fid = fact_id(ALIAS)
+    _store(home).parent.mkdir(parents=True)
+    doc = {"version": 1, "facts": _table(ALIAS, status="active", effect=[4.0, 1.0, 3.0])}
+    _store(home).write_text(json.dumps(doc), encoding="utf-8")
+    tr = Log().prompt().bash("python -m pytest -q", "3 passed").write(tmp_path / "s.jsonl")
+    _overlay(home, "s1", tr, {"shown": {fid: 0.9}, "withheld": {}})
+
+    def boom(*_a: object, **_k: object) -> list[Fact]:
+        raise RuntimeError("disk")
+
+    monkeypatch.setattr(miners, "mine_transcript", boom)
+    assert overlay.fold("s1", KEY, home).staged
+    state = session.read_session(session.session_path(home, KEY, "s1"))
+    assert state[lifecycle.SESSION_KEY]["shown"] == {fid: 0.9}
+    assert fid not in state.get(lifecycle.DONE_KEY, [])
+    monkeypatch.undo()
+    path = session.session_path(home, KEY, "s1")
+    state["evidence"] = {"x": {}}  # new activity: the session is folded again
+    path.write_text(json.dumps(state), encoding="utf-8")
+    overlay.fold("s1", KEY, home)
+    after = json.loads(_store(home).read_text(encoding="utf-8"))
+    assert after["facts"][fid]["effect"] == [5.0, 1.0, 4.0]

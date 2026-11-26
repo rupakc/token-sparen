@@ -460,3 +460,16 @@ def in_play(doc: Mapping[str, Any], ids: Collection[str]) -> dict[str, Fact]:
         if fact is not None and fact_id(fact) == fid:
             out[fid] = fact
     return out
+
+
+def restore_log(state: dict[str, Any], staged: object) -> None:
+    """Undo ``take_log`` after a failed fold step (in place): the staged decisions go back into
+    the overlay's log and leave the done list, so the next fold judges them."""
+    shown, withheld = parse_log(staged)
+    if not shown and not withheld:
+        return
+    log_decisions(state, shown, withheld)
+    raw_done = state.get(DONE_KEY)
+    if isinstance(raw_done, list):
+        back = set(shown) | set(withheld)
+        state[DONE_KEY] = [d for d in raw_done if d not in back]

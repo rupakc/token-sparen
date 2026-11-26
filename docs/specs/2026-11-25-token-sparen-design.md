@@ -187,8 +187,9 @@ posterior (`effect`) plus a withheld baseline per fact; withholding is a propens
 (`[facts] withhold_floor = 0.1`, logged per session) rather than Thompson sampling, so activation
 uses the lcb rule (`activate_lcb = 0.55`, lcb(0.1)) or a bootstrap (>= 3 sessions while no
 baseline exists) and retirement `ucb(0.9) < 0.4` or contradiction. Injection (§6.8/§6.9) is a
-labelled data block whose first line says the facts are observations, not instructions, at most
-8 facts / 300 tokens through the emit gate, on startup, resume (deduplicated), clear and compact.
+labelled data block whose first line says the facts are observations, not instructions,
+recency-ranked (most recent evidence first: the hook has no task context yet, so relevance is
+approximated by recency), at most 8 facts / 300 tokens through the emit gate, on startup, resume (deduplicated), clear and compact.
 `[facts] enabled` defaults to true; a project file may only disable facts or lower their budget.
 Details in `MEMORY.md`.
 

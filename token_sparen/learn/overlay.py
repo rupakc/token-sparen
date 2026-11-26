@@ -422,7 +422,8 @@ def _fold(
         _breaker_and_project(rep, fid, cells, outcomes, pdir, params, now, cap, env, timeout)
         _global(rep, fid, cells, home, key, params, now, cap, env, timeout)
         _pretrim(rep, fid, outcomes, pdir, params, now, env, timeout)
-        rep.facts = _mine_facts(rep.session_id, fid, staged, pdir, now, env, timeout, params)
+        mined = _mine_facts(rep.session_id, fid, staged, pdir, now, env, timeout, params)
+        rep.facts = max(0, mined)
         rep.backfilled = _backfill(staged.get("outcomes"), pdir, params, env)
 
         # Clear and un-index under one overlay lock: a hook that adds evidence either ran
@@ -434,6 +435,8 @@ def _fold(
             if isinstance(cur, dict) and cur.get("id") == fid:
                 del state[FOLDING_KEY]
             state[FOLDED_AT] = now
+            if mined == MINING_FAILED:  # keep the facts log for the next fold of this session
+                lifecycle.restore_log(state, staged.get(lifecycle.SESSION_KEY))
             jsonstore.write_locked(ov, state)
             if not _unfolded(state):
                 pending.remove(home, key, name, env, timeout=timeout)
@@ -486,6 +489,9 @@ def _breaker_and_project(
             jsonstore.write_locked(bpath, bdoc)
 
 
+MINING_FAILED = -1
+
+
 def _mine_facts(
     sid: str,
     fid: str,
@@ -498,7 +504,8 @@ def _mine_facts(
 ) -> int:
     """Step 5a: mine the session transcript into ``facts.json`` and, in the same read and the
     same ``facts.json`` update, apply the session's outcome to the fact lifecycle (injected /
-    withheld facts logged at SessionStart, ``facts.lifecycle``); never raises."""
+    withheld facts logged at SessionStart, ``facts.lifecycle``); never raises. Returns the facts
+    written, or ``MINING_FAILED`` (the staged facts log is then put back into the overlay)."""
     raw = staged.get(TRANSCRIPT_KEY)
     if not isinstance(raw, str) or not raw:
         return 0
@@ -533,7 +540,7 @@ def _mine_facts(
         raise
     except Exception as exc:  # noqa: BLE001 - fail open: facts are optional
         log_error(env, "fold", f"facts: {type(exc).__name__}: {exc}")
-        return 0
+        return MINING_FAILED
 
 
 def _reset(points: dict[str, Any], name: str, scale: float) -> None:
