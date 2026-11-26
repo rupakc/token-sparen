@@ -7,14 +7,16 @@ and the recently touched file paths so compressors can score relevance.
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from token_sparen.config import Config, log_error, state_home
 from token_sparen.events import Action, Event, SessionCtx
-from token_sparen.store import jsonstore, session
+from token_sparen.store import jsonstore, paths, session
 
+LAST_ACTIVE_FILE = "last_active.json"
 PROMPT_MAX_CHARS = 2000
 RECENT_PATHS = 20
 _PATH_CATEGORIES = frozenset({"read", "edit"})
@@ -71,7 +73,42 @@ def handle_prompt(event: Event, cfg: Config, *, env: Mapping[str, str] | None = 
         return state
 
     _update(overlay_path(event, env), apply, env)
+    record_active(event, env=env)
     return Action()
+
+
+def last_active_path(home: Path, project_key: str) -> Path:
+    return paths.project_dir_for(home, project_key) / LAST_ACTIVE_FILE
+
+
+def record_active(event: Event, *, env: Mapping[str, str] | None = None) -> None:
+    """Remember the most recently active session of this project (SessionStart, prompts).
+
+    ``token-sparen session disable|enable`` without ``--session`` acts on it: the Bash tool's
+    environment carries no session id.
+    """
+    if event.session_id == "unknown":
+        return
+    env = os.environ if env is None else env
+    path = last_active_path(state_home(env), event.project_key)
+
+    def apply(state: dict[str, Any]) -> dict[str, Any]:
+        return {"session_id": event.session_id, "ts": time.time()}
+
+    try:
+        jsonstore.update(path, apply, {})
+    except (jsonstore.StoreBusy, OSError) as exc:  # best effort
+        log_error(env, "tracking", f"last_active: {type(exc).__name__}: {exc}")
+
+
+def last_active(home: Path, project_key: str, max_age_s: float) -> tuple[str | None, bool]:
+    """(session id, fresh): the last active session and whether it is younger than max_age_s."""
+    state = jsonstore.read(last_active_path(home, project_key), {})
+    sid, ts = state.get("session_id"), state.get("ts")
+    if not isinstance(sid, str) or not sid:
+        return None, False
+    fresh = isinstance(ts, int | float) and 0 <= time.time() - float(ts) < max_age_s
+    return sid, fresh
 
 
 def touched_path(event: Event) -> str | None:

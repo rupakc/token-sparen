@@ -142,6 +142,11 @@ def _on_session_start(event: Event, cfg: Config) -> Action:
     return read_dedupe.on_session_start(event, env=HOOK_ENV.get())
 
 
+def _on_session_active(event: Event, cfg: Config) -> Action:
+    tracking.record_active(event, env=HOOK_ENV.get())
+    return Action()
+
+
 for _kind, _fn in (
     ("prompt", _on_prompt),  # counts the turn first; the governor and boundary see it
     ("prompt", _on_governor_prompt),
@@ -161,6 +166,7 @@ for _kind, _fn in (
     ("pre_compact", _on_pre_compact),  # sets last_compact_turn, clears the read table
     ("pre_compact", _on_compact_instructions),
     ("session_start", _on_session_start),
+    ("session_start", _on_session_active),
 ):
     register(cast(EventKind, _kind), _contained(cast(Handler, _fn)))
 

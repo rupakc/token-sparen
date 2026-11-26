@@ -56,7 +56,10 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--fix", action="store_true", help="remove leftover temp files")
     ses = sub.add_parser("session", help="per-session kill switch")
     ses.add_argument("action", choices=["disable", "enable"])
-    ses.add_argument("--session", help="session id (default: $CLAUDE_SESSION_ID)")
+    ses.add_argument(
+        "--session",
+        help="session id (default: $CLAUDE_SESSION_ID, else this project's last active session)",
+    )
     _project_opt(ses)
     ext = sub.add_parser("extensions", help="list, trust or untrust extensions")
     ext_sub = ext.add_subparsers(dest="action", required=True)
@@ -267,11 +270,28 @@ def _stats(args: argparse.Namespace) -> int:
     return 0
 
 
+LAST_ACTIVE_MAX_AGE_S = 6 * 3600
+
+
 def _session_cmd(args: argparse.Namespace) -> int:
-    sid = _session_id(args, required=True)
-    assert sid is not None
+    from token_sparen.mechanisms import tracking
+
     env = os.environ
     key = keycache.cached_project_key(_project_dir(args).resolve(), env)
+    sid = _session_id(args, required=False)
+    if sid is None:
+        last, fresh = tracking.last_active(state_home(env), key, LAST_ACTIVE_MAX_AGE_S)
+        if last is None:
+            raise CliError(
+                "no session id: pass --session ID or set CLAUDE_SESSION_ID "
+                "(no recently active session recorded for this project)"
+            )
+        if not fresh:
+            raise CliError(
+                f"no session id: the last active session {last} is more than 6 h old; "
+                "pass --session ID (inside Claude Code: /token-sparen disable)"
+            )
+        sid = last
     overlay = session.session_path(state_home(env), key, sid)
     off = args.action == "disable"
 

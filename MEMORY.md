@@ -322,3 +322,13 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   is a non-empty list of text blocks only. The text blocks are joined with `\n` (that join is the
   preview the never-exceed bound applies to); the replacement deep-copies every other field and
   sets `content` to one text block. Any non-text block leaves the result untouched.
+- **`/token-sparen` is a plugin skill** (`skills/token-sparen/SKILL.md`), not a command:
+  `commands/token-sparen.md` is removed (a skill and a command with the same name would shadow
+  each other; the skill wins). Plugin skills substitute `${CLAUDE_PLUGIN_ROOT}` in
+  `allowed-tools` and `${CLAUDE_SESSION_ID}` in the body, so `allowed-tools` is exactly
+  `Bash(token-sparen:*)` and `Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py":*)` and the
+  body passes `--session ${CLAUDE_SESSION_ID}`. Plugin-only installs work through the second rule.
+- **Last active session**: SessionStart and UserPromptSubmit write
+  `projects/<key>/last_active.json` `{session_id, ts}` (best effort). `token-sparen session
+  disable|enable` resolves `--session` (non-empty) > `$CLAUDE_SESSION_ID` > that record if it is
+  < 6 h old; otherwise it fails (exit 2) and says to pass `--session`.

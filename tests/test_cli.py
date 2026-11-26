@@ -329,16 +329,36 @@ def test_python_dash_m_and_run_cli(env: dict[str, str]) -> None:
         assert proc.returncode == 0 and "token-sparen" in proc.stdout
 
 
-def test_slash_command_file() -> None:
-    text = (ROOT / "commands" / "token-sparen.md").read_text(encoding="utf-8")
-    front = text.split("---")[1]
-    assert "description:" in front and "argument-hint:" in front
-    tools = [ln for ln in front.splitlines() if ln.startswith("allowed-tools:")]
-    assert tools == ["allowed-tools: Bash(token-sparen:*)"]
+def _skill_front() -> tuple[str, str]:
+    text = (ROOT / "skills" / "token-sparen" / "SKILL.md").read_text(encoding="utf-8")
+    _, front, body = text.split("---", 2)
+    return front, body
+
+
+def test_slash_command_is_a_skill() -> None:
+    # A plugin skill substitutes ${CLAUDE_PLUGIN_ROOT} in allowed-tools and ${CLAUDE_SESSION_ID}
+    # in its body; a command and a skill with the same name would shadow each other.
+    assert not (ROOT / "commands" / "token-sparen.md").exists()
+    front, body = _skill_front()
+    lines = front.splitlines()
+    start = lines.index("allowed-tools:")
+    tools = []
+    for ln in lines[start + 1 :]:
+        if not ln.startswith("  - "):
+            break
+        tools.append(ln[4:].strip().strip("'"))
+    assert tools == [
+        "Bash(token-sparen:*)",
+        'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py":*)',
+    ]
+    assert "argument-hint:" in front
     for bare in ("python3:*", "python:*", "sh:*", "bash:*"):
         assert bare not in front
-    for needle in ("token-sparen stats", "statusline install", "session disable", "run_cli.py"):
-        assert needle in text
+    assert "$ARGUMENTS" in body
+    assert "session disable --session ${CLAUDE_SESSION_ID}" in body
+    assert 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"' in body
+    for needle in ("token-sparen stats", "statusline install", "extensions trust"):
+        assert needle in body
 
 
 def test_skill_file() -> None:
@@ -346,6 +366,55 @@ def test_skill_file() -> None:
     front = text.split("---")[1]
     assert "name: token-sparen" in front
     assert "Use when the user asks about token usage, trimmed outputs" in front
-    assert len(text.splitlines()) <= 60
+    assert len(text.splitlines()) <= 80
     for needle in ("token-sparen show", "token-sparen stats", "TOKEN_SPAREN_DISABLE"):
         assert needle in text
+
+
+def _hook(event: str, payload: dict[str, object], env: dict[str, str]) -> str:
+    out = io.StringIO()
+    hook_env = {**env, "TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS": "5000"}
+    entry.main(event, io.StringIO(json.dumps(payload)), out, hook_env)
+    return out.getvalue().strip()
+
+
+def _overlay(env: dict[str, str], sid: str) -> dict[str, object]:
+    key = keycache.cached_project_key(Path.cwd(), env)
+    return session.read_session(session.session_path(Path(env["TOKEN_SPAREN_HOME"]), key, sid))
+
+
+def test_session_disable_defaults_to_last_active_session(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    cwd = str(Path.cwd())
+    _hook("SessionStart", {"session_id": "old-1", "cwd": cwd, "source": "startup"}, env)
+    _hook("UserPromptSubmit", {"session_id": "live-2", "cwd": cwd, "prompt": "hi"}, env)
+    assert main(["session", "disable"]) == 0
+    assert "live-2" in capsys.readouterr().out
+    assert _overlay(env, "live-2")["disabled"] is True
+    assert "disabled" not in _overlay(env, "old-1")
+    assert main(["session", "enable", "--session", ""]) == 0  # empty flag: fall back too
+    assert "disabled" not in _overlay(env, "live-2")
+
+
+def test_session_last_active_expires(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time as _time
+
+    cwd = str(Path.cwd())
+    _hook("UserPromptSubmit", {"session_id": "stale-3", "cwd": cwd, "prompt": "hi"}, env)
+    real = _time.time
+    monkeypatch.setattr(_time, "time", lambda: real() + 6 * 3600 + 5)
+    assert main(["session", "disable"]) == 2
+    err = capsys.readouterr().err
+    assert "--session" in err and "6 h" in err
+    assert "disabled" not in _overlay(env, "stale-3")
+
+
+def test_explicit_session_beats_last_active(env: dict[str, str]) -> None:
+    cwd = str(Path.cwd())
+    _hook("UserPromptSubmit", {"session_id": "live-4", "cwd": cwd, "prompt": "hi"}, env)
+    assert main(["session", "disable", "--session", "other-5"]) == 0
+    assert _overlay(env, "other-5")["disabled"] is True
+    assert "disabled" not in _overlay(env, "live-4")
