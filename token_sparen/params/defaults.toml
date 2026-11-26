@@ -8,6 +8,14 @@ min_saving_ratio = 0.15
 skip_tools = ["Edit", "Write", "MultiEdit", "NotebookEdit", "TodoWrite", "AskUserQuestion", "ExitPlanMode"]
 persisted_max_bytes = 5000000  # larger persisted Bash outputs are not read (preview only)
 save_deadline_ms = 250  # past this hook time no recovery file is written, output left as is
+# Quality first: only these content types are ever offered to the compression decision point.
+# text, table and stacktrace are not (too little evidence that trimming them is harmless); widen
+# in your own config. A project file may only remove entries.
+allow_ctypes = ["diff", "search", "test_report", "compiler", "build_log", "json", "pplx", "log"]
+# File contents (the Read tool, and shell commands that print a file: cat, head, tail, sed -n,
+# git show <rev>:<path>, ...) are never trimmed: the agent usually uses them. true opts in (your
+# own config only; a project file may only set false).
+trim_file_contents = false
 
 # Arms for the text compressor: keep head + tail lines and ceil(keep_ratio * total) overall.
 [compression.levels.light]

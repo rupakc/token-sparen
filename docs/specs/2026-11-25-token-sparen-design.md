@@ -128,6 +128,22 @@ E1 before any change (the p95-normalised value saturates, so trimming arms look 
 (2) 1M-context models without the statusline sensor are mis-banded (the governor's window table
 falls back to 200k and `band` reads `unk` once a call exceeds it).
 
+**2026-11-26 (M2, Task 24b; owner decision).** §6.1 revised to **quality-first defaults**. An
+offline replay of the owner's own sessions (E1, private) showed that trimming file contents
+saves little net of recovery re-reads while the agent usually uses those contents. New gate
+(`compression.gated`, before the decision point, so nothing is logged or learned for a gated
+output): (1) file contents are never trimmed by default: the Read tool (any content type) and
+shell commands of the file-dump family (`cat`, `head`, `tail`, `sed -n`, `less`, `bat`, `nl`,
+`awk`, `xxd`/`od`, `jq <file>`, `... | xargs cat`, `git show <rev>:<path>`, `git cat-file -p`);
+`[compression] trim_file_contents = true` opts in (user/env/session; a project may only set
+false). (2) Only these content types are offered to the decision point: diff, search,
+test_report, compiler, build_log, json, pplx, log (`[compression] allow_ctypes`; text, table and
+stacktrace are not, for lack of evidence; a project may only remove entries, new config kind
+`subset`). The command-family classifier moved to `compress/families.py` and is shared by the
+gate and E1. E1 `--policy default` replays the gate with the static arm; `engine` is gated too;
+`static` and arm names stay ungated. A rerun regret no longer charges a recovery read (its
+tokens are already in the baseline); recovery cost is reported per signal.
+
 ---
 
 ## 1. Intent and why
@@ -265,6 +281,12 @@ context features, its safe default arm, its quality-risk tier (low/medium/high),
 attribute reward to it. Tier governs exploration (§7.6).
 
 ### 6.1 Recoverable output compression (PostToolUse) — tier: medium
+- **Quality gate (2026-11-26, owner decision).** Before the decision point, `compression.gated`
+  leaves untouched (no decision, no log, no learning, no recovery file) every file's contents
+  (Read results and file-dump shell commands) unless `trim_file_contents = true`, and every
+  content type outside `allow_ctypes` (default: diff, search, test_report, compiler, build_log,
+  json, pplx, log). Both widen only from the user's own config, env or session; a project file may
+  only narrow them.
 - **Router** by content type: `json`, `diff`, `stacktrace/error`, `test-report` (pytest, jest,
   go test, cargo test), `compiler` (tsc, rustc, javac, gcc), `build-log` (npm, pip, gradle, docker),
   `table/csv` (handled by the text compressor; no dedicated compressor), `search-results` (grep/rg, `pplx` JSON), `log` (timestamped), `text`.

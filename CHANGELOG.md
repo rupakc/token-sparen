@@ -46,6 +46,16 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations) and M1 (Claude Co
   until benchmarked).
 
 ### Changed
+- Quality-first compression defaults (owner decision after replaying real sessions): file
+  contents (the Read tool and shell commands that print a file, such as `cat`, `head`, `tail`,
+  `sed -n`, `git show <rev>:<path>`) are never trimmed, and only diff, search, test report,
+  compiler, build log, JSON, `pplx` and log output is offered for compression; plain text,
+  tables and stack traces are left whole. Widen with `[compression] trim_file_contents = true`
+  and `[compression] allow_ctypes` in your own config (a project file may only narrow them).
+- `token-sparen replay --policy default` replays the production gate; a re-run no longer counts
+  as a recovery cost; recovery cost is reported per regret signal. The command-family
+  classifier is shared with the hook and handles `source`/`export`/`echo` prefixes, `timeout`,
+  `sudo -u`, `bash -c`, `python3.X -m`, `yarn jest`, `pnpm exec` and `xargs cat`.
 - Compression never returns more than the model would have seen and enforces the 2000-token floor
   (a lower `compression.min_tokens` is ignored with a one-time warning).
 - Mechanisms are host-neutral: tool-output shapes live behind the host adapter.

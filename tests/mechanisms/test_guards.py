@@ -455,7 +455,12 @@ def _compress(tmp_path: Path, ev: Event, arms: dict[str, str], **over: str) -> A
 def test_pretrim_bounded_is_tail_biased_compression(tmp_path: Path) -> None:
     _store(tmp_path, {"make build": {}})
     out = _noisy()
-    act = _compress(tmp_path, _post(tmp_path, "make build", out), {"pretrim": "bounded"})
+    act = _compress(
+        tmp_path,
+        _post(tmp_path, "make build", out),
+        {"pretrim": "bounded"},
+        COMPRESSION__ALLOW_CTYPES="text",  # plain text is opt-in
+    )
     body = act.replace_output
     assert body is not None and "[token-sparen: kept " in body
     assert "ERROR: failed to resolve dependency module_x (code 7)" in body  # early error kept
@@ -472,8 +477,9 @@ def test_pretrim_bounded_is_tail_biased_compression(tmp_path: Path) -> None:
 def test_pretrim_off_or_not_candidate_uses_compression_point(tmp_path: Path) -> None:
     _store(tmp_path, {"make build": {}})
     out = _noisy()
-    _compress(tmp_path, _post(tmp_path, "make build", out), {})  # static pretrim = off
-    _compress(tmp_path, _post(tmp_path, "make other", out), {"pretrim": "bounded"})
+    widen = {"COMPRESSION__ALLOW_CTYPES": "text"}  # plain text is opt-in
+    _compress(tmp_path, _post(tmp_path, "make build", out), {}, **widen)  # static pretrim = off
+    _compress(tmp_path, _post(tmp_path, "make other", out), {"pretrim": "bounded"}, **widen)
     recs = _decisions(tmp_path)
     assert [(r["point"], r["arm"]) for r in recs] == [
         ("pretrim", "off"),  # logged no-op (propensity kept for off-policy evaluation)
@@ -481,6 +487,13 @@ def test_pretrim_off_or_not_candidate_uses_compression_point(tmp_path: Path) -> 
         ("compression", "standard"),
     ]
     assert recs[0]["tokens_after"] == recs[0]["tokens_before"]
+
+
+def test_pretrim_never_consulted_for_gated_output(tmp_path: Path) -> None:
+    """Plain text is not an allowed content type by default: no pre-trim decision at all."""
+    _store(tmp_path, {"make build": {}})
+    act = _compress(tmp_path, _post(tmp_path, "make build", _noisy()), {"pretrim": "bounded"})
+    assert act.is_noop() and _decisions(tmp_path) == []
 
 
 def test_pretrim_respects_compression_gates(tmp_path: Path) -> None:

@@ -1,8 +1,10 @@
 """Recoverable output compression on PostToolUse (decision point ``compression``).
 
-Flow: cheap gates (tool deny-set, replaceable shape, size) -> detect content type -> ask the
-policy for an arm -> compress -> keep only if it saves at least ``min_saving_ratio`` -> save the
-full text, append the recovery marker, update the session ledger. Every decision the policy made
+Flow: cheap gates (tool deny-set, replaceable shape, size) -> detect content type -> quality
+gate (``gated``: file contents and content types outside ``allow_ctypes`` are never offered to
+the decision point, so nothing is logged or learned for them) -> ask the policy for an arm ->
+compress -> keep only if it saves at least ``min_saving_ratio`` -> save the full text, append the
+recovery marker, update the session ledger. Every decision the policy made
 is logged with its propensity, including the ones that ended as a no-op.
 
 Baseline is always the *preview*: the text the host would show the model (``output_text``). When
@@ -31,7 +33,8 @@ from token_sparen.compress import (
     detect,
     load_level,
 )
-from token_sparen.config import Config, log_error, state_home
+from token_sparen.compress.families import is_file_dump
+from token_sparen.config import Config, flag_off, log_error, state_home
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event, SessionCtx, ToolCall
 from token_sparen.learn import features, regret
@@ -62,6 +65,22 @@ DEFAULT_SKIP_TOOLS = (
 )
 # Never compressed, whatever `skip_tools` says: interaction tools whose result the user answers.
 HARD_SKIP_TOOLS = frozenset({"TodoWrite", "AskUserQuestion", "ExitPlanMode"})
+# Quality first (owner decision 2026-11-26): the content types offered to the decision point by
+# default. text, table and stacktrace are not (too little evidence that trimming them is
+# harmless); file contents are never trimmed unless `trim_file_contents` is on.
+DEFAULT_ALLOW_CTYPES = (
+    "diff",
+    "search",
+    "test_report",
+    "compiler",
+    "build_log",
+    "json",
+    "pplx",
+    "log",
+)
+GATE_FILE_CONTENT = "file_content"
+GATE_CTYPE = "ctype_not_allowed"
+_ON = frozenset({"true", "1", "yes", "on"})
 _EST_TYPE = {"json": "json", "pplx": "json", "log": "log", "build_log": "log"}
 _POST_KINDS = frozenset({"post_tool", "post_tool_failure"})
 
@@ -270,6 +289,48 @@ def skipped(event: Event, cfg: Config) -> bool:
     return _skipped(event, cfg)
 
 
+def allowed_ctypes(cfg: Config) -> frozenset[str]:
+    """``[compression] allow_ctypes`` (env form: comma-separated); the defaults when unset or
+    not a list/string. Non-string entries are dropped."""
+    raw = cfg.get("compression.allow_ctypes")
+    if isinstance(raw, str):
+        return frozenset(x.strip() for x in raw.split(",") if x.strip())
+    if isinstance(raw, list):
+        return frozenset(x for x in raw if isinstance(x, str))
+    return frozenset(DEFAULT_ALLOW_CTYPES)
+
+
+def trims_file_contents(cfg: Config) -> bool:
+    """``[compression] trim_file_contents``: only an explicit on value opts in."""
+    raw = cfg.get("compression.trim_file_contents", False)
+    if raw is None or flag_off(raw):
+        return False
+    return raw is True or raw == 1 or (isinstance(raw, str) and raw.strip().lower() in _ON)
+
+
+def is_file_content(tool: ToolCall) -> bool:
+    """A file's contents: the read category (Read tool), or a shell command of the file-dump
+    family (cat, head, tail, sed -n, ``git show <rev>:<path>``, ``... | xargs cat`` ...)."""
+    if tool.category == "read":
+        return True
+    cmd = tool.input.get("command")
+    return tool.category == "shell" and isinstance(cmd, str) and is_file_dump(cmd)
+
+
+def gated(event: Event, ctype: str, cfg: Config) -> str | None:
+    """Why an output is never offered to the compression decision point, else None. Pure (no
+    I/O); the hook and offline replay (``--policy default``) share it. Reasons:
+    ``file_content`` (unless ``trim_file_contents``), ``ctype_not_allowed`` (``allow_ctypes``)."""
+    tool = event.tool
+    if tool is None:
+        return None
+    if not trims_file_contents(cfg) and is_file_content(tool):
+        return GATE_FILE_CONTENT
+    if ctype not in allowed_ctypes(cfg):
+        return GATE_CTYPE
+    return None
+
+
 def handle_post_tool(
     event: Event,
     policy: Policy,
@@ -295,10 +356,12 @@ def handle_post_tool(
     preview = event.output_text
     if estimate_tokens(preview) < _min_tokens(cfg, env, event.project_key):
         return Action()
+    ctype = detect(preview, event.tool)
+    if gated(event, ctype, cfg) is not None:
+        return Action()  # quality gate: no decision, no log, no learning, no recovery file
     full = _persisted_text(event, cfg)
     if full == preview:
         full = None
-    ctype = detect(preview, event.tool)
     est = est_type(ctype)
     before = estimate_tokens(preview, est)
     tokens_full = None if full is None else estimate_tokens(full, est)

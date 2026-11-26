@@ -279,7 +279,10 @@ def test_persisted_generic_never_exceeds_preview(tmp_path: Path) -> None:
         response={"stdout": preview, "stderr": "", "persistedOutputPath": str(saved)},
         text=preview,
     )
-    act = _handle(tmp_path, ev)
+    widen = _cfg(  # plain text and file contents are opt-in
+        tmp_path, COMPRESSION__ALLOW_CTYPES="text", COMPRESSION__TRIM_FILE_CONTENTS="true"
+    )
+    act = _handle(tmp_path, ev, widen)
     if act.replace_output is not None:
         assert len(act.replace_output) <= len(preview)
     rec = _decisions(tmp_path)[-1]
@@ -405,7 +408,8 @@ def test_read_content_compressed(tmp_path: Path) -> None:
     }
     ev = _event(tmp_path, tool="Read", tool_input={"file_path": "/repo/log.txt"}, response=resp)
     ev = Event(**{**ev.__dict__, "output_text": content})
-    act = _handle(tmp_path, ev)
+    assert _handle(tmp_path, ev).is_noop()  # file contents are never trimmed by default
+    act = _handle(tmp_path, ev, _cfg(tmp_path, COMPRESSION__TRIM_FILE_CONTENTS="true"))
     assert act.replace_output is not None
     m = MARKER.fullmatch(act.replace_output.splitlines()[-1])
     assert m is not None and int(m.group(2)) == n

@@ -161,6 +161,7 @@ def flag_off(value: object) -> bool:
 #   max / min  project may only raise / lower it (numbers, within bounds)
 #   true_only / false_only   only that boolean (holds; switching a mechanism off)
 #   union      list the project may only add to (tools never compressed)
+#   subset     list the project may only remove from (content types that may be trimmed)
 #   enum       an ordered choice the project may only move toward the conservative end
 RATIO = (0.0, 1.0)
 COUNT = (0.0, 1e12)
@@ -187,6 +188,8 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     (("compression", "min_tokens"), "max", COUNT),
     (("compression", "min_saving_ratio"), "max", RATIO),
     (("compression", "skip_tools"), "union", None),
+    (("compression", "allow_ctypes"), "subset", None),  # fewer content types trimmed
+    (("compression", "trim_file_contents"), "false_only", None),  # file contents kept whole
     (("compression", "save_deadline_ms"), "min", COUNT),  # lower = fewer replacements
     # head/tail are user-only: the budget is max(head + tail, keep_ratio x total), so a larger
     # head/tail displaces prompt-relevant lines rather than keeping more of them
@@ -329,6 +332,11 @@ def _accept(kind: str, extra: Any, value: Any, base: Any) -> tuple[bool, Any]:
         if add is None or have is None:
             return False, value
         return True, have + [x for x in add if x not in have]
+    if kind == "subset":
+        keep, have = _tool_list(value) if isinstance(value, list) else None, _tool_list(base)
+        if keep is None or have is None or any(x not in have for x in keep):
+            return False, value
+        return True, [x for x in have if x in keep]
     if kind == "enum":
         order = list(extra)
         if value not in order or base not in order:
@@ -383,6 +391,8 @@ def sanitise_project(
         base = _dig(trusted, path)
         fallback = _dig(defaults, path)
         if kind in {"max", "min", "free"} and (base is _MISSING or not _same_type(base, fallback)):
+            base = fallback
+        if kind == "subset" and _tool_list(base) is None:
             base = fallback
         if kind == "true_only" and base is _MISSING:
             base = False

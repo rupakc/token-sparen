@@ -96,7 +96,8 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument(
         "--policy",
         default="static",
-        help="static, engine, a compression arm, or a comma-separated list (one pass)",
+        help="default (production quality gate + static arm), static (ungated), engine (gated), "
+        "a compression arm (ungated), or a comma-separated list (one pass)",
     )
     rep.add_argument("--split", choices=["dev", "test", "all"], default="all")
     rep.add_argument("--cutoff", help="YYYY-MM-DD: sessions before are dev, the rest test")

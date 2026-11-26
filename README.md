@@ -1,8 +1,8 @@
 # token-sparen
 
 An open-source Claude Code plugin that cuts token usage without hurting output quality. It trims
-noisy tool output (test runs, logs, JSON, diffs, searches, subagent results) before the model sees
-it, keeps the **full text on disk so nothing is lost**, blocks a few clearly unbounded commands, and
+noisy tool output (test runs, build logs, JSON, diffs, searches) before the model sees it, never
+trims file contents by default, keeps the **full text on disk so nothing is lost**, blocks a few clearly unbounded commands, and
 shows a live token meter. Everything runs locally.
 
 ## Status
@@ -48,12 +48,30 @@ synthetic compress-and-recover round trip.
 
 All of this is on by default. Nothing is sent anywhere.
 
-- **Compression.** When a tool result is **at least 2000 estimated tokens**, token-sparen replaces
-  it with a shorter version that keeps the head and tail, every error line, failures and
-  stack-trace edges, and ends with a recovery marker. It applies to Bash output, text Read results,
-  Agent/Task results and plain-text results from search, web and MCP tools. It chooses a
-  compressor by content type (JSON, diff, stack trace, test report, compiler output, build log,
-  search results, logs, plain text).
+- **Compression (quality first).** When a tool result is **at least 2000 estimated tokens** and
+  is one of these kinds of output, token-sparen may replace it with a shorter version that keeps
+  the head and tail, every error line and failures, and ends with a recovery marker:
+  - diffs (`git diff`, `git show <commit>`) and search results (Grep/Glob, `grep`, `rg`);
+  - test reports (pytest, jest, vitest, go test, cargo test, ...), compiler output (tsc, rustc,
+    gcc, javac, ...), build and install logs (npm, pip, gradle, docker build, ...);
+  - JSON (API responses, MCP tools, `curl`), `pplx` search results and timestamped logs.
+
+  By default it does **not** trim **file contents** (the Read tool, and shell commands that
+  print a file: `cat`, `head`, `tail`, `sed -n`, `less`, `bat`, `nl`, `awk`, `jq <file>`, `xxd`,
+  `... | xargs cat`, `git show <rev>:<path>`), nor plain text, tables or stack traces from any
+  tool (Agent/Task and web results included). Those outputs are shown in full and never reach
+  the learner. To widen it, in your own `~/.token-sparen/config.toml`, env or `config set` (a
+  project file may only narrow it):
+
+  ```toml
+  [compression]
+  trim_file_contents = true   # also trim Read results and cat/head/tail/... output
+  allow_ctypes = ["diff", "search", "test_report", "compiler", "build_log", "json", "pplx", "log", "text"]
+  ```
+
+  Quality warning: the agent usually goes on to use a file's contents (to edit or quote it), so
+  trimming them often costs a recovery read and can cost answer quality; on the maintainer's own
+  sessions it saved little once those re-reads were counted.
 - **Never larger.** The replacement is used only if it is no longer than what the model would
   have seen anyway and saves at least 15 % of it; otherwise the output is left untouched.
 - **What is never touched.** Results below 2000 tokens (a lower `min_tokens` in config is
@@ -174,8 +192,8 @@ Example (colours on a terminal; `NO_COLOR` or `statusline.ascii = true` simplify
 | `ctx` | share of the context window used by the last call |
 | `burn` | billed context tokens summed over calls, against the session budget |
 | `rate` | recent context growth per turn (`+2.4k/turn`) and your 5-hour rate-limit use when Claude Code reports it |
-| `saved` | tokens removed so far, with an approximate dollar figure derived from the session's average cost per token reported by Claude Code. Recovery reads are not yet subtracted (planned, M2), so treat it as gross savings |
-| `trims` | `✂` trims made, `↺` recovery reads (regrets; counted from M2, shows 0 for now) |
+| `saved` | estimated tokens removed by this session's trims minus recovery reads of trimmed output and the tokens token-sparen itself injected, with an approximate dollar figure derived from the session's average cost per token reported by Claude Code. Only the output kinds listed under [What changes in your session](#what-changes-in-your-session) are ever trimmed, so on file-heavy sessions it stays small or at 0 by design. It counts each removed token once (not its later re-sends) and can be negative |
+| `trims` | `✂` trims made, `↺` regrets detected (recovery reads, re-runs) |
 | `learn` | learner state: `cold` (< 20 observations), `adapting`, `exploiting` (>= 80 % of recent decisions pick the best-known arm) or `safe-mode` (a decision point is paused by the circuit breaker) |
 
 Choose segments with `statusline.segments`.
@@ -209,6 +227,8 @@ session); anything else is ignored and logged once.
 | `compression.min_tokens`, `min_saving_ratio`, `levels.*.keep_ratio`, the per-type knobs (`json.items`, `diff.context`, `stacktrace.edge_frames`, `test_report.block_lines`, `search.per_file`, `pplx.results`, `log.tail`), `recovery.*`, `guards.max_read_bytes`, `read_dedupe.min_tokens` | only raise (keep more) |
 | `compression.compiler.warnings.*` | only move from `count` to `keep` |
 | `compression.skip_tools` | only add tools |
+| `compression.allow_ctypes` | only remove content types |
+| `compression.trim_file_contents` | only set `false` |
 | `read_dedupe.max_turn_gap`, `read_dedupe.max_entries`, `compression.save_deadline_ms`, `adapter.latency_budget_ms` | only lower |
 | `learn.tau.<tier>` lower; `learn.floor.<tier>`, `learn.ladder_obs` higher; `learn.hold.<point>` only `true`; `learn.breaker_min_obs`, `learn.breaker_every` lower; `learn.breaker_lcb_q`, `learn.breaker_sessions` higher | only make learning more careful |
 | everything else, including `learn.enabled` and all other `learn.*`, `compression.levels.*.{head,tail}` and `guards.pretrim_*` (a larger head/tail displaces prompt-relevant lines), `governor.hard_stop`, `governor.session_budget_tokens`, `governor.windows`, `adapter.latency_sample_rate`, `adapter.latency_log_max_bytes`, `extensions.*`, and any key not listed | nothing (user config, env or `config set` only) |
@@ -218,6 +238,8 @@ session); anything else is ignored and logged once.
 | `compression.min_tokens` | 2000 | outputs below this are never modified (floor) |
 | `compression.min_saving_ratio` | 0.15 | minimum share saved for a replacement to be used |
 | `compression.skip_tools` | edit tools, TodoWrite, ... | tools whose output is never compressed |
+| `compression.allow_ctypes` | diff, search, test_report, compiler, build_log, json, pplx, log | content types that may be trimmed (add `text`, `table`, `stacktrace` to widen) |
+| `compression.trim_file_contents` | false | also trim file contents (Read, `cat`, `head`, ...); see the quality warning above |
 | `guards.enabled` | true | block the unbounded commands listed above |
 | `guards.max_read_bytes` | 5000000 | size limit for `cat`/Read without a range |
 | `read_dedupe.enabled` | true | return a pointer for unchanged re-reads |
@@ -292,9 +314,10 @@ twice the target rate, and tells you once. Repo-fact injection and tool pruning 
 
 ### Measuring it on your own sessions (offline, private)
 
-`token-sparen replay <transcript files or dirs> --policy static|engine|<arm> --out <file>` replays
-your past Claude Code transcripts through the same compression path the hook uses (nothing is
-saved or learned) and estimates tokens removed, projected re-sends until the next compaction,
+`token-sparen replay <transcript files or dirs> --policy default|static|engine|<arm> --out <file>`
+replays your past Claude Code transcripts through the same compression path the hook uses
+(nothing is saved or learned; `default` and `engine` apply the quality gate above, `static` and
+an arm name replay every eligible output) and estimates tokens removed, projected re-sends until the next compaction,
 cache-aware cost-weighted savings and a proxy regret rate (the agent later used distinctive words
 that only the trimmed part contained). `--split dev|test|all` and `--cutoff YYYY-MM-DD` split
 sessions by date. `token-sparen ope --log <decisions.jsonl...> --target static|engine-snapshot

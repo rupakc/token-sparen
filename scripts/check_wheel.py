@@ -85,7 +85,12 @@ def main() -> int:
         )
         _run([py, "-c", probe], work, home)
         print("ok extensions list + conformance kit importable")
+        # plain text is not trimmed by default (quality first); a timestamped log is
         out = _run([exe, "run", "--", "seq", "1", "5000"], work, home).stdout
+        if "[token-sparen: kept" in out or (work / ".token-sparen" / "outputs").exists():
+            sys.exit("FAIL run trimmed plain text (not an allowed content type by default)")
+        log = "for i in range(5000): print(f'2026-11-20T10:00:{i % 60:02d} INFO worker {i} ok')"
+        out = _run([exe, "run", "--", py, "-c", log], work, home).stdout
         saved = list((work / ".token-sparen" / "outputs").glob("*.txt"))
         shown = re.search(r"token-sparen show ([0-9a-f]{12})", out)
         if len(saved) != 1 or not shown or saved[0].stem != shown.group(1):

@@ -432,7 +432,11 @@ def _hook(proj: Path, env: dict[str, str], text: str, use_id: str) -> str:
     return out.getvalue()
 
 
-_LINES = "\n".join(f"line {i} of the synthetic output with some padding words" for i in range(3000))
+# A timestamped log (an allowed content type by default, so the probes exercise trimming).
+_LINES = "\n".join(
+    f"2026-11-20T10:{i // 60 % 60:02d}:{i % 60:02d} line {i} of the synthetic output with padding"
+    for i in range(3000)
+)
 
 
 def test_probe_project_disabling_learning_cannot_override_user_hold(tmp_path: Path) -> None:

@@ -61,6 +61,7 @@ from typing import Any, Literal
 
 from token_sparen.adapters.claude import translate
 from token_sparen.compress import CompressContext, detect, load_level, registry
+from token_sparen.compress.families import FAMILIES, command_family
 from token_sparen.config import Config, load_config, redacted_logs, state_home
 from token_sparen.estimate import Prices, estimate_tokens
 from token_sparen.events import Event, SessionCtx, ToolCall
@@ -69,7 +70,6 @@ from token_sparen.learn.engine import Engine
 from token_sparen.learn.hierarchy import StoreChain
 from token_sparen.learn.policy import COMPRESSION, Decision, DecisionPoint, Policy, StaticPolicy
 from token_sparen.mechanisms import compression, governor
-from token_sparen.replay.families import FAMILIES, command_family
 from token_sparen.store import paths as store_paths
 from token_sparen.transcript import (
     AssistantRecord,
@@ -140,23 +140,30 @@ class FrozenEngine:
         return Decision(uuid.uuid4().hex, point.name, arm, p, eng.bucket(point, feats))
 
 
+GATED_POLICIES = frozenset({"default", "engine"})
+
+
 def resolve_policy(policy: Policy | str, cfg: Config, seed: int = 0) -> tuple[str, Policy]:
-    """``(name, policy)``: ``static`` (the fixed defaults), ``engine`` (frozen snapshot of the
-    local learner state) or a compression arm name; a ``Policy`` object is used as given (an
-    ``Engine`` is frozen)."""
+    """``(name, policy)``: ``default`` (production: the quality gate, then the static arm),
+    ``static`` (the static arm on every output, ungated), ``engine`` (frozen snapshot of the
+    local learner state, gated like production) or a compression arm name (ungated); a
+    ``Policy`` object is used as given (an ``Engine`` is frozen). Lanes named in
+    ``GATED_POLICIES`` apply ``compression.gated``."""
     if isinstance(policy, Engine):
         frozen = FrozenEngine(policy.cfg, policy.stores.home, seed)
         frozen._engines[policy.stores.project_key] = policy
         return "engine", frozen
     if not isinstance(policy, str):
         return type(policy).__name__, policy
-    if policy == "static":
+    if policy in ("static", "default"):
         return policy, StaticPolicy({})
     if policy == "engine":
         return policy, FrozenEngine(cfg, state_home(os.environ), seed)
     if policy in COMPRESSION.arms:
         return policy, StaticPolicy({COMPRESSION.name: policy})
-    raise ValueError(f"unknown policy {policy!r}: static, engine or one of {COMPRESSION.arms}")
+    raise ValueError(
+        f"unknown policy {policy!r}: default, static, engine or one of {COMPRESSION.arms}"
+    )
 
 
 # --------------------------------------------------------------------------- accounting
@@ -195,6 +202,8 @@ class _Acc:
     per_family: dict[str, dict[str, float]] = field(default_factory=dict)  # shell commands
     signals: dict[str, int] = field(default_factory=dict)
     regret_turns: dict[str, int] = field(default_factory=dict)
+    gated: dict[str, int] = field(default_factory=dict)  # quality-gate reason -> results
+    recovery_signals: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def add(
         self, ctype: str, key: str, value: float, cat: str = "other", fam: str | None = None
@@ -253,6 +262,14 @@ class _Acc:
         }
         out["regret_signals"] = dict(sorted(self.signals.items()))
         out["regret_turns"] = {b: self.regret_turns.get(b, 0) for b in TURN_BUCKETS}
+        out["gated"] = dict(sorted(self.gated.items()))
+        out["recovery_by_signal"] = {
+            sig: {
+                "recovery_tokens_resent": int(row["recovery_tokens_resent"]),
+                "recovery_cost_weighted": round(row["recovery_cost_weighted"], 3),
+            }
+            for sig, row in sorted(self.recovery_signals.items())
+        }
         return out
 
 
@@ -345,10 +362,10 @@ HEURISTICS = {
     "of the same signature; partial (0.5): >= 2 in a user prompt; within regret_window_turns "
     "user turns; sum of values",
     "dedupe": "message and tool-use ids counted once per run (resumed sessions copy history)",
-    "net": "net_cost_weighted_saved = saved - recovery: each regretted trim is assumed to be "
-    "followed by one recovery read of the full output (tokens_before, times the regret value; "
-    "a partial regret charges half) in the turn the regret fires, priced like a removed token "
-    "(cache write on the next call, cache read after) until the next compaction",
+    "net": "net_cost_weighted_saved = saved - recovery: each regretted trim (except a rerun) is "
+    "assumed to be followed by one recovery read of the full output (tokens_before, times the "
+    "regret value; a partial regret charges half) in the turn the regret fires, priced like a "
+    "removed token (cache write on the next call, cache read after) until the next compaction",
     "families": "per_family: shell (Bash) results only, by the first program of the normalised "
     "command (+ subcommand for git, npm/pnpm/yarn/bun, cargo, go, pip/uv, make, gradle, mvn); "
     "linters and type checkers count as build",
@@ -359,6 +376,13 @@ HEURISTICS = {
     "comma-separated --policy replayed in the same pass (totals and by_split are the first arm)",
     "gates": "PostToolUse gates: skip_tools/edit category, recovery reads, Claude Code "
     "replaceable shapes, failed results, 2000-token floor; compression.pick_candidate",
+    "gating": "policies default and engine also apply the production quality gate "
+    "(compression.gated: file contents - Read results and file-dump shell commands - and content "
+    "types outside [compression] allow_ctypes are never offered to the decision point; counted "
+    "in gated by reason, not eligible); static and arm names replay every eligible output",
+    "rerun": "a rerun regret counts as regret but charges no recovery read: the re-run's "
+    "tokens are already in the baseline; recovery_by_signal splits the recovery cost by the "
+    "signal that charged it",
 }
 
 
@@ -460,7 +484,7 @@ class _Span:
 
 _SAVED = "saved"
 _RECOVERY = "recovery"
-_Key = tuple[str, str, str | None, str]
+_Key = tuple[str, str, str | None, str, str]  # category, ctype, family, kind, signal
 _FIELDS_BY_KIND = {
     _SAVED: ("tokens_resent_removed", "projected_cost_weighted_saved"),
     _RECOVERY: ("recovery_tokens_resent", "recovery_cost_weighted"),
@@ -487,7 +511,9 @@ class _Session:
         window: int,
         run_ids: RunIds | None = None,
         cwd: str | None = None,
+        gate: bool = False,
     ) -> None:
+        self.gate = gate
         self.run_ids = run_ids
         self.cwd = cwd
         self.accs = accs
@@ -518,11 +544,12 @@ class _Session:
         for acc in self.accs:
             acc.add(ctype, key, value, cat, fam)
 
-    def _charge(self, span: _Span) -> None:
-        """Queue the recovery read the regret implies (weighted by its value so far)."""
+    def _charge(self, span: _Span, signal: str) -> None:
+        """Queue the recovery read the regret implies (weighted by its value so far). A rerun
+        charges nothing: its tokens are already in the baseline."""
         extra = span.best - span.charged
-        if extra > 0:
-            key = (span.cat, span.ctype, span.fam, _RECOVERY)
+        if extra > 0 and signal != "rerun":
+            key = (span.cat, span.ctype, span.fam, _RECOVERY, signal)
             self.awaiting[key] = self.awaiting.get(key, 0.0) + span.before * extra
             span.charged = span.best
 
@@ -543,17 +570,27 @@ class _Session:
                 acc.baseline_context_cost += cost
         if rec.model:
             self.model = rec.model
-        for (cat, ctype, fam, kind), n in self.sent.items():
-            tok_field, cost_field = _FIELDS_BY_KIND[kind]
-            self._add(ctype, tok_field, n, cat, fam)
-            self._add(ctype, cost_field, n * self.prices.cache_read, cat, fam)
+        for (cat, ctype, fam, kind, signal), n in self.sent.items():
+            self._book(cat, ctype, fam, kind, signal, n, self.prices.cache_read)
         for key, n in self.awaiting.items():
-            cat, ctype, fam, kind = key
-            tok_field, cost_field = _FIELDS_BY_KIND[kind]
-            self._add(ctype, tok_field, n, cat, fam)
-            self._add(ctype, cost_field, n * self.prices.cache_write, cat, fam)
+            cat, ctype, fam, kind, signal = key
+            self._book(cat, ctype, fam, kind, signal, n, self.prices.cache_write)
             self.sent[key] = self.sent.get(key, 0.0) + n
         self.awaiting.clear()
+
+    def _book(
+        self, cat: str, ctype: str, fam: str | None, kind: str, signal: str, n: float, price: float
+    ) -> None:
+        tok_field, cost_field = _FIELDS_BY_KIND[kind]
+        self._add(ctype, tok_field, n, cat, fam)
+        self._add(ctype, cost_field, n * price, cat, fam)
+        if kind == _RECOVERY:
+            for acc in self.accs:
+                row = acc.recovery_signals.setdefault(
+                    signal, dict.fromkeys(_FIELDS_BY_KIND[kind], 0.0)
+                )
+                row[tok_field] += n
+                row[cost_field] += n * price
 
     def on_compaction(self) -> None:
         self.sent.clear()
@@ -577,7 +614,7 @@ class _Session:
             return
         for span, idx in matched:
             span.mark(regret.FULL, signal, self.turn - span.turn, idx)
-            self._charge(span)
+            self._charge(span, signal)
             self._settle(span)
         gone = {id(span) for span, _ in matched}
         self.watched = deque(span for span in self.watched if id(span) not in gone)
@@ -607,7 +644,7 @@ class _Session:
             asked = _digests(ev.text, regret.INPUT_SCAN_CHARS)
             for span, idx in self._matches(asked):  # partial: the span stays watched
                 span.mark(regret.PARTIAL, "user_prompt", self.turn - span.turn, idx)
-                self._charge(span)
+                self._charge(span, "user_prompt")
         self._see(ev.text, refresh=True)
         self.prompt = ev.text[:PROMPT_CHARS]
         if any(self.turn - s.turn > self.window for s in self.watched):
@@ -699,6 +736,12 @@ class _Session:
         """True if the result was trimmed (then only its kept text became visible)."""
         text = rec.text
         ctype = detect(text, tool)
+        if self.gate:
+            reason = compression.gated(event, ctype, self.cfg)
+            if reason is not None:
+                for acc in self.accs:
+                    acc.count(acc.gated, reason)
+                return False
         est = compression.est_type(ctype)
         before = estimate_tokens(text, est)
         self._add(ctype, "eligible", 1, cat, fam)
@@ -737,7 +780,7 @@ class _Session:
         removed = before - picked.tokens_after
         self._add(ctype, "trimmed", 1, cat, fam)
         self._add(ctype, "tokens_removed", removed, cat, fam)
-        key = (cat, ctype, fam, _SAVED)
+        key = (cat, ctype, fam, _SAVED, "")
         self.awaiting[key] = self.awaiting.get(key, 0.0) + removed
         kept = picked.result.text
         seen = self.seen
@@ -833,6 +876,7 @@ class _Lane:
     policy: Policy
     total: _Acc
     parts: dict[str, _Acc]
+    gate: bool = False
 
 
 def run(
@@ -852,7 +896,13 @@ def run(
     cfg = cfg or load_config(Path.cwd(), os.environ)
     prices = prices or Prices.load(cfg)
     lanes = [
-        _Lane(name, pol, _Acc(), {s: _Acc() for s in SPLITS if split in ("all", s)})
+        _Lane(
+            name,
+            pol,
+            _Acc(),
+            {s: _Acc() for s in SPLITS if split in ("all", s)},
+            name in GATED_POLICIES,
+        )
         for name, pol in resolve_policies(policy, cfg, seed)
     ]
     window = _window(cfg)
@@ -869,7 +919,7 @@ def run(
             sessions = []
             for lane in lanes:
                 accs = (lane.total, lane.parts[part])
-                sess = _Session(accs, lane.policy, cfg, prices, window, run_ids, cwd)
+                sess = _Session(accs, lane.policy, cfg, prices, window, run_ids, cwd, lane.gate)
                 sess.project_key = key
                 sessions.append(sess)
             try:

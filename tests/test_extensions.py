@@ -726,7 +726,11 @@ def test_hook_uses_trusted_override(env: dict[str, str], monkeypatch: pytest.Mon
     path, _ = _dropin(_home(env) / "extensions", handles=("text", "log"), body=body)
     extensions.trust(path, _home(env), env)
     monkeypatch.setenv("TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE", "true")
-    run_env = {**env, "TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE": "true"}
+    run_env = {
+        **env,
+        "TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE": "true",
+        "TOKEN_SPAREN_COMPRESSION__ALLOW_CTYPES": "text",  # plain text is opt-in
+    }
     text = "".join(f"plain line number {i} with some padding words here\n" for i in range(3000))
     cfg = load_config(_proj(env), run_env)
     out, info = compress_text(

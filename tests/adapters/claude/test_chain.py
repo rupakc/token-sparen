@@ -261,10 +261,25 @@ def test_pipeline_read_dedupe_pointer_and_compact(tmp_path: Path) -> None:
     )
 
 
+def test_default_read_untouched_then_reread_deduped(tmp_path: Path) -> None:
+    """Quality first: a big Read is shown in full, so an unchanged re-read becomes a pointer."""
+    path = tmp_path / "big.py"
+    path.write_text(_code(3000), encoding="utf-8")
+    env = _env(tmp_path, TOKEN_SPAREN_LEARN__ENABLED="false")
+    assert _run("PostToolUse", _read_payload(path), env) == {}
+    second = _run("PostToolUse", _read_payload(path), env)["hookSpecificOutput"]
+    assert "unchanged since turn" in second["updatedToolOutput"]["file"]["content"]
+
+
 def test_pipeline_compressed_read_is_not_deduped(tmp_path: Path) -> None:
     path = tmp_path / "big.py"
     path.write_text(_code(3000), encoding="utf-8")
-    env = _env(tmp_path, TOKEN_SPAREN_LEARN__ENABLED="false")  # static: both reads compressed
+    env = _env(  # static: both reads compressed (file contents and plain text opted in)
+        tmp_path,
+        TOKEN_SPAREN_LEARN__ENABLED="false",
+        TOKEN_SPAREN_COMPRESSION__TRIM_FILE_CONTENTS="true",
+        TOKEN_SPAREN_COMPRESSION__ALLOW_CTYPES="text",
+    )
     first = _run("PostToolUse", _read_payload(path), env)["hookSpecificOutput"]
     assert "[token-sparen: kept " in first["updatedToolOutput"]["file"]["content"]
     # the model never saw the full file, so a re-read must not become a pointer

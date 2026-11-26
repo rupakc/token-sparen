@@ -119,7 +119,9 @@ def test_entry_wiring_rewrites_with_on_policy(tmp_path: Path, monkeypatch: Any) 
     assert "permissionDecision" not in spec
 
 
-def _agent_post(tmp_path: Path, response: Any) -> dict[str, Any]:
+def _agent_post(tmp_path: Path, response: Any, *, widen: bool = True) -> dict[str, Any]:
+    """PostToolUse for an Agent result; ``widen`` opts in to plain text (not trimmed by
+    default)."""
     from token_sparen.adapters.claude import entry
 
     env = {
@@ -127,6 +129,8 @@ def _agent_post(tmp_path: Path, response: Any) -> dict[str, Any]:
         "CLAUDE_PROJECT_DIR": str(tmp_path / "proj"),
         "TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS": "5000",
     }
+    if widen:
+        env["TOKEN_SPAREN_COMPRESSION__ALLOW_CTYPES"] = "text"
     (tmp_path / "proj").mkdir(exist_ok=True)
     payload = {
         "session_id": "s",
@@ -150,6 +154,10 @@ def test_oversized_agent_string_result_is_compressed(tmp_path: Path) -> None:
     new = out["hookSpecificOutput"]["updatedToolOutput"]
     assert isinstance(new, str) and len(new) < len(_big())
     assert "[token-sparen: kept" in new and "full output:" in new
+
+
+def test_agent_plain_text_result_untouched_by_default(tmp_path: Path) -> None:
+    assert _agent_post(tmp_path, _big(), widen=False) == {}
 
 
 def test_agent_structured_result_is_compressed(tmp_path: Path) -> None:

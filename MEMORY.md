@@ -927,3 +927,44 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - `test_huge_and_binary_output` (default suite) asserted an absolute 600 ms on 10 MB and flaked
   at 641 ms on a macOS runner. It now checks scaling only (10 MB / 1 MB <= 15) plus a 5 s hang
   guard; the calibrated absolute budget stays in the perf job (`test_strict_budget_10mb`).
+
+## 2026-11-26 Task 24b: quality-first compression defaults (owner decision)
+- Evidence (E1 on the owner's own sessions, private; figures stay outside the repo): most
+  trimming savings came from file contents the agent then used, and net savings after recovery
+  re-reads were near zero. Owner decision: quality first.
+- `compression.gated(event, ctype, cfg) -> str | None` (pure, no I/O) runs **before** the
+  decision point in `handle_post_tool` (after the deny-set, replaceable, recovery-read and
+  2000-token gates and `detect`; before the persisted file is read): a gated output gets no
+  `DecisionRecord`, no policy call (static, engine or pre-trim), no reward, no regret watch, no
+  recovery file. Reasons: `file_content` (the `read` tool category, any content type; or a
+  `shell` command whose family is `file_dump`) unless `[compression] trim_file_contents = true`;
+  `ctype_not_allowed` when the detected type is not in `[compression] allow_ctypes` (default
+  diff, search, test_report, compiler, build_log, json, pplx, log; text, table, stacktrace not
+  allowed for lack of evidence). `token-sparen run` goes through the same handler, so it is
+  gated too (it is the wrapper for hosts without output replacement).
+- Config: `allow_ctypes` kind `subset` (new; a project list is accepted only if every entry is
+  in the trusted list, merged as the trusted list filtered to it; the env form is
+  comma-separated), `trim_file_contents` kind `false_only`. Env and session overrides still
+  beat the project layer. `allowed_ctypes` reads a list or a comma string; anything else -> the
+  defaults. `trims_file_contents` is on only for an explicit true/1/yes/on.
+- Classifier moved to `compress/families.py` (shared by the gate and E1; `replay.command_family`
+  re-exported). Fixes: chained (not piped) setup segments skipped (`cd`, `pushd`, `source`, `.`,
+  `export`, `set`, `echo`, `printf`, `mkdir`, ...; a lone/last one is classified as itself),
+  wrappers with option arguments (`sudo -u U`, `env -u V`, `nice -n N`, `timeout [-s S] N`,
+  `xargs -n N`), `bash|sh|zsh -c '<script>'` classified recursively (depth <= 3),
+  `python3.X -m`, JS `exec`/`dlx`/`x` and direct tools (`yarn jest`, `pnpm exec tsc`), a later
+  pipeline stage `xargs <dump>` -> file_dump, `git show <rev>:<path>` and `git cat-file -p|blob`
+  -> file_dump (plain `git show <rev>` stays vcs_read), `od`/`hexdump`/`tac`/`zcat` added.
+- `ls -R` listings sniff as `text`, so they are gated (`ctype_not_allowed`); the search
+  compressor would not trim bare paths anyway. Glob/Grep (search category) are allowed.
+- Replay: `--policy default` = the gate + the static arm; `engine` is gated too (production
+  gates it); `static` and arm names stay ungated (comparable with earlier E1 runs). Gated
+  results are counted in `gated` by reason and are not `eligible`. A `rerun` regret charges no
+  recovery read (the re-run is already in the baseline); `recovery_by_signal` splits recovery
+  tokens/cost by the signal that charged them.
+- Tests that exercised trimming of plain text or file contents now opt in (env
+  `COMPRESSION__ALLOW_CTYPES=text`, `COMPRESSION__TRIM_FILE_CONTENTS=true`), each paired with a
+  default-behaviour test; the config-safety probes use a timestamped log (an allowed type) so
+  they keep their teeth. E2 calls compressors directly (no gate), so its cases are unchanged.
+- Consequence: the learned pre-trim (`make build` noise etc.) only acts on allowed types; plain
+  text noise is now left whole unless the user widens `allow_ctypes`.

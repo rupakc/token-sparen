@@ -303,8 +303,13 @@ def test_watch_window_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert rep.evicted == 2
 
 
-def test_engine_policy_is_frozen(tmp_path: Path, _home: Path) -> None:
+def test_engine_policy_is_frozen(
+    tmp_path: Path, _home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = resend_session().write(tmp_path / "a.jsonl")
+    rep = replay.run([path], "engine", "all", CUTOFF)
+    assert rep.eligible == 0 and rep.totals["gated"] == {"ctype_not_allowed": 1}  # gated
+    monkeypatch.setenv("TOKEN_SPAREN_COMPRESSION__ALLOW_CTYPES", "text")  # the user widens
     rep = replay.run([path], "engine", "all", CUTOFF)
     assert rep.eligible == 1
     written = [p for p in _home.rglob("*") if p.is_file()] if _home.exists() else []
@@ -803,3 +808,103 @@ def test_failed_write_leaves_nothing_and_closes_the_handle(
     with pytest.raises(OSError):
         report.write_private(tmp_path / "w" / "r.json", {"a": 1})
     assert list((tmp_path / "w").iterdir()) == []  # temp file removed (handle closed first)
+
+
+# ------------------------------------------------------------------ quality-first gating (24b)
+
+
+def _gating_session() -> tuple[Session, list[tuple[str, str, Any, str, Any]]]:
+    """One result per gating case: (tool id, tool name, input, output, raw)."""
+    from sampleoutputs import big_diff, big_pytest, plain_text, python_source
+
+    src = python_source()
+    cases: list[tuple[str, str, Any, str, Any]] = [
+        ("t1", "Read", {"file_path": "/w/big.py"}, src, _read_raw(src)),
+        ("t2", "Bash", {"command": "cat big.py"}, src, None),
+        ("t3", "Bash", {"command": "pytest -v"}, big_pytest(), None),
+        ("t4", "Bash", {"command": "./tool --dump"}, plain_text(), None),
+        ("t5", "Bash", {"command": "git diff"}, big_diff(), None),
+    ]
+    s = Session().prompt()
+    for i, (tid, name, inp, text, raw) in enumerate(cases):
+        s.call(f"m{i}", tool=(tid, name, inp)).result(tid, text, raw=raw)
+    s.call("m9", text="done")
+    return s, cases
+
+
+def test_default_policy_matches_hook_gating(tmp_path: Path, _home: Path) -> None:
+    from token_sparen.adapters.claude import translate
+    from token_sparen.config import load_config
+    from token_sparen.events import Event, ToolCall
+    from token_sparen.learn.policy import StaticPolicy
+    from token_sparen.mechanisms import compression
+
+    s, cases = _gating_session()
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "default", "all", CUTOFF)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    cfg = load_config(proj, os.environ)
+    hook_trims = 0
+    for tid, name, inp, text, _raw in cases:
+        ev = Event(
+            "claude",
+            "post_tool",
+            "s",
+            proj,
+            "0123456789abcdef",
+            None,
+            ToolCall(name, translate.tool_category(name), inp, tid),
+            text,
+            text,
+        )
+        act = compression.handle_post_tool(ev, StaticPolicy({}), cfg)
+        hook_trims += act.replace_output is not None
+    assert rep.trimmed == hook_trims == 2  # pytest and git diff
+    assert rep.eligible == 2
+    assert rep.totals["gated"] == {"file_content": 2, "ctype_not_allowed": 1}
+    assert set(rep.per_ctype) == {"test_report", "diff"}
+
+
+def test_static_and_arm_lanes_stay_ungated(tmp_path: Path) -> None:
+    s, _cases = _gating_session()
+    path = s.write(tmp_path / "a.jsonl")
+    rep = replay.run([path], "default,standard", "all", CUTOFF)
+    assert rep.by_arm["default"]["totals"]["trimmed"] == 2
+    standard = rep.by_arm["standard"]["totals"]
+    assert standard["trimmed"] > 2 and standard["gated"] == {}
+    assert replay.run([path], "static", "all", CUTOFF).trimmed == standard["trimmed"]
+
+
+def test_default_policy_named_in_heuristics(tmp_path: Path) -> None:
+    rep = replay.run([resend_session().write(tmp_path / "a.jsonl")], "default", "all", CUTOFF)
+    assert "gating" in rep.to_dict()["heuristics"]
+    assert rep.trimmed == 0 and rep.totals["gated"] == {"ctype_not_allowed": 1}
+
+
+def test_rerun_regret_charges_no_recovery(tmp_path: Path) -> None:
+    """A re-run's tokens are already in the baseline: the regret counts, no recovery cost."""
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    s.call("m2", tool=("t2", "Bash", {"command": "make sync"})).call("m3", text="a")
+    s.call("m4", text="b")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    t = rep.totals
+    assert t["proxy_regret_full"] == 1 and t["regret_signals"] == {"rerun": 1}
+    assert t["recovery_cost_weighted"] == 0
+    assert t["recovery_by_signal"] == {}
+    assert t["net_cost_weighted_saved"] == t["projected_cost_weighted_saved"]
+
+
+def test_recovery_cost_split_by_signal(tmp_path: Path) -> None:
+    extra = {201: "aardvarkone11 bisonbeta22 lemmingtail33"}
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output(extra=extra))
+    s.prompt(f"what about {MARKERS[0]} and {MARKERS[2]}?").call("m2", text="a")
+    s.call("m3", text="aardvarkone11 bisonbeta22").call("m4", text="b").call("m5", text="c")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    t = rep.totals
+    before = t["tokens_before_eligible"]
+    split = t["recovery_by_signal"]
+    assert set(split) == {"user_prompt", "assistant_text"}
+    assert split["user_prompt"]["recovery_tokens_resent"] == 2 * before  # m2..m5
+    assert split["assistant_text"]["recovery_tokens_resent"] == before  # m4, m5
+    total = sum(row["recovery_cost_weighted"] for row in split.values())
+    assert total == pytest.approx(t["recovery_cost_weighted"], abs=1e-3)
