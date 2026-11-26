@@ -366,13 +366,17 @@ def test_rerun_after_edit_of_file_in_kept_text_not_regret(tmp_path: Path) -> Non
     assert rec.regrets() == []
 
 
-def test_rerun_after_unrelated_edit_is_regret(tmp_path: Path) -> None:
+def test_rerun_after_unrelated_edit_is_partial_regret(tmp_path: Path) -> None:
     _track(tmp_path, turn=1)
     rec = Recorder()
     edit = _event(tmp_path, tool="Edit", tool_input={"file_path": "/x/proj/docs/notes.md"})
     _handle(tmp_path, edit, rec)
     _handle(tmp_path, _bash(tmp_path, "pytest -q tests"), rec)
-    assert rec.regrets() == [("d1", 1.0)]
+    assert rec.regrets() == []
+    assert _state(tmp_path)["regret"]["d1"]["best"] == 0.5
+    _set_turn(tmp_path, 8)
+    _handle(tmp_path, _event(tmp_path, kind="prompt", tool=None, prompt="go"), rec)
+    assert rec.regrets() == [("d1", 0.5)]
 
 
 def test_different_command_is_not_rerun(tmp_path: Path) -> None:
@@ -786,8 +790,10 @@ def test_rerun_in_another_package_is_not_regret(tmp_path: Path) -> None:
     rec = Recorder()
     _handle(tmp_path, _bash(tmp_path, "cd packages/b && npm test"), rec)
     assert rec.regrets() == []
+    assert _state(tmp_path)["regret"]["d1"]["best"] == 0.0
     _handle(tmp_path, _bash(tmp_path, f"cd {_proj(tmp_path)}/packages/a && npm test"), rec)
-    assert rec.regrets() == [("d1", 1.0)]
+    # same command; the run in packages/b may have changed state, so only partial regret
+    assert _state(tmp_path)["regret"]["d1"]["best"] == 0.5
 
 
 @pytest.mark.parametrize(
@@ -843,3 +849,57 @@ def test_filter_base() -> None:
     assert regret.filter_base("pytest -q | grep -v x | head -n 3") == "pytest -q"
     assert regret.filter_base("pytest -q") == "pytest -q"
     assert regret.filter_base("cat a | wc -l") == "cat a | wc -l"
+
+
+@pytest.mark.parametrize(
+    "between",
+    [
+        "pip install requests",
+        "echo x > notes.txt",
+        "git checkout main",
+        "rm -rf build",
+        "find . -name '*.pyc' -delete",
+        "npm run build",
+        "ls && touch a",
+    ],
+)
+def test_rerun_after_state_change_is_partial_regret(tmp_path: Path, between: str) -> None:
+    _track(tmp_path, turn=1)
+    rec = Recorder()
+    _handle(tmp_path, _bash(tmp_path, between), rec)
+    _handle(tmp_path, _bash(tmp_path, "pytest -q tests"), rec)
+    assert rec.regrets() == []
+    assert _state(tmp_path)["regret"]["d1"]["best"] == 0.5
+
+
+@pytest.mark.parametrize(
+    "between",
+    [
+        "git status",
+        "git diff HEAD -- a.py",
+        "ls -la | grep x",
+        "cat a.py > /dev/null",
+        "cd src && pwd",
+        "which python",
+        "wc -l a.py",
+        "find . -name '*.py'",
+        "echo hi",
+        "rg -n 'a|b' src",
+        "head -n 5 a.py 2>&1",
+        "git log --oneline -5",
+    ],
+)
+def test_rerun_after_read_only_command_is_full_regret(tmp_path: Path, between: str) -> None:
+    _track(tmp_path, turn=1)
+    rec = Recorder()
+    _handle(tmp_path, _bash(tmp_path, between), rec)
+    _handle(tmp_path, _bash(tmp_path, "pytest -q tests"), rec)
+    assert rec.regrets() == [("d1", 1.0)]
+
+
+def test_read_only_classifier() -> None:
+    assert regret.read_only("git -C sub status")
+    assert not regret.read_only("git push")
+    assert not regret.read_only("cat 'unbalanced")
+    assert not regret.read_only("ls >> listing.txt")
+    assert regret.read_only("")

@@ -32,6 +32,7 @@ import json
 import math
 import os
 import re
+import shlex
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,6 +101,63 @@ def filter_base(sig: str) -> str:
     ``| sed …``, ``| awk …``, ``| tail …``, ``| less``): re-filtering the same output is a
     re-run."""
     return _strip_all(sig, (_TRAIL_FILTER, _TRAIL_REDIR))
+
+
+_READ_ONLY = frozenset(
+    {"ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "find", "pwd", "echo", "which",
+     "wc", "cd"}
+)  # fmt: skip
+_GIT_READ_ONLY = frozenset({"status", "diff", "log", "show"})
+_GIT_ARG_OPTS = frozenset({"-C", "-c", "--git-dir", "--work-tree"})
+_FIND_WRITES = frozenset({"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fls"})
+_SEPS = frozenset({";", "&&", "||", "|", "&", "|&", "(", ")", ";;", "\n"})
+_DEV_NULL = re.compile(r"\d?>>?\s*/dev/null|\d?>&\d")
+
+
+def _simple_read_only(words: list[str]) -> bool:
+    while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+        words = words[1:]
+    if words and words[0] == "env":
+        words = words[1:]
+        while words and "=" in words[0]:
+            words = words[1:]
+    if not words:
+        return True
+    prog = os.path.basename(words[0])
+    if prog == "git":
+        rest = words[1:]
+        while rest and rest[0].startswith("-"):
+            rest = rest[2:] if rest[0] in _GIT_ARG_OPTS else rest[1:]
+        return bool(rest) and rest[0] in _GIT_READ_ONLY
+    if prog == "find":
+        return not any(w in _FIND_WRITES for w in words)
+    return prog in _READ_ONLY
+
+
+def read_only(cmd: str) -> bool:
+    """True when every simple command of ``cmd`` is on the read-only allowlist (``ls``, ``cat``,
+    ``head``, ``tail``, ``grep``, ``rg``, ``find`` without actions, ``git status|diff|log|show``,
+    ``pwd``, ``echo``, ``which``, ``wc``, ``cd``) and nothing is redirected to a file. Anything
+    else, or a command that does not parse, may have changed state."""
+    text = _DEV_NULL.sub(" ", cmd)
+    try:
+        lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        return False
+    words: list[str] = []
+    for tok in [*tokens, ";"]:
+        if tok in _SEPS:
+            if not _simple_read_only(words):
+                return False
+            words = []
+        elif tok and set(tok) <= set("<>&|;()"):
+            if ">" in tok:
+                return False  # writes a file
+        else:
+            words.append(tok)
+    return True
 
 
 def _resolve_cd(dirs: list[str], project_dir: str | None, cwd: str | None) -> str | None:
@@ -397,6 +455,7 @@ class _Info:
 
     sig: str | None = None
     base: str | None = None
+    state_change: bool = False  # an edit of an unmentioned file or a state-changing command
     recovery_ids: set[str] = field(default_factory=set)
     tokens: set[str] = field(default_factory=set)
     edit_path: str | None = None
@@ -439,6 +498,8 @@ def _info(event: Event) -> _Info:
         return info
     info.sig = event_signature(event)
     info.base = filter_base(info.sig) if tool.name == "Bash" else info.sig
+    cmd = tool.input.get("command") if tool.name == "Bash" else None
+    info.state_change = isinstance(cmd, str) and not read_only(cmd)
     direct, shown = recovery_reads(event)
     info.recovery_ids = direct | shown
     if direct and event.output_text:  # `token-sparen show` counts its own tokens
@@ -548,14 +609,23 @@ class RegretDetector:
             if info.recovery_ids and entry.get("recovery_id") in info.recovery_ids:
                 value = FULL
             edited = _strs(entry.get("edited_paths_since"))
-            if info.edit_path is not None and len(edited) < MAX_EDITS:
+            if info.edit_path is not None:
                 if any(_path_match(info.edit_path, f) for f in _strs(entry.get("files_in_span"))):
-                    entry["edited_paths_since"] = [*edited, info.edit_path]
+                    if len(edited) < MAX_EDITS:
+                        entry["edited_paths_since"] = [*edited, info.edit_path]
+                        changed = True
+                elif entry.get("changed_since") is not True:
+                    entry["changed_since"] = True  # an edit elsewhere: a re-run may be a check
                     changed = True
-            if info.sig is not None and not edited and self._same_command(entry, info):
+            rerun = info.sig is not None and self._same_command(entry, info)
+            if rerun and not edited:
                 age = turn - decided
                 if 0 <= age <= window:
-                    value = max(value, FULL if age <= FULL_WITHIN_TURNS else PARTIAL)
+                    full = age <= FULL_WITHIN_TURNS and entry.get("changed_since") is not True
+                    value = max(value, FULL if full else PARTIAL)
+            elif not rerun and info.state_change and entry.get("changed_since") is not True:
+                entry["changed_since"] = True
+                changed = True
             if len(info.tokens) >= MIN_TOKEN_HITS:
                 hits = 0
                 for tok in _strs(entry.get("elided_tokens")):
