@@ -32,7 +32,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from token_sparen.config import ENV_PREFIX, Config, log_error
+from token_sparen.config import ENV_PREFIX, Config, flag_off, log_error
 from token_sparen.events import SessionCtx
 from token_sparen.learn import pending
 from token_sparen.learn.beta import Beta, Evidence, beta_cdf
@@ -125,8 +125,8 @@ class Engine:
         return float(value) if _is_num(value) else default  # type: ignore[arg-type]
 
     def enabled(self) -> bool:
-        value = lookup_param(self.cfg.data, ("learn", "enabled"), lambda v: isinstance(v, bool))
-        return value is not False
+        """``[learn] enabled`` unless switched off in any spelling (``config.flag_off``)."""
+        return not flag_off(self.cfg.get("learn.enabled", True))
 
     def _tau(self, point: DecisionPoint) -> float:
         return min(1.0, max(0.0, self._param(("tau", point.tier), _TAU.get(point.tier, 0.0))))

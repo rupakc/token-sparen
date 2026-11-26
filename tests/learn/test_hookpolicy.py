@@ -105,3 +105,32 @@ def test_test_seed_needs_a_non_default_home(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(hookpolicy, "_default_home", broken)
     env = {"TOKEN_SPAREN_TEST_SEED": "1", "TOKEN_SPAREN_HOME": "/x/ts"}
     assert hookpolicy.test_seed(env) is None  # cannot tell: never seed
+
+
+@pytest.mark.parametrize("value", ["0", "no", "false", "off"])
+def test_any_false_spelling_disables_learning(tmp_path: Path, value: str) -> None:
+    pol = _pol(tmp_path, TOKEN_SPAREN_LEARN__ENABLED=value)
+    assert pol.decide(COMPRESSION, FULL, _ctx(tmp_path)).bucket == "static"
+    env = _env(tmp_path, TOKEN_SPAREN_LEARN__ENABLED=value)
+    cfg = load_config(tmp_path / "proj", env)
+    from token_sparen.learn.hierarchy import StoreChain
+
+    eng = Engine(
+        StoreChain(KEY, tmp_path / "home", "s-1", params=cfg.data),
+        cfg,
+        __import__("random").Random(1),
+    )
+    assert not eng.enabled()
+    assert eng.decide(COMPRESSION, FULL, _ctx(tmp_path)).bucket == "static"
+
+
+@pytest.mark.real_seed
+def test_test_seed_needs_a_temp_home(tmp_path: Path) -> None:
+    import tempfile
+
+    assert hookpolicy.test_seed({"TOKEN_SPAREN_TEST_SEED": "1", "TOKEN_SPAREN_HOME": str(tmp_path)})
+    inside = Path(tempfile.gettempdir()) / "ts-home"
+    assert hookpolicy.test_seed({"TOKEN_SPAREN_TEST_SEED": "1", "TOKEN_SPAREN_HOME": str(inside)})
+    for home in ("/srv/ts-home", str(Path.home() / "ts-elsewhere")):
+        env = {"TOKEN_SPAREN_TEST_SEED": "1", "TOKEN_SPAREN_HOME": home}
+        assert hookpolicy.test_seed(env) is None

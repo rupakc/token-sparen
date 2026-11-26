@@ -7,18 +7,20 @@ and answers with bucket ``error``), this hook falls back to the static decision 
 its decisions; construction failures are logged once per hook.
 
 The rng is seeded from ``os.urandom``. Tests may set ``TOKEN_SPAREN_TEST_SEED``; it is honoured
-only when ``TOKEN_SPAREN_HOME`` points somewhere other than the default state root, so a real
-session can never be made deterministic by a stray variable.
+only when ``TOKEN_SPAREN_HOME`` resolves inside the system temp directory
+(``tempfile.gettempdir()``) and is not the default state root. That narrows the risk (a real
+state root is never under the temp directory) but cannot rule out a deliberate setup.
 """
 
 from __future__ import annotations
 
 import os
 import random
+import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from token_sparen.config import Config, log_error, state_home
+from token_sparen.config import Config, flag_off, log_error, state_home
 from token_sparen.events import SessionCtx
 from token_sparen.learn.engine import ERROR_BUCKET, Engine
 from token_sparen.learn.hierarchy import StoreChain
@@ -33,13 +35,16 @@ def _default_home() -> Path:
 
 
 def test_seed(env: Mapping[str, str]) -> str | None:
-    """``TOKEN_SPAREN_TEST_SEED`` if set together with a non-default ``TOKEN_SPAREN_HOME``."""
+    """``TOKEN_SPAREN_TEST_SEED`` if ``TOKEN_SPAREN_HOME`` is a temp-dir state root."""
     seed = env.get(TEST_SEED_ENV)
     home = env.get("TOKEN_SPAREN_HOME")
     if not seed or not home:
         return None
     try:
-        if Path(home).expanduser().resolve() == _default_home().resolve():
+        root = Path(home).expanduser().resolve()
+        if root == _default_home().resolve():
+            return None
+        if not root.is_relative_to(Path(tempfile.gettempdir()).resolve()):
             return None
     except (OSError, RuntimeError):
         return None
@@ -47,7 +52,8 @@ def test_seed(env: Mapping[str, str]) -> str | None:
 
 
 def learning_enabled(cfg: Config) -> bool:
-    return cfg.get("learn.enabled", True) is not False
+    """``[learn] enabled`` unless switched off in any spelling (``config.flag_off``)."""
+    return not flag_off(cfg.get("learn.enabled", True))
 
 
 class HookPolicy:

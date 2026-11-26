@@ -371,13 +371,33 @@ def test_read_dedupe_goes_through_engine(tmp_path: Path) -> None:
 
 
 @pytest.mark.real_seed
-def test_test_seed_ignored_for_default_home(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_test_seed_ignored_for_default_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from token_sparen.learn import hookpolicy
 
     assert hookpolicy.test_seed({"TOKEN_SPAREN_TEST_SEED": "1"}) is None
-    monkeypatch.setenv("HOME", "/nonexistent-home")
+    monkeypatch.setenv("HOME", str(tmp_path))  # even a default root inside the temp dir
     default = str(Path.home() / ".token-sparen")
     env = {"TOKEN_SPAREN_TEST_SEED": "1", "TOKEN_SPAREN_HOME": default}
     assert hookpolicy.test_seed(env) is None
-    env = {"TOKEN_SPAREN_TEST_SEED": "1", "TOKEN_SPAREN_HOME": "/elsewhere/ts-home"}
+    env = {"TOKEN_SPAREN_TEST_SEED": "1", "TOKEN_SPAREN_HOME": str(tmp_path / "ts-home")}
     assert hookpolicy.test_seed(env) == "1"
+    env = {"TOKEN_SPAREN_TEST_SEED": "1", "TOKEN_SPAREN_HOME": "/elsewhere/ts-home"}
+    assert hookpolicy.test_seed(env) is None  # outside the temp dir
+
+
+def test_project_file_cannot_release_the_subagent_hold(tmp_path: Path) -> None:
+    """A committed project file must not switch the held brief on (review round 1)."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "token-sparen.toml").write_text("[learn.hold]\nsubagent_brief = false\n", "utf-8")
+    d = Driver(tmp_path / "home", proj, "s-hold")
+    for i in range(20):
+        out = d.hook(
+            "PreToolUse",
+            tool_name="Task",
+            tool_input={"prompt": f"investigate module {i}", "description": "x"},
+            tool_use_id=f"hold-{i}",
+        )
+        assert "updatedInput" not in json.dumps(out)
