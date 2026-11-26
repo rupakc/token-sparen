@@ -205,8 +205,13 @@ def _launches(head: list[str], program: str) -> bool:
     return len(pre) == 2 and _PYTHON.fullmatch(pre[0]) is not None and pre[1] == "-m"
 
 
-_SUBCOMMAND = re.compile(r"[a-z][a-z0-9:_-]*")
+_SUBCOMMAND = re.compile(r"[a-z][a-z:_-]{0,19}")  # no digits: a token like hunter2 is no subcommand
+_KNOWN_SUBCOMMANDS = frozenset({"build", "test", "run", "start", "serve", "dev", "check", "lint"})
 _RUNNERS = frozenset({"npm", "pnpm", "yarn", "bun"})
+
+
+def _subcommand(word: str) -> bool:
+    return word in _KNOWN_SUBCOMMANDS or _SUBCOMMAND.fullmatch(word) is not None
 
 
 def _program(norm: str) -> str:
@@ -219,9 +224,9 @@ def _program(norm: str) -> str:
     if len(words) >= 3 and _PYTHON.fullmatch(words[0]) and words[1] == "-m":
         return " ".join(words[:3])
     if len(words) >= 3 and words[0] in _RUNNERS and words[1] == "run":
-        if _SUBCOMMAND.fullmatch(words[2]):
+        if _subcommand(words[2]):
             return " ".join(words[:3])
-    if len(words) >= 2 and _SUBCOMMAND.fullmatch(words[1]):
+    if len(words) >= 2 and _subcommand(words[1]):
         return " ".join(words[:2])
     return words[0]
 

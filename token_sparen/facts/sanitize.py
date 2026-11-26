@@ -73,8 +73,18 @@ _ARGV_SECRET = re.compile(
     r"|[^ ]+:[^ ]+@"
     r"|(?<![A-Za-z0-9])(?:sk_live_|sk_test_|glpat-|AIza|npm_|xapp-|xoxb-|xoxp-|ghs_|github_pat_)"
 )
-_PW_CLIENTS = frozenset({"mysql", "psql", "mariadb"})
+_PW_CLIENTS = frozenset({"mysql", "psql", "mariadb", "redis-cli", "mongosh"})
 _SHORT_PW = re.compile(r"-p.+")
+_PW_FLAGS = frozenset({"-W", "-a"})  # take the password as the next argument
+# A credential-named option (whole words of its name): any value, attached or the next token.
+_CRED_OPTION = re.compile(
+    r"-{1,2}(?:[a-z0-9]+[-_])*"
+    r"(?:pass(?:word)?|passwd|pwd|pw|token|secret|key|api[-_]?key|apikey|auth|cred(?:ential)?s?"
+    r"|bearer|private[-_]key|client[-_]secret|access[-_]key)"
+    r"(?:[-_][a-z0-9]+)*",
+    re.IGNORECASE,
+)
+_AUTH_SCHEME = re.compile(r"(?:(?i:bearer)|Basic)[ :=]+[^ ]")
 _DRIVE = re.compile(r"^[A-Za-z]:")
 _SIDE_EFFECTS = re.compile(r"(?i:push|deploy|release|publish|upload|install)")
 _CD_PREFIX = re.compile(r"cd ([^ ]+) && (.+)")
@@ -190,11 +200,19 @@ def _clean(text: object, project_dir: str | None) -> bool:
         return False
     if _SECRET.search(text) or _ARGV_SECRET.search(text):
         return False
+    if _AUTH_SCHEME.search(text):
+        return False  # Bearer <token>, Basic <base64>
     tokens = text.split(" ")
-    if any(posixpath.basename(t) in _PW_CLIENTS for t in tokens) and any(
-        _SHORT_PW.fullmatch(t) for t in tokens
-    ):
-        return False  # mysql -pSECRET
+    for i, token in enumerate(tokens):
+        name = token.split("=", 1)[0].split(":", 1)[0]
+        has_value = name != token or i + 1 < len(tokens)
+        if has_value and _CRED_OPTION.fullmatch(name):
+            return False  # --token hunter2, --password=x, --auth-header Bearer ...
+    if any(posixpath.basename(t) in _PW_CLIENTS for t in tokens):
+        if any(_SHORT_PW.fullmatch(t) for t in tokens):
+            return False  # mysql -pSECRET
+        if any(t in _PW_FLAGS for t in tokens[:-1]):
+            return False  # psql -W secret, redis-cli -a secret
     return _paths_ok(text, project_dir)
 
 

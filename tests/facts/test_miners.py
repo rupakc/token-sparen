@@ -419,3 +419,21 @@ def test_test_command_keeps_one_project_relative_cd(tmp_path: Path) -> None:
     assert _kinds(_mine(tmp_path, log), "test_command") == [
         ("tests", "cd packages/api && npm test")
     ]
+
+
+def test_space_separated_credentials_never_become_a_test_command(tmp_path: Path) -> None:
+    log = Log().prompt()
+    for _ in range(3):
+        log.bash("pytest --token hunter2 -q")
+    log.bash("pytest -q")
+    assert _kinds(_mine(tmp_path, log), "test_command") == [("tests", "pytest -q")]
+
+
+def test_env_subject_drops_secret_looking_subcommands(tmp_path: Path) -> None:
+    assert miners._program("tool hunter2pw x") == "tool"
+    assert miners._program("tool s3cr3t") == "tool"
+    assert miners._program("docker compose up") == "docker compose"
+    log = Log().prompt()
+    log.bash("tool hunter2pw", "API_HOST is not set", err=True)
+    log.bash("API_HOST=x tool hunter2pw")
+    assert _kinds(_mine(tmp_path, log), "requires_env") == [("tool", "API_HOST")]

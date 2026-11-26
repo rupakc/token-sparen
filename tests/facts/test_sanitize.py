@@ -295,3 +295,48 @@ def test_test_command_allows_one_relative_cd_prefix() -> None:
         assert sanitize(_f(bad)) is None, bad
     cd = Fact("build_first", "npm test", "cd a && npm run build", EV)
     assert sanitize(cd) is None  # only test_command takes the prefix
+
+
+# --------------------------------------------------------------------------- fix round 2
+SPACED_SECRETS = [
+    "pytest --token hunter2 -q",
+    "app --password Hunter2pw",
+    "app --apikey abc123",
+    "app --secret_key abc",
+    "npm test -- --api-key abc",
+    "curl --auth-header Bearer abcd1234",
+    "curl -H Bearer abcd1234",
+    "curl -H Basic dXNlcjpwYXNz",
+    "app --key abc",
+    "app --pw abc",
+    "app --private-key k1",
+    "app --client-secret s",
+    "app --access-key a",
+    "app --credentials c",
+    "app -auth x",
+    "psql -W hunter2",
+    "redis-cli -a hunter2",
+    "mongosh --password hunter2",
+    "mysql --password hunter2",
+    "redis-cli -phunter2",
+]
+
+
+@pytest.mark.parametrize("bad", SPACED_SECRETS)
+def test_sanitize_rejects_space_separated_credentials(bad: str) -> None:
+    assert sanitize(_f(bad)) is None
+
+
+@pytest.mark.parametrize(
+    "good",
+    [
+        "pytest --keyword x",
+        "grep --keyboard x",
+        "pytest -k basic_tests",
+        "pytest tests --token-count",
+        "mysql -p shop",
+        "app --verbose --key",
+    ],
+)
+def test_sanitize_option_names_use_word_boundaries(good: str) -> None:
+    assert sanitize(_f(good)) is not None

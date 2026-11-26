@@ -1135,3 +1135,10 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   nothing was mined.
 - For Task 26 (coordinator): rendered facts must be injected inside a clearly labelled frame
   saying they are data, not instructions, observed in past sessions.
+- Fix round 2: a credential-named option (whole words of its name: pass/password/passwd/pwd/pw,
+  token, secret, key, api-key/apikey, auth, cred(ential)s, bearer, private-key, client-secret,
+  access-key) is rejected when it has a value: attached (`=`/`:`) or any following token
+  (`--token hunter2`); `--keyword x` passes, a trailing `--key` passes. `Bearer <tok>` (any case)
+  and `Basic <tok>` are rejected anywhere; for mysql/psql/mariadb/redis-cli/mongosh also
+  `-p<val>` and `-W`/`-a` followed by a token. `miners._program` keeps a subcommand only if it is
+  letters/`:_-` (no digits, <= 20 chars) or in a small known vocabulary; else the program alone.
