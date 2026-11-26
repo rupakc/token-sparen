@@ -92,6 +92,30 @@ def test_run_small_output_unchanged_with_stderr_merged(
     assert capsys.readouterr().out == "hello\noops\n"
 
 
+def test_run_tags_cli_host_and_not_counted_as_session(
+    env: dict[str, str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["run", "--", *_child(tmp_path, big_pytest())])
+    capsys.readouterr()
+    (log,) = (Path(env["TOKEN_SPAREN_HOME"]) / "projects").glob("*/decisions.jsonl")
+    assert json.loads(log.read_text(encoding="utf-8").splitlines()[0])["host"] == "cli"
+    assert main(["stats", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["sessions"] == 0
+
+
+def test_run_honours_session_disabled(
+    env: dict[str, str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "s-off")
+    assert main(["session", "disable"]) == 0
+    text = big_pytest()
+    assert main(["run", "--", *_child(tmp_path, text)]) == 0
+    assert capsys.readouterr().out.endswith(text)
+
+
 def test_run_missing_command(env: dict[str, str], capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["run", "--", "definitely-not-a-command-xyz"]) == 127
     assert "token-sparen:" in capsys.readouterr().err
@@ -215,6 +239,25 @@ def test_doctor_fails_on_broken_plugin_root(
     assert "✗ plugin" in capsys.readouterr().out
 
 
+def test_doctor_pip_only_install_skips_plugin_checks(
+    env: dict[str, str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import token_sparen.cli as cli
+
+    monkeypatch.setattr(cli, "PACKAGE_ROOT", tmp_path / "site-packages")
+    assert main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "skipped (pip-only install" in out and "✗" not in out
+
+
+def test_check_wheel_script_importable() -> None:
+    text = (ROOT / "scripts" / "check_wheel.py").read_text(encoding="utf-8")
+    assert "token_sparen/params/defaults.toml" in text and "seq" in text
+
+
 def test_session_disable_makes_hooks_noop(env: dict[str, str]) -> None:
     payload = {
         "session_id": "sess-9",
@@ -288,7 +331,10 @@ def test_slash_command_file() -> None:
     text = (ROOT / "commands" / "token-sparen.md").read_text(encoding="utf-8")
     front = text.split("---")[1]
     assert "description:" in front and "argument-hint:" in front
-    assert "allowed-tools: Bash(token-sparen:*)" in front
+    tools = [ln for ln in front.splitlines() if ln.startswith("allowed-tools:")]
+    assert tools == ["allowed-tools: Bash(token-sparen:*)"]
+    for bare in ("python3:*", "python:*", "sh:*", "bash:*"):
+        assert bare not in front
     for needle in ("token-sparen stats", "statusline install", "session disable", "run_cli.py"):
         assert needle in text
 

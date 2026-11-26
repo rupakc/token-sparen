@@ -152,7 +152,7 @@ def test_decision_record_fields() -> None:
         "command_sig",
         "ts",
     ]
-    assert names[11:] == ["ctype", "tool_name", "tokens_full"]
+    assert names[11:] == ["ctype", "tool_name", "tokens_full", "host"]
     assert policy_mod.STATIC_BUCKET == "static"
 
 

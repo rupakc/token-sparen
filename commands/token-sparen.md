@@ -1,11 +1,12 @@
 ---
 description: Show token-sparen savings, recovery help, statusline setup, or disable it for this session
 argument-hint: "[stats | statusline | disable | enable]"
-allowed-tools: Bash(token-sparen:*), Bash(python3:*)
+allowed-tools: Bash(token-sparen:*)
 ---
 
 Run token-sparen commands with the `token-sparen` console script. If `token-sparen` is not
-installed (command not found), run the same arguments through the plugin bootstrap instead:
+installed (command not found), do not run anything else yourself: tell the user to run the same
+arguments through the plugin bootstrap, which will ask for permission:
 `python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>`.
 
 Argument given: `$ARGUMENTS`

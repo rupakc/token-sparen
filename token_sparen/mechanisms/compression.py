@@ -164,6 +164,7 @@ def _log_decision(
         ctype=ctype,
         tool_name=event.tool.name,
         tokens_full=tokens_full,
+        host=event.host,
     )
     limit = int(_num(cfg, "learn.decision_log_max_bytes", 20_000_000))
     path = paths.project_dir_for(state_home(env), event.project_key) / "decisions.jsonl"

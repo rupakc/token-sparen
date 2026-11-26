@@ -116,6 +116,15 @@ def _exit_code(returncode: int) -> int:
     return 128 - returncode if returncode < 0 else returncode
 
 
+def _cli_session_disabled(project: Path, env: Mapping[str, str]) -> bool:
+    sid = env.get("CLAUDE_SESSION_ID") or CLI_SESSION
+    key = keycache.cached_project_key(project, env)
+    return (
+        session.read_session(session.session_path(state_home(env), key, sid)).get("disabled")
+        is True
+    )
+
+
 def _run_cmd(args: argparse.Namespace) -> int:
     from token_sparen.mechanisms.compression import compress_text
 
@@ -148,7 +157,7 @@ def _run_cmd(args: argparse.Namespace) -> int:
     env = os.environ
     shown = text
     cfg = load_config(project, env)
-    if not cfg.disabled:
+    if not cfg.disabled and not _cli_session_disabled(project, env):
         tool = ToolCall(name="Bash", category="shell", input={"command": text_cmd}, use_id=None)
         try:
             shown, _info = compress_text(text, tool, cfg, project, env)
@@ -182,6 +191,7 @@ def _int(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+CLI_SESSION = "cli"
 _LEDGER_KEYS = ("trims", "tokens_removed", "injected_tokens", "recovery_read_tokens")
 
 
@@ -208,7 +218,9 @@ def _stats_data(args: argparse.Namespace) -> dict[str, Any]:
         before += _int(rec.get("tokens_before"))
         after += _int(rec.get("tokens_after"))
     try:
-        sessions = sum(1 for _ in (pdir / "sessions").glob("*.json"))
+        sessions = sum(  # the synthetic "cli" session (`run`) is not a real session
+            1 for f in (pdir / "sessions").glob("*.json") if f.stem != CLI_SESSION
+        )
     except OSError:
         sessions = 0
     sid = _session_id(args, required=False)
@@ -393,8 +405,16 @@ def _doctor(args: argparse.Namespace) -> int:
     except OSError as exc:
         add(_BAD, "state home", f"{home} not writable ({exc})")
     root = _plugin_root(env)
-    good, detail = _check_hooks_json(root)
-    add(_OK if good else _BAD, "plugin", detail)
+    if "CLAUDE_PLUGIN_ROOT" not in env and not (root / "hooks" / "hooks.json").is_file():
+        add(
+            _OK,
+            "plugin",
+            "skipped (pip-only install; run inside Claude Code plugin to check hooks)",
+        )
+        good = False
+    else:
+        good, detail = _check_hooks_json(root)
+        add(_OK if good else _BAD, "plugin", detail)
     if good:
         good, detail = _round_trip(root)
         add(_OK if good else _BAD, "hook round-trip", detail)

@@ -53,6 +53,7 @@ class DecisionRecord:
     ctype: str | None = None
     tool_name: str | None = None
     tokens_full: int | None = None  # persisted full output size, when it differed from preview
+    host: str | None = None  # originating host ("cli" for `token-sparen run`)
 
 
 class Policy(Protocol):
