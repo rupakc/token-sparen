@@ -141,3 +141,20 @@ def test_boundary_and_subagent_switch_off_in_any_spelling(tmp_path: Path, value:
     assert not boundary._enabled(_cfg("boundary", "enabled", value))
     assert not subagent._enabled(_cfg("subagent", "enabled", value))
     assert boundary._enabled(Config()) and subagent._enabled(Config())
+
+
+@pytest.mark.parametrize("raw", ["1", "true", "yes", "ON", " Yes "])
+def test_hook_and_statusline_kill_switch_spellings(raw: str) -> None:
+    from token_sparen.adapters.claude import entry, statusline
+
+    assert entry._disabled({"TOKEN_SPAREN_DISABLE": raw})
+    assert statusline._disabled({"TOKEN_SPAREN_DISABLE": raw})
+
+
+@pytest.mark.parametrize("raw", ["", "0", "no", "off", "maybe"])
+def test_hook_and_statusline_kill_switch_off(raw: str) -> None:
+    from token_sparen.adapters.claude import entry, statusline
+
+    assert not entry._disabled({"TOKEN_SPAREN_DISABLE": raw})
+    assert not statusline._disabled({"TOKEN_SPAREN_DISABLE": raw})
+    assert not entry._disabled({})

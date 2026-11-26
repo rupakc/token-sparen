@@ -19,7 +19,7 @@ from contextvars import ContextVar
 from typing import Any, TextIO, cast
 
 from token_sparen.adapters.claude.translate import EVENT_KINDS, ClaudeAdapter
-from token_sparen.config import Config, load_config, log_error, state_home
+from token_sparen.config import Config, flag_on, load_config, log_error, state_home
 from token_sparen.events import Action, Event, EventKind
 from token_sparen.learn import breaker, overlay, regret
 from token_sparen.learn.hookpolicy import HookPolicy
@@ -43,7 +43,6 @@ DEFAULT_BUDGET_MS = 400
 DEFAULT_SAMPLE_RATE = 0.1
 DEFAULT_LATENCY_LOG_BYTES = 1_000_000
 NOOP = "{}"
-_TRUE = {"1", "true"}
 _POST_KINDS = frozenset({"post_tool", "post_tool_failure"})
 
 
@@ -385,11 +384,16 @@ def _log_latency(
         log_error(env, "claude.entry", f"latency log: {type(exc).__name__}: {exc}")
 
 
+def _disabled(env: Mapping[str, str]) -> bool:
+    """The kill switch, any on spelling (``config.flag_on``)."""
+    return flag_on(env.get("TOKEN_SPAREN_DISABLE", ""))
+
+
 def _respond(
     event_name: str, stdin: TextIO, env: Mapping[str, str], dog: _Watchdog
 ) -> tuple[str, Config | None, str]:
     """(response JSON, config, outcome); raises on any failure (caller fails open)."""
-    if env.get("TOKEN_SPAREN_DISABLE", "").strip().lower() in _TRUE:
+    if _disabled(env):
         return NOOP, None, "disabled"
     if event_name not in EVENT_KINDS:
         return NOOP, None, "unsupported"

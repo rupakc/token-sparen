@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, TextIO
 
-from token_sparen.config import Config, flag, load_config, log_error, state_home
+from token_sparen.config import Config, flag, flag_on, load_config, log_error, state_home
 from token_sparen.events import SessionCtx
 from token_sparen.mechanisms import governor, tracking
 from token_sparen.store import jsonstore, keycache, session
@@ -42,7 +42,6 @@ WINDOW_REFRESH_S = 3600  # rewrite an unchanged entry at most hourly (keeps ts f
 COMPOSE_TIMEOUT_S = 1.0
 DEFAULT_PARSE_BUDGET_MS = 20
 GREEN, YELLOW, RED, RESET = "\x1b[32m", "\x1b[33m", "\x1b[31m", "\x1b[0m"
-_TRUE = {"1", "true"}
 
 
 # --------------------------------------------------------------------------- small helpers
@@ -96,7 +95,7 @@ def _minimal(ascii_: bool) -> str:
 
 
 def _disabled(env: Mapping[str, str]) -> bool:
-    return env.get("TOKEN_SPAREN_DISABLE", "").strip().lower() in _TRUE
+    return flag_on(env.get("TOKEN_SPAREN_DISABLE", ""))
 
 
 def _binding(payload: Mapping[str, Any]) -> tuple[str, Path] | None:
