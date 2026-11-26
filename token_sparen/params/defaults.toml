@@ -131,3 +131,9 @@ decision_log_max_bytes = 20000000  # projects/<key>/decisions.jsonl rotates past
 latency_budget_ms = 400  # hard cap per hook; on overrun the hook returns the host no-op
 latency_sample_rate = 0.1  # share of hooks whose duration goes to logs/latency.jsonl
 latency_log_max_bytes = 1000000  # latency.jsonl rotates past this size
+
+[extensions]
+# Let a trusted extension replace a built-in compressor for a content type it also handles.
+# Honoured only from ~/.token-sparen/config.toml or TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE,
+# never from a project's token-sparen.toml.
+allow_override = false

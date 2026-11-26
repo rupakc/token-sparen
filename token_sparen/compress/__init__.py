@@ -6,15 +6,20 @@ from token_sparen.compress import relevance
 from token_sparen.compress.base import (
     ENTRY_POINT_GROUP,
     ERROR_PATTERNS,
+    CheckedCompressor,
     CompressContext,
     Compressor,
     CompressResult,
     ContentType,
     Level,
     Registry,
+    is_compressor,
     is_error_line,
     load_level,
+    missing_error_lines,
     registry,
+    result_problems,
+    unwrap,
 )
 from token_sparen.compress.detect import detect
 from token_sparen.compress.reports import (
@@ -46,6 +51,7 @@ __all__ = [
     "TestReportCompressor",
     "ENTRY_POINT_GROUP",
     "ERROR_PATTERNS",
+    "CheckedCompressor",
     "CompressContext",
     "CompressResult",
     "Compressor",
@@ -60,8 +66,12 @@ __all__ = [
     "StackTraceCompressor",
     "TextCompressor",
     "detect",
+    "is_compressor",
     "is_error_line",
     "load_level",
+    "missing_error_lines",
     "registry",
     "relevance",
+    "result_problems",
+    "unwrap",
 ]

@@ -22,6 +22,7 @@ from token_sparen.compress import (
     load_level,
     registry,
     relevance,
+    unwrap,
 )
 from token_sparen.compress.base import Registry, error_line_indices
 from token_sparen.config import load_config
@@ -301,7 +302,7 @@ def test_registry_entry_points_lazy(monkeypatch: pytest.MonkeyPatch) -> None:
 
     reg = Registry(entry_points_fn=eps)
     assert calls == []
-    assert isinstance(reg.for_type("json"), _Fake)
+    assert isinstance(unwrap(reg.for_type("json")), _Fake)  # extensions run safety-checked
     reg.for_type("text")
     assert calls == ["x"]
     assert len(logged) == 2

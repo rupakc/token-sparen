@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from token_sparen import recovery
+from token_sparen import extensions, recovery
 from token_sparen.adapters.claude.translate import render_tool_output
 from token_sparen.compress import (
     CompressContext,
@@ -30,7 +30,6 @@ from token_sparen.compress import (
     Level,
     detect,
     load_level,
-    registry,
 )
 from token_sparen.config import Config, log_error, state_home
 from token_sparen.estimate import estimate_tokens
@@ -259,7 +258,8 @@ def handle_post_tool(
         recent_paths=tuple(tracking.recent_paths(overlay)),
         config=cfg,
     )
-    compressor = registry.for_type(ctype)
+    home = state_home(env)
+    compressor = extensions.load_extensions(event.project_dir, home, cfg, env).compressor_for(ctype)
     max_after = before * (1 - _num(cfg, "compression.min_saving_ratio", 0.15))
     stand_in = _marker_len_ref(event.project_dir)
     chosen: CompressResult | None = None

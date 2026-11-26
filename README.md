@@ -18,3 +18,17 @@ existing statusline command is kept: ours is appended after it. Only `statusLine
 settings file that is not valid JSON is refused. `token-sparen statusline uninstall` restores the
 original `statusLine` exactly (or removes the key) and leaves every other setting as it is now.
 Example: `⛁ ts 42% ctx │ burn 48M/500M 10% │ +2.4k/turn │ saved 31.2k (≈$0.84) │ ✂ 12 ↺ 1 │ learn: cold`.
+
+## Extensions (opt-in, explicit trust)
+
+Installed Python packages can add compressors, decision points, signals or host adapters through
+the entry-point groups `token_sparen.compressors`, `.decision_points`, `.signals` and `.adapters`.
+Drop-in `*.py` files in `<project>/.token-sparen/extensions/` or `~/.token-sparen/extensions/` run
+only after you trust their exact content: `token-sparen extensions trust <path>` shows the sha256
+and the first 40 lines, and `--yes` records it in `~/.token-sparen/trusted_extensions.json`. Any
+edit to the file revokes trust; a repository cannot trust its own files. Symlinked, foreign-owned
+and world-writable files are skipped. `token-sparen extensions list` shows each drop-in's status;
+`extensions untrust <path|sha256>` revokes. Built-in compressors win unless you set
+`[extensions] allow_override = true` in `~/.token-sparen/config.toml`. A failing extension, or one
+that drops an error line, is disabled for the session and the built-in is used instead. Check your
+compressor with `token_sparen.testing.conformance.check_compressor(c) == []`.

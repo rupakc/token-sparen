@@ -58,6 +58,14 @@ def build_parser() -> argparse.ArgumentParser:
     ses.add_argument("action", choices=["disable", "enable"])
     ses.add_argument("--session", help="session id (default: $CLAUDE_SESSION_ID)")
     _project_opt(ses)
+    ext = sub.add_parser("extensions", help="list, trust or untrust extensions")
+    ext_sub = ext.add_subparsers(dest="action", required=True)
+    _project_opt(ext_sub.add_parser("list", help="drop-ins with trust status, and entry points"))
+    tr = ext_sub.add_parser("trust", help="show a drop-in and trust its exact content (--yes)")
+    tr.add_argument("path", type=Path)
+    tr.add_argument("--yes", action="store_true", help="record trust (without it: preview only)")
+    un = ext_sub.add_parser("untrust", help="revoke trust by drop-in path or sha256")
+    un.add_argument("target")
     for name in _STUBS:
         stub = sub.add_parser(name, help="available after M2/M3")
         stub.add_argument("rest", nargs="*")
@@ -482,6 +490,67 @@ def _statusline(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def _extensions_list(args: argparse.Namespace) -> int:
+    from token_sparen import extensions
+
+    home = state_home(os.environ)
+    dropins = extensions.discover(_project_dir(args), home, os.environ)
+    eps = extensions.entry_point_listing()
+    if not dropins and not eps:
+        print("no extensions found (drop-ins: <project>/.token-sparen/extensions/*.py,")
+        print(f"  {extensions.printable(str(home / 'extensions'))}/*.py; entry points: none)")
+        return 0
+    for d in dropins:
+        sha = d.sha256[:12] if d.sha256 else "-"
+        print(f"{d.status:<24} {sha:<12} {extensions.printable(str(d.path))}")
+    for group, name, value in eps:
+        text = extensions.printable(f"{name} = {value}")
+        print(f"{'entry-point':<24} {group:<31} {text}")
+    return 0
+
+
+def _extensions_trust(args: argparse.Namespace) -> int:
+    from token_sparen import extensions
+
+    path: Path = args.path
+    shown = extensions.printable(str(path))
+    try:
+        sha, lines = extensions.preview(path)
+    except extensions.UnsafeFile as exc:
+        raise CliError(f"{shown}: refusing to trust ({exc.reason})") from None
+    print(f"sha256 {sha}  {shown}")
+    print(f"--- first {len(lines)} lines ---")
+    for line in lines:
+        print(line)
+    print("---")
+    if not args.yes:
+        print("not trusted: re-run with --yes to trust exactly this content", file=sys.stderr)
+        return 1
+    try:
+        extensions.trust(path, state_home(os.environ), os.environ, expect_sha=sha)
+    except extensions.UnsafeFile as exc:
+        raise CliError(f"{shown}: refusing to trust ({exc.reason})") from None
+    print(f"trusted {sha} (any edit to the file revokes trust)")
+    return 0
+
+
+def _extensions_untrust(args: argparse.Namespace) -> int:
+    from token_sparen import extensions
+
+    removed = extensions.untrust(args.target, state_home(os.environ), os.environ)
+    print(f"removed {removed} trusted entr{'y' if removed == 1 else 'ies'}")
+    return 0 if removed else 1
+
+
+def _extensions(args: argparse.Namespace) -> int:
+    handlers = {
+        "list": _extensions_list,
+        "trust": _extensions_trust,
+        "untrust": _extensions_untrust,
+    }
+    return handlers[args.action](args)
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "statusline":
         return _statusline(args)
@@ -494,6 +563,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         "stats": _stats,
         "doctor": _doctor,
         "session": _session_cmd,
+        "extensions": _extensions,
     }
     return handlers[args.command](args)
 

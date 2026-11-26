@@ -72,6 +72,49 @@ PRETRIM = DecisionPoint("pretrim", ("off", "bounded"), safe_arm="off", tier="med
 READ_DEDUPE = DecisionPoint("read_dedupe", ("off", "pointer"), safe_arm="off", tier="low")
 # PreToolUse(Task|Agent): append a one-line "conclusions, not dumps" brief to the subagent prompt.
 SUBAGENT_BRIEF = DecisionPoint("subagent_brief", ("off", "on"), safe_arm="off", tier="medium")
+_TIERS: frozenset[str] = frozenset({"low", "medium", "high", "none"})
+_BUILTIN_POINTS: dict[str, DecisionPoint] = {
+    p.name: p for p in (COMPRESSION, PRETRIM, READ_DEDUPE, SUBAGENT_BRIEF)
+}
+_POINTS: dict[str, DecisionPoint] = dict(_BUILTIN_POINTS)
+
+
+def validate_point(point: object) -> DecisionPoint:
+    """``point`` if it is a well-formed DecisionPoint, else TypeError/ValueError."""
+    if not isinstance(point, DecisionPoint):
+        raise TypeError(f"{type(point).__name__} is not a DecisionPoint")
+    if not isinstance(point.name, str) or not point.name:
+        raise ValueError("decision point name must be a non-empty str")
+    arms = point.arms
+    if not isinstance(arms, tuple) or not arms or not all(isinstance(a, str) for a in arms):
+        raise ValueError(f"{point.name}: arms must be a non-empty tuple of str")
+    if point.safe_arm not in arms:
+        raise ValueError(f"{point.name}: safe_arm {point.safe_arm!r} is not one of its arms")
+    if point.tier not in _TIERS:
+        raise ValueError(f"{point.name}: tier {point.tier!r} is not one of {sorted(_TIERS)}")
+    return point
+
+
+def register_point(point: DecisionPoint) -> None:
+    """Add an extension decision point. Built-in names can never be replaced."""
+    validate_point(point)
+    if point.name in _BUILTIN_POINTS:
+        raise ValueError(f"{point.name!r} is a built-in decision point")
+    existing = _POINTS.get(point.name)
+    if existing is not None and existing != point:
+        raise ValueError(f"decision point {point.name!r} is already registered differently")
+    _POINTS[point.name] = point
+
+
+def get_point(name: str) -> DecisionPoint | None:
+    return _POINTS.get(name)
+
+
+def points() -> dict[str, DecisionPoint]:
+    """Every known decision point by name (built-ins and registered extensions)."""
+    return dict(_POINTS)
+
+
 _DEFAULT_ARMS = {
     COMPRESSION.name: "standard",
     PRETRIM.name: "off",

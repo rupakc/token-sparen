@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import re
+import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from importlib import metadata
@@ -186,35 +188,166 @@ class Compressor(Protocol):
     def compress(self, text: str, level: Level, ctx: CompressContext) -> CompressResult: ...
 
 
+def is_compressor(obj: Any) -> bool:
+    """Structural check stricter than the Protocol: str name, frozenset of str handles."""
+    if not isinstance(obj, Compressor):
+        return False
+    handles = getattr(obj, "handles", None)
+    return (
+        isinstance(getattr(obj, "name", None), str)
+        and isinstance(handles, frozenset)
+        and all(isinstance(t, str) for t in handles)
+    )
+
+
+def missing_error_lines(source: str, output: str) -> list[str]:
+    """Input lines matching ERROR_PATTERNS that do not appear (stripped) in ``output``."""
+    idx = error_line_indices(source)
+    if not idx:
+        return []
+    lines = source.split("\n")
+    present = {x.strip() for x in output.split("\n")}
+    missing: list[str] = []
+    for i in idx:
+        wanted = lines[i].strip()
+        if wanted in present or wanted in output:
+            continue
+        missing.append(lines[i])
+    return missing
+
+
+def result_problems(source: str, result: Any) -> list[str]:
+    """Contract violations of one ``compress`` result: type, counts, dropped error lines."""
+    if not isinstance(result, CompressResult):
+        return [f"returned {type(result).__name__}, not a CompressResult"]
+    if not isinstance(result.text, str):
+        return [f"CompressResult.text is {type(result.text).__name__}, not str"]
+    problems: list[str] = []
+    kept, total = result.kept_lines, result.total_lines
+    if (
+        not isinstance(kept, int)
+        or not isinstance(total, int)
+        or isinstance(kept, bool)
+        or isinstance(total, bool)
+        or not 0 <= kept <= total
+    ):
+        problems.append(f"kept_lines/total_lines invalid: kept={kept!r} total={total!r}")
+    missing = missing_error_lines(source, result.text)
+    if missing:
+        problems.append(f"dropped {len(missing)} error line(s), e.g. {missing[0][:120]!r}")
+    return problems
+
+
+class CheckedCompressor:
+    """Runs a third-party compressor under the runtime safety check.
+
+    Any exception, malformed result or dropped error line disables the extension for the rest
+    of the process (logged once) and the built-in ``fallback`` answers instead.
+    """
+
+    def __init__(self, inner: Compressor, fallback: Compressor, owner: Registry) -> None:
+        self.inner = inner
+        self.fallback = fallback
+        self.name = inner.name
+        self.handles = inner.handles
+        self._owner = owner
+
+    def compress(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
+        if not self._owner.is_disabled(self.inner):
+            try:
+                with contextlib.redirect_stdout(sys.stderr):  # stdout is the host protocol
+                    result: Any = self.inner.compress(text, level, ctx)
+                problems = result_problems(text, result)
+            except (Exception, SystemExit) as exc:  # noqa: BLE001 - third-party code
+                problems = [f"{type(exc).__name__}: {exc}"]
+            if not problems:
+                return result  # type: ignore[no-any-return]
+            self._owner.disable(self.inner, problems[0])
+        return self.fallback.compress(text, level, ctx)
+
+
+def unwrap(c: Compressor) -> Compressor:
+    """The extension behind a CheckedCompressor (``c`` itself otherwise)."""
+    return c.inner if isinstance(c, CheckedCompressor) else c
+
+
 def _default_entry_points() -> Iterable[Any]:
     return metadata.entry_points(group=ENTRY_POINT_GROUP)
 
 
 class Registry:
-    """Maps content types to compressors; plugin entry points load lazily on first lookup."""
+    """Maps content types to compressors.
+
+    ``register`` is the in-process path (built-ins). Entry-point plugins load lazily, only when a
+    lookup can use one: a content type without a built-in, or ``allow_override``. Built-ins win
+    by default. Every extension compressor is returned wrapped in ``CheckedCompressor``.
+    """
 
     def __init__(self, entry_points_fn: Callable[[], Iterable[Any]] | None = None) -> None:
         self._by_type: dict[str, Compressor] = {}
+        self._builtins: list[Compressor] = []
+        self._ext_by_type: dict[str, list[Compressor]] = {}
         self._entry_points_fn = entry_points_fn or _default_entry_points
         self._loaded = False
         self._fallback: Compressor | None = None
+        self._disabled: dict[int, Compressor] = {}  # id -> object (kept alive: ids stay unique)
 
     def register(self, c: Compressor) -> None:
+        if c not in self._builtins:
+            self._builtins.append(c)
         for t in c.handles:
             self._by_type[t] = c
 
-    def for_type(self, t: ContentType) -> Compressor:
-        if not self._loaded:
-            self._loaded = True
-            self._load_entry_points()
-        found = self._by_type.get(t)
-        if found is not None:
-            return found
+    def builtins(self) -> list[Compressor]:
+        return list(self._builtins)
+
+    def is_disabled(self, c: Compressor) -> bool:
+        return id(c) in self._disabled
+
+    def disable(self, c: Compressor, reason: str) -> None:
+        if id(c) in self._disabled:
+            return
+        self._disabled[id(c)] = c
+        name = getattr(c, "name", type(c).__name__)
+        _config.log_error(os.environ, "extensions.compressor", f"{name}: disabled: {reason}")
+
+    def for_type(
+        self,
+        t: str,
+        *,
+        allow_override: bool = False,
+        extra: Callable[[str], Sequence[Compressor]] | None = None,
+    ) -> Compressor:
+        base = self._by_type.get(t)
+        if base is None or allow_override:
+            ext = self._extension_for(t, extra)
+            if ext is not None:
+                return CheckedCompressor(ext, base if base is not None else self._text(), self)
+        return base if base is not None else self._text()
+
+    def _text(self) -> Compressor:
         if self._fallback is None:
             from token_sparen.compress.text import TextCompressor
 
             self._fallback = TextCompressor()
         return self._fallback
+
+    def _extension_for(
+        self, t: str, extra: Callable[[str], Sequence[Compressor]] | None
+    ) -> Compressor | None:
+        if not self._loaded:
+            self._loaded = True
+            self._load_entry_points()
+        candidates = list(self._ext_by_type.get(t, ()))
+        if extra is not None:
+            try:
+                candidates.extend(extra(t))
+            except Exception as exc:  # noqa: BLE001 - extension discovery never breaks a hook
+                _config.log_error(os.environ, "extensions", f"drop-in lookup: {exc}")
+        for c in candidates:
+            if id(c) not in self._disabled:
+                return c
+        return None
 
     def _load_entry_points(self) -> None:
         try:
@@ -228,9 +361,10 @@ class Registry:
                 obj = ep.load()
                 if isinstance(obj, type):
                     obj = obj()
-                if not isinstance(obj, Compressor):
+                if not is_compressor(obj):
                     raise TypeError(f"{type(obj).__name__} is not a Compressor")
-                self.register(obj)
+                for t in obj.handles:
+                    self._ext_by_type.setdefault(t, []).append(obj)
             except Exception as exc:  # noqa: BLE001 - skip broken plugins
                 _config.log_error(os.environ, "compress.registry", f"{name}: {exc}")
 

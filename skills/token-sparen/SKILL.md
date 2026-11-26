@@ -21,6 +21,8 @@ A trimmed output ends with:
 - `token-sparen doctor [--fix]`: verifies Python, state home, hooks and a synthetic round-trip.
 - `token-sparen run -- <command>`: run a command and print its compressed output.
 - `token-sparen statusline install|uninstall`: opt-in live statusline (backs up settings).
+- `token-sparen extensions list`: installed and drop-in extensions with their trust status.
+  Trusting a drop-in (`extensions trust <path> --yes`) is the user's decision: never run it for them.
 - `python3 -m token_sparen ...` works when the console script is not on PATH.
 
 ## Switching it off

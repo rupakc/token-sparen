@@ -11,6 +11,7 @@ Plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`. Decisions: `MEMORY.md`.
   - `store/` JSON+JSONL state, `compress/` compressors, `mechanisms/` decision-point mechanisms
   - `facts/` repo-fact mining and injection, `learn/` bandit engine, `replay/` offline replay
   - `adapters/` host translation; `adapters/claude/` Claude Code (entry, translate, statusline, settings)
+  - `extensions.py` trusted extension loading; `testing/conformance.py` compressor conformance kit
 - `params/defaults.toml` every tunable (hill-climbing surface)
 - `hooks/` plugin hooks (`hooks.json`, `run.py`); `commands/`, `skills/token-sparen/` user-facing plugin parts
 - `evals/e2/` fact-preservation suite (corpus, `needles.toml`, `run.py`)

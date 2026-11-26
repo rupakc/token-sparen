@@ -276,3 +276,24 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   honoured by `entry.main` for every event. Session id from `CLAUDE_SESSION_ID`, else `--session`.
 - The slash command also allows `Bash(python3:*)` so it can fall back to `hooks/run_cli.py`.
 - pyproject `packages` now lists `token_sparen.mechanisms` and `token_sparen.learn` (were missing).
+
+## 2026-11-26 Extensions and conformance kit (Task 17a)
+- Drop-ins load only if sha256(file bytes) is in `~/.token-sparen/trusted_extensions.json`
+  (`{"trusted": {sha: {"path": realpath, "ts"}}}`); trust is by content, read only from the user's
+  state home. The trust file itself is ignored if symlinked, foreign-owned or world-writable.
+- Drop-ins are executed from the exact bytes that were hashed (spec built with
+  `spec_from_file_location`, code compiled from the verified bytes) so there is no check/use race.
+  Module name `token_sparen_ext_<sha[:12]>`; identical content is imported once.
+- Skipped: symlinked files, symlinked `extensions/` dirs or project `.token-sparen/`, files not
+  owned by the current user, world-writable files, files > 1 MB. Owner/mode checks are POSIX-only.
+- Supersedes Task 8 note: built-ins now win over entry-point and drop-in compressors unless
+  `[extensions] allow_override = true`, which is honoured only from `~/.token-sparen/config.toml`
+  or `TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE`, never from a project's `token-sparen.toml`.
+- Extension compressors (entry point or drop-in) always run inside `CheckedCompressor`: an
+  exception, malformed result or any dropped ERROR_PATTERNS input line (stripped line must appear
+  in the output) disables that compressor for the process (logged once) and the built-in answers.
+- Laziness: discovery is two `lstat`s when no extension dir exists, cached per process; drop-ins
+  are imported on the first lookup that can use one (a content type without a built-in, or
+  override on). Extension decision points cannot reuse a built-in point name.
+- `extensions trust` without `--yes` previews only and exits 1; control characters in the preview
+  are escaped.

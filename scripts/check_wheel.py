@@ -15,7 +15,11 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-REQUIRED_FILES = ("token_sparen/params/defaults.toml", "token_sparen/__main__.py")
+REQUIRED_FILES = (
+    "token_sparen/params/defaults.toml",
+    "token_sparen/__main__.py",
+    "token_sparen/testing/conformance.py",
+)
 
 
 def _run(argv: list[str], cwd: Path, home: Path) -> subprocess.CompletedProcess[str]:
@@ -69,6 +73,15 @@ def main() -> int:
         print("ok", _run([exe, "--version"], work, home).stdout.strip())
         _run([exe, "stats", "--json"], work, home)
         print("ok stats --json")
+        _run([exe, "extensions", "list"], work, home)
+        py = str(bindir / "python")
+        probe = (
+            "from token_sparen.compress import registry;"
+            "from token_sparen.testing.conformance import check_compressor;"
+            "assert all(check_compressor(c) == [] for c in registry.builtins())"
+        )
+        _run([py, "-c", probe], work, home)
+        print("ok extensions list + conformance kit importable")
         out = _run([exe, "run", "--", "seq", "1", "5000"], work, home).stdout
         saved = list((work / ".token-sparen" / "outputs").glob("*.txt"))
         shown = re.search(r"token-sparen show ([0-9a-f]{12})", out)
