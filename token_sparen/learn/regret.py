@@ -92,6 +92,16 @@ def _unquote(word: str) -> str:
     return word
 
 
+_TRAIL_FILTER = re.compile(r"\s*\|\s*(?:grep|egrep|fgrep|rg|head|tail|sed|awk|less|more)\b[^|]*$")
+
+
+def filter_base(sig: str) -> str:
+    """A normalised command without its trailing filter pipeline (``| grep …``, ``| head …``,
+    ``| sed …``, ``| awk …``, ``| tail …``, ``| less``): re-filtering the same output is a
+    re-run."""
+    return _strip_all(sig, (_TRAIL_FILTER, _TRAIL_REDIR))
+
+
 def _resolve_cd(dirs: list[str], project_dir: str | None, cwd: str | None) -> str | None:
     """The directory a chain of ``cd``s ends in, relative to the project when inside it; None
     when it is the project dir or the hook's cwd (the command runs where it would anyway)."""
@@ -279,6 +289,7 @@ def _path_match(edited: str, mentioned: str) -> bool:
 _REC_PATH = re.compile(r"\.token-sparen[/\\]outputs[/\\]([0-9a-f]{12})\.txt")
 _SHOW = re.compile(r"(?:token-sparen|token_sparen|run_cli\.py)\b.*?\bshow\s+([0-9a-f]{12})\b")
 _SPLIT = re.compile(r"[\s|;&()]+")
+_REC_PATH_END = re.compile(_REC_PATH.pattern + r"\s*$")
 
 
 def recovery_reads(event: Event) -> tuple[set[str], set[str]]:
@@ -293,7 +304,17 @@ def recovery_reads(event: Event) -> tuple[set[str], set[str]]:
             if rid is not None:
                 return {rid}, set()
         return set(), set()
-    cmd = tool.input.get("command") if tool.name == "Bash" else None
+    if tool.name != "Bash":
+        if tool.category == "edit":
+            return set(), set()
+        found: set[str] = set()
+        for value in tool.input.values():  # e.g. Grep/Glob `path` at a saved full output
+            if isinstance(value, str):
+                m = _REC_PATH_END.search(value)
+                if m is not None:
+                    found.add(m.group(1))
+        return found, set()
+    cmd = tool.input.get("command")
     if not isinstance(cmd, str) or not cmd:
         return set(), set()
     shown = set(_SHOW.findall(cmd))
@@ -360,6 +381,7 @@ def _entry(
         "arm": arm,
         "recovery_id": recovery_id,
         "command_sig": command_sig[:MAX_SIG_CHARS],
+        "command_base": filter_base(command_sig[:MAX_SIG_CHARS]),
         "elided_tokens": _span_tokens(span, kept, command_sig) if full else [],
         "files_in_span": list(mentioned)[:MAX_FILES],
         "edited_paths_since": [],
@@ -374,6 +396,7 @@ class _Info:
     """What one event can tell the detector."""
 
     sig: str | None = None
+    base: str | None = None
     recovery_ids: set[str] = field(default_factory=set)
     tokens: set[str] = field(default_factory=set)
     edit_path: str | None = None
@@ -415,6 +438,7 @@ def _info(event: Event) -> _Info:
             info.edit_path = path
         return info
     info.sig = event_signature(event)
+    info.base = filter_base(info.sig) if tool.name == "Bash" else info.sig
     direct, shown = recovery_reads(event)
     info.recovery_ids = direct | shown
     if direct and event.output_text:  # `token-sparen show` counts its own tokens
@@ -528,7 +552,7 @@ class RegretDetector:
                 if any(_path_match(info.edit_path, f) for f in _strs(entry.get("files_in_span"))):
                     entry["edited_paths_since"] = [*edited, info.edit_path]
                     changed = True
-            if info.sig is not None and not edited and entry.get("command_sig") == info.sig:
+            if info.sig is not None and not edited and self._same_command(entry, info):
                 age = turn - decided
                 if 0 <= age <= window:
                     value = max(value, FULL if age <= FULL_WITHIN_TURNS else PARTIAL)
@@ -554,6 +578,16 @@ class RegretDetector:
                 del table[did]
                 changed = True
         return signals, payouts, changed, forget
+
+    @staticmethod
+    def _same_command(entry: Mapping[str, Any], info: _Info) -> bool:
+        sig = entry.get("command_sig")
+        if not isinstance(sig, str):
+            return False
+        if sig == info.sig:
+            return True
+        base = entry.get("command_base")
+        return (base if isinstance(base, str) else sig) == info.base
 
     def _apply(self, path: Path, info: _Info, turn: int | None, settle: bool, final: bool) -> Any:
         """Lock-free pre-check, then (only if something changes) one locked update.

@@ -788,3 +788,58 @@ def test_rerun_in_another_package_is_not_regret(tmp_path: Path) -> None:
     assert rec.regrets() == []
     _handle(tmp_path, _bash(tmp_path, f"cd {_proj(tmp_path)}/packages/a && npm test"), rec)
     assert rec.regrets() == [("d1", 1.0)]
+
+
+@pytest.mark.parametrize(
+    ("tool", "field"),
+    [("Grep", "path"), ("Glob", "path"), ("Glob", "pattern"), ("mcp__fs__read", "file")],
+)
+def test_recovery_path_in_any_tool_input_is_full_regret(
+    tmp_path: Path, tool: str, field: str
+) -> None:
+    _track(tmp_path)
+    rec = Recorder()
+    target = f"{_proj(tmp_path)}/.token-sparen/outputs/abcdef012345.txt"
+    ev = _event(tmp_path, tool=tool, tool_input={field: target, "other": "x"}, text="y" * 40)
+    _handle(tmp_path, ev, rec)
+    assert rec.regrets() == [("d1", 1.0)]
+    assert _state(tmp_path)["recovery_read_tokens"] == 10
+
+
+def test_recovery_path_not_at_end_of_input_is_not_a_read(tmp_path: Path) -> None:
+    _track(tmp_path)
+    rec = Recorder()
+    note = ".token-sparen/outputs/abcdef012345.txt is where outputs go"
+    _handle(tmp_path, _event(tmp_path, tool="WebSearch", tool_input={"query": note}), rec)
+    assert rec.regrets() == []
+
+
+@pytest.mark.parametrize(
+    ("first", "again"),
+    [
+        ("pytest -q tests", "pytest -q tests | grep FAILED"),
+        ("pytest -q tests | grep FAILED", "pytest -q tests"),
+        ("make 2>&1 | grep error", "make | head -n 50"),
+        ("make", "make 2>&1 | sed -n '1,40p' | awk '{print $1}'"),
+        ("npm test | less", "npm test | tail -5"),
+    ],
+)
+def test_rerun_with_other_filter_pipeline_is_regret(tmp_path: Path, first: str, again: str) -> None:
+    _track(tmp_path, command=first)
+    rec = Recorder()
+    _handle(tmp_path, _bash(tmp_path, again), rec)
+    assert rec.regrets() == [("d1", 1.0)]
+
+
+def test_filter_on_another_command_is_not_rerun(tmp_path: Path) -> None:
+    _track(tmp_path, command="pytest -q tests | grep FAILED")
+    rec = Recorder()
+    _handle(tmp_path, _bash(tmp_path, "pytest -q tests/test_x.py | grep FAILED"), rec)
+    _handle(tmp_path, _bash(tmp_path, "cat log.txt | grep FAILED"), rec)
+    assert rec.regrets() == []
+
+
+def test_filter_base() -> None:
+    assert regret.filter_base("pytest -q | grep -v x | head -n 3") == "pytest -q"
+    assert regret.filter_base("pytest -q") == "pytest -q"
+    assert regret.filter_base("cat a | wc -l") == "cat a | wc -l"
