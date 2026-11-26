@@ -5,6 +5,18 @@ Status: APPROVED 2026-11-25 (with §6.12 live statusline added at approval) · D
 > "sparen" (German): *to save, to economise*. token-sparen makes autonomous coding agents spend
 > fewer tokens **without making their work worse**.
 
+## Revision log
+
+**2026-11-26 (after M1).** Synced with the decisions recorded in `MEMORY.md` and the shipped code.
+Changes: §3 C1 (Python >= 3.11); §5 hook events (PostToolUseFailure and SessionEnd instead of
+PostToolBatch) and the Event/Action field names; §6.1 never-larger rule, failed tool results,
+duplicated-field elision dropped, table type handled by the text compressor; §6.2 pre-trim is a
+PostToolUse arm, no command rewriting; §6.5 containment instead of Jaccard, no idle-gap signal;
+§6.7 subagent brief is an arm that is off by default, Agent result shape; §6.12 dollar figure,
+restore of the recorded original, Windows launcher deferred; §8 Claude row; §9 trust through the
+CLI, interface version 1.0, session config layer; §10.6 and §11 defaults path and CI matrix.
+Later-milestone items (M2/M3) are unchanged and remain planned.
+
 ---
 
 ## 1. Intent and why
@@ -65,8 +77,8 @@ a hard constraint, never a term traded off in a weighted sum.
 
 ## 3. Constraints
 
-- C1 Core in **Python ≥ 3.10, standard library only** at runtime (fast hook start-up, no install
-  friction, auditable). Dev dependencies (pytest, ruff, mypy, hypothesis) are fine.
+- C1 Core in **Python ≥ 3.11, standard library only** at runtime (3.10 is end-of-life and
+  `tomllib` ships from 3.11; fast hook start-up, no install friction, auditable). Dev dependencies (pytest, ruff, mypy, hypothesis) are fine.
 - C2 OpenCode needs a small **TypeScript shim** (npm) that shells out to the Python core.
 - C3 Benchmarks run with **Claude Code only**, under the owner's **Claude Max subscription** (no API
   keys): rate-limit-aware scheduling across 5-hour windows and weekly caps (§10.4).
@@ -90,7 +102,8 @@ a hard constraint, never a term traded off in a weighted sum.
 
 ```
             ┌────────────── host agent (Claude Code / Codex / Gemini / Qwen / OpenCode) ──────────────┐
- hook event │ SessionStart · UserPromptSubmit · PreToolUse · PostToolUse · PostToolBatch · PreCompact │
+ hook event │ SessionStart · UserPromptSubmit · PreToolUse · PostToolUse · PostToolUseFailure ·       │
+            │ PreCompact · SessionEnd                                                                │
             └───────────────┬───────────────────────────────────────────────────────────────────────┘
                             │ stdin JSON (host-specific)
                   ┌─────────▼─────────┐
@@ -111,11 +124,16 @@ a hard constraint, never a term traded off in a weighted sum.
              recovery/ (full outputs on disk)     background `token-sparen fold` after session end
 ```
 
-- **Canonical event model**: `Event{host, kind, session_id, project_key, tool{name, category,
-  input}, output{text, structured, bytes}, prompt, transcript_path, model, context_tokens?}` and
-  `Action{replace_output?, rewrite_input?, block{reason}?, inject_context?, user_message?}`. Adapters
-  map host JSON to these and declare **capabilities** (e.g. `can_replace_output`); mechanisms
-  degrade gracefully when a capability is missing.
+- **Canonical event model** (as built): `Event{host, kind, session_id, project_dir, project_key,
+  transcript_path, tool{name, category, input}, output_text, raw_response, prompt, model, extra}`
+  and `Action{replace_output?, rewrite_input?, block_reason?, inject_context?, user_message?,
+  compact_instructions?}` (`compact_instructions` is PreCompact only: Claude Code reads a plain-text
+  stdout there). Hosts own tool-output shapes: the adapter exposes `replaceable(event)` and
+  `render_tool_output(...)`, and mechanisms never import an adapter. Adapters declare
+  **capabilities**; today the adapter's `replaceable` predicate, not the flags, decides what a
+  mechanism may replace. Hook events handled on Claude Code: SessionStart, UserPromptSubmit,
+  PreToolUse, PostToolUse, PostToolUseFailure, PreCompact, SessionEnd (the detached `fold` at
+  session end is planned, M2). There is no per-batch event; no mechanism needs one.
 - **Fail-open everywhere**: every hook entrypoint wraps the pipeline; on exception or a
   latency-budget overrun it returns the host's no-op response and logs to
   `~/.token-sparen/logs/errors.jsonl`.
@@ -125,8 +143,9 @@ a hard constraint, never a term traded off in a weighted sum.
   more conservative); (b) *cross-session* — a detached `token-sparen fold` (spawned at session end,
   also runnable manually) merges the overlay into project and global stores under a file lock,
   computes delayed rewards, mines facts and recomputes pruning sets.
-- **Project key**: hash of normalised git remote URL (fallback: realpath of repo root); never the
-  raw path in shared stores.
+- **Project key**: hash of normalised git remote URL (fallback: realpath of the project directory,
+  `CLAUDE_PROJECT_DIR` or the hook's `cwd`); never the raw path in the shared stores (`projects/`,
+  `global/`). User-local bookkeeping (trusted extensions, statusline install record) does hold paths.
 
 ## 6. Mechanisms (decision points)
 
@@ -137,10 +156,12 @@ attribute reward to it. Tier governs exploration (§7.6).
 ### 6.1 Recoverable output compression (PostToolUse) — tier: medium
 - **Router** by content type: `json`, `diff`, `stacktrace/error`, `test-report` (pytest, jest,
   go test, cargo test), `compiler` (tsc, rustc, javac, gcc), `build-log` (npm, pip, gradle, docker),
-  `table/csv`, `search-results` (grep/rg, `pplx` JSON), `log` (timestamped), `text`.
+  `table/csv` (handled by the text compressor; no dedicated compressor), `search-results` (grep/rg, `pplx` JSON), `log` (timestamped), `text`.
 - **Compressors** (deterministic, pure functions, each with golden tests): structure-aware
   summaries (e.g. test report → failures with first assertion + counts; JSON → schema + sampled
-  items + duplicated-field elision; `pplx` → dedupe `snippet`/`summary`, keep titles/urls/top-k
+  items (duplicated-field elision was dropped: a `…same` marker is ambiguous about what it equals, and
+  no exemption list can make it safe for every field);
+  `pplx` → dedupe `snippet`/`summary`, keep titles/urls/top-k
   snippets), keyword-guided keep (lines scored by relevance to the current user prompt and recent
   edited paths — BM25-lite), head+tail with error-line pinning, and repetitive-line folding
   ("× 37 similar lines").
@@ -148,16 +169,26 @@ attribute reward to it. Tier governs exploration (§7.6).
 - **Invariants**: never elide lines matching error/failure/exception signatures; always append a
   marker `[token-sparen: kept X of Y lines · full output: <abs path> · `token-sparen show <id>`]`;
   full output saved to `<project>/.token-sparen/outputs/<id>.txt` (gitignored, TTL + size cap).
-  Below a minimum size (default 2 000 tokens est.) nothing is touched.
+  Below 2 000 tokens est. nothing is touched: this is a floor, `compression.min_tokens` can raise
+  it but never lower it.
+- **Never larger**: the baseline is the *preview* (the text the host would show the model); a
+  replacement is used only if it is no longer than the preview and saves at least
+  `min_saving_ratio` of it, and savings are booked against the preview.
+- **Failed tool results are not replaceable on Claude Code** (PostToolUseFailure supports only
+  `additionalContext`), so failing Bash commands are shown in full there; the mechanism supports
+  failures for hosts that can replace them. Agent/Task results of shape
+  `{status, content:[{type:text,text}], ...}` are compressed through their text blocks.
 - Hosts that cannot replace output (Codex): achieved via PreToolUse command wrapping
   `token-sparen run -- <cmd>` (§8).
 
 ### 6.2 Pre-tool guards and learned pre-trims (PreToolUse) — tier: low/medium
-- Block clearly unbounded scans (e.g. `find /`, `cat` of a > N MB file, `grep -r` over
-  `node_modules`) with a reason that suggests the bounded form — never block anything else.
-- **Learned pre-trims**: commands whose outputs were repeatedly compressed with no regret get a
-  bounded form proposed (`| tail -n K`) — an arm, not a rule; K learned. Rewrites preserve the
-  original command prefix so user allow-rules still match.
+- Block clearly unbounded scans (`find /` or `find ~` without `-maxdepth`, recursive `grep`/`rg`
+  over vendored or build directories, `cat`/Read of a > 5 MB file without a range, `ls -R` on `/`
+  or `~`) with a reason that suggests the bounded form — never block anything else.
+- **Learned pre-trims** are a **PostToolUse arm**, not a command rewrite: commands whose outputs
+  were repeatedly compressed with no regret get a tail-biased compression level (K learned).
+  Commands are never rewritten: a `| tail -n K` rewrite would mask the exit status and drop
+  output that cannot be recovered. (The learning of K is planned, M2.)
 
 ### 6.3 Read de-duplication (PreToolUse/PostToolUse on file reads) — tier: low
 - Track `(path, mtime, size, hash, range)` per session; on a re-read of unchanged content, replace
@@ -171,8 +202,9 @@ attribute reward to it. Tier governs exploration (§7.6).
   tools. Separates *economy* thresholds (absolute tokens) from *risk* thresholds (window fraction).
 
 ### 6.5 Compaction advice and task-boundary detection — tier: low
-- Change-point detection on prompt/topic features (Jaccard of referenced paths, prompt-embedding-free
-  lexical shift, idle gap) flags task boundaries; recommend `/compact` (or host equivalent) to the
+- Change-point detection on prompt/topic features (containment of the prompt's identifiers in recent
+  prompts and paths, a prompt-embedding-free lexical shift; an idle-gap signal was dropped as not
+  needed) flags task boundaries; recommend `/compact` (or host equivalent) to the
   **user** at boundaries when context is large. Never auto-compacts.
 
 ### 6.6 Output-style directives — tier: high (off by default)
@@ -181,9 +213,10 @@ attribute reward to it. Tier governs exploration (§7.6).
   from the landscape: a plain "be concise" prompt captures most of what terse-output plugins claim.)
 
 ### 6.7 Subagent shaping — tier: medium
-- For hosts with subagents (Claude Code Task/Agent tool): inject a short brief asking for
-  conclusions-not-dumps in subagent results, and compress oversized subagent results with the same
-  recoverability rules.
+- For hosts with subagents (Claude Code Task/Agent tool): an arm that appends a short brief asking
+  for conclusions-not-dumps to the subagent prompt — **default off** until the live benchmark shows
+  non-inferior quality (as §6.6) — and compression of oversized subagent results with the same
+  recoverability rules (Claude Code delivers them as `{status, agentId, content:[{type:text,...}]}`).
 
 ### 6.8 Micro-skills: learned repository facts (cross-session) — tier: medium
 - **Sources**: (a) deterministic miners for repeated failures across sessions (command-not-found →
@@ -230,16 +263,18 @@ attribute reward to it. Tier governs exploration (§7.6).
   `⛁ ts 42% ctx │ burn 48M/500M 10% │ +2.4k/turn │ saved 31.2k (≈$0.84) │ ✂ 12 ↺ 1 │ learn: adapting`
   — context fill (green < 50 %, yellow < 75 %, red), cumulative session burn vs the governor's budget,
   projected burn per turn (EWMA), **net** tokens saved this session (after subtracting recovery reads
-  and our own injected text) with cost-weighted $ equivalent, trims and regrets (recovery reads /
+  and our own injected text) with an approximate $ equivalent (the session's average cost per token from the host's reported
+  cost, not weighted by token class), trims and regrets (recovery reads /
   re-runs), and the learner's state (`cold` / `adapting` / `exploiting` / `safe-mode` when a circuit
   breaker tripped); optional segments for active facts and pruned tools.
 - **Sensor role**: the statusline is the only Claude Code entry point that receives
   `context_window` (used %, size) and model id, so it records the real window per session/model for
   the governor (§6.4).
-- Plugins cannot register a statusline, so `token-sparen statusline install` (also offered once by
-  the `/token-sparen` command) writes the user's `statusLine` setting **opt-in**, with a backup, and
+- Plugins cannot register a statusline, so `token-sparen statusline install` (offered by the `/token-sparen` skill
+  when asked) writes the user's `statusLine` setting **opt-in**, with a backup, and
   **composes** with an existing statusline command (ours appended as a segment) instead of replacing
-  it; `statusline uninstall` restores the backup. The launcher resolves the active installed plugin
+  it; `statusline uninstall` restores the recorded original `statusLine` exactly (a backup of the
+  file is also kept). The launcher is POSIX shell: a Windows launcher is deferred (v1.1). The launcher resolves the active installed plugin
   copy robustly and renders an empty line (never an error) if the plugin is gone.
 - Strictly bound to the current `session_id`/`transcript_path` from stdin (never "latest transcript in
   the directory"); p95 render < 50 ms; configurable segments, `NO_COLOR` and ASCII fallback.
@@ -318,7 +353,7 @@ promotion only on held-out improvement (§10.6).
 
 | Host | Replace tool output | Rewrite/block pre-tool | Inject context | Tool pruning | Packaging |
 |---|---|---|---|---|---|
-| Claude Code | PostToolUse `updatedToolOutput` (shape per tool) | PreToolUse `updatedInput` / deny | SessionStart `additionalContext` | settings.local deny rules (opt-in) | `.claude-plugin/plugin.json` + hooks.json + marketplace.json |
+| Claude Code | PostToolUse `updatedToolOutput` (shape per tool; not on PostToolUseFailure) | PreToolUse deny (no `updatedInput` rewriting by design) | SessionStart `additionalContext` | settings.local deny rules (opt-in) | `.claude-plugin/plugin.json` + hooks.json + marketplace.json |
 | Codex CLI | not supported → PreToolUse rewrite to `token-sparen run -- <cmd>` (wrapper compresses & saves) | yes | SessionStart | config.toml toggles | `.codex-plugin/` + repo marketplace (hooks need user trust) |
 | Gemini CLI | AfterTool `decision:"deny"` + `reason` | BeforeTool | SessionStart | BeforeToolSelection allow-list | `gemini-extension.json` at root, topic `gemini-cli-extension` |
 | Qwen Code | Claude-style hooks; verify `updatedToolOutput` in released version, else Gemini path | yes | yes | allow-list | `qwen-extension.json` |
@@ -332,12 +367,15 @@ the host version, capabilities and that hooks fire (synthetic event round-trip).
 
 - **Plugin registry** via Python entry points (`token_sparen.compressors`, `.decision_points`,
   `.signals`, `.adapters`) **and** drop-in files at `<project>/.token-sparen/extensions/*.py` and
-  `~/.token-sparen/extensions/*.py` (loaded lazily, only when their trigger matches; opt-in trust
-  prompt the first time).
-- Stable, versioned interfaces (`Compressor.detect/compress`, `DecisionPoint`, `Signal`,
+  `~/.token-sparen/extensions/*.py` (loaded lazily, only when their trigger matches; run only after an explicit
+  `token-sparen extensions trust <path>` step, since hooks cannot prompt; trust follows the file's
+  content hash and equals full code execution as the user).
+- Stable, versioned interfaces (version `1.0`, `token_sparen.EXTENSION_API_VERSION`; an extension
+  declaring an incompatible version is skipped) (`Compressor.detect/compress`, `DecisionPoint`, `Signal`,
   `HostAdapter`) with a conformance test kit users can run on their extension.
 - Config precedence: built-in defaults < `~/.token-sparen/config.toml` < `<project>/token-sparen.toml`
-  < env vars (`TOKEN_SPAREN_*`) < per-session `/token-sparen` command. `TOKEN_SPAREN_DISABLE=1`
+  < env vars (`TOKEN_SPAREN_*`) < per-session overrides (`token-sparen config set`, also reachable
+  from the `/token-sparen` skill). `TOKEN_SPAREN_DISABLE=1`
   is a global kill switch.
 
 ## 10. Evaluation, benchmarking and hill-climbing
@@ -397,7 +435,7 @@ plugin version** (hash recorded). No claim without a reproducible script in `ben
 
 ### 10.6 Hill-climbing
 Every tunable (keep ratios, thresholds, priors, λ targets, size floors, compressor rules) is a
-parameter in `params/defaults.toml`. Loop: propose change → E2 must stay 100 % → E1/E3 on **dev**
+parameter in `token_sparen/params/defaults.toml` (inside the package so the wheel carries it). Loop: propose change → E2 must stay 100 % → E1/E3 on **dev**
 split must improve the objective (savings with regret ≤ target) → confirm on **held-out test**
 split → (periodically) E4 confirmation. Search: coordinate ascent + successive halving; every
 accepted change is a commit with its eval delta. Never tune on the test split (Reference B's flaw).
@@ -407,14 +445,14 @@ accepted change is a commit with its eval delta. Never tune on the test split (R
 - Repo **github.com/rupakc/token-sparen** (public, MIT), incremental commits pushed to `main`.
 - Layout: `token_sparen/` (core), `adapters/{claude,codex,gemini,qwen,opencode}/`,
   `.claude-plugin/`, `.codex-plugin/`, `gemini-extension.json`, `qwen-extension.json`,
-  `packages/opencode/` (TS), `bench/`, `evals/`, `params/`, `docs/`, `site/` (gh-pages source),
+  `packages/opencode/` (TS), `bench/`, `evals/`, `docs/`, `site/` (gh-pages source),
   `tests/`.
 - Claude scaffolding: `CLAUDE.md`, `AGENTS.md` (host-neutral), `MEMORY.md` (project decisions log),
   `.claude/agents/` (e.g. `goldfish-reviewer`, `drift-checker`, `compressor-author`,
   `bench-runner`, `eval-hillclimber`, `host-adapter-author`), `.claude/skills/` (e.g.
   `add-compressor`, `add-host-adapter`, `run-evals`, `hill-climb`, `release`).
 - CI (GitHub Actions): lint (ruff), types (mypy --strict on core), tests (pytest, Linux/macOS/Windows
-  × py3.10–3.13, coverage gate ≥ 90 %), E2 fact-preservation suite, hook latency benchmark, manifest
+  × py3.11–3.13, coverage gate ≥ 90 %), E2 fact-preservation suite, hook latency benchmark, manifest
   drift tests across host manifests, plugin validation (`claude plugin validate`, `claude plugin
   eval` cases), TS shim build/tests, security scan (no secrets, file-size rule C6), docs/site build.
 - Release workflow on tag: build wheels/sdist → PyPI (Trusted Publishing); per-host zips as GitHub
