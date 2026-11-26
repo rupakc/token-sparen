@@ -174,6 +174,12 @@ class ClaudeAdapter:
             extra=MappingProxyType({k: payload[k] for k in _EXTRA_KEYS if k in payload}),
         )
 
+    def render_tool_output(self, tool_name: str, original: Any, new_text: str) -> Any | None:
+        return render_tool_output(tool_name, original, new_text)
+
+    def replaceable(self, event: Event) -> bool:
+        return replaceable(event)
+
     def render_text(self, event: Event, action: Action) -> str | None:
         """Plain-text stdout for events whose output is text, else None (render JSON).
 

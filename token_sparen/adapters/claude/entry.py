@@ -18,7 +18,6 @@ from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from typing import Any, TextIO, cast
 
-from token_sparen.adapters.claude import translate
 from token_sparen.adapters.claude.translate import EVENT_KINDS, ClaudeAdapter
 from token_sparen.config import Config, load_config, log_error, state_home
 from token_sparen.events import Action, Event, EventKind
@@ -84,7 +83,7 @@ def _on_track(event: Event, cfg: Config) -> Action:
 
 def _on_read_dedupe(event: Event, cfg: Config) -> Action:
     return read_dedupe.handle_post_tool(
-        event, POLICY, cfg, env=HOOK_ENV.get(), replaceable=translate.replaceable
+        event, POLICY, cfg, env=HOOK_ENV.get(), replaceable=ADAPTER.replaceable
     )
 
 
@@ -95,7 +94,7 @@ def _on_compress(event: Event, cfg: Config) -> Action:
         POLICY,
         cfg,
         env=env,
-        replaceable=translate.replaceable,
+        replaceable=ADAPTER.replaceable,
         started=HOOK_STARTED.get(),
     )
     if action.replace_output is not None and event.tool is not None and event.tool.name == "Read":

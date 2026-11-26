@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Any
 
 from token_sparen import extensions, recovery
-from token_sparen.adapters.claude.translate import render_tool_output
 from token_sparen.compress import (
     CompressContext,
     CompressResult,
@@ -72,18 +71,10 @@ def _num(cfg: Config, key: str, default: float) -> float:
     return float(value)
 
 
-def _original(event: Event) -> Any:
-    """What the host would show the model: the tool response, or the failure's error text."""
-    if event.kind == "post_tool_failure" and event.raw_response is None:
-        return event.output_text
-    return event.raw_response
-
-
-def shape_replaceable(event: Event) -> bool:
-    """Host-neutral check: the response has a shape we can render a replacement for."""
-    if event.tool is None or event.kind not in _POST_KINDS:
-        return False
-    return render_tool_output(event.tool.name, _original(event), "") is not None
+def default_replaceable(event: Event) -> bool:
+    """Host-neutral default: any tool result event. Hosts pass ``HostAdapter.replaceable``,
+    which knows their result shapes (mechanisms never do)."""
+    return event.tool is not None and event.kind in _POST_KINDS
 
 
 def _skipped(event: Event, cfg: Config) -> bool:
@@ -211,7 +202,7 @@ def handle_post_tool(
     env = os.environ if env is None else env
     if event.tool is None or event.output_text is None or _skipped(event, cfg):
         return Action()
-    if not (replaceable or shape_replaceable)(event):
+    if not (replaceable or default_replaceable)(event):
         return Action()  # checked before any work: nothing to save or log if we cannot replace
     preview = event.output_text
     if estimate_tokens(preview) < _num(cfg, "compression.min_tokens", 2000):

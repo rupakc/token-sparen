@@ -348,9 +348,17 @@ def test_failure_event_compressed(tmp_path: Path) -> None:
 
 def test_unreplaceable_shape_does_no_work(tmp_path: Path) -> None:
     text = big_pytest()
+    from token_sparen.adapters.claude.translate import ClaudeAdapter
+
     ev = _event(tmp_path, response={"stdout": text, "isImage": True}, text=text)
-    assert _handle(tmp_path, ev).is_noop()
+    assert _handle(tmp_path, ev, replaceable=ClaudeAdapter().replaceable).is_noop()
     assert _outputs(tmp_path) == [] and _decisions(tmp_path) == []
+
+
+def test_default_predicate_is_host_neutral(tmp_path: Path) -> None:
+    ev = _event(tmp_path, response={"opaque": True}, text=big_pytest())
+    assert compression.default_replaceable(ev)  # no host shape knowledge in the mechanism
+    assert not compression.default_replaceable(Event(**{**ev.__dict__, "kind": "pre_tool"}))
 
 
 def test_host_replaceable_predicate_vetoes(tmp_path: Path) -> None:
