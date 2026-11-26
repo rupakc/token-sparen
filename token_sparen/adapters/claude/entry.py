@@ -1,7 +1,8 @@
 """Claude Code hook entry point: parse, dispatch, render; fail open on everything.
 
 Contract with the host: exactly one JSON object on stdout, exit code 0, within the latency budget.
-Any exception, bad payload, kill switch or budget overrun yields the no-op ``{}``.
+Any exception, bad payload, kill switch or budget overrun yields the no-op ``{}``. The one
+exception is PreCompact with summary instructions: Claude Code reads that stdout as plain text.
 """
 
 from __future__ import annotations
@@ -22,7 +23,15 @@ from token_sparen.adapters.claude.translate import EVENT_KINDS, ClaudeAdapter
 from token_sparen.config import Config, load_config, log_error, state_home
 from token_sparen.events import Action, Event, EventKind
 from token_sparen.learn.policy import StaticPolicy
-from token_sparen.mechanisms import compression, guards, read_dedupe, tracking
+from token_sparen.mechanisms import (
+    boundary,
+    compression,
+    governor,
+    guards,
+    read_dedupe,
+    subagent,
+    tracking,
+)
 from token_sparen.store import jsonl
 
 Handler = Callable[[Event, Config], Action]
@@ -106,21 +115,52 @@ def _on_pre_compact(event: Event, cfg: Config) -> Action:
     return read_dedupe.on_pre_compact(event, env=HOOK_ENV.get())
 
 
+def _on_governor_prompt(event: Event, cfg: Config) -> Action:
+    return governor.on_prompt(event, cfg, env=HOOK_ENV.get())
+
+
+def _on_boundary(event: Event, cfg: Config) -> Action:
+    return boundary.on_prompt(event, cfg, env=HOOK_ENV.get())
+
+
+def _on_governor_post(event: Event, cfg: Config) -> Action:
+    return governor.on_post_tool(event, cfg, env=HOOK_ENV.get())
+
+
+def _on_governor_stop(event: Event, cfg: Config) -> Action:
+    return governor.check_pre_tool(event, cfg, env=HOOK_ENV.get())
+
+
+def _on_subagent(event: Event, cfg: Config) -> Action:
+    return subagent.handle_pre_tool(event, POLICY, cfg, env=HOOK_ENV.get())
+
+
+def _on_compact_instructions(event: Event, cfg: Config) -> Action:
+    return boundary.on_pre_compact(event, cfg, env=HOOK_ENV.get())
+
+
 def _on_session_start(event: Event, cfg: Config) -> Action:
     return read_dedupe.on_session_start(event, env=HOOK_ENV.get())
 
 
 for _kind, _fn in (
-    ("prompt", _on_prompt),
+    ("prompt", _on_prompt),  # counts the turn first; the governor and boundary see it
+    ("prompt", _on_governor_prompt),
+    ("prompt", _on_boundary),
     ("pre_tool", _on_pre_invalidate),
+    ("pre_tool", _on_governor_stop),
     ("pre_tool", _on_guard),
+    ("pre_tool", _on_subagent),
     ("post_tool", _on_track),
+    ("post_tool", _on_governor_post),  # before any replacement ends the chain
     ("post_tool", _on_read_dedupe),
     ("post_tool", _on_compress),
     # same chain minus de-dupe; the host decides whether a failure result can be replaced
     ("post_tool_failure", _on_track),
+    ("post_tool_failure", _on_governor_post),
     ("post_tool_failure", _on_compress),
-    ("pre_compact", _on_pre_compact),
+    ("pre_compact", _on_pre_compact),  # sets last_compact_turn, clears the read table
+    ("pre_compact", _on_compact_instructions),
     ("session_start", _on_session_start),
 ):
     register(cast(EventKind, _kind), _contained(cast(Handler, _fn)))
@@ -133,6 +173,7 @@ def _join(a: str | None, b: str | None, sep: str) -> str | None:
 def _merge_side(into: Action, add: Action) -> None:
     into.inject_context = _join(into.inject_context, add.inject_context, "\n\n")
     into.user_message = _join(into.user_message, add.user_message, "\n")
+    into.compact_instructions = _join(into.compact_instructions, add.compact_instructions, "\n\n")
 
 
 def handle(event: Event, cfg: Config) -> Action:
@@ -291,6 +332,9 @@ def _respond(
         HOOK_ENV.reset(token)
     if action.is_noop():
         return NOOP, cfg, "noop"
+    text = ADAPTER.render_text(event, action)
+    if text is not None:  # e.g. PreCompact summary instructions: plain-text stdout
+        return text, cfg, "action"
     rendered = ADAPTER.render(event, action)
     if not rendered:
         return NOOP, cfg, "noop"

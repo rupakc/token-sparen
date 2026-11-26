@@ -122,10 +122,15 @@ def test_other_kinds_merge_all(tmp_path: Path) -> None:
 
 def test_builtin_order() -> None:
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["pre_tool"]]
-    assert names == ["_on_pre_invalidate", "_on_guard"]  # pretrim is post-tool only
+    # pretrim is post-tool only; the governor's opt-in stop runs before the subagent rewrite
+    assert names == ["_on_pre_invalidate", "_on_governor_stop", "_on_guard", "_on_subagent"]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["post_tool"]]
-    assert names == ["_on_track", "_on_read_dedupe", "_on_compress"]
-    assert {"pre_compact", "session_start"} <= set(entry.HANDLERS)
+    assert names == ["_on_track", "_on_governor_post", "_on_read_dedupe", "_on_compress"]
+    names = [getattr(f, "__name__", "") for f in entry.HANDLERS["prompt"]]
+    assert names == ["_on_prompt", "_on_governor_prompt", "_on_boundary"]
+    names = [getattr(f, "__name__", "") for f in entry.HANDLERS["pre_compact"]]
+    assert names == ["_on_pre_compact", "_on_compact_instructions"]
+    assert "session_start" in entry.HANDLERS
 
 
 def test_builtin_mechanism_errors_are_contained(
@@ -181,7 +186,9 @@ def test_pipeline_read_dedupe_pointer_and_compact(tmp_path: Path) -> None:
     content = out["hookSpecificOutput"]["updatedToolOutput"]["file"]["content"]
     assert content.startswith("[token-sparen: unchanged since turn 1 ")
     # PreCompact: the earlier read is gone from context, full content again
-    _run("PreCompact", {"session_id": "s-r", "trigger": "auto"}, env)
+    out = io.StringIO()  # PreCompact answers with plain-text summary instructions
+    entry.main("PreCompact", io.StringIO(json.dumps({"session_id": "s-r"})), out, env)
+    assert "token-sparen" in out.getvalue()
     assert _run("PostToolUse", _read_payload(path), env) == {}
     # an Edit (PreToolUse) invalidates
     edit = {"session_id": "s-r", "tool_name": "Edit", "tool_input": {"file_path": str(path)}}

@@ -174,6 +174,16 @@ class ClaudeAdapter:
             extra=MappingProxyType({k: payload[k] for k in _EXTRA_KEYS if k in payload}),
         )
 
+    def render_text(self, event: Event, action: Action) -> str | None:
+        """Plain-text stdout for events whose output is text, else None (render JSON).
+
+        PreCompact: Claude Code uses a non-blocking hook's stdout as instructions for the
+        compaction summary (and discards ``systemMessage``), so the instructions go out as text.
+        """
+        if event.kind == "pre_compact" and action.compact_instructions:
+            return action.compact_instructions
+        return None
+
     def render(self, event: Event, action: Action) -> dict[str, Any]:
         hook_event = next((h for h, k in EVENT_KINDS.items() if k == event.kind), "")
         out: dict[str, Any] = {}

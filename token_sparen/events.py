@@ -52,6 +52,8 @@ class Action:
     block_reason: str | None = None
     inject_context: str | None = None
     user_message: str | None = None
+    # PreCompact only: instructions for the compaction summary (Claude Code: plain-text stdout).
+    compact_instructions: str | None = None
 
     def is_noop(self) -> bool:
         return (
@@ -60,6 +62,7 @@ class Action:
             and self.block_reason is None
             and self.inject_context is None
             and self.user_message is None
+            and self.compact_instructions is None
         )
 
 

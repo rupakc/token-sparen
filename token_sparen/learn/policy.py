@@ -69,10 +69,13 @@ COMPRESSION = DecisionPoint(
 PRETRIM = DecisionPoint("pretrim", ("off", "bounded"), safe_arm="off", tier="medium")
 # PostToolUse(Read): replace a re-read of unchanged, still-in-context content with a pointer.
 READ_DEDUPE = DecisionPoint("read_dedupe", ("off", "pointer"), safe_arm="off", tier="low")
+# PreToolUse(Task|Agent): append a one-line "conclusions, not dumps" brief to the subagent prompt.
+SUBAGENT_BRIEF = DecisionPoint("subagent_brief", ("off", "on"), safe_arm="off", tier="medium")
 _DEFAULT_ARMS = {
     COMPRESSION.name: "standard",
     PRETRIM.name: "off",
     READ_DEDUPE.name: "pointer",
+    SUBAGENT_BRIEF.name: "off",
 }
 
 

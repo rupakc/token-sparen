@@ -37,6 +37,11 @@ def session_ctx(event: Event, overlay: Mapping[str, Any], path: Path) -> Session
     )
 
 
+def edited_paths(overlay: Mapping[str, Any]) -> list[str]:
+    value = overlay.get("edited_paths")
+    return [p for p in value if isinstance(p, str)] if isinstance(value, list) else []
+
+
 def last_prompt(overlay: Mapping[str, Any]) -> str | None:
     value = overlay.get("last_prompt")
     return value if isinstance(value, str) else None
@@ -78,14 +83,21 @@ def touched_path(event: Event) -> str | None:
 
 
 def record_paths(event: Event, *, env: Mapping[str, str] | None = None) -> None:
-    """Remember the file a Read/Edit/Write-style tool touched (most recent last, max 20)."""
+    """Remember the file a Read/Edit/Write-style tool touched (most recent last, max 20).
+
+    Edited files are also kept apart (``edited_paths``) for the PreCompact summary instructions.
+    """
     file_path = touched_path(event)
     if file_path is None:
         return
+    edited = event.tool is not None and event.tool.category == "edit"
 
     def apply(state: dict[str, Any]) -> dict[str, Any]:
         paths = [p for p in recent_paths(state) if p != file_path]
         state["recent_paths"] = [*paths, file_path][-RECENT_PATHS:]
+        if edited:
+            done = [p for p in edited_paths(state) if p != file_path]
+            state["edited_paths"] = [*done, file_path][-RECENT_PATHS:]
         return state
 
     _update(overlay_path(event, env), apply, env)

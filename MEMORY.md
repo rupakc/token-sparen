@@ -181,3 +181,44 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   earlier read is at most 8 turns old; an older one is re-sent in full and its entry refreshed. The
   pointer text itself leaves the agent a way out ("re-read with a different range or after edits"),
   so a mistaken pointer costs one extra ranged read, not lost information.
+
+## 2026-11-26 Governor, boundary advice, subagent shaping (Task 15)
+- **Context window is not guessed per model.** Resolution: `~/.token-sparen/windows.json`
+  (`{session_id: {"window": N}}` or `{session_id: N}`, written by the statusline in Task 16, read
+  only here) -> env `CLAUDE_CODE_MAX_CONTEXT_TOKENS` -> `[governor.windows]` fnmatch table on the
+  model id (packaged table holds only `default = 200000`) -> 200 000. `ctx_pct` = last main-chain
+  call's input + cache_read + cache_write over the window.
+- **Incremental burn meter.** The session overlay key `governor` caches the byte offset reached
+  (end of the last complete line), running burn, last call context/model, the last 64 message ids
+  (streamed records of one id count once, last value wins), EWMA (alpha 0.3) of per-turn burn
+  (closed on each UserPromptSubmit) and a digest of the first min(offset, 256) bytes. A smaller
+  file, a changed head or another transcript path restarts from 0. A first contact with more than
+  `max_unparsed_bytes = 50 MB` unparsed is skipped: `burn_unknown` (economy levels and the hard
+  stop are off for the session) and the last call is found in the trailing `tail_scan_bytes = 1 MB`.
+  Otherwise a parse stops after `parse_budget_ms = 150` and continues in the next hook
+  (`catching_up`: no advisories, no EWMA update meanwhile). No new bytes = a stat, no lock.
+- **Advisories** are `user_message` (systemMessage, terminal only), on UserPromptSubmit and
+  PostToolUse(+Failure). Keys `ctx:notice|advise`, `econ:notice|advise` in overlay
+  `governor_advised`, each said once per session; reaching advise implies notice. Levels do not
+  re-arm after a compaction (strictly once per session).
+- **Hard stop** (`[governor] hard_stop = true` and burn >= `session_budget_tokens`): PreToolUse
+  deny of Read/Bash/WebFetch/WebSearch/Task/Agent only; never edits. Reason names
+  `TOKEN_SPAREN_GOVERNOR__HARD_STOP=false` and `/token-sparen`.
+- **Boundary**: identifiers = path basenames, snake_case/camelCase (>= 4 chars), backticked words,
+  lower-cased; compared with the last 3 prompts' identifiers plus identifiers of `recent_paths`.
+  Extra guard: a prompt with < `min_identifiers = 2` identifiers (or an empty history) is never a
+  boundary, otherwise "yes, go on" would always look like a topic shift. Cooldown 10 turns.
+- **PreCompact output is plain-text stdout** (Claude Code docs: a non-blocking PreCompact hook's
+  stdout becomes the compaction summary instructions; `systemMessage` is discarded). New
+  `Action.compact_instructions` + `ClaudeAdapter.render_text`; entry writes that text instead of a
+  JSON object for PreCompact only. Instructions ask to keep recovery-marker paths and
+  `token-sparen show <id>` commands verbatim and list the files edited this session (tracking now
+  keeps `edited_paths`, last 20). Composed after read de-dupe's handler (which sets
+  `last_compact_turn`).
+- **Subagent brief**: point `subagent_brief` (`off`/`on`, safe `off`, tier medium), static
+  default `off`. Only Task/Agent with a non-empty string `prompt` not already holding the brief;
+  every such decision is logged. `updatedInput` without `permissionDecision` may be re-checked in
+  auto mode (host docs); acceptable while the arm is off by default.
+- **Agent results**: a plain-string Agent/Task result is compressed by the normal PostToolUse
+  path; a structured result (`{"content": [...], ...}`) is not a replaceable shape yet and is left
+  untouched.

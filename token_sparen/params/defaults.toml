@@ -79,7 +79,35 @@ max_entries = 200  # reads remembered per session (oldest dropped first)
 max_turn_gap = 8  # pointer only if the earlier read is at most this many turns old
 
 [governor]
-# filled by later tasks
+# Advisory only (terminal messages, zero model tokens) unless hard_stop is set by the user.
+enabled = true
+session_budget_tokens = 500000000  # economy budget: billed context tokens summed over calls
+econ_notice = 0.50  # share of the budget
+econ_advise = 0.80
+ctx_notice = 0.60  # risk: share of the context window used by the last call
+ctx_advise = 0.80
+hard_stop = false  # true: at >= 100 % of the budget, deny Read/Bash/WebFetch/WebSearch/Task/Agent
+ewma_alpha = 0.3  # per-turn burn smoothing
+max_unparsed_bytes = 50000000  # first contact with a larger unparsed transcript: burn unknown
+tail_scan_bytes = 1000000  # then the last call is looked up in this many trailing bytes
+parse_budget_ms = 150  # per hook; a longer catch-up parse continues in the next hook
+
+# Context window by model (fnmatch patterns on the model id). Conservative on purpose: only a
+# default. The statusline-recorded window and CLAUDE_CODE_MAX_CONTEXT_TOKENS take precedence.
+[governor.windows]
+default = 200000
+
+[boundary]
+enabled = true
+min_ctx_pct = 0.40  # advise /compact at a task boundary only when context is this full
+max_jaccard = 0.15  # identifier overlap with recent prompts and paths below this = new task
+min_turn = 3
+history = 3  # recent prompts compared against
+min_identifiers = 2  # a prompt with fewer identifiers is never a boundary
+cooldown_turns = 10
+
+[subagent]
+enabled = true  # the brief is still a decision point (static default arm: off)
 
 [statusline]
 # filled by later tasks
