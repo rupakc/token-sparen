@@ -65,6 +65,12 @@ def _truthy(value: object) -> bool:
     return isinstance(value, str) and value.strip().lower() in {"1", "true"}
 
 
+def _received(entry: list[Any]) -> set[str]:
+    """Reward kinds a pending entry ``[point, bucket, arm, ts, [kinds]]`` already received."""
+    kinds = entry[4] if len(entry) > 4 else None
+    return {k for k in kinds if isinstance(k, str)} if isinstance(kinds, list) else set()
+
+
 def _draw(cands: list[Cand], tau: float, safe: str, rng: random.Random) -> str:
     """One constrained Thompson draw (no floor)."""
     best, best_s = safe, 0.0
@@ -312,14 +318,20 @@ class Engine:
         """Fold a savings and/or regret observation into the session overlay evidence.
 
         Values are clamped to [0, 1]; NaN or non-numeric values are ignored and logged. Unknown
-        (evicted) decision ids and safe-arm decisions are no-ops. Never raises.
+        (evicted) decision ids and safe-arm decisions are no-ops. Each decision takes at most one
+        savings and one regret reward; a repeat of a kind is ignored and logged. Callers must
+        report ``regret=0.0`` explicitly when the regret window expires without regret (Task 21):
+        silence is not evidence. Never raises.
         """
         try:
             self._reward(decision_id, savings, regret)
         except Exception as exc:  # noqa: BLE001 - never raise into a hook
             log_error(self._env, "engine", f"reward: {type(exc).__name__}: {exc}")
 
-    def _pending(self, state: Mapping[str, Any], decision_id: str) -> tuple[str, str, str] | None:
+    def _pending(
+        self, state: Mapping[str, Any], decision_id: str
+    ) -> tuple[str, str, str, list[Any]] | None:
+        """``(point, bucket, arm, entry)`` of a rewardable pending decision, else None."""
         pending = state.get(PENDING_KEY)
         entry = pending.get(decision_id) if isinstance(pending, dict) else None
         if not isinstance(entry, list) or len(entry) < 3:
@@ -333,7 +345,7 @@ class Engine:
             return None
         if arm == known.safe_arm or arm not in known.arms:
             return None  # the safe arm's S and R are 0 by definition
-        return point, bucket, arm
+        return point, bucket, arm, entry
 
     def _reward(self, decision_id: str, savings: float | None, regret: float | None) -> None:
         values: dict[Kind, float] = {}
@@ -347,8 +359,18 @@ class Engine:
         if not values or self._overlay is None:
             return
         path = self._overlay
-        if self._pending(jsonstore.read(path, {}, self._env), decision_id) is None:
+        found = self._pending(jsonstore.read(path, {}, self._env), decision_id)
+        if found is None:
             return  # nothing to update: skip the locked write
+        repeat = sorted(k for k in values if k in _received(found[3]))
+        if repeat:
+            log_error(
+                self._env, "engine", f"reward: {decision_id} already rewarded {repeat}, ignored"
+            )
+            for k in repeat:
+                del values[k]
+            if not values:
+                return
         gamma = min(1.0, max(0.0, self._param(("gamma",), 0.98)))
         cap = self._param(("posterior_cap",), 50.0)
         cap = cap if cap > 0.0 else 50.0
@@ -358,19 +380,28 @@ class Engine:
             found = self._pending(state, decision_id)
             if found is None:
                 return state
+            *where, entry = found
+            done = _received(entry)
+            fresh = {k: x for k, x in values.items() if k not in done}  # a racing reward won
+            if not fresh:
+                return state
+            while len(entry) < 4:
+                entry.append(time.time())
+            del entry[4:]
+            entry.append(sorted(done | set(fresh)))
             node: dict[str, Any] = state
-            for key in (SESSION_KEY, *found):
+            for key in (SESSION_KEY, *where):
                 child = node.get(key)
                 if not isinstance(child, dict):
                     child = node[key] = {}
                 node = child
-            for kind, x in values.items():
+            for kind, x in fresh.items():
                 old = _EMPTY
                 if node.get(kind) is not None:
                     try:
                         old = Evidence.from_list(node[kind])
                     except ValueError:
-                        log(f"reward: corrupt session evidence {'/'.join(found)}/{kind}, reset")
+                        log(f"reward: corrupt session evidence {'/'.join(where)}/{kind}, reset")
                 node[kind] = old.observe(x, gamma=gamma, cap=cap).to_list()
             return state
 

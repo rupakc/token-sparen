@@ -49,6 +49,9 @@ events per fresh bucket) and the Monte-Carlo propensity is unusable for IPS on r
   `p_safe = Π_j (1 − P_j)` in the sampling branch, logged `p = floor·[safe] + (1−floor)·p_branch`.
   Integrated in logit space by the trapezoid rule (smooth, no endpoint singularities): Σ p = 1
   within 1e-6, agrees with 100 000-draw frequencies within 0.005. Decision ids are uuid4.
+- §7.5 reward bookkeeping: each decision takes at most one savings and one regret reward (a repeat
+  is ignored and logged); regret detection must report regret 0 explicitly when its window
+  expires (silence is not evidence). `cold_obs` is removed (superseded by `ladder_obs`).
 
 ---
 

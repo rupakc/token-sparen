@@ -479,8 +479,30 @@ def test_learn_defaults_present() -> None:
     assert learn["enabled"] is True
     assert "propensity_samples" not in learn  # exact propensity, no Monte-Carlo
     assert learn["pending_max"] == 500
-    assert learn["cold_obs"] == 3
+    assert "cold_obs" not in learn  # superseded by ladder_obs
     assert learn["ladder_obs"] == 20
     assert learn["optin"] == {}
     assert learn["tau"] == {"low": 0.10, "medium": 0.05, "high": 0.01, "none": 1.0}
     assert learn["floor"] == {"low": 0.05, "medium": 0.05, "high": 0.02, "none": 0.0}
+
+
+def test_one_reward_per_kind_per_decision(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    eng = _engine(home, extra={"learn": {"floor": {"low": 0.0}}})
+    ctx = _ctx(home)
+    d = next(
+        d
+        for d in (eng.decide(READ_DEDUPE, {"cat": "read", "size": "sm"}, ctx) for _ in range(50))
+        if d.arm != "off"
+    )
+    eng.reward(d.decision_id, 0.8, None)
+    eng.reward(d.decision_id, 0.1, None)  # second savings reward: ignored + logged
+    eng.reward(d.decision_id, None, 0.0)  # first regret reward: applied (explicit "no regret")
+    eng.reward(d.decision_id, 0.5, 1.0)  # both kinds already received: ignored
+    doc = json.loads(_overlay(home).read_text("utf-8"))
+    node = doc["evidence"]["read_dedupe"]["cat=read|size=sm"][d.arm]
+    sav, reg = Evidence.from_list(node["savings"]), Evidence.from_list(node["regret"])
+    assert (sav.n, sav.ea) == (1.0, pytest.approx(0.8))
+    assert (reg.n, reg.ea) == (1.0, 0.0)
+    assert sorted(doc["pending"][d.decision_id][4]) == ["regret", "savings"]
+    assert sum("already rewarded" in line for line in _log_lines(home)) == 2

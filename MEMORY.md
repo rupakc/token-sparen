@@ -489,3 +489,8 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   decide ~1.4 ms incl. the locked pending write. Gauss-Legendre / plain Simpson on s were rejected:
   they miss narrow peaks (sum error 1e-2) and endpoint singularities (cold pointer Beta(5.4, 0.6)).
 - **Decision ids are uuid4** (not the injected rng); choices stay deterministic under a seeded rng.
+- **One reward per kind per decision**: pending entry is `[point, bucket, arm, ts, [kinds]]`; a
+  second savings (or regret) reward for the same decision is ignored with one log line per call.
+  Task 21 must report `regret=0.0` explicitly when the regret window expires.
+- `cold_obs` removed from code and defaults (superseded by `ladder_obs`); the plan's mention of it
+  is historical.
