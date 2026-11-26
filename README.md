@@ -16,6 +16,9 @@ planned (M2/M3), see [How it learns](#how-it-learns-planned).
 
 - Claude Code with plugin support.
 - `python3` >= 3.11 on your `PATH` (the hooks run `python3`). No other runtime dependencies.
+  macOS's system `python3` is often older than 3.11: check with `python3 --version`, and run
+  `/token-sparen doctor` (below) first if you are unsure. Hooks fail open, so an old Python means
+  token-sparen silently does nothing rather than breaking your session.
 - macOS and Linux. Windows: hooks need a `python3` on `PATH` (`token-sparen doctor` suggests
   `py -3` or `python` if it is missing), and the statusline launcher is not supported yet.
 
@@ -26,14 +29,19 @@ claude plugin marketplace add rupakc/token-sparen
 claude plugin install token-sparen@token-sparen
 ```
 
-That is all the plugin needs. The `/token-sparen` skill works without anything else: it runs the
-bundled CLI through `hooks/run_cli.py`.
+That is all the plugin needs. Start a new Claude Code session afterwards (or reload plugins) so
+the hooks are picked up.
 
-Optional: the `token-sparen` console command (handy in your own terminal). It is **not published
-on PyPI yet**; from a checkout of this repository run `pip install .`.
+**Using the CLI as a plugin-only user.** You do not need the `token-sparen` command: ask Claude
+`/token-sparen` (stats), `/token-sparen doctor`, `/token-sparen disable`, and it runs the bundled CLI
+for you. To run it yourself in a terminal, call the bundled launcher from the plugin directory:
+`python3 <plugin dir>/hooks/run_cli.py <args>` (for example `... stats`). The plugin directory is the
+`installPath` entry for `token-sparen` in `~/.claude/plugins/installed_plugins.json`.
 
-**Verify:** in Claude Code run `/token-sparen` (it prints your totals and runs the checks), or in a
-terminal run `token-sparen doctor`. `doctor` checks Python, the state directory, hook files and a
+Optional: the `token-sparen` console command (handy in your own terminal). It is **not published on PyPI yet**;
+from a checkout of this repository run `pip install .`.
+
+**Verify:** in Claude Code run `/token-sparen doctor`, or in a terminal `token-sparen doctor`. `doctor` checks Python, the state directory, hook files and a
 synthetic compress-and-recover round trip.
 
 ## What changes in your session
@@ -54,18 +62,20 @@ All of this is on by default. Nothing is sent anywhere.
   Code cannot replace the result of a failed call, so a failing Bash command always shows in full.
 - **Guards (block a call).** Exactly these are blocked, with a one-sentence reason that names the
   bounded alternative (for example "add `-maxdepth 3`"):
-  1. `find /` or `find ~` without `-maxdepth`;
-  2. recursive `grep`/`rg` into `node_modules`, `.git`, `dist`, `build` or `.venv` without an
-     include filter;
-  3. `cat` or Read of a text file larger than 5 MB without a range;
-  4. `ls -R` on `/` or `~`.
-  
+  1. `find` starting at `/`, `~` or `~/` without `-maxdepth`;
+  2. recursive `grep`/`rg` into an existing `node_modules`, `.git`, `dist`, `build` or `.venv`
+     directory without an include filter;
+  3. `cat` of a file larger than 5 MB whose output goes to the model (not when piped or
+     redirected), and the Read tool on a text file larger than 5 MB without an offset/limit range
+     (images, PDFs and notebooks are not blocked);
+  4. `ls -R` on `/`, `~` or `~/`.
+
   A command that cannot be parsed is never blocked. Turn guards off with `guards.enabled = false`.
 - **Read de-duplication.** Re-reading an unchanged file that is still in context (within 8 turns,
   not compacted since) returns a short pointer, `[token-sparen: unchanged since turn N ...]`,
   instead of the file again.
 - **Notices (terminal only, no model tokens).** Budget notices when your session passes 50 % and
-  80 % of the configured token budget, context-window notices at 60 % and 80 %, and at most an
+  80 % of the configured token budget (default 500M billed context tokens), context-window notices at 60 % and 80 %, and at most an
   occasional "this looks like a new task, consider `/compact`" hint when context is fairly full.
   token-sparen never compacts for you; before a compaction it asks that recovery paths be kept in
   the summary.
@@ -86,30 +96,45 @@ A trimmed result ends with a marker:
 
 - `token-sparen show <id>` prints the full text (the id is 12 hex characters), or just read the
   `<path>` file. Add `--project <dir>` if you are not in that project.
-- Full outputs are stored in `<project>/.token-sparen/outputs/<id>.txt` and expire after 14 days
-  (also capped at 200 files / 100 MB, oldest first).
+- Full outputs are stored in `<project>/.token-sparen/outputs/<id>.txt`. Old files are pruned
+  whenever a new one is saved: those older than 14 days, then the oldest beyond 200 files or 100 MB.
 - Ask the model to read the file when it needs more; most of the time the visible lines suffice.
 
 ## Turning it off
 
 | Scope | How |
 |---|---|
-| Everywhere | `TOKEN_SPAREN_DISABLE=1` in the environment (every hook becomes a no-op) |
-| This session | `/token-sparen disable` (and `/token-sparen enable`), or `token-sparen session disable` (acts on the project's most recent session if you pass no `--session`) |
-| One mechanism | set its `enabled` key to `false` in config, e.g. `guards.enabled` |
-| Uninstall | `claude plugin uninstall token-sparen@token-sparen`; if you installed the statusline, run `token-sparen statusline uninstall` first |
+| Everywhere | `TOKEN_SPAREN_DISABLE=1` (every hook becomes a no-op). It must be in the environment Claude Code is **launched** from; setting it in a running session's shell is too late |
+| This session | `/token-sparen disable` (and `/token-sparen enable`), or `token-sparen session disable` (with no `--session` it acts on this project's most recently active session, if active in the last 6 hours; otherwise pass `--session ID`) |
+| The plugin | `claude plugin disable token-sparen` (and `claude plugin enable token-sparen`) |
+| One mechanism | `guards.enabled`, `read_dedupe.enabled`, `governor.enabled`, `boundary.enabled` or `subagent.enabled` set to `false`. There is no `compression.enabled`: turn compression off with one of the first three rows |
+| Uninstall | `claude plugin uninstall token-sparen@token-sparen`; run `token-sparen statusline uninstall` first if you installed the statusline |
+
+Uninstalling leaves `~/.token-sparen/` and each project's `.token-sparen/` in place; both are safe
+to delete.
 
 ## What it writes to disk
 
-- `<project>/.token-sparen/`: recovery files under `outputs/`, plus a `.gitignore` containing `*`
-  so the folder is never committed. Created on first compression in that project.
-- `~/.token-sparen/` (override with `TOKEN_SPAREN_HOME`): project index, per-project and
-  per-session state (decision log, token ledger, read de-dupe memory), `logs/errors.jsonl`,
-  sampled `logs/latency.jsonl`, and the optional `config.toml`. Project folders are keyed by a hash,
-  never by a raw path.
-- Claude Code `settings.json`: **only** if you run `token-sparen statusline install`
-  (see below), with a backup and exact restore. Pruning tools from your settings is planned
-  (M3) and will be opt-in too.
+Everything stays on your machine, but some of it is plain text you should know about.
+
+- `<project>/.token-sparen/`: recovery files under `outputs/` (full tool outputs, so they can
+  contain anything a command printed), plus a `.gitignore` containing `*` so the folder is never
+  committed. Created on the first compression in that project.
+- `~/.token-sparen/` (override with `TOKEN_SPAREN_HOME`):
+  - `config.toml` (yours, optional), `trusted_extensions.json`, `statusline_install.json` (records
+    your settings file's path and original `statusLine`), `statusline.sh` (launcher copy),
+    `windows.json` (context window per session), `project_keys.json` (index from project to hash
+    key);
+  - `logs/errors.jsonl` and sampled `logs/latency.jsonl`;
+  - `projects/<key>/`: `decisions.jsonl` (per-decision log; keeps the first 500 characters of Bash
+    commands), `sessions/<id>.json` (session overlay: the **last user prompt, up to 2000
+    characters**, recently read/edited **file paths**, identifiers used for task-boundary
+    detection, the token ledger and read de-dupe memory), `last_active.json` (the project's most
+    recent session id) and `floor_warned.json`. Project folders are named by a hash, but the files inside hold
+    the plain text above.
+- Claude Code `settings.json`: **only** if you run `token-sparen statusline install` (see below),
+  with a backup and exact restore. Pruning tools from your settings is planned (M3) and will be
+  opt-in too.
 - Hooks fail open: any internal error or a hook slower than 400 ms returns "no change" and logs one
   line to `errors.jsonl`.
 
@@ -134,7 +159,7 @@ Example (colours on a terminal; `NO_COLOR` or `statusline.ascii = true` simplify
 | `ctx` | share of the context window used by the last call |
 | `burn` | billed context tokens summed over calls, against the session budget |
 | `rate` | recent context growth per turn (`+2.4k/turn`) and your 5-hour rate-limit use when Claude Code reports it |
-| `saved` | net tokens removed (after recovery reads), with an approximate dollar figure derived from the session's average cost per token reported by Claude Code |
+| `saved` | tokens removed so far, with an approximate dollar figure derived from the session's average cost per token reported by Claude Code. Recovery reads are not yet subtracted (planned, M2), so treat it as gross savings |
 | `trims` | `✂` trims made, `↺` recovery reads (regrets; counted from M2, shows 0 for now) |
 | `learn` | learner state; `cold` until learning ships (M2) |
 
@@ -180,6 +205,8 @@ ignored and `doctor` flags it).
 
 Installed Python packages can add compressors, decision points, signals or host adapters through
 the entry-point groups `token_sparen.compressors`, `.decision_points`, `.signals` and `.adapters`.
+Installing such a package is itself the trust decision: entry points have no separate trust step,
+so install only packages you trust.
 The extension interface is versioned (`token_sparen.EXTENSION_API_VERSION`, currently `1.0`);
 an extension may declare `TOKEN_SPAREN_EXTENSION = {"api": "1.0"}` and one that needs a newer or
 different major is skipped. Check a compressor with
@@ -191,7 +218,9 @@ and the first 40 lines, and `--yes` records it in `~/.token-sparen/trusted_exten
 edit revokes trust, and a repository cannot trust its own files. Symlinked, foreign-owned and
 world-writable files are skipped. `token-sparen extensions list` shows each drop-in's status;
 `extensions untrust <path|sha256>` revokes. Built-in compressors win unless
-`[extensions] allow_override = true` is set in `~/.token-sparen/config.toml`.
+`[extensions] allow_override = true` is set in `~/.token-sparen/config.toml` or via
+`TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE`; a project `token-sparen.toml` and `config set` cannot
+enable it.
 
 **What trust means: trusting a drop-in gives it full code execution as you**, with your files and
 credentials, every time a hook uses it. Only trust code you have read or whose author you trust.
@@ -201,9 +230,10 @@ a trusted file in another project also loads.
 
 ## Privacy
 
-Everything is local. token-sparen has no telemetry and makes no network requests. State and
-recovered outputs stay on your machine (a hash-keyed `~/.token-sparen/` and the project's
-git-ignored `.token-sparen/`).
+Nothing leaves your machine. token-sparen has no telemetry and makes no network requests. Its local
+files are plain text, though: recovered outputs, your last prompt, file paths and command prefixes
+are stored as described in [What it writes to disk](#what-it-writes-to-disk). Delete
+`~/.token-sparen/` and `<project>/.token-sparen/` at any time.
 
 ## How it learns (planned)
 
