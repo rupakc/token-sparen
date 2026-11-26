@@ -4,7 +4,7 @@ Reports are built from the owner's own transcripts and decision logs, so they ho
 only and are written where they can never be committed by accident: never under the git work
 tree of the current directory, never under this package's own checkout, and never inside any
 git work tree at all (``git rev-parse`` succeeds, or an ancestor holds a ``.git`` entry). The
-file is written atomically with mode 0600; missing parent directories are created 0700.
+file is written atomically with mode 0600; every missing parent directory is created 0700.
 """
 
 from __future__ import annotations
@@ -80,10 +80,23 @@ def check_out_path(path: Path) -> Path:
     return out
 
 
+def _mkdirs_private(directory: Path) -> None:
+    """Create ``directory`` and any missing parent, each new one mode 0700 (whatever the umask);
+    existing directories are left as they are."""
+    missing: list[Path] = []
+    node = directory
+    while not node.exists():
+        missing.append(node)
+        node = node.parent
+    for d in reversed(missing):
+        d.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(d, 0o700)
+
+
 def write_private(path: Path, data: Any) -> Path:
     """Check ``path``, then write ``data`` as JSON atomically with mode 0600."""
     out = check_out_path(path)
-    out.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _mkdirs_private(out.parent)
     fd, tmp = tempfile.mkstemp(dir=out.parent, prefix=".report-", suffix=".tmp")
     try:
         os.fchmod(fd, 0o600)
