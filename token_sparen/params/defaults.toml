@@ -170,9 +170,14 @@ none = 1.0
 
 # Decision points held at their safe arm: the engine decides them (bucket, breaker, propensity 1)
 # but never explores a trimming arm. The subagent brief stays off until the live benchmark shows
-# non-inferior quality (spec 6.7); it also has no reward signal yet.
+# non-inferior quality (spec 6.7); it also has no reward signal yet. `compression = true` rules
+# out every output trim (the static fallback and the learned pre-trim included); listed here so
+# `token-sparen config set learn.hold.<point> true` works for one session.
 [learn.hold]
 subagent_brief = true
+compression = false
+pretrim = false
+read_dedupe = false
 
 # Propensity floor per tier: probability of choosing the safe arm outright.
 [learn.floor]

@@ -532,6 +532,45 @@ def test_config_set_rejects_unknown_keys(
     assert _overlay(env, "s")["config_overrides"] == {"compression": {"min_tokens": 3000}}
 
 
+@pytest.mark.parametrize("point", ["compression", "pretrim", "read_dedupe"])
+def test_config_set_can_hold_a_point_per_session(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str], point: str
+) -> None:
+    key = f"learn.hold.{point}"
+    assert main(["config", "set", key, "true", "--session", "h1"]) == 0, capsys.readouterr().err
+    assert _overlay(env, "h1")["config_overrides"] == {"learn": {"hold": {point: True}}}
+
+
+def test_config_set_compression_hold_stops_trimming_in_that_session(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    from sampleoutputs import big_pytest
+
+    def post(sid: str, n: int) -> str:
+        payload = {
+            "session_id": sid,
+            "cwd": Path.cwd().as_posix(),
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": f"pytest -q t{n}.py"},
+            "tool_use_id": f"{sid}-{n}",
+            "tool_response": {
+                "stdout": big_pytest(20_000),
+                "stderr": "",
+                "interrupted": False,
+                "isImage": False,
+            },
+        }
+        return _hook("PostToolUse", payload, env)
+
+    learn_off = {**env, "TOKEN_SPAREN_LEARN__ENABLED": "false"}
+    env.update(learn_off)
+    assert "updatedToolOutput" in post("h2", 1)  # static standard trims
+    assert main(["config", "set", "learn.hold.compression", "yes", "--session", "h2"]) == 0
+    assert post("h2", 2) == "{}"
+    assert "updatedToolOutput" in post("h3", 3)  # other sessions unaffected
+
+
 def test_config_set_uses_last_active_session(env: dict[str, str]) -> None:
     cwd = Path.cwd().as_posix()
     _hook("UserPromptSubmit", {"session_id": "live-9", "cwd": cwd, "prompt": "hi"}, env)

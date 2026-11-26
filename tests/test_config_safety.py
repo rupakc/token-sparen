@@ -313,7 +313,7 @@ def test_project_direction_per_key(
     proj, env = _setup(tmp_path / "base")
     base = load_config(proj, env).get(key)
     if key == "learn.hold.compression":
-        base = None
+        assert base is False  # listed in the defaults so `config set` can hold it per session
     for name, value, accepted in (("t", tight, True), ("l", loose, False), ("j", junk, False)):
         proj, env = _setup(tmp_path / name, project=_toml(key, value))
         got = load_config(proj, env).get(key)

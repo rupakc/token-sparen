@@ -1078,3 +1078,4 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   per-decision `regret` part stays as information only.
 - `regret_known_fraction` denominator = evaluated non-safe-arm decisions (1.0 when none).
 - `ope --target engine-snapshot` reads every log once for the outcome join (global by decision id, across rotation generations and files), then maps each decision to its project's engine.
+- `defaults.toml [learn.hold]` lists `compression`, `pretrim`, `read_dedupe = false` so `token-sparen config set learn.hold.<point> true` (which only accepts known keys) can hold a point for one session.
