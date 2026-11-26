@@ -131,28 +131,95 @@ def flag_off(value: object) -> bool:
     return isinstance(value, str) and value.strip().lower() in _OFF
 
 
-# The project file is committed, so possibly someone else's: of the learning settings it may set
-# only these leaves, each only to a value tighter than every other layer's (defaults, user file,
-# env, session overrides). Everything else under [learn], and extensions.allow_override, is user,
-# env or session only. Directions: "min" lower is safer, "max" higher is safer, "on" only true,
-# "off" only false. Not settable: breaker_window (neither direction is uniformly safer) and
-# breaker_reentry_scale (it scales savings, regret and n alike, so neither direction is safer).
-PROJECT_LEARN_KEYS: dict[tuple[str, ...], str] = {
-    ("learn", "tau", "*"): "min",  # a lower regret target trims less
-    ("learn", "floor", "*"): "max",  # a higher floor keeps more outputs untouched
-    ("learn", "enabled"): "off",
-    ("learn", "hold", "*"): "on",  # a held point never explores
-    ("learn", "ladder_obs"): "max",  # stronger arms unlock later
-    ("learn", "breaker_min_obs"): "min",  # the breaker judges sooner
-    ("learn", "breaker_every"): "min",  # ... and more often
-    ("learn", "breaker_lcb_q"): "max",  # a higher quantile trips more readily
-    ("learn", "breaker_sessions"): "max",  # paused longer
-}
+# The project file (``<project>/token-sparen.toml``) is committed, so possibly someone else's. It
+# is deny-by-default: a cloned repository's config may only make token-sparen intervene less or
+# keep more, never trim more, recover less or block more. Every project leaf is checked against
+# ``PROJECT_POLICY`` (first matching pattern; ``*`` one segment, ``**`` any rest) and the trusted
+# value (defaults, user file, env, session overrides); an unlisted key is user-only. Kinds:
+#   free       cosmetic or advisory, normal precedence (still type-checked)
+#   user_only  never from a project
+#   max / min  project may only raise / lower it (numbers, within bounds)
+#   true_only / false_only   only that boolean (holds; switching a mechanism off)
+#   union      list the project may only add to (tools never compressed)
+#   enum       an ordered choice the project may only move toward the conservative end
+RATIO = (0.0, 1.0)
+COUNT = (0.0, 1e12)
+PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
+    # learning: only tighter targets, holds and stricter breaker thresholds
+    (("learn", "tau", "*"), "min", RATIO),  # a lower regret target trims less
+    (("learn", "floor", "*"), "max", RATIO),  # more outputs left untouched
+    (("learn", "hold", "*"), "true_only", None),  # a held point never explores
+    (("learn", "ladder_obs"), "max", COUNT),  # stronger arms unlock later
+    (("learn", "breaker_min_obs"), "min", (1.0, 1e12)),  # the breaker judges sooner
+    (("learn", "breaker_every"), "min", (1.0, 1e12)),  # ... and more often
+    (("learn", "breaker_lcb_q"), "max", (0.0, 0.49)),  # trips more readily
+    (("learn", "breaker_sessions"), "max", COUNT),  # paused longer
+    # learn.enabled: switching learning off would fall back to the static arms (standard
+    # compression), ignoring the user's holds, tau and floor; a project uses learn.hold instead.
+    # breaker_window / breaker_reentry_scale: neither direction is uniformly safer.
+    (("learn", "**"), "user_only", None),
+    (("extensions", "**"), "user_only", None),
+    (("facts", "**"), "user_only", None),
+    (("prune", "**"), "user_only", None),
+    (("loopguard", "**"), "user_only", None),
+    # compression: keep more, compress less
+    (("compression", "min_tokens"), "max", COUNT),
+    (("compression", "min_saving_ratio"), "max", RATIO),
+    (("compression", "skip_tools"), "union", None),
+    (("compression", "save_deadline_ms"), "free", COUNT),  # lower = fewer replacements
+    (("compression", "levels", "*", "head"), "max", COUNT),
+    (("compression", "levels", "*", "tail"), "max", COUNT),
+    (("compression", "levels", "*", "keep_ratio"), "max", RATIO),
+    (("compression", "json", "items", "*"), "max", COUNT),
+    (("compression", "diff", "context", "*"), "max", COUNT),
+    (("compression", "stacktrace", "edge_frames", "*"), "max", COUNT),
+    (("compression", "test_report", "block_lines", "*"), "max", COUNT),
+    (("compression", "search", "per_file", "*"), "max", COUNT),
+    (("compression", "pplx", "results", "*"), "max", COUNT),
+    (("compression", "log", "tail"), "max", COUNT),
+    (("compression", "compiler", "warnings", "*"), "enum", ("count", "keep")),
+    (("compression", "persisted_max_bytes"), "user_only", None),
+    (("compression", "json", "max_bytes"), "user_only", None),
+    (("compression", "**"), "user_only", None),
+    (("pricing", "*"), "free", COUNT),  # reporting only
+    # recovery: keep saved outputs longer, never less
+    (("recovery", "ttl_days"), "max", COUNT),
+    (("recovery", "max_files"), "max", COUNT),
+    (("recovery", "max_bytes"), "max", COUNT),
+    # guards: block less
+    (("guards", "enabled"), "false_only", None),
+    (("guards", "max_read_bytes"), "max", COUNT),
+    (("guards", "pretrim_lines"), "max", COUNT),
+    (("guards", "pretrim_head"), "max", COUNT),
+    # read de-dupe: fewer pointers
+    (("read_dedupe", "enabled"), "false_only", None),
+    (("read_dedupe", "min_tokens"), "max", COUNT),
+    (("read_dedupe", "max_turn_gap"), "min", COUNT),
+    (("read_dedupe", "max_entries"), "min", COUNT),
+    # governor: advisories are free; budgets, the hard stop and parsing are the user's
+    (("governor", "enabled"), "false_only", None),
+    (("governor", "econ_notice"), "free", RATIO),
+    (("governor", "econ_advise"), "free", RATIO),
+    (("governor", "ctx_notice"), "free", RATIO),
+    (("governor", "ctx_advise"), "free", RATIO),
+    (("governor", "**"), "user_only", None),  # hard_stop, session_budget_tokens, windows, ...
+    (("boundary", "enabled"), "false_only", None),
+    (("boundary", "*"), "free", COUNT),  # advice thresholds
+    (("subagent", "enabled"), "false_only", None),
+    (("statusline", "**"), "free", COUNT),
+    (("adapter", "*"), "free", COUNT),
+]
 SAFETY_WARNED_FILE = "config_safety_warned.json"
 
 
 def _is_num(value: object) -> bool:
-    return not isinstance(value, bool) and isinstance(value, int | float) and math.isfinite(value)
+    """A finite real number (bool excluded; an int too large for a float is rejected)."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
 
 
 def _dig(data: Mapping[str, Any] | None, path: tuple[str, ...]) -> Any:
@@ -164,27 +231,86 @@ def _dig(data: Mapping[str, Any] | None, path: tuple[str, ...]) -> Any:
     return node
 
 
-def _direction(path: tuple[str, ...]) -> str | None:
-    found = PROJECT_LEARN_KEYS.get(path)
-    if found is None and len(path) > 1:
-        found = PROJECT_LEARN_KEYS.get((*path[:-1], "*"))
-    return found
+def _matches(pattern: tuple[str, ...], path: tuple[str, ...]) -> bool:
+    if pattern and pattern[-1] == "**":
+        head = pattern[:-1]
+        return len(path) >= len(head) and _matches(head, path[: len(head)])
+    return len(pattern) == len(path) and all(
+        p in ("*", k) for p, k in zip(pattern, path, strict=True)
+    )
 
 
-def _tighter(value: Any, base: Any, direction: str) -> bool:
-    """Is the project ``value`` a scalar of the right type and at least as safe as ``base``
-    (the trusted value; for numbers, the packaged default when the trusted one is invalid)?"""
-    if direction == "on":
-        return value is True
-    if direction == "off":
-        return value is False
-    if not _is_num(value) or not _is_num(base):
-        return False
-    return bool(value <= base) if direction == "min" else bool(value >= base)
+def _rule(path: tuple[str, ...]) -> tuple[str, Any] | None:
+    for pattern, kind, extra in PROJECT_POLICY:
+        if _matches(pattern, path):
+            return kind, extra
+    return None
+
+
+def policy_for(path: tuple[str, ...]) -> str | None:
+    """The project-layer kind of a config key, None when unlisted (treated as user-only)."""
+    rule = _rule(path)
+    return None if rule is None else rule[0]
+
+
+def _same_type(value: Any, base: Any) -> bool:
+    if isinstance(base, bool) or isinstance(value, bool):
+        return isinstance(base, bool) and isinstance(value, bool)
+    if isinstance(base, int | float):
+        if not _is_num(value):
+            return False
+        return isinstance(value, int) if isinstance(base, int) else True
+    if isinstance(base, str):
+        return isinstance(value, str)
+    if isinstance(base, list):
+        return isinstance(value, list) and all(isinstance(x, str) for x in value)
+    return False
+
+
+def _in_bounds(value: Any, bounds: Any) -> bool:
+    if not _is_num(value) or bounds is None:
+        return True
+    lo, hi = bounds
+    return bool(lo <= value <= hi)
+
+
+def _tool_list(value: Any) -> list[str] | None:
+    if isinstance(value, str):  # env override form: comma-separated
+        return [x.strip() for x in value.split(",") if x.strip()]
+    if isinstance(value, list) and all(isinstance(x, str) for x in value):
+        return list(value)
+    return None
+
+
+def _accept(kind: str, extra: Any, value: Any, base: Any) -> tuple[bool, Any]:
+    """(accepted, the value to merge) for one project leaf against its trusted base."""
+    if kind == "true_only":
+        return value is True, value
+    if kind == "false_only":
+        return value is False, value
+    if kind == "union":
+        add, have = _tool_list(value) if isinstance(value, list) else None, _tool_list(base)
+        if add is None or have is None:
+            return False, value
+        return True, have + [x for x in add if x not in have]
+    if kind == "enum":
+        order = list(extra)
+        if value not in order or base not in order:
+            return False, value
+        return order.index(value) >= order.index(base), value
+    if base is _MISSING or not _same_type(value, base) or not _in_bounds(value, extra):
+        return False, value
+    if kind == "free":
+        return True, value
+    if kind == "max":
+        return bool(value >= base), value
+    if kind == "min":
+        return bool(value <= base), value
+    return False, value  # user_only
 
 
 def _leaves(node: Any, path: tuple[str, ...]) -> list[tuple[tuple[str, ...], Any]]:
-    if isinstance(node, Mapping) and node:
+    if isinstance(node, Mapping):
         out: list[tuple[tuple[str, ...], Any]] = []
         for key, val in node.items():
             out += _leaves(val, (*path, str(key)))
@@ -205,36 +331,30 @@ def _set(data: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
 def sanitise_project(
     project: Mapping[str, Any], trusted: Mapping[str, Any], defaults: Mapping[str, Any]
 ) -> tuple[dict[str, Any], list[tuple[str, Any]]]:
-    """(the project layer with only allowlisted, tighter learning leaves, dropped (key, value)).
+    """(the project layer rebuilt from its accepted leaves, dropped (key, value) pairs).
 
-    The whole ``learn`` subtree and ``extensions.allow_override`` are stripped; each leaf of the
-    project's ``learn`` (a scalar replacing a table counts as a leaf) is re-added only if it is an
-    allowlisted key with a tighter scalar of the right type. Other sections keep their normal
-    project precedence."""
-    clean = {k: v for k, v in project.items() if k != "learn"}
+    Each leaf of the project file (a scalar replacing a table counts as a leaf; empty tables are
+    ignored) is kept only if ``PROJECT_POLICY`` allows its kind and direction against the trusted
+    value (the packaged default when the trusted value is missing or of the wrong type)."""
+    clean: dict[str, Any] = {}
     dropped: list[tuple[str, Any]] = []
-    ext = clean.get("extensions")
-    if isinstance(ext, Mapping) and "allow_override" in ext:
-        clean["extensions"] = {k: v for k, v in ext.items() if k != "allow_override"}
-        dropped.append(("extensions.allow_override", ext["allow_override"]))
-    elif "extensions" in clean and not isinstance(ext, Mapping):
-        dropped.append(("extensions", clean.pop("extensions")))  # would wipe the user's table
-    if "learn" not in project:
-        return clean, dropped
-    learn: dict[str, Any] = {}
-    for path, value in _leaves(project["learn"], ("learn",)):
-        direction = _direction(path)
+    for path, value in _leaves(project, ()):
+        rule = _rule(path)
+        if rule is None or rule[0] == "user_only":
+            dropped.append((".".join(path), value))
+            continue
+        kind, extra = rule
         base = _dig(trusted, path)
-        if direction in {"min", "max"} and not _is_num(base):
-            base = _dig(defaults, path)
-        if direction == "on" and base is _MISSING:
+        fallback = _dig(defaults, path)
+        if kind in {"max", "min", "free"} and (base is _MISSING or not _same_type(base, fallback)):
+            base = fallback
+        if kind == "true_only" and base is _MISSING:
             base = False
-        if direction is not None and base is not _MISSING and _tighter(value, base, direction):
-            _set(learn, path[1:], value)
+        ok, merged = _accept(kind, extra, value, base)
+        if ok:
+            _set(clean, path, merged)
         else:
             dropped.append((".".join(path), value))
-    if learn:
-        clean["learn"] = learn
     return clean, dropped
 
 
@@ -261,8 +381,8 @@ def _warn_once(env: Mapping[str, str], project_dir: Path, key: str, value: Any) 
             env,
             "config",
             f"{key} = {shown} in the project's token-sparen.toml ignored: a project file may only "
-            "tighten tau, floor, enabled, hold, ladder_obs and breaker thresholds; other learning "
-            "settings belong in ~/.token-sparen/config.toml, the env or `config set`",
+            "make token-sparen intervene less or keep more (see README); set it in "
+            "~/.token-sparen/config.toml, a TOKEN_SPAREN_* variable or `token-sparen config set`",
         )
 
 

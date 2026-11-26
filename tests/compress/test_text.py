@@ -440,7 +440,8 @@ def test_invalid_level_falls_back_to_defaults(
     monkeypatch.setattr(config_mod, "log_error", lambda env, where, msg: logged.append(where))
     proj = tmp_path / "p"
     proj.mkdir()
-    (proj / "token-sparen.toml").write_text(
+    (tmp_path / "h").mkdir()  # user config: the loader validates what it is given
+    (tmp_path / "h" / "config.toml").write_text(
         f"[compression.levels.light]\n{body}\n", encoding="utf-8"
     )
     cfg = load_config(proj, {"TOKEN_SPAREN_HOME": str(tmp_path / "h")})
@@ -451,7 +452,8 @@ def test_invalid_level_falls_back_to_defaults(
 def test_valid_level_edge_values(tmp_path: Path) -> None:
     proj = tmp_path / "p"
     proj.mkdir()
-    (proj / "token-sparen.toml").write_text(
+    (tmp_path / "h").mkdir()
+    (tmp_path / "h" / "config.toml").write_text(
         "[compression.levels.light]\nhead = 0\ntail = 0\nkeep_ratio = 1.0\n"
     )
     cfg = load_config(proj, {"TOKEN_SPAREN_HOME": str(tmp_path / "h")})

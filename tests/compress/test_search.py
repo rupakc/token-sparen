@@ -134,7 +134,8 @@ def test_search_config_override(tmp_path: Path) -> None:
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
     proj = tmp_path / "proj"
     proj.mkdir()
-    (proj / "token-sparen.toml").write_text(
+    (tmp_path / "home").mkdir()  # user config: a project file may only raise per_file
+    (tmp_path / "home" / "config.toml").write_text(
         "[compression.search]\nper_file = { standard = 5 }\n", encoding="utf-8"
     )
     ctx = CompressContext(prompt=None, recent_paths=(), config=load_config(proj, env))

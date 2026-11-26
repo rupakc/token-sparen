@@ -501,7 +501,9 @@ def test_doctor_reports_min_tokens_below_floor(
     import token_sparen.cli as cli
 
     monkeypatch.setattr(cli, "PACKAGE_ROOT", Path.cwd() / "no-plugin")  # skip the round-trip
-    Path("token-sparen.toml").write_text("[compression]\nmin_tokens = 700\n", encoding="utf-8")
+    home = Path(env["TOKEN_SPAREN_HOME"])  # a project file may only raise it
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.toml").write_text("[compression]\nmin_tokens = 700\n", encoding="utf-8")
     assert main(["doctor"]) == 0
     out = capsys.readouterr().out
     line = next(ln for ln in out.splitlines() if "min_tokens" in ln)

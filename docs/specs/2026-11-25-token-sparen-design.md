@@ -98,7 +98,16 @@ unknown). §6.7: the subagent brief is decided by the engine but held at `off`
 `token-sparen run` keeps the static policy (no session lifecycle to settle regret or fold).
 A trimming arm that ends as a no-op for any reason (nothing worth trimming, save deadline,
 never-larger check) gets savings 0 and regret 0 at once.
-Review rounds 1-2: the project `token-sparen.toml` layer is sanitised before merging with an
+Review round 3 supersedes rounds 1-2 below: the **whole** project layer is deny-by-default
+(`config.PROJECT_POLICY`, `config.sanitise_project`). A cloned repository's config may only make
+token-sparen intervene less or keep more, never trim more, recover less or block more. Every
+leaf of `params/defaults.toml` has a kind (completeness test; unlisted keys are user-only):
+free (display/advice/timing), user_only, max/min (direction-only numbers within bounds),
+true_only (`learn.hold.*`), false_only (mechanism switches), union (`compression.skip_tools`),
+enum (`compiler.warnings` toward `keep`); each relative to the trusted value. `learn.enabled` is
+user/env/session only (a project disabling learning would fall back to the static standard arm,
+ignoring the user's holds/tau/floor). README has the table.
+Rounds 1-2 (superseded): the project `token-sparen.toml` layer is sanitised before merging with an
 **allowlist** (`config.PROJECT_LEARN_KEYS`, `config.sanitise_project`): the whole `learn` subtree
 and `extensions.allow_override` are stripped, then only these leaves are re-added, each only as a
 scalar of the right type tighter than the trusted value (defaults + user file + env + session

@@ -742,3 +742,26 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   (looser). It and `breaker_window` are user/env/session only.
 - Test change: `test_hierarchy::test_user_config_overrides_apply` now writes its learn overrides
   to the user config (they were in a project file, which is no longer allowed).
+
+## 2026-11-26 Task 23 review round 3 (controller ruling: deny-by-default project layer)
+- Adversarial re-review: project `learn.enabled = false` fell back to StaticPolicy (standard,
+  pointer) and ignored the user's `hold.compression = true` ("kept 1 of 3000" 20/20); project
+  `[recovery] ttl_days|max_files|max_bytes = 0` made recovery impossible; project
+  `[compression.levels.standard] keep_ratio = 0, head = 0, tail = 0` overrode the user's levels;
+  plus knobs, `min_saving_ratio`, `skip_tools` wipe, `max_turn_gap`, hard stop/budget,
+  `max_read_bytes`; `_is_num` raised OverflowError on huge ints.
+- Principle: a cloned repository's config may only make token-sparen intervene less or keep
+  more. `config.PROJECT_POLICY` (ordered patterns, `*` one segment, `**` any rest, first match)
+  classifies every leaf: free, user_only, max, min (with bounds; int defaults need ints), true_only,
+  false_only, union (`skip_tools`: trusted list + additions; env comma strings understood), enum
+  (`compiler.warnings` toward `keep`). Every key of `defaults.toml` has an entry (test); section
+  catch-alls (`learn.**`, `compression.**`, `governor.**`, ...) and unlisted sections are
+  user-only. Comparisons are against the trusted value, or the packaged default when the trusted
+  one is missing or the wrong type. Builder calls beyond the ruling's list: `persisted_max_bytes`,
+  `json.max_bytes`, governor parsing/EWMA/windows user-only; `read_dedupe.max_entries` min;
+  `guards.pretrim_*`, `read_dedupe.min_tokens` max; `pricing.*` free (only `estimate.Prices`, which
+  nothing in the hook path uses).
+- `learn.enabled` is user/env/session only; a project wanting less trimming uses `learn.hold`.
+- `_is_num` catches OverflowError (300-digit ints rejected).
+- Tests that configured compressor levels / search knobs / `min_tokens = 700` through a project
+  file now use the user config (they test the loaders, not the project layer).

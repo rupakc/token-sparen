@@ -195,6 +195,23 @@ Later layers override earlier ones:
 `compression.min_tokens` can raise the 2000-token floor but never lower it (a lower value is
 ignored and `doctor` flags it).
 
+**What a project file may change.** `<project>/token-sparen.toml` is committed, so it may be
+someone else's. It can only make token-sparen intervene less or keep more, never trim more,
+recover less or block more. A value is used only if it has the right type, is within sane
+bounds and moves in the allowed direction from your own value (defaults, your config, env,
+session); anything else is ignored and logged once.
+
+| Settings | A project may |
+|---|---|
+| `statusline.*`, `adapter.*`, `pricing.*`, `boundary.*` thresholds, `governor.{econ,ctx}_{notice,advise}`, `compression.save_deadline_ms` | set freely (display, advice, timing) |
+| `guards.enabled`, `read_dedupe.enabled`, `governor.enabled`, `boundary.enabled`, `subagent.enabled` | only turn off |
+| `compression.min_tokens`, `min_saving_ratio`, `levels.*.{head,tail,keep_ratio}`, the per-type knobs (`json.items`, `diff.context`, `stacktrace.edge_frames`, `test_report.block_lines`, `search.per_file`, `pplx.results`, `log.tail`), `recovery.*`, `guards.max_read_bytes`, `guards.pretrim_*`, `read_dedupe.min_tokens` | only raise (keep more) |
+| `compression.compiler.warnings.*` | only move from `count` to `keep` |
+| `compression.skip_tools` | only add tools |
+| `read_dedupe.max_turn_gap`, `read_dedupe.max_entries` | only lower |
+| `learn.tau.<tier>` lower; `learn.floor.<tier>`, `learn.ladder_obs` higher; `learn.hold.<point>` only `true`; `learn.breaker_min_obs`, `learn.breaker_every` lower; `learn.breaker_lcb_q`, `learn.breaker_sessions` higher | only make learning more careful |
+| everything else, including `learn.enabled` and all other `learn.*`, `governor.hard_stop`, `governor.session_budget_tokens`, `governor.windows`, `extensions.*`, and any key not listed | nothing (user config, env or `config set` only) |
+
 | Key | Default | Meaning |
 |---|---|---|
 | `compression.min_tokens` | 2000 | outputs below this are never modified (floor) |
@@ -209,7 +226,7 @@ ignored and `doctor` flags it).
 | `governor.hard_stop` | false | deny context-adding tools at 100 % of the budget |
 | `boundary.enabled` | true | suggest `/compact` at task boundaries |
 | `subagent.enabled` | true | subagent brief decision point (its default arm is off) |
-| `learn.enabled` | true | learn how strongly to trim; `false` uses the fixed defaults |
+| `learn.enabled` | true | learn how strongly to trim; `false` uses the fixed defaults (user config, env or `config set` only) |
 | `statusline.segments` | all six | which segments to show |
 | `statusline.ascii`, `statusline.color` | false, true | plain glyphs; colours |
 | `recovery.ttl_days`, `max_files`, `max_bytes` | 14, 200, 100 MB | recovery file retention |
@@ -262,15 +279,10 @@ only after the previous one has been observed enough without regret, so early se
 than later ones. A small share of decisions always keeps the output untouched, as a baseline. The
 subagent brief stays off (it is not learned until a benchmark shows it does not hurt quality).
 Turn learning off with `[learn] enabled = false` (fixed defaults: standard compression, read
-de-dupe pointers). A project's `token-sparen.toml` (committed, so possibly someone else's) may set
-only these learning settings, and only to a more careful value than your own: `learn.enabled`
-(only `false`), `learn.tau.<tier>` (only lower), `learn.floor.<tier>` (only higher),
-`learn.hold.<point>` (only `true`), `learn.ladder_obs` (only higher), and the breaker thresholds
-`learn.breaker_min_obs` and `learn.breaker_every` (only lower), `learn.breaker_lcb_q` and
-`learn.breaker_sessions` (only higher). Everything else under `[learn]`, and
-`extensions.allow_override`, is read only from `~/.token-sparen/config.toml`, `TOKEN_SPAREN_*`
-environment variables or `token-sparen config set`; anything else a project file puts there is
-ignored and logged once, so a repository you clone cannot make trimming more aggressive. When a session ends, a background `token-sparen fold` merges what the session learned into the
+de-dupe pointers). A project's `token-sparen.toml` can only make learning more careful (see [What a
+project file may change](#configuration)); it cannot turn learning off (that would fall back to
+the fixed standard compression), so a project that wants less trimming sets
+`[learn.hold] compression = true`. When a session ends, a background `token-sparen fold` merges what the session learned into the
 project (and, weighted 0.3, into a cross-project global store that forgets after 90 idle days);
 sessions it missed are folded at the next session start. A circuit breaker pauses a decision point
 for the project for 3 sessions when the learner's recent trims clearly caused re-reads at more than
