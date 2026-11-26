@@ -17,11 +17,16 @@ later calls (distinct message ids of the chain) before the next compaction. Cost
 saves nothing. ``baseline_context_cost`` prices the context of every call the same way (input,
 cache write, cache read; output excluded), so the saved share is comparable.
 
-**Proxy regret.** A trim is regretted when a later assistant text block or tool input of the
-same session contains >= 2 distinctive tokens (``regret.distinctive_tokens``: 8+ characters with
-a letter, absent from the kept text and the tool input) of its elided span, matched through
-``regret.token_digest`` within ``[learn] regret_window_turns`` user turns. At most
-``MAX_WATCHED`` spans are watched (the oldest is evicted unregretted, counted in ``evicted``).
+**Proxy regret.** A trim is regretted when a later assistant text block or non-edit tool input
+of the same session (edit inputs repeat code being changed; the live detector ignores them too)
+contains >= 2 distinctive tokens of its elided span (``regret.distinctive_tokens``: 8+
+characters with a letter, absent from the kept text and the tool input) that are found **only**
+in that span: tokens already in the session's context before the trim (prompts, assistant text,
+tool inputs, the visible text of earlier results; first ``SCAN_CHARS`` of each, up to
+``MAX_SEEN`` digests) are dropped, and tokens that reappear in a later prompt or tool result
+are dropped from the span before they can count. Matched through ``regret.token_digest`` within
+``[learn] regret_window_turns`` user turns. At most ``MAX_WATCHED`` spans are watched (the
+oldest is evicted unregretted, counted in ``evicted``).
 
 **Memory.** One record at a time; per session only counters, the last prompt (<= 2000 chars),
 recent tool categories and paths, and the watched spans' digests.
@@ -70,6 +75,7 @@ PROMPT_CHARS = 2000
 RECENT_PATHS = 20
 RECENT_CATS = 10
 MAX_ENGINES = 64
+MAX_SEEN = 500_000  # token digests already in the session's context (no more added beyond)
 _PATH_TOOLS = frozenset({"read", "edit"})
 _NULL_OVERLAY = Path(os.devnull)
 SPLITS: tuple[str, ...] = ("dev", "test")
@@ -245,8 +251,9 @@ HEURISTICS = {
     "(compact_boundary system record or isCompactSummary user record)",
     "cost": "first later call prices removed tokens as cache_write, each further call as "
     "cache_read (estimate.Prices); baseline prices every call's context the same way",
-    "proxy_regret": ">= 2 distinctive elided-span tokens (regret.distinctive_tokens, digests) in "
-    "one later assistant text block or tool input within regret_window_turns user turns",
+    "proxy_regret": ">= 2 distinctive tokens found only in the elided span (not in the context "
+    "before the trim, not in a later prompt or tool result) in one later assistant text block or "
+    "non-edit tool input within regret_window_turns user turns",
     "gates": "PostToolUse gates: skip_tools/edit category, recovery reads, Claude Code "
     "replaceable shapes, failed results, 2000-token floor; compression.pick_candidate",
 }
@@ -280,7 +287,7 @@ def session_date(path: Path) -> date:
 
 @dataclass
 class _Span:
-    digests: frozenset[str]
+    digests: set[str]
     ctype: str
     turn: int
 
@@ -304,6 +311,7 @@ class _Session:
         self.sent: dict[str, int] = {}  # removed tokens already sent once, per ctype
         self.awaiting: dict[str, int] = {}  # removed tokens not sent yet, per ctype
         self.watched: deque[_Span] = deque()
+        self.seen: set[str] = set()
         self.ctx_tokens: int | None = None
         self.model: str | None = None
         self.project_dir = Path(os.devnull).parent
@@ -344,16 +352,32 @@ class _Session:
         self.sent.clear()
         self.awaiting.clear()
 
+    def _see(self, text: str, *, refresh: bool) -> set[str]:
+        """Record ``text`` as visible context; with ``refresh``, its tokens no longer count as
+        found only in a watched span (the agent has them from elsewhere now)."""
+        digests = regret.text_digests(text, regret.SCAN_CHARS) if text else set()
+        if digests and len(self.seen) < MAX_SEEN:
+            self.seen |= digests
+        if refresh and digests:
+            for span in self.watched:
+                span.digests -= digests
+        return digests
+
     def on_prompt(self, ev: Prompt) -> None:
+        self._see(ev.text, refresh=True)
         self.turn = ev.turn
         self.prompt = ev.text[:PROMPT_CHARS]
         if any(self.turn - s.turn > self.window for s in self.watched):
             self.watched = deque(s for s in self.watched if self.turn - s.turn <= self.window)
 
-    def on_said(self, text: str) -> None:
-        if not self.watched or not text:
+    def on_said(self, text: str, *, counts: bool = True) -> None:
+        if not text:
             return
         digests = regret.text_digests(text)
+        if len(self.seen) < MAX_SEEN:
+            self.seen |= digests
+        if not counts or not self.watched:
+            return
         if len(digests) < regret.MIN_TOKEN_HITS:
             return
         keep: deque[_Span] = deque()
@@ -369,8 +393,9 @@ class _Session:
             self.on_call(rec)
         for text in rec.texts:
             self.on_said(text)
-        for _tid, _name, inp in rec.tool_uses:
-            self.on_said(regret.input_text(inp))
+        for _tid, name, inp in rec.tool_uses:
+            edit = translate.tool_category(name) == "edit"
+            self.on_said(regret.input_text(inp), counts=not edit)
 
     def on_result(self, rec: ToolResultRecord) -> None:
         for acc in self.accs:
@@ -381,6 +406,7 @@ class _Session:
         if category in _PATH_TOOLS and isinstance(path, str) and path:
             self.paths.append(path)
         if rec.is_error or not rec.tool_name:
+            self._see(rec.text, refresh=True)
             return  # failures cannot be replaced on Claude Code
         tool = ToolCall(rec.tool_name, category, rec.input, rec.tool_use_id)
         event = Event(
@@ -394,11 +420,14 @@ class _Session:
             output_text=rec.text,
             raw_response=rec.raw if rec.raw is not None else rec.text,
         )
-        if compression.skipped(event, self.cfg) or regret.is_recovery_access(event):
-            return
-        if not translate.replaceable(event) or estimate_tokens(rec.text) < self.min_tokens:
-            return
-        self._replay(event, tool, rec)
+        if (
+            compression.skipped(event, self.cfg)
+            or regret.is_recovery_access(event)
+            or not translate.replaceable(event)
+            or estimate_tokens(rec.text) < self.min_tokens
+            or not self._replay(event, tool, rec)
+        ):
+            self._see(rec.text, refresh=True)  # shown in full
 
     def _ctx_pct(self) -> float | None:
         if self.ctx_tokens is None:
@@ -406,7 +435,8 @@ class _Session:
         window = governor.resolve_window(self.cfg, os.environ, "replay", self.model)
         return self.ctx_tokens / window if window > 0 else None
 
-    def _replay(self, event: Event, tool: ToolCall, rec: ToolResultRecord) -> None:
+    def _replay(self, event: Event, tool: ToolCall, rec: ToolResultRecord) -> bool:
+        """True if the result was trimmed (then only its kept text became visible)."""
         text = rec.text
         ctype = detect(text, tool)
         est = compression.est_type(ctype)
@@ -427,7 +457,7 @@ class _Session:
         for acc in self.accs:
             acc.arms[arm] = acc.arms.get(arm, 0) + 1
         if arm == COMPRESSION.safe_arm:
-            return
+            return False
         ctx = CompressContext(
             prompt=self.prompt or None, recent_paths=tuple(self.paths), config=self.cfg
         )
@@ -443,23 +473,23 @@ class _Session:
             self.project_dir,
         )
         if picked is None:
-            return
+            return False
         removed = before - picked.tokens_after
         self._add(ctype, "trimmed", 1)
         self._add(ctype, "tokens_removed", removed)
         self.awaiting[ctype] = self.awaiting.get(ctype, 0) + removed
-        tokens = regret.distinctive_tokens(
-            text, picked.result.text, exclude=regret.input_text(rec.input)
-        )
-        if len(tokens) >= regret.MIN_TOKEN_HITS:
+        kept = picked.result.text
+        tokens = regret.distinctive_tokens(text, kept, exclude=regret.input_text(rec.input))
+        self._see(kept, refresh=True)
+        digests = {regret.token_digest(t) for t in tokens} - self.seen
+        if len(digests) >= regret.MIN_TOKEN_HITS:
             self._add(ctype, "watched", 1)
-            self.watched.append(
-                _Span(frozenset(regret.token_digest(t) for t in tokens), ctype, self.turn)
-            )
+            self.watched.append(_Span(digests, ctype, self.turn))
             while len(self.watched) > MAX_WATCHED:
                 self.watched.popleft()
                 for acc in self.accs:
                     acc.evicted += 1
+        return True
 
 
 def _window(cfg: Config) -> int:

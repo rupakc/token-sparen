@@ -668,10 +668,10 @@ class _Info:
         )
 
 
-def text_digests(text: str) -> set[str]:
-    """Digests of the distinctive tokens in the first ``INPUT_SCAN_CHARS`` of ``text`` (how a
+def text_digests(text: str, limit: int = INPUT_SCAN_CHARS) -> set[str]:
+    """Digests of the distinctive tokens in the first ``limit`` characters of ``text`` (how a
     prompt or tool input is matched against an elided span's ``token_digest`` values)."""
-    return {token_digest(t) for t in set(_tokens(text[:INPUT_SCAN_CHARS]))}
+    return {token_digest(t) for t in set(_tokens(text[:limit]))}
 
 
 def input_text(tool_input: Mapping[str, Any]) -> str:

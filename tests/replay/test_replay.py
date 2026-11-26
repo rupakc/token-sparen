@@ -438,3 +438,30 @@ def test_cli_rejects_bad_cutoff_and_policy(
     assert cli.main(["replay", str(tmp_path), "--cutoff", "nope", "--out", out]) == 2
     assert cli.main(["replay", str(tmp_path), "--policy", "wild", "--out", out]) == 2
     assert not Path(out).exists()
+
+
+def test_edit_inputs_are_not_regret(tmp_path: Path) -> None:
+    """As the live detector: an edit's input repeats code the agent is changing, not a lookup."""
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    edit = {"file_path": "a.py", "old_string": MARKERS[0], "new_string": MARKERS[1]}
+    s.call("m2", tool=("t2", "Edit", edit))
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.trimmed == 1 and rep.proxy_regrets == 0
+
+
+def test_tokens_seen_before_are_not_regret(tmp_path: Path) -> None:
+    s = Session().prompt().call("m0", tool=("t0", "Grep", {"pattern": "note"}))
+    s.result("t0", f"y.txt: {MARKERS[0]} {MARKERS[1]}", raw="r")  # seen before the trim
+    s.call("m1", tool=_bash("t1")).result("t1", big_output())
+    s.call("m2", text=f"{MARKERS[0]} {MARKERS[1]}")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.trimmed == 1 and rep.proxy_regrets == 0
+
+
+def test_tokens_seen_again_later_are_not_regret(tmp_path: Path) -> None:
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    s.call("m2", tool=("t2", "Grep", {"pattern": "note"}))
+    s.result("t2", f"x.txt: {MARKERS[0]} {MARKERS[1]}", raw="r")  # small: shown in full
+    s.call("m3", text=f"{MARKERS[0]} {MARKERS[1]}")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.trimmed == 1 and rep.proxy_regrets == 0

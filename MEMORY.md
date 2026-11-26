@@ -847,10 +847,12 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   `isCompactSummary` user record; `type: summary` title records ignored). Cost: the first later
   call prices removed tokens as cache_write, each further one as cache_read; a result followed by
   no call saves nothing; baseline = every call's context priced the same way (output excluded).
-  Proxy regret: >= 2 distinctive elided-span tokens (`regret.distinctive_tokens`, excluding kept
-  text and the tool input; digests) in one later assistant text block or tool input within
-  `regret_window_turns` user turns; <= `MAX_WATCHED` (200) spans, oldest evicted unregretted
-  (`evicted`). Split by the first record `timestamp` (else mtime); default cutoff 2026-11-01.
+  Proxy regret: >= 2 distinctive tokens found **only** in the elided span
+  (`regret.distinctive_tokens`, excluding kept text and the tool input; digests; minus every token
+  already in the session's context before the trim, and minus tokens that reappear in a later
+  prompt or tool result) in one later assistant text block or **non-edit** tool input (as the
+  live detector) within `regret_window_turns` user turns; <= `MAX_WATCHED` (200) spans, oldest
+  evicted unregretted (`evicted`); context digests capped at 500 000 per session. Split by the first record `timestamp` (else mtime); default cutoff 2026-11-01.
 - `transcript.py`: turn counting skips sidechain, `isMeta` and compaction-summary records
   (`is_prompt`); a read error mid-file ends iteration; a too-deep line (RecursionError) is
   skipped; `ToolResultRecord` gained `is_error`, `raw` (`toolUseResult` only when the record holds
