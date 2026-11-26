@@ -667,3 +667,96 @@ def test_multi_arm_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> No
     assert "[arm aggressive]" in capsys.readouterr().out
     assert cli.main([*args, "light,light"]) == 2
     assert cli.main([*args, "light,bogus"]) == 2
+
+
+# ------------------------------------------------------------------ families and net (round 3)
+
+
+@pytest.mark.parametrize(
+    ("cmd", "family"),
+    [
+        ("pytest -q tests/", "test"),
+        ("cd pkg && python -m pytest -x", "test"),
+        ("uv run pytest", "test"),
+        ("npx jest --ci", "test"),
+        ("go test ./...", "test"),
+        ("cargo test", "test"),
+        ("npm test", "test"),
+        ("pnpm run test:unit", "test"),
+        ("make test", "test"),
+        ("mvn test", "test"),
+        ("tsc --noEmit", "build"),
+        ("cargo build --release", "build"),
+        ("make", "build"),
+        ("gradle assemble", "build"),
+        ("npm run build", "build"),
+        ("FOO=1 mypy token_sparen", "build"),
+        ("pip install -e .", "install"),
+        ("uv pip install foo", "install"),
+        ("yarn add left-pad", "install"),
+        ("sudo apt-get install -y jq", "install"),
+        ("brew install rg", "install"),
+        ("ls -la", "listing"),
+        ("find . -name '*.py' | head", "listing"),
+        ("rg TODO src", "listing"),
+        ("tree -L 2", "listing"),
+        ("cat a.txt", "file_dump"),
+        ("sed -n '1,80p' x.py", "file_dump"),
+        ("tail -n 50 log.txt", "file_dump"),
+        ("git log --oneline -20", "vcs_read"),
+        ("git -C repo diff HEAD~1", "vcs_read"),
+        ("git status", "vcs_read"),
+        ("git commit -m x", "other"),
+        ("docker compose logs api", "container_cloud"),
+        ("kubectl get pods", "container_cloud"),
+        ("gcloud run services list", "container_cloud"),
+        ("curl -s https://example.org", "http"),
+        ("echo hi", "other"),
+        ("", "other"),
+        ("'unbalanced", "other"),
+    ],
+)
+def test_command_family(cmd: str, family: str) -> None:
+    assert replay.command_family(cmd) == family
+
+
+def test_net_savings_after_recovery(tmp_path: Path) -> None:
+    """The regret fires in m2: one recovery read of the full output (tokens_before) is sent
+    by m3 (cache write) and m4 (cache read); after the compaction nothing more."""
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    s.call("m2", text=f"{MARKERS[0]} {MARKERS[1]}").call("m3", text="a").call("m4", text="b")
+    s.compact().call("m5", text="c")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    t = rep.totals
+    before = t["tokens_before_eligible"]
+    removed = t["tokens_removed"]
+    assert t["proxy_regret_full"] == 1
+    saved = removed * (1.25 + 2 * 0.1)
+    recovery = before * (1.25 + 0.1)
+    assert t["projected_cost_weighted_saved"] == pytest.approx(saved)
+    assert t["recovery_cost_weighted"] == pytest.approx(recovery)
+    assert t["net_cost_weighted_saved"] == pytest.approx(saved - recovery)
+    share = (saved - recovery) / t["baseline_context_cost"]
+    assert t["net_saved_share_of_context_cost"] == pytest.approx(share, abs=1e-6)
+    fam = t["per_family"]["build"]
+    assert fam["trimmed"] == 1 and fam["net_cost_weighted_saved"] == pytest.approx(saved - recovery)
+
+
+def test_partial_regret_charges_half_a_recovery(tmp_path: Path) -> None:
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", big_output())
+    s.prompt(f"what about {MARKERS[0]} and {MARKERS[2]}?").call("m2", text="a")
+    s.call("m3", text="b")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    before = rep.totals["tokens_before_eligible"]
+    assert rep.totals["recovery_cost_weighted"] == pytest.approx(0.5 * before * (1.25 + 0.1))
+
+
+def test_no_regret_no_recovery_and_families_only_for_shell(tmp_path: Path) -> None:
+    s = Session().prompt()
+    s.call("m1", tool=_read("t1")).result("t1", big_output(seed=1), raw=_read_raw("x"))
+    s.call("m2", tool=("t2", "Bash", {"command": "pytest -q"})).result("t2", big_output(seed=2))
+    s.call("m3", text="done")
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.totals["recovery_cost_weighted"] == 0
+    assert set(rep.totals["per_family"]) == {"test"}
+    assert rep.totals["net_cost_weighted_saved"] == rep.totals["projected_cost_weighted_saved"]

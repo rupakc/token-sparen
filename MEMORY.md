@@ -903,3 +903,15 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   transcripts (one `_Session` lane per policy; each arm compresses each result once); ids are
   de-duplicated once per run before the lanes see an event. `by_arm` holds each lane's totals
   and splits; `totals`/`by_split` are the first lane's.
+
+## 2026-11-26 Task 24 review round 3 (command families, net savings)
+- `replay/families.py` `command_family(cmd)`: normalised command, first simple command that is
+  not `cd`/`pushd`, wrappers skipped (sudo, time, nohup, env, npx/bunx/uvx, uv/poetry/pipenv
+  run, python -m), program (+ subcommand for git, npm/pnpm/yarn/bun, cargo, go, pip/uv, make,
+  gradle, mvn) -> test, build (linters and type checkers included), install, listing, file_dump,
+  vcs_read, container_cloud, http, other. Report `per_family` covers Bash results only.
+- Net savings: each regretted trim is assumed to cost one recovery read of the full output
+  (tokens_before x regret value; a partial charges half, a later full the other half) queued in
+  the turn the regret fires and priced like removed tokens (cache write on the next call, cache
+  read after, nothing after a compaction). `recovery_cost_weighted`, `net_cost_weighted_saved`,
+  `net_saved_share_of_context_cost` per total, content type, tool and family.

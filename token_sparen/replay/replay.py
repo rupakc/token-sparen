@@ -69,6 +69,7 @@ from token_sparen.learn.engine import Engine
 from token_sparen.learn.hierarchy import StoreChain
 from token_sparen.learn.policy import COMPRESSION, Decision, DecisionPoint, Policy, StaticPolicy
 from token_sparen.mechanisms import compression, governor
+from token_sparen.replay.families import FAMILIES, command_family
 from token_sparen.store import paths as store_paths
 from token_sparen.transcript import (
     AssistantRecord,
@@ -171,6 +172,8 @@ _CT_FIELDS = (
     "proxy_regret_full",
     "proxy_regret_partial",
     "watched",
+    "recovery_tokens_resent",
+    "recovery_cost_weighted",
 )
 
 
@@ -189,11 +192,17 @@ class _Acc:
     arms: dict[str, int] = field(default_factory=dict)
     per_ctype: dict[str, dict[str, float]] = field(default_factory=dict)
     per_tool: dict[str, dict[str, float]] = field(default_factory=dict)  # "<category>/<ctype>"
+    per_family: dict[str, dict[str, float]] = field(default_factory=dict)  # shell commands
     signals: dict[str, int] = field(default_factory=dict)
     regret_turns: dict[str, int] = field(default_factory=dict)
 
-    def add(self, ctype: str, key: str, value: float, cat: str = "other") -> None:
-        for table, name in ((self.per_ctype, ctype), (self.per_tool, f"{cat}/{ctype}")):
+    def add(
+        self, ctype: str, key: str, value: float, cat: str = "other", fam: str | None = None
+    ) -> None:
+        tables = [(self.per_ctype, ctype), (self.per_tool, f"{cat}/{ctype}")]
+        if fam is not None:
+            tables.append((self.per_family, fam))
+        for table, name in tables:
             row = table.get(name)
             if row is None:
                 row = table[name] = dict.fromkeys(_CT_FIELDS, 0.0)
@@ -209,6 +218,7 @@ class _Acc:
         trimmed = self.total("trimmed")
         regrets = self.total("proxy_regrets")
         saved = self.total("projected_cost_weighted_saved")
+        recovery = self.total("recovery_cost_weighted")
         out: dict[str, Any] = {
             "sessions": self.sessions,
             "sessions_failed": self.sessions_failed,
@@ -224,6 +234,10 @@ class _Acc:
             "projected_cost_weighted_saved": round(saved, 3),
             "baseline_context_cost": round(self.baseline_context_cost, 3),
             "saved_share_of_context_cost": _ratio(saved, self.baseline_context_cost),
+            "recovery_tokens_resent": int(self.total("recovery_tokens_resent")),
+            "recovery_cost_weighted": round(recovery, 3),
+            "net_cost_weighted_saved": round(saved - recovery, 3),
+            "net_saved_share_of_context_cost": _ratio(saved - recovery, self.baseline_context_cost),
             "proxy_regrets": round(regrets, 1),
             "proxy_regret_full": int(self.total("proxy_regret_full")),
             "proxy_regret_partial": int(self.total("proxy_regret_partial")),
@@ -234,12 +248,17 @@ class _Acc:
         }
         out["per_ctype"] = {ct: _ct_row(row) for ct, row in sorted(self.per_ctype.items())}
         out["per_tool"] = {k: _ct_row(row) for k, row in sorted(self.per_tool.items())}
+        out["per_family"] = {
+            f: _ct_row(self.per_family[f]) for f in FAMILIES if f in self.per_family
+        }
         out["regret_signals"] = dict(sorted(self.signals.items()))
         out["regret_turns"] = {b: self.regret_turns.get(b, 0) for b in TURN_BUCKETS}
         return out
 
 
-_FLOAT_FIELDS = frozenset({"projected_cost_weighted_saved", "proxy_regrets"})
+_FLOAT_FIELDS = frozenset(
+    {"projected_cost_weighted_saved", "proxy_regrets", "recovery_cost_weighted"}
+)
 TURN_BUCKETS = ("0", "1", "2", "3-6", "7+")
 SIGNALS = (
     "assistant_text",
@@ -266,6 +285,8 @@ def _ct_row(row: Mapping[str, float]) -> dict[str, Any]:
         k: (round(v, 3) if k in _FLOAT_FIELDS else int(v)) for k, v in row.items()
     }
     out["proxy_regret_rate"] = _ratio(row["proxy_regrets"], row["trimmed"])
+    net = row["projected_cost_weighted_saved"] - row["recovery_cost_weighted"]
+    out["net_cost_weighted_saved"] = round(net, 3)
     return out
 
 
@@ -324,6 +345,13 @@ HEURISTICS = {
     "of the same signature; partial (0.5): >= 2 in a user prompt; within regret_window_turns "
     "user turns; sum of values",
     "dedupe": "message and tool-use ids counted once per run (resumed sessions copy history)",
+    "net": "net_cost_weighted_saved = saved - recovery: each regretted trim is assumed to be "
+    "followed by one recovery read of the full output (tokens_before, times the regret value; "
+    "a partial regret charges half) in the turn the regret fires, priced like a removed token "
+    "(cache write on the next call, cache read after) until the next compaction",
+    "families": "per_family: shell (Bash) results only, by the first program of the normalised "
+    "command (+ subcommand for git, npm/pnpm/yarn/bun, cargo, go, pip/uv, make, gradle, mvn); "
+    "linters and type checkers count as build",
     "breakdowns": "per_tool keys are <tool category>/<content type> (categories: shell = Bash, "
     "read, search, web, agent, mcp, other); regret_signals counts the signal that settled each "
     "regretted trim (path_mention: a matched token was a path or its basename, overlaps the "
@@ -406,6 +434,9 @@ class _Span:
     sig: str  # digest of the producing call's re-run signature
     cat: str = "other"
     paths: frozenset[int] = frozenset()  # indices of path-like tokens
+    fam: str | None = None
+    before: int = 0  # tokens of the full output (what a recovery read brings back)
+    charged: float = 0.0  # recovery weight already charged
     best: float = 0.0
     signal: str = ""
     lag: int = 0
@@ -425,6 +456,23 @@ class _Span:
     def forget(self, digests: set[str]) -> None:
         if any(d in digests for d in self.digests):
             self.digests = {d: i for d, i in self.digests.items() if d not in digests}
+
+
+_SAVED = "saved"
+_RECOVERY = "recovery"
+_Key = tuple[str, str, str | None, str]
+_FIELDS_BY_KIND = {
+    _SAVED: ("tokens_resent_removed", "projected_cost_weighted_saved"),
+    _RECOVERY: ("recovery_tokens_resent", "recovery_cost_weighted"),
+}
+
+
+def _family(rec: ToolResultRecord) -> str | None:
+    """Command family of a Bash result (None for every other tool)."""
+    if rec.tool_name != "Bash":
+        return None
+    cmd = rec.input.get("command")
+    return command_family(cmd) if isinstance(cmd, str) else "other"
 
 
 class _Session:
@@ -452,9 +500,10 @@ class _Session:
         self.prompt = ""
         self.cats: deque[str] = deque(maxlen=RECENT_CATS)
         self.paths: deque[str] = deque(maxlen=RECENT_PATHS)
-        # removed tokens already sent once / not sent yet, per (category, ctype)
-        self.sent: dict[tuple[str, str], int] = {}
-        self.awaiting: dict[tuple[str, str], int] = {}
+        # tokens already sent once / not sent yet, per (category, ctype, family, kind): kind
+        # _SAVED = removed by a trim, _RECOVERY = brought back by an assumed recovery read
+        self.sent: dict[_Key, float] = {}
+        self.awaiting: dict[_Key, float] = {}
         self.watched: deque[_Span] = deque()
         self.seen: set[str] = set()
         self.ctx_tokens: int | None = None
@@ -463,9 +512,19 @@ class _Session:
         self.project_key = "replay"
         self._keys: dict[str, str] = {}
 
-    def _add(self, ctype: str, key: str, value: float, cat: str = "other") -> None:
+    def _add(
+        self, ctype: str, key: str, value: float, cat: str = "other", fam: str | None = None
+    ) -> None:
         for acc in self.accs:
-            acc.add(ctype, key, value, cat)
+            acc.add(ctype, key, value, cat, fam)
+
+    def _charge(self, span: _Span) -> None:
+        """Queue the recovery read the regret implies (weighted by its value so far)."""
+        extra = span.best - span.charged
+        if extra > 0:
+            key = (span.cat, span.ctype, span.fam, _RECOVERY)
+            self.awaiting[key] = self.awaiting.get(key, 0.0) + span.before * extra
+            span.charged = span.best
 
     # events --------------------------------------------------------------------------------
 
@@ -484,16 +543,16 @@ class _Session:
                 acc.baseline_context_cost += cost
         if rec.model:
             self.model = rec.model
-        for (cat, ctype), removed in self.sent.items():
-            self._add(ctype, "tokens_resent_removed", removed, cat)
-            saved = removed * self.prices.cache_read
-            self._add(ctype, "projected_cost_weighted_saved", saved, cat)
-        for key, removed in self.awaiting.items():
-            cat, ctype = key
-            self._add(ctype, "tokens_resent_removed", removed, cat)
-            saved = removed * self.prices.cache_write
-            self._add(ctype, "projected_cost_weighted_saved", saved, cat)
-            self.sent[key] = self.sent.get(key, 0) + removed
+        for (cat, ctype, fam, kind), n in self.sent.items():
+            tok_field, cost_field = _FIELDS_BY_KIND[kind]
+            self._add(ctype, tok_field, n, cat, fam)
+            self._add(ctype, cost_field, n * self.prices.cache_read, cat, fam)
+        for key, n in self.awaiting.items():
+            cat, ctype, fam, kind = key
+            tok_field, cost_field = _FIELDS_BY_KIND[kind]
+            self._add(ctype, tok_field, n, cat, fam)
+            self._add(ctype, cost_field, n * self.prices.cache_write, cat, fam)
+            self.sent[key] = self.sent.get(key, 0.0) + n
         self.awaiting.clear()
 
     def on_compaction(self) -> None:
@@ -505,8 +564,8 @@ class _Session:
         if span.best <= 0:
             return
         kind = "proxy_regret_full" if span.best >= regret.FULL else "proxy_regret_partial"
-        self._add(span.ctype, kind, 1, span.cat)
-        self._add(span.ctype, "proxy_regrets", span.best, span.cat)
+        self._add(span.ctype, kind, 1, span.cat, span.fam)
+        self._add(span.ctype, "proxy_regrets", span.best, span.cat, span.fam)
         for acc in self.accs:
             acc.count(acc.signals, span.signal)
             if span.path_hit:
@@ -518,6 +577,7 @@ class _Session:
             return
         for span, idx in matched:
             span.mark(regret.FULL, signal, self.turn - span.turn, idx)
+            self._charge(span)
             self._settle(span)
         gone = {id(span) for span, _ in matched}
         self.watched = deque(span for span in self.watched if id(span) not in gone)
@@ -547,6 +607,7 @@ class _Session:
             asked = _digests(ev.text, regret.INPUT_SCAN_CHARS)
             for span, idx in self._matches(asked):  # partial: the span stays watched
                 span.mark(regret.PARTIAL, "user_prompt", self.turn - span.turn, idx)
+                self._charge(span)
         self._see(ev.text, refresh=True)
         self.prompt = ev.text[:PROMPT_CHARS]
         if any(self.turn - s.turn > self.window for s in self.watched):
@@ -622,7 +683,7 @@ class _Session:
             or regret.is_recovery_access(event)
             or not translate.replaceable(event)
             or estimate_tokens(rec.text) < self.min_tokens
-            or not self._replay(event, tool, rec, category)
+            or not self._replay(event, tool, rec, category, _family(rec))
         ):
             self._see(rec.text, refresh=True)  # shown in full
 
@@ -632,14 +693,16 @@ class _Session:
         window = governor.resolve_window(self.cfg, os.environ, "replay", self.model)
         return self.ctx_tokens / window if window > 0 else None
 
-    def _replay(self, event: Event, tool: ToolCall, rec: ToolResultRecord, cat: str) -> bool:
+    def _replay(
+        self, event: Event, tool: ToolCall, rec: ToolResultRecord, cat: str, fam: str | None
+    ) -> bool:
         """True if the result was trimmed (then only its kept text became visible)."""
         text = rec.text
         ctype = detect(text, tool)
         est = compression.est_type(ctype)
         before = estimate_tokens(text, est)
-        self._add(ctype, "eligible", 1, cat)
-        self._add(ctype, "tokens_before", before, cat)
+        self._add(ctype, "eligible", 1, cat, fam)
+        self._add(ctype, "tokens_before", before, cat, fam)
         sctx = SessionCtx(
             "replay",
             self.project_key,
@@ -672,9 +735,10 @@ class _Session:
         if picked is None:
             return False
         removed = before - picked.tokens_after
-        self._add(ctype, "trimmed", 1, cat)
-        self._add(ctype, "tokens_removed", removed, cat)
-        self.awaiting[(cat, ctype)] = self.awaiting.get((cat, ctype), 0) + removed
+        self._add(ctype, "trimmed", 1, cat, fam)
+        self._add(ctype, "tokens_removed", removed, cat, fam)
+        key = (cat, ctype, fam, _SAVED)
+        self.awaiting[key] = self.awaiting.get(key, 0.0) + removed
         kept = picked.result.text
         seen = self.seen
 
@@ -695,9 +759,10 @@ class _Session:
                 if d not in self.seen:
                     digests[d] = i
         if len(set(digests.values())) >= regret.MIN_TOKEN_HITS:
-            self._add(ctype, "watched", 1, cat)
+            self._add(ctype, "watched", 1, cat, fam)
             sig = self._signature(rec.tool_name, rec.input)
-            self.watched.append(_Span(digests, ctype, self.turn, sig, cat, frozenset(paths)))
+            span = _Span(digests, ctype, self.turn, sig, cat, frozenset(paths), fam, before)
+            self.watched.append(span)
             while len(self.watched) > MAX_WATCHED:
                 self._settle(self.watched.popleft())
                 for acc in self.accs:
@@ -860,6 +925,7 @@ def summary_lines(rep: ReplayReport) -> list[str]:
         lines.append(
             f"[arm {arm}] trimmed {t['trimmed']}, tokens_removed {t['tokens_removed']}, "
             f"saved_share_of_context_cost {100 * t['saved_share_of_context_cost']:.2f} %, "
+            f"net {100 * t['net_saved_share_of_context_cost']:.2f} %, "
             f"proxy_regret_rate {100 * t['proxy_regret_rate']:.2f} %"
         )
     for ct, row in rep.totals["per_ctype"].items():
