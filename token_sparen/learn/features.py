@@ -83,7 +83,8 @@ def for_point(
     """The point's features in its declared order; unknown (extension) points get ``{}``.
 
     ``tokens`` is the output size when the caller already
-    estimated it; otherwise it is estimated from ``event.output_text``.
+    estimated it; otherwise it is estimated from ``event.output_text``. Values are sanitised
+    (``|`` and ``=`` become ``_``) so ``bucket_key`` never raises on the hook path.
     """
     keys = FEATURE_KEYS.get(point.name, ())
     out: dict[str, str] = {}
@@ -99,7 +100,11 @@ def for_point(
             out[key] = content_type or UNKNOWN
         else:  # phase
             out[key] = phase(session.recent_cats)
-    return out
+    return {k: _sanitise(v) for k, v in out.items()}
+
+
+def _sanitise(value: str) -> str:
+    return value.replace("|", "_").replace("=", "_")
 
 
 def bucket_key(features: Mapping[str, str], levels: Sequence[str]) -> str:

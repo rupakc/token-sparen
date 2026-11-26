@@ -236,3 +236,11 @@ def test_record_tool_history_bounded(tmp_path: Path) -> None:
     assert ov["recent_cats"][-1] == "shell!"
     assert ov["recent_cats"][-2] == "read"
     assert "recent_paths" not in ov  # no file_path in these events
+
+
+def test_feature_values_are_sanitised(tmp_path: Path) -> None:
+    f = features.for_point(COMPRESSION, _event(tmp_path), _ctx(tmp_path), "ext|type=x")
+    assert f["ctype"] == "ext_type_x"
+    key = features.bucket_key(f, list(features.FEATURE_KEYS["compression"]))
+    assert "ctype=ext_type_x" in key
+    assert features.for_point(PRETRIM, _event(tmp_path), _ctx(tmp_path), "a=b")["ctype"] == "a_b"

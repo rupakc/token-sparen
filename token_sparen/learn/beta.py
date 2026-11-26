@@ -193,18 +193,32 @@ class Evidence:
     cap binding, ``observe`` then ``posterior(prior)`` equals ``Beta.update`` with that prior
     (discount toward the prior == discount of the evidence). The cap here bounds the evidence
     mass only, mean-preserving.
+
+    ``es2`` is the discounted sum of squared rewards (scaled with the cap like ``ea``/``eb``), so
+    the within-bucket reward variance is available for fractional rewards; omitted (``None``,
+    or a 3-element list on disk) it is taken as ``ea``, the Bernoulli case (x in {0, 1}).
     """
 
     ea: float
     eb: float
     n: float = 0.0
+    es2: float | None = None
 
     def __post_init__(self) -> None:
-        for v in (self.ea, self.eb, self.n):
+        if self.es2 is None:
+            object.__setattr__(self, "es2", self.ea)
+        for v in (self.ea, self.eb, self.n, self.second):
             if not math.isfinite(v):
                 raise ValueError(f"non-finite Evidence value: {v!r}")
-        if self.ea < 0 or self.eb < 0 or self.n < 0:
+        if self.ea < 0 or self.eb < 0 or self.n < 0 or self.second < 0:
             raise ValueError(f"invalid Evidence({self.ea!r}, {self.eb!r}, n={self.n!r})")
+        if self.second > self.ea * (1.0 + 1e-9) + 1e-12:  # x^2 <= x on [0, 1]
+            raise ValueError(f"Evidence es2={self.second!r} exceeds ea={self.ea!r}")
+
+    @property
+    def second(self) -> float:
+        """``es2`` as a float (always set after construction)."""
+        return self.ea if self.es2 is None else self.es2
 
     @property
     def mean_data(self) -> float | None:
@@ -212,9 +226,21 @@ class Evidence:
         total = self.ea + self.eb
         return None if total <= 0.0 else self.ea / total
 
+    @property
+    def var_within(self) -> float | None:
+        """Within-bucket reward variance ``es2/w - (ea/w)^2`` (w = ea + eb), >= 0; None at w = 0.
+
+        Equals ``m (1 - m)`` for Bernoulli rewards.
+        """
+        total = self.ea + self.eb
+        if total <= 0.0:
+            return None
+        m = self.ea / total
+        return max(0.0, self.second / total - m * m)
+
     def observe(self, x: float, *, gamma: float, cap: float) -> Evidence:
-        """Discount by ``gamma``, add ``x`` (clamped to [0, 1]) and ``1 - x``, ``n += 1``; if
-        ``ea + eb > cap`` scale both so the sum is ``cap`` (mean preserved)."""
+        """Discount by ``gamma``, add ``x`` (clamped to [0, 1]) and ``1 - x`` (and ``x^2`` to
+        ``es2``), ``n += 1``; if ``ea + eb > cap`` scale all three so ``ea + eb == cap``."""
         if math.isnan(x):
             raise ValueError("reward is NaN")
         if not (0.0 <= gamma <= 1.0):
@@ -224,21 +250,24 @@ class Evidence:
         x = min(1.0, max(0.0, x))
         ea = gamma * self.ea + x
         eb = gamma * self.eb + (1.0 - x)
+        es2 = min(ea, gamma * self.second + x * x)
         total = ea + eb
         if total > cap:
             scale = cap / total
-            ea, eb = ea * scale, eb * scale
-        return Evidence(ea, eb, self.n + 1.0)
+            ea, eb, es2 = ea * scale, eb * scale, es2 * scale
+        return Evidence(ea, eb, self.n + 1.0, min(ea, es2))
 
     def posterior(self, prior: Beta) -> Beta:
         return Beta(prior.a + self.ea, prior.b + self.eb, self.n)
 
     def to_list(self) -> list[float]:
-        return [self.ea, self.eb, self.n]
+        return [self.ea, self.eb, self.n, self.second]
 
     @classmethod
     def from_list(cls, seq: Sequence[float]) -> Evidence:
-        """Inverse of ``to_list``; any malformed input raises ValueError (same rules as Beta)."""
-        if isinstance(seq, (str, bytes)) or not isinstance(seq, Sequence) or len(seq) != 3:
-            raise ValueError(f"not a [ea, eb, n] triple: {seq!r}")
-        return cls(_real(seq[0]), _real(seq[1]), _real(seq[2]))
+        """Inverse of ``to_list`` (``[ea, eb, n, es2]``; ``[ea, eb, n]`` means es2 = ea); any
+        malformed input raises ValueError (same rules as Beta)."""
+        if isinstance(seq, (str, bytes)) or not isinstance(seq, Sequence) or len(seq) not in (3, 4):
+            raise ValueError(f"not an [ea, eb, n(, es2)] list: {seq!r}")
+        es2 = _real(seq[3]) if len(seq) == 4 else None
+        return cls(_real(seq[0]), _real(seq[1]), _real(seq[2]), es2)

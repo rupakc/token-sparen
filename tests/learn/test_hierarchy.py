@@ -369,15 +369,28 @@ def test_designed_default_uses_default_kappa(tmp_path: Path) -> None:
     assert p.mean == pytest.approx(0.35) and p.a + p.b == pytest.approx(6.0)
 
 
-def _simulated(true_kappa: float, seed: int, *, buckets: int = 30, obs: int = 20) -> dict[str, Any]:
+def _simulated(
+    true_kappa: float,
+    seed: int,
+    *,
+    buckets: int = 30,
+    obs: int = 20,
+    sd: float | None = None,
+) -> dict[str, Any]:
+    """Sibling evidence: bucket means from Beta(mu k, (1-mu) k); Bernoulli rewards, or
+    fractional rewards N(p, sd) clamped to [0, 1] when ``sd`` is given."""
     rng = random.Random(seed)
     mu = 0.4
     pts: dict[str, Any] = {}
     for i in range(buckets):
         p = rng.betavariate(mu * true_kappa, (1 - mu) * true_kappa)
-        ev = Evidence(0.0, 0.0, 0.0)
+        ev = Evidence(0.0, 0.0, 0.0, 0.0)
         for _ in range(obs):
-            ev = ev.observe(1.0 if rng.random() < p else 0.0, gamma=0.98, cap=50.0)
+            if sd is None:
+                x = 1.0 if rng.random() < p else 0.0
+            else:
+                x = min(1.0, max(0.0, rng.gauss(p, sd)))
+            ev = ev.observe(x, gamma=0.98, cap=50.0)
         pts[f"band=lt50|cat=c{i}|size=sm|ctype=log|phase=build"] = {"light": _entry(ev)}
     return pts
 
@@ -392,3 +405,29 @@ def test_kappa_recovers_simulated_strength(
         _project(home, {"compression": _simulated(true_kappa, seed)})
         estimates.append(_kappa(home))
     assert lo <= statistics.median(estimates) <= hi
+
+
+@pytest.mark.parametrize("true_kappa", [3.0, 6.0])
+def test_kappa_recovers_strength_with_fractional_rewards(tmp_path: Path, true_kappa: float) -> None:
+    estimates = []
+    for seed in range(25):
+        home = tmp_path / f"h{seed}"
+        _project(home, {"compression": _simulated(true_kappa, seed, sd=0.15)})
+        estimates.append(_kappa(home))
+    assert true_kappa / 2 <= statistics.median(estimates) <= 2 * true_kappa
+
+
+def test_kappa_noise_uses_within_bucket_variance(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    means, w = [0.3, 0.5, 0.7, 0.4], 10.0
+    var_w = 0.01  # fractional rewards: far below the Bernoulli m(1-m)
+    pts = {
+        f"band=lt50|cat=c{i}|size=sm|ctype=log|phase=build": {
+            "light": _entry(Evidence(m * w, (1 - m) * w, 8, (var_w + m * m) * w))
+        }
+        for i, m in enumerate(means)
+    }
+    _project(home, {"compression": pts})
+    m_bar = statistics.fmean(means)
+    between = statistics.pvariance(means) - var_w / (w + 1)
+    assert _kappa(home) == pytest.approx(m_bar * (1 - m_bar) / between - 1)

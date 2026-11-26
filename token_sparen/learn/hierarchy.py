@@ -3,7 +3,8 @@
 The stores hold **evidence**, never posteriors (a stored posterior would fold its prior in for
 good, and an estimator over stored posteriors would see its own priors). ``StoreChain`` is a
 read-only, per-instance cached view of three stores with the inner shape
-``{point: {bucket: {arm: {"savings": [ea, eb, n], "regret": [ea, eb, n]}}}}``:
+``{point: {bucket: {arm: {"savings": [ea, eb, n, es2], "regret": [ea, eb, n, es2]}}}}``
+(a 3-element list is read with es2 = ea, the Bernoulli case):
 
 - ``projects/<key>/posteriors.json`` and ``global/posteriors.json``:
   ``{"version": 2, "points": <inner>}`` (version 1 held posteriors: read as empty, logged);
@@ -160,8 +161,10 @@ def kappa(point: DecisionPoint, arm: str, kind: Kind, stores: StoreChain) -> flo
     """Prior strength by method of moments over sibling buckets (cached per StoreChain).
 
     Siblings: project-scope buckets of the point's most specific level with the same arm and
-    kind and ``n >= min_parent_obs``. On their data-only means m_i (mass w_i = ea_i + eb_i):
-    ``var_between = var(m_i) - mean(m_i (1 - m_i) / (w_i + 1))`` (sampling noise removed);
+    kind and ``n >= min_parent_obs``. On their data-only means m_i (mass w_i = ea_i + eb_i,
+    within-bucket reward variance v_i from the discounted second moment):
+    ``var_between = var(m_i) - mean(v_i / (w_i + 1))`` (sampling noise removed; v_i is
+    m_i (1 - m_i) for Bernoulli rewards, much less for fractional ones);
     fewer than ``kappa_min_siblings`` -> ``kappa_default``; ``var_between <= 0`` ->
     ``kappa_max`` (indistinguishable buckets pool strongly); else
     ``mean(m_i) (1 - mean(m_i)) / var_between - 1`` clamped to [kappa_min, kappa_max].
@@ -188,10 +191,12 @@ def kappa(point: DecisionPoint, arm: str, kind: Kind, stores: StoreChain) -> flo
             ):
                 continue
             ev = stores.get(point.name, bucket, arm, kind, "project")
-            m = None if ev is None or ev.n < min_obs else ev.mean_data
-            if ev is not None and m is not None:
+            if ev is None or ev.n < min_obs:
+                continue
+            m, var_w = ev.mean_data, ev.var_within
+            if m is not None and var_w is not None:
                 means.append(m)
-                noise.append(m * (1.0 - m) / (ev.ea + ev.eb + 1.0))
+                noise.append(var_w / (ev.ea + ev.eb + 1.0))
     value = default
     if len(means) >= max(min_sib, 2):
         m_bar = statistics.fmean(means)

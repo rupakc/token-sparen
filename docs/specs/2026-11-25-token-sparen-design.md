@@ -25,6 +25,11 @@ estimator sees data-only means (no feedback loop through its own priors). A pare
 default d, κ0 = `kappa_default`); κ is method of moments on sibling data means with the sampling
 noise `mean(m_i(1−m_i)/(w_i+1))` subtracted from their variance (≤ 0 → `kappa_max`).
 
+**2026-11-26 (M2, Task 19 review round 2).** §7.4: evidence also keeps the discounted second
+moment `es2` (stored `[ea, eb, n, es2]`; a 3-element list means es2 = ea, the Bernoulli case), and
+the κ noise term is `mean(v_i/(w_i+1))` with the within-bucket variance
+`v_i = es2/w − (ea/w)²`, so fractional savings rewards no longer pin κ at `kappa_max`.
+
 ---
 
 ## 1. Intent and why

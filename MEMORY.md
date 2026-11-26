@@ -433,3 +433,10 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   the end of both PostToolUse chains, registered `always=True` (`entry.ALWAYS_RUN`) so it still
   runs after a replacement ends the chain; compression features now see the history before the
   current call. Perf test: 10 processes, one update each, p95 wait < 20 ms x perf factor.
+- **Kappa noise term uses within-bucket variance (review round 2)**: the Bernoulli term
+  m(1-m)/(w+1) overshoots for fractional savings rewards and pinned kappa at kappa_max (median
+  16-20 for true 3-6). `Evidence` now keeps `es2` (discounted sum of x^2, scaled by the cap like
+  ea/eb; serialised `[ea, eb, n, es2]`, a 3-element list reads es2 = ea; schema stays v2) and
+  `var_within = es2/w - (ea/w)^2`; noise = mean(var_within_i/(w_i+1)). Simulation (sd 0.15
+  fractional rewards, n=20): true kappa 3 -> median ~3.6, 6 -> ~6.3. `features.for_point`
+  replaces `|`/`=` in values with `_` so `bucket_key` never raises on the hook path.
