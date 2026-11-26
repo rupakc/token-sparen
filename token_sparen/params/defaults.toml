@@ -1,4 +1,4 @@
-# Every tunable lives here (hill-climbing surface). Sections are filled by later tasks.
+# Every tunable lives here (hill-climbing surface). Empty sections are used from M2/M3.
 
 [compression]
 min_tokens = 2000
@@ -119,13 +119,13 @@ parse_budget_ms = 20  # transcript catch-up per render (the governor's cache kee
 decision_log_max_bytes = 20000000  # projects/<key>/decisions.jsonl rotates past this size
 
 [facts]
-# filled by later tasks
+# Repo-fact learning: planned (M3), no keys yet.
 
 [prune]
-# filled by later tasks
+# Tool pruning (opt-in): planned (M3), no keys yet.
 
 [loopguard]
-# filled by later tasks
+# Failure-loop guard: planned (M3), no keys yet.
 
 [adapter]
 latency_budget_ms = 400  # hard cap per hook; on overrun the hook returns the host no-op
