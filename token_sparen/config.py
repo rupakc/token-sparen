@@ -206,6 +206,7 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     (("extensions", "**"), "user_only", None),
     (("facts", "**"), "user_only", None),
     (("prune", "**"), "user_only", None),
+    (("ope", "**"), "user_only", None),  # offline evaluation thresholds are the user's
     (("loopguard", "**"), "user_only", None),
     # compression: keep more, compress less
     (("compression", "min_tokens"), "max", COUNT),

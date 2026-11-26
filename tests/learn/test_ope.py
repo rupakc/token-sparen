@@ -380,17 +380,19 @@ def test_savings_and_regret_reported_separately_with_cis() -> None:
     assert res["tau"] == 0.05 and res["objective"] == "savings - regret / tau"
 
 
-def test_constraint_ok_uses_the_regret_upper_bound() -> None:
+def test_constraint_ok_uses_the_pessimistic_per_trim_upper_bound() -> None:
     log, regrets = synth_log(12, n=3000)
     res = ope.evaluate(log, TableTarget(), regrets=regrets, n_boot=200)["compression"]
-    upper = max(res["regret"][e]["ci95"][1] for e in ("ips", "dr"))
-    assert res["regret_upper"] == round(upper, 6)
+    pess = res["regret_per_trim"]["pessimistic"]
+    upper = max(pess[e]["ci95"][1] for e in ("ips", "dr"))
+    assert res["constraint_upper"] == round(upper, 6)
     assert res["constraint_ok"] is (upper <= 0.05)
-    assert res["constraint_ok"] is True  # true regret ~0.02, well under 0.05
+    assert res["constraint_ok"] is True and res["constraint_status"] == "ok"  # ~0.02 per trim
     tight = ope.evaluate(log, TableTarget(), regrets=regrets, n_boot=200, tau={"medium": 0.005})[
         "compression"
     ]
     assert tight["constraint_ok"] is False and tight["tau"] == 0.005
+    assert tight["constraint_status"] == "violated"
     assert tight["regret"] == res["regret"]  # tau only moves the bar and the combined value
 
 
@@ -431,7 +433,8 @@ def test_ope_cli_reports_parts_and_constraint(
     out = tmp_path / "priv" / "e3.json"
     assert cli.main(["ope", "--log", str(log), "--target", "static", "--out", str(out)]) == 0
     point = json.loads(out.read_text(encoding="utf-8"))["points"]["compression"]
-    assert {"savings", "regret", "combined", "tau", "constraint_ok", "regret_upper"} <= set(point)
+    keys = {"savings", "regret", "combined", "tau", "constraint_ok", "constraint_status"}
+    assert keys | {"regret_per_trim", "outcome_coverage", "unsupported_trim_fraction"} <= set(point)
     text = capsys.readouterr().out
     assert "savings" in text and "regret" in text and "constraint" in text
 
@@ -457,3 +460,121 @@ def test_regret_known_fraction_counts_only_decisions_needing_an_outcome() -> Non
     assert res["regret_known_fraction"] == 0.75  # 3 of the 4 trimming decisions
     only_safe = ope.evaluate(log[:6], StaticPolicy({}), n_boot=10)["compression"]
     assert only_safe["regret_known_fraction"] == 1.0  # nothing needs an outcome
+
+
+# --------------------------------------------------------------------------- fix round 1: per trim
+def _mixed_log(
+    n: int, regret_rate: float, coverage: float
+) -> tuple[list[DecisionRecord], dict[str, float]]:
+    """A stochastic logger (off / standard at 0.5 each); trims regretted at ``regret_rate``;
+    only the first ``coverage`` share of trimming decisions has a settled outcome."""
+    log: list[DecisionRecord] = []
+    regrets: dict[str, float] = {}
+    trims = 0
+    n_trims = n // 2
+    for i in range(n):
+        arm = "standard" if i % 2 else "off"
+        log.append(_rec(f"m{i}", arm, 0.5, CTX[0]))
+        if arm == "standard":
+            if trims < round(coverage * n_trims):
+                regrets[f"m{i}"] = 1.0 if (trims % 10) < round(regret_rate * 10) else 0.0
+            trims += 1
+    return log, regrets
+
+
+class MixTarget:
+    def __init__(self, trim: float) -> None:
+        self.trim = trim
+
+    def probs(self, rec: DecisionRecord) -> Mapping[str, float] | None:
+        return {"off": 1.0 - self.trim, "standard": self.trim}
+
+
+def test_probe_a_no_support_is_insufficient() -> None:
+    """A deterministic logger that never trimmed cannot vouch for a target that trims."""
+    log = [_rec(f"a{i}", "off", 1.0, "static") for i in range(300)]
+    res = ope.evaluate(log, StaticPolicy({}), n_boot=50)["compression"]
+    assert res["unsupported_trim_fraction"] == 1.0
+    assert res["constraint_ok"] is None and res["constraint_status"] == "insufficient"
+
+
+@pytest.mark.parametrize("coverage", [0.1, 0.2, 1.0])
+def test_probe_b_true_regret_point_three_is_never_ok(coverage: float) -> None:
+    log, regrets = _mixed_log(400, 0.3, coverage)
+    res = ope.evaluate(log, StaticPolicy({}), regrets=regrets, n_boot=200)["compression"]
+    assert res["constraint_ok"] is not True
+    assert res["outcome_coverage"] == pytest.approx(coverage, abs=0.01)
+    if coverage < 0.8:
+        assert res["constraint_status"] == "insufficient" and res["constraint_ok"] is None
+    else:
+        assert res["constraint_status"] == "violated"
+        assert res["regret_per_trim"]["pessimistic"]["ips"]["value"] == pytest.approx(0.3)
+
+
+def test_probe_c_rare_trims_with_high_regret_are_not_ok() -> None:
+    """Trimming 10 % of the time at 40 % regret averages to 0.04 per decision (under the
+    0.05 bar) but is 0.4 per trim."""
+    log, regrets = _mixed_log(1000, 0.4, 1.0)
+    res = ope.evaluate(log, MixTarget(0.1), regrets=regrets, n_boot=200)["compression"]
+    assert res["regret"]["ips"]["value"] < 0.05  # the per-decision average would pass
+    per_trim = res["regret_per_trim"]
+    assert per_trim["pessimistic"]["ips"]["value"] == pytest.approx(0.4)
+    assert per_trim["pessimistic"]["dr"]["value"] == pytest.approx(0.4, abs=0.02)
+    assert res["constraint_ok"] is False and res["constraint_status"] == "violated"
+
+
+def test_optimistic_and_pessimistic_bounds() -> None:
+    log, regrets = _mixed_log(400, 0.0, 0.9)  # settled trims never regretted; 10 % unsettled
+    res = ope.evaluate(log, StaticPolicy({}), regrets=regrets, n_boot=200)["compression"]
+    per_trim = res["regret_per_trim"]
+    assert per_trim["optimistic"]["ips"]["value"] == 0.0
+    assert per_trim["pessimistic"]["ips"]["value"] == pytest.approx(0.1)
+    assert res["constraint_ok"] is False  # 0.1 pessimistic > 0.05
+    full, regrets_full = _mixed_log(400, 0.0, 1.0)
+    ok = ope.evaluate(full, StaticPolicy({}), regrets=regrets_full, n_boot=200)["compression"]
+    assert ok["constraint_ok"] is True and ok["constraint_status"] == "ok"
+
+
+def test_target_that_never_trims_passes() -> None:
+    log, regrets = _mixed_log(100, 0.5, 0.1)
+    res = ope.evaluate(log, StaticPolicy({"compression": "off"}), regrets=regrets, n_boot=20)
+    point = res["compression"]
+    assert point["constraint_ok"] is True and point["constraint_status"] == "no_trims"
+
+
+def test_thresholds_are_parameters() -> None:
+    log, regrets = _mixed_log(400, 0.0, 0.5)
+    lax = ope.evaluate(log, StaticPolicy({}), regrets=regrets, n_boot=50, min_outcome_coverage=0.4)[
+        "compression"
+    ]
+    assert lax["constraint_status"] == "violated"  # pessimistic 0.5 > tau
+    strict = ope.evaluate(
+        log, StaticPolicy({}), regrets=regrets, n_boot=50, max_unsupported_trim=-1.0
+    )["compression"]
+    assert strict["constraint_status"] == "insufficient"
+
+
+def test_ope_thresholds_are_user_only(tmp_path: Path) -> None:
+    home, proj = tmp_path / "home", tmp_path / "proj"
+    home.mkdir()
+    proj.mkdir()
+    env = {"TOKEN_SPAREN_HOME": str(home)}
+    assert load_config(proj, env).get("ope.min_outcome_coverage") == 0.8
+    assert load_config(proj, env).get("ope.max_unsupported_trim") == 0.2
+    (proj / "token-sparen.toml").write_text("[ope]\nmin_outcome_coverage = 0.1\n", "utf-8")
+    assert load_config(proj, env).get("ope.min_outcome_coverage") == 0.8
+    (home / "config.toml").write_text("[ope]\nmin_outcome_coverage = 0.5\n", "utf-8")
+    assert load_config(proj, env).get("ope.min_outcome_coverage") == 0.5
+
+
+def test_ope_cli_reads_the_thresholds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.toml").write_text("[ope]\nmin_outcome_coverage = 1.01\n", "utf-8")
+    monkeypatch.setenv("TOKEN_SPAREN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    log = _write_log(home / "projects" / KEY / "decisions.jsonl")
+    out = tmp_path / "priv" / "e3.json"
+    assert cli.main(["ope", "--log", str(log), "--target", "static", "--out", str(out)]) == 0
+    point = json.loads(out.read_text(encoding="utf-8"))["points"]["compression"]
+    assert point["constraint_status"] == "insufficient"

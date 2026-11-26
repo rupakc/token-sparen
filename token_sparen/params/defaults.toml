@@ -255,3 +255,9 @@ latency_log_max_bytes = 1000000  # latency.jsonl rotates past this size
 # Honoured only from ~/.token-sparen/config.toml or TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE,
 # never from a project's token-sparen.toml.
 allow_override = false
+
+[ope]
+# E3 (`token-sparen ope`) quality constraint: a verdict needs enough evidence, else it is
+# "insufficient" (constraint_ok = null). User-only (never from a project's token-sparen.toml).
+max_unsupported_trim = 0.2  # share of the target's trimming mass the log cannot support
+min_outcome_coverage = 0.8  # share of logged trimming decisions with a settled outcome

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import os
 import re
 import shlex
@@ -879,6 +880,7 @@ def _ope_cmd(args: argparse.Namespace) -> int:
             n_boot=max(1, args.n_boot),
             seed=args.seed,
             tau=_tau_config(),
+            **_ope_thresholds(),
         )
         report.write_private(
             out,
@@ -908,10 +910,21 @@ def _ope_cmd(args: argparse.Namespace) -> int:
             for est in ("ips", "snips", "dr"):
                 lo, hi = agg[part][est]["ci95"]
                 print(f"  {part} {est} {agg[part][est]['value']:.4f} [{lo:.4f}, {hi:.4f}]")
-        verdict = "ok" if agg["constraint_ok"] else "VIOLATED"
+        for variant in ("optimistic", "pessimistic"):
+            for est in ("ips", "dr"):
+                got = agg["regret_per_trim"][variant][est]
+                if got is not None:
+                    lo, hi = got["ci95"]
+                    print(
+                        f"  regret per trim ({variant}) {est} {got['value']:.4f} "
+                        f"[{lo:.4f}, {hi:.4f}]"
+                    )
+        upper = agg["constraint_upper"]
+        bound = "" if upper is None else f", pessimistic upper {upper:.4f}"
         print(
-            f"  constraint {verdict}: regret upper {agg['regret_upper']:.4f} "
-            f"vs tau {agg['tau']:.4f}"
+            f"  constraint {agg['constraint_status']}{bound} vs tau {agg['tau']:.4f} "
+            f"(outcome coverage {agg['outcome_coverage']:.3f}, unsupported trim mass "
+            f"{agg['unsupported_trim_fraction']:.3f})"
         )
     print("token-sparen ope: private report written (mode 0600)")
     return 0
@@ -925,6 +938,17 @@ def _tau_config() -> dict[str, float]:
     for tier, value in raw.items() if isinstance(raw, dict) else ():
         if isinstance(value, int | float) and not isinstance(value, bool) and 0 <= value <= 1:
             out[str(tier)] = float(value)
+    return out
+
+
+def _ope_thresholds() -> dict[str, float]:
+    """``[ope]`` thresholds of the merged config (user-only keys; finite numbers only)."""
+    cfg = load_config(Path.cwd(), os.environ)
+    out: dict[str, float] = {}
+    for key in ("max_unsupported_trim", "min_outcome_coverage"):
+        value = cfg.get(f"ope.{key}")
+        if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value):
+            out[key] = float(value)
     return out
 
 

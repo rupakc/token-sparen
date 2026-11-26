@@ -1065,3 +1065,15 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   all tools via `hookSpecificOutput.updatedToolOutput` (previously MCP-only)"; the `engines`
   key itself is honoured from 2.1.323 (older hosts ignore it). `claude plugin validate`
   passes (no engines warning). Tested with Claude Code 2.1.332.
+
+## 2026-11-26 M2 close-out fix round 1 (coordinator rulings)
+- OPE constraint is judged per trim: `regret_per_trim` = target regret mass / target trimming
+  mass (IPS: sum w r 1[trim] / sum w 1[trim]; DR: model on settled trims + weighted residual,
+  over the exact supported target trimming mass), `optimistic` (unsettled trims dropped) and
+  `pessimistic` (unsettled trims = regret 1), bootstrap CIs. `constraint_ok` = max pessimistic
+  upper (IPS, DR) <= tau; null + `constraint_status: "insufficient"` when
+  `unsupported_trim_fraction` > `[ope] max_unsupported_trim` (0.2) or `outcome_coverage` <
+  `[ope] min_outcome_coverage` (0.8) or no ratio; `no_trims` (ok) when the target never trims.
+  `[ope]` is user-only. `regret_upper` is gone (replaced by `constraint_upper`); the
+  per-decision `regret` part stays as information only.
+- `regret_known_fraction` denominator = evaluated non-safe-arm decisions (1.0 when none).

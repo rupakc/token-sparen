@@ -5,9 +5,13 @@ the output removed (``(tokens_before - tokens_after) / tokens_before``), ``regre
 regret value (joined from the log's outcome lines; missing counts as 0 and is reported as
 ``regret_known``) and the combined objective ``savings - lambda * regret`` with
 ``lambda = 1 / tau[tier]`` (the old ``ips``/``snips``/``dr`` keys). The safe arm's savings and
-regret are 0 by definition. Quality is a constraint, not a weight: ``constraint_ok`` says the
-target's estimated regret is within ``tau`` of the point's tier, judged on the larger upper 95 %
-bound of IPS and DR (``regret_upper``; SNIPS is conditional on support and not used).
+regret are 0 by definition. Quality is a constraint, not a weight, judged **per trim**
+(``regret_per_trim``: target regret mass / target trimming mass, IPS and DR ratio estimators,
+``optimistic`` on settled rows only and ``pessimistic`` with every unsettled trimming decision
+counted as regret 1): ``constraint_ok`` = the larger pessimistic upper 95 % bound <= ``tau`` of
+the point's tier; None (``constraint_status`` ``insufficient``) when the log cannot support
+enough of the target's trimming (``[ope] max_unsupported_trim``) or too few trimming decisions
+have an outcome (``[ope] min_outcome_coverage``).
 
 Estimators: IPS and self-normalised IPS with importance weights ``pi(a|x) / p_log(a|x)``
 clipped at ``CLIP`` (20; the clipped fraction is reported), and doubly robust with a per
@@ -58,8 +62,11 @@ NOTES = {
     "0, or 1 with the target elsewhere); a lower bound for stochastic loggers, which do not log "
     "the arms they could not choose; IPS and DR cover supported mass only; SNIPS is conditional "
     "on support (rows = decisions it covers)",
-    "constraint": "constraint_ok = regret_upper <= tau (regret_upper: the larger upper 95 % "
-    "bound of the IPS and DR regret estimates); judge a target on savings only when it holds",
+    "constraint": "constraint_ok = constraint_upper <= tau, constraint_upper = the larger upper "
+    "95 % bound of the pessimistic IPS and DR regret per trim (unsettled trims count as regret "
+    "1); null with constraint_status 'insufficient' when unsupported_trim_fraction > "
+    "[ope] max_unsupported_trim or outcome_coverage < [ope] min_outcome_coverage; judge a target "
+    "on savings only when it holds",
     "in_sample": "engine-snapshot on the logs its own learner was trained on is in-sample and "
     "optimistic; use --holdout-after to evaluate only later decisions",
     "regret": "settled regret joins from the log's outcome lines by decision id (recovery read, "
@@ -471,6 +478,182 @@ def load_log(paths: Iterable[Path]) -> tuple[list[DecisionRecord], dict[str, flo
     return log, regrets
 
 
+MAX_UNSUPPORTED_TRIM = 0.2
+MIN_OUTCOME_COVERAGE = 0.8
+
+
+@dataclass
+class _TrimRow:
+    """One evaluated decision's terms for the per-trim regret ratio."""
+
+    w: float  # clipped importance weight of the logged arm (0 when unsupported)
+    trims: bool  # the logged arm is a trimming arm
+    regret: float | None  # its settled regret (None: unsettled)
+    pi: dict[str, float]  # target probability of each supported trimming arm
+    rec: DecisionRecord
+
+
+def _trim_rows(
+    log: Sequence[DecisionRecord],
+    target: Target,
+    regrets: Mapping[str, float],
+    clip: float,
+) -> tuple[list[_TrimRow], float, float]:
+    """(rows, target trimming mass, unsupported target trimming mass), summed over decisions."""
+    rows: list[_TrimRow] = []
+    total = unsupported = 0.0
+    for rec in log:
+        probs = target.probs(rec)
+        point = get_point(rec.point)
+        if probs is None or point is None:
+            continue
+        trim_pi = {a: float(q) for a, q in probs.items() if a != point.safe_arm and q > 0.0}
+        mass = sum(trim_pi.values())
+        total += mass
+        p = rec.propensity
+        if not isinstance(p, int | float) or not math.isfinite(p) or p <= 0.0:
+            unsupported += mass
+            continue
+        if p >= DETERMINISTIC:  # only the logged arm is supported
+            supported = {a: q for a, q in trim_pi.items() if a == rec.arm}
+            unsupported += mass - sum(supported.values())
+            trim_pi = supported
+        w = min(clip, float(probs.get(rec.arm, 0.0)) / p)
+        trims = rec.arm != point.safe_arm
+        rows.append(
+            _TrimRow(w, trims, regrets.get(rec.decision_id) if trims else 0.0, trim_pi, rec)
+        )
+    return rows, total, unsupported
+
+
+def _regret_model(rows: Sequence[_TrimRow]) -> Any:
+    """Mean regret per (bucket, arm), then per arm, then over all trims (settled rows of the
+    variant only), as a ``predict(rec, arm)`` callable."""
+    fine: dict[tuple[str, str], list[float]] = {}
+    coarse: dict[str, list[float]] = {}
+    every = [0.0, 0.0]
+    for row in rows:
+        if not row.trims or row.regret is None:
+            continue
+        for acc in (
+            fine.setdefault((row.rec.bucket, row.rec.arm), [0.0, 0.0]),
+            coarse.setdefault(row.rec.arm, [0.0, 0.0]),
+            every,
+        ):
+            acc[0] += row.regret
+            acc[1] += 1.0
+
+    def predict(rec: DecisionRecord, arm: str) -> float:
+        acc = fine.get((rec.bucket, arm)) or coarse.get(arm) or (every if every[1] else None)
+        return acc[0] / acc[1] if acc else 0.0
+
+    return predict
+
+
+def _ratio_terms(rows: Sequence[_TrimRow]) -> tuple[list[tuple[float, float]], ...]:
+    """Per-row (numerator, denominator) pairs of the IPS and DR per-trim regret ratios."""
+    predict = _regret_model(rows)
+    ips_t: list[tuple[float, float]] = []
+    dr_t: list[tuple[float, float]] = []
+    for row in rows:
+        r = row.regret if row.regret is not None else 0.0
+        ind = row.w if row.trims else 0.0
+        ips_t.append((ind * r, ind))
+        dm = sum(q * predict(row.rec, a) for a, q in row.pi.items())
+        resid = row.w * (r - predict(row.rec, row.rec.arm)) if row.trims else 0.0
+        dr_t.append((dm + resid, sum(row.pi.values())))
+    return ips_t, dr_t
+
+
+def _ratio(terms: Sequence[tuple[float, float]]) -> float | None:
+    den = sum(d for _, d in terms)
+    if den <= 0.0:
+        return None
+    return min(1.0, max(0.0, sum(x for x, _ in terms) / den))
+
+
+def _ratio_estimate(
+    terms: Sequence[tuple[float, float]], n_boot: int, seed: int
+) -> dict[str, Any] | None:
+    value = _ratio(terms)
+    if value is None:
+        return None
+    rng = random.Random(seed)
+    boots = [
+        b for _ in range(n_boot) if (b := _ratio(rng.choices(terms, k=len(terms)))) is not None
+    ]
+    lo, hi = _percentiles(boots) if boots else (value, value)
+    return {"value": round(value, 6), "ci95": [round(lo, 6), round(hi, 6)]}
+
+
+def regret_per_trim(
+    log: Sequence[DecisionRecord],
+    target: Target | Policy,
+    *,
+    regrets: Mapping[str, float] | None = None,
+    tau: float,
+    clip: float = CLIP,
+    n_boot: int = N_BOOT,
+    seed: int = 0,
+    max_unsupported_trim: float = MAX_UNSUPPORTED_TRIM,
+    min_outcome_coverage: float = MIN_OUTCOME_COVERAGE,
+) -> dict[str, Any]:
+    """The target's regret per trimming decision (target regret mass / target trimming mass;
+    IPS and DR ratio estimators, bootstrap 95 % CIs) in two variants: ``optimistic`` estimates
+    on settled rows only (unsettled trimming decisions dropped), ``pessimistic`` counts each
+    unsettled trimming decision as regret 1. ``constraint_ok`` = the larger pessimistic upper
+    bound <= ``tau``; None with status ``insufficient`` when more than
+    ``max_unsupported_trim`` of the target's trimming mass is unsupported, fewer than
+    ``min_outcome_coverage`` of the logged trimming decisions have an outcome, or no ratio can
+    be formed; status ``no_trims`` (ok) when the target never trims."""
+    rows, total, unsupported = _trim_rows(log, as_target(target), regrets or {}, clip)
+    trimming = [r for r in rows if r.trims]
+    settled = sum(1 for r in trimming if r.regret is not None)
+    coverage = settled / len(trimming) if trimming else 1.0
+    unsupported_frac = unsupported / total if total > 0.0 else 0.0
+    variants: dict[str, dict[str, Any]] = {}
+    for name, variant in (
+        ("optimistic", [r for r in rows if not (r.trims and r.regret is None)]),
+        (
+            "pessimistic",
+            [
+                dataclasses.replace(r, regret=1.0) if r.trims and r.regret is None else r
+                for r in rows
+            ],
+        ),
+    ):
+        ips_t, dr_t = _ratio_terms(variant)
+        variants[name] = {
+            "ips": _ratio_estimate(ips_t, n_boot, seed),
+            "dr": _ratio_estimate(dr_t, n_boot, seed),
+        }
+    pess = variants["pessimistic"]
+    upper: float | None = None
+    if total <= 0.0:
+        status, ok = "no_trims", True
+    elif (
+        unsupported_frac > max_unsupported_trim
+        or coverage < min_outcome_coverage
+        or pess["ips"] is None
+        or pess["dr"] is None
+    ):
+        status, ok = "insufficient", None
+    else:
+        upper = max(float(pess[k]["ci95"][1]) for k in ("ips", "dr"))
+        ok = upper <= tau
+        status = "ok" if ok else "violated"
+    n = len(rows) or 1
+    return {
+        "regret_per_trim": variants,
+        "outcome_coverage": round(coverage, 6),
+        "unsupported_trim_fraction": round(unsupported_frac, 6),
+        "target_trim_mass": round(total / n, 6),
+        "constraint_upper": None if upper is None else round(upper, 6),
+        "constraint_ok": ok,
+        "constraint_status": status,
+    }
+
+
 def evaluate(
     log: Sequence[DecisionRecord],
     target: Target | Policy,
@@ -479,10 +662,13 @@ def evaluate(
     n_boot: int = N_BOOT,
     seed: int = 0,
     tau: Mapping[str, float] | None = None,
+    max_unsupported_trim: float = MAX_UNSUPPORTED_TRIM,
+    min_outcome_coverage: float = MIN_OUTCOME_COVERAGE,
 ) -> dict[str, dict[str, Any]]:
     """Aggregates per decision point: n, support, clipping, and the IPS/SNIPS/DR estimates of
-    savings, regret and the combined objective (the top-level ``ips``/``snips``/``dr``), the
-    point's ``tau`` and ``constraint_ok`` (``regret_upper`` <= ``tau``)."""
+    savings, regret per decision and the combined objective (the top-level
+    ``ips``/``snips``/``dr``), the point's ``tau`` and the quality constraint judged on regret
+    per trim (``regret_per_trim``)."""
     regrets = regrets or {}
     tgt = as_target(target)
     out: dict[str, dict[str, Any]] = {}
@@ -499,7 +685,16 @@ def evaluate(
             }
         e_ips, e_snips, e_dr = (parts["combined"][k] for k in ("ips", "snips", "dr"))
         t = tau_for(name, tau)
-        upper = max(parts["regret"][k].ci95[1] for k in ("ips", "dr"))
+        constraint = regret_per_trim(
+            rows,
+            tgt,
+            regrets=regrets,
+            tau=t,
+            n_boot=n_boot,
+            seed=seed,
+            max_unsupported_trim=max_unsupported_trim,
+            min_outcome_coverage=min_outcome_coverage,
+        )
         out[name] = {
             "logged": len(rows),
             "n": e_ips.n,
@@ -516,7 +711,6 @@ def evaluate(
             **{p: {k: e.to_dict() for k, e in parts[p].items()} for p in PARTS},
             "objective": OBJECTIVE,
             "tau": t,
-            "regret_upper": round(upper, 6),
-            "constraint_ok": upper <= t,
+            **constraint,
         }
     return out
