@@ -26,11 +26,17 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations) and M1 (Claude Co
 - Live statusline (opt-in install/uninstall that composes with an existing statusline, backs up
   settings and restores the original exactly).
 - CLI: `stats`, `show`, `run`, `doctor`, `session disable|enable`, `config set`,
-  `statusline`, `extensions`; placeholders for `fold`, `replay`, `facts`, `prune`.
+  `statusline`, `extensions`, `fold`; placeholders for `replay`, `facts`, `prune`.
 - Trusted extension loading (entry points and content-hash-trusted drop-ins), a compressor
   conformance kit and a versioned extension interface (`EXTENSION_API_VERSION = "1.0"`).
 - Per-session config overrides (`config set`) and a per-session kill switch that finds the
   project's last active session.
+- Learning (M2, in progress): `token-sparen fold [--session ID] [--all]` merges a finished
+  session's evidence into the project store (and coarse back-off buckets), contributes 0.3 x the
+  delta to the global store (halved after 90 untouched days), learns pre-trim candidates, and runs
+  a per-project circuit breaker that pauses a decision point after repeated regret. SessionEnd
+  spawns the fold detached; SessionStart folds left-over sessions. The statusline `learn` segment
+  shows `cold`, `adapting`, `exploiting` or `safe-mode`.
 
 ### Changed
 - Compression never returns more than the model would have seen and enforces the 2000-token floor

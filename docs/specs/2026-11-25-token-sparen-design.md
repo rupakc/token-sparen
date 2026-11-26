@@ -70,6 +70,20 @@ events per fresh bucket) and the Monte-Carlo propensity is unusable for IPS on r
   `token-sparen show`) are never trimmed or de-duplicated again.
 - A trimming arm that ended as a no-op gets savings 0 and regret 0 at once; the safe arm nothing.
 
+**2026-11-26 (M2, Task 22).** §7.4 / §7.6 session fold and circuit breaker (`learn/overlay.py`,
+`learn/breaker.py`):
+- The fold moves session evidence into the project store (sum, then the mean-preserving cap; no
+  re-discount) and empties the overlay first, so the engine's project + session sum never counts
+  it twice; it is idempotent (per-document applied fold ids). Coarse back-off buckets in the
+  project and global stores are aggregates of their children. Global receives the session delta
+  x 0.3 (`global_weight`), and entries untouched for 90 days are halved.
+- Circuit breaker: rolling mean of the last 50 settled regret values of a point's trimming arms
+  (evaluated from 20) above 2 x tau pauses the point for the project (safe arm, propensity 1) for
+  3 folded sessions, with one user message; on re-entry its trimming-arm project evidence is
+  deleted so the designed priors apply again. Applies to every tier, not only high.
+- Pre-trim candidates are learned at fold time from the decision log (>= 5 trimming
+  compressions, mean kept ratio <= 0.4, never a regret).
+
 ---
 
 ## 1. Intent and why

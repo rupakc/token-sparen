@@ -284,6 +284,26 @@ class Evidence:
             self.ea + other.ea, self.eb + other.eb, self.n + other.n, self.second + other.second
         )
 
+    def scaled(self, factor: float) -> Evidence:
+        """Every field (``ea``, ``eb``, ``n``, ``es2``) times ``factor`` (>= 0): the global
+        store's weighted contribution and its age discount."""
+        if not (math.isfinite(factor) and factor >= 0.0):
+            raise ValueError(f"factor must be finite and >= 0, got {factor!r}")
+        ea = self.ea * factor
+        return Evidence(ea, self.eb * factor, self.n * factor, min(ea, self.second * factor))
+
+    def capped(self, cap: float) -> Evidence:
+        """The cap rule of ``observe``: if ``ea + eb > cap`` scale ``ea``, ``eb`` and ``es2`` so
+        ``ea + eb == cap`` (mean-preserving); ``n`` (real observations) is unchanged."""
+        if not (math.isfinite(cap) and cap > 0.0):
+            raise ValueError(f"cap must be finite and > 0, got {cap!r}")
+        total = self.ea + self.eb
+        if total <= cap:
+            return self
+        f = cap / total
+        ea = self.ea * f
+        return Evidence(ea, self.eb * f, self.n, min(ea, self.second * f))
+
     def posterior(self, prior: Beta) -> Beta:
         return Beta(prior.a + self.ea, prior.b + self.eb, self.n)
 

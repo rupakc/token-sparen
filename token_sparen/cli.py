@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Mapping
 from importlib import resources
 from pathlib import Path
@@ -80,13 +81,22 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--yes", action="store_true", help="record trust (without it: preview only)")
     un = ext_sub.add_parser("untrust", help="revoke trust by drop-in path or sha256")
     un.add_argument("target")
+    fold = sub.add_parser("fold", help="fold finished sessions into the project and global stores")
+    fold.add_argument("--session", help="session id (default: $CLAUDE_SESSION_ID)")
+    fold.add_argument("--all", action="store_true", help="every unfolded session of the project")
+    fold.add_argument(
+        "--older-than", type=float, default=0.0, help="--all: only sessions idle this many seconds"
+    )
+    fold.add_argument("--max", type=int, default=0, help="--all: at most this many (0 = no limit)")
+    _project_opt(fold)
     for name in _STUBS:
         stub = sub.add_parser(name, help="available after M2/M3")
         stub.add_argument("rest", nargs="*")
     return parser
 
 
-_STUBS = ("fold", "replay", "facts", "prune")
+_STUBS = ("replay", "facts", "prune")
+_FOLD_TRIES = 5
 _ID_RE = re.compile(r"[0-9a-f]{12}")
 _SHELL_SYNTAX = re.compile(r"[\s|&;<>()$`\\*?{}~!#]")
 
@@ -680,6 +690,49 @@ def _extensions(args: argparse.Namespace) -> int:
     return handlers[args.action](args)
 
 
+def _fold_one(sid: str, key: str, home: Path, params: Mapping[str, Any]) -> Any:
+    from token_sparen.learn import overlay
+
+    for attempt in range(_FOLD_TRIES):
+        try:
+            return overlay.fold(sid, key, home, params=params)
+        except jsonstore.StoreBusy:
+            if attempt == _FOLD_TRIES - 1:
+                raise CliError(f"fold {sid}: state is busy, try again later", 1) from None
+            time.sleep(0.2 * (attempt + 1))
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _fold_cmd(args: argparse.Namespace) -> int:
+    from token_sparen.learn import overlay
+
+    env = os.environ
+    home = state_home(env)
+    project = _project_dir(args).resolve()
+    key = keycache.cached_project_key(project, env)
+    params = load_config(project, env).data
+    if args.all:
+        limit = args.max if args.max > 0 else 1_000_000
+        sids = overlay.pending_sessions(
+            key, home, older_than=max(0.0, args.older_than), limit=limit, max_scan=None
+        )
+        reports = [_fold_one(s, key, home, params) for s in sids]
+        done = [r for r in reports if r.staged]
+        cells = sum(r.cells for r in done)
+        tripped = sorted({p for r in done for p in r.tripped})
+        line = f"token-sparen fold: {len(done)} session{'' if len(done) == 1 else 's'} folded"
+        line += f", {cells} cells merged"
+        if tripped:
+            line += f"; breaker tripped: {', '.join(tripped)}"
+        print(line)
+        return 0
+    sid = args.session or env.get("CLAUDE_SESSION_ID")
+    if not sid:
+        raise CliError("fold needs --session ID (or $CLAUDE_SESSION_ID) or --all")
+    print(_fold_one(sid, key, home, params).line())
+    return 0
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "statusline":
         return _statusline(args)
@@ -694,6 +747,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         "session": _session_cmd,
         "extensions": _extensions,
         "config": _config_set,
+        "fold": _fold_cmd,
     }
     return handlers[args.command](args)
 

@@ -153,11 +153,11 @@ def record_window(
 # --------------------------------------------------------------------------- state sources
 
 
-_LEARNER: list[Callable[[str], Any] | None] = []
+_LEARNER: list[Callable[[str, Path], Any] | None] = []
 
 
 def _learner_state(project_key: str, env: Mapping[str, str]) -> str:
-    """The learner's state (Task 22 adds ``learn.overlay.learner_state``), else ``cold``."""
+    """``learn.overlay.learner_state`` for the project (state root from ``env``), else ``cold``."""
     if not _LEARNER:
         try:
             module = importlib.import_module("token_sparen.learn.overlay")
@@ -169,7 +169,7 @@ def _learner_state(project_key: str, env: Mapping[str, str]) -> str:
     if fn is None:
         return "cold"
     try:
-        value = fn(project_key)
+        value = fn(project_key, state_home(env))
     except Exception as exc:  # noqa: BLE001 - a learner bug must not break the statusline
         log_error(env, "statusline", f"learner_state: {type(exc).__name__}: {exc}")
         return "cold"

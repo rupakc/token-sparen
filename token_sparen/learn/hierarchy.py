@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from token_sparen.config import log_error
+from token_sparen.learn import breaker
 from token_sparen.learn.beta import Beta, Evidence
 from token_sparen.learn.features import (
     FEATURE_KEYS,
@@ -87,6 +88,7 @@ class StoreChain:
         self.params: Mapping[str, Any] | None = params
         self._env = {"TOKEN_SPAREN_HOME": str(home)}
         self._docs: dict[Scope, dict[str, Any]] = {}
+        self._breaker: dict[str, Any] | None = None
         self.kappa_cache: dict[tuple[str, str, str], float] = {}
         self._warned = False
 
@@ -123,6 +125,13 @@ class StoreChain:
             self._warn(f"{scope} evidence: points is not an object")
             return {}
         return inner
+
+    def tripped(self, point: str) -> bool:
+        """Is ``point`` paused by the project's circuit breaker (``breaker.json``, cached)?"""
+        if self._breaker is None:
+            path = project_dir_for(self.home, self.project_key) / breaker.BREAKER_FILE
+            self._breaker = jsonstore.read(path, {}, self._env) if path.exists() else {}
+        return breaker.is_tripped(self._breaker, point)
 
     def invalidate(self, scope: Scope) -> None:
         """Drop the cached document of ``scope`` (after this process wrote it)."""

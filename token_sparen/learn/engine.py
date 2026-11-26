@@ -14,9 +14,10 @@ cannot drift toward aggressive trimming by construction. Before sampling, the sa
 ladder and (high tier) the user opt-in and ucb gate remove arms deterministically. The logged
 propensity is exact (``learn.propensity``: numerical integral of the win probability) mixed with
 the floor, so off-policy estimates stay unbiased. Decision ids are uuid4. Rewards update only
-the session overlay (``evidence``); the fold into the project store is Task 22. The engine never
-raises into a hook: on any error it logs and returns the safe arm, propensity 1.0, bucket
-``error``.
+the session overlay (``evidence``); ``learn.overlay.fold`` merges them into the project store.
+A point paused by the project's circuit breaker (``learn.breaker``) gets the safe arm with
+propensity 1. The engine never raises into a hook: on any error it logs and returns the safe
+arm, propensity 1.0, bucket ``error``.
 """
 
 from __future__ import annotations
@@ -36,7 +37,13 @@ from token_sparen.events import SessionCtx
 from token_sparen.learn.beta import Beta, Evidence, beta_cdf
 from token_sparen.learn.features import backoff_keys, backoff_levels, bucket_key, lookup_param
 from token_sparen.learn.hierarchy import SESSION_KEY, Kind, StoreChain, prior_for
-from token_sparen.learn.policy import Decision, DecisionPoint, StaticPolicy, get_point
+from token_sparen.learn.policy import (
+    DEFAULT_TAU,
+    Decision,
+    DecisionPoint,
+    StaticPolicy,
+    get_point,
+)
 from token_sparen.learn.propensity import win_probabilities
 from token_sparen.store import jsonstore, session
 
@@ -45,7 +52,7 @@ PENDING_KEY = "pending"
 HIGH_UCB_Q = 0.95
 MIN_PROPENSITY = 1e-3
 _KINDS: tuple[Kind, ...] = ("savings", "regret")
-_TAU = {"low": 0.10, "medium": 0.05, "high": 0.01, "none": 1.0}
+_TAU = DEFAULT_TAU
 _FLOOR = {"low": 0.05, "medium": 0.05, "high": 0.02, "none": 0.0}
 _EMPTY = Evidence(0.0, 0.0, 0.0, 0.0)
 
@@ -278,14 +285,17 @@ class Engine:
         self, point: DecisionPoint, features: Mapping[str, str], ctx: SessionCtx
     ) -> Decision:
         bucket = self.bucket(point, features)
-        cands = self._candidates(point, features)
         decision_id = uuid.uuid4().hex
-        floor = self._floor(point)
-        if floor > 0.0 and self.rng.random() < floor:
-            arm = point.safe_arm
+        if self.stores.tripped(point.name):
+            arm, p = point.safe_arm, 1.0  # circuit breaker: paused for this project
         else:
-            arm = _draw(cands, self._tau(point), point.safe_arm, self.rng)
-        p = min(1.0, max(MIN_PROPENSITY, self._propensity(point, cands, arm)))
+            cands = self._candidates(point, features)
+            floor = self._floor(point)
+            if floor > 0.0 and self.rng.random() < floor:
+                arm = point.safe_arm
+            else:
+                arm = _draw(cands, self._tau(point), point.safe_arm, self.rng)
+            p = min(1.0, max(MIN_PROPENSITY, self._propensity(point, cands, arm)))
         self._points[point.name] = point
         if self._overlay is None:
             self._overlay = ctx.overlay_path

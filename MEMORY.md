@@ -569,3 +569,52 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   tracked command itself lowers a later quick re-run of *every* open decision to 0.5, even when
   unrelated (e.g. `cd packages/b && npm test` before re-running packages/a). Slight
   under-reporting of regret, accepted.
+
+## 2026-11-26 Task 22: session fold, global deltas, circuit breaker, learner state
+- `learn/overlay.py` `fold(session_id, project_key, home)`: (1) stage the overlay (`evidence` and
+  `regret_outcomes` move under `folding` with a uuid4 fold id, `evidence` emptied), (2) breaker,
+  (3) project merge `cap(project + session)` (ea, eb, es2, n summed, mean-preserving cap of
+  `Evidence.observe`, n not scaled, no re-discount), every full bucket also added to each coarser
+  back-off level (**coarse buckets are aggregates**), (4) global += session x `global_weight`
+  (0.3, all four fields) at every level with `t`; entries untouched > `global_age_days` (90) are
+  halved and `t` reset (once per period), (5) pre-trim candidates, (6) clear `folding`, set
+  `folded_at`. **Double counting**: evidence is never in both overlay and project (staged first;
+  briefly in neither). **Idempotency/crash safety**: each target doc keeps `applied` (last 200
+  fold ids); a staged-but-unfinished fold is resumed. A session's first fold always stages (even
+  empty), so paused points count down in projects without trims.
+- **Lock order** (`overlay.LOCK_ORDER`): project `posteriors.json` held for the whole fold
+  (serialises a project's folds); under it `breaker.json`, `global/posteriors.json`,
+  `pretrim.json`, overlay, one at a time. Hooks only take the overlay lock alone.
+  `jsonstore.locked/update` gained `timeout`; `read_locked`/`write_locked` added.
+- Regret outcomes: `RegretDetector` appends every settled payout (and table evictions) to the
+  overlay `regret_outcomes` = `[decision_id, point, arm, command_sig, value]` (last 1000), for any
+  policy; fold consumes them.
+- **Circuit breaker** (`learn/breaker.py`, `projects/<key>/breaker.json`): ring of the last
+  `breaker_window` (50) settled regret values of trimming arms per point; evaluated once >=
+  `breaker_min_obs` (20, builder choice: no verdict from a handful) are in it; mean > 2 x tau[tier]
+  trips -> `remaining = breaker_sessions` (3), ring cleared. Each newly folded session decrements;
+  at 0 the point re-enters: its trimming-arm project evidence (all buckets) is deleted. While
+  tripped `Engine.decide` returns the safe arm, propensity 1 (`StoreChain.tripped`, cached read).
+  The user message is shown once at the next SessionStart (`breaker.notices`, flag `notified`).
+  `DEFAULT_TAU` moved to `learn.policy` (engine and breaker share it).
+- **Pre-trim candidates**: fold scans `decisions.jsonl` from a byte offset (`scan.offset`, reset
+  when the first line's hash changes = rotation); per `command_sig` stats `[count, sum ratio,
+  regrets, last ts]` over trimming Bash compression decisions; regrets from outcomes with value > 0
+  (any point). Candidate iff count >= 5, mean ratio <= 0.4, regrets == 0 (ever) ->
+  `{"lines": 120, "t"}`; a regret or a failing ratio removes it; <= 200 candidates, <= 2000 stats
+  (least recent dropped). Keys are `regret.event_signature` values, so `guards.pretrim_lines`
+  finds them.
+- `learner_state(project_key, home=None)`: safe-mode (any point paused) > cold (< 20 real
+  observations: sum over points and arms of the `*` bucket's max n) > exploiting (>= 80 % of the
+  last 50 logged decisions chose their bucket's posterior-best arm: max savings mean among
+  trimming arms with regret mean <= tau, prior + project evidence; else the safe arm) > adapting.
+  The statusline now calls `learner_state(key, state_home(env))`.
+- Hooks: SessionEnd `_on_fold_spawn` (after regret settlement) spawns `python3 -I
+  <plugin>/hooks/run_cli.py fold --session <id> --project <dir>` (`-m token_sparen` without the
+  plugin tree) with stdio DEVNULL, POSIX `start_new_session`, Windows `DETACHED_PROCESS |
+  CREATE_NEW_PROCESS_GROUP`. SessionStart `_on_breaker_notice`, then `_on_fold_pending`: up to 3
+  unfolded overlays idle >= 1 h (reading <= 50 files), in-process when their overlays + decision
+  log + stores are <= 256 KiB, with a 50 ms lock timeout and a 100 ms budget; otherwise (or on a
+  busy lock) spawn `fold --all --older-than 3600 --max 3`. `tests/conftest.py` stubs the spawn.
+- CLI `fold [--session ID] [--all] [--older-than S] [--max N] [--project DIR]`; one line out;
+  retries a busy lock 5 times.

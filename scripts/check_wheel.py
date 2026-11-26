@@ -74,6 +74,8 @@ def main() -> int:
         print("ok", _run([exe, "--version"], work, home).stdout.strip())
         _run([exe, "stats", "--json"], work, home)
         print("ok stats --json")
+        out = _run([exe, "fold", "--all"], work, home).stdout.strip()
+        print(f"ok {out}")
         _run([exe, "extensions", "list"], work, home)
         py = str(bindir / "python")
         probe = (

@@ -73,6 +73,9 @@ READ_DEDUPE = DecisionPoint("read_dedupe", ("off", "pointer"), safe_arm="off", t
 # PreToolUse(Task|Agent): append a one-line "conclusions, not dumps" brief to the subagent prompt.
 SUBAGENT_BRIEF = DecisionPoint("subagent_brief", ("off", "on"), safe_arm="off", tier="medium")
 _TIERS: frozenset[str] = frozenset({"low", "medium", "high", "none"})
+# Regret target per tier (``[learn.tau]`` overrides): the engine's feasibility bound and the
+# circuit breaker's reference (trips above 2 x tau).
+DEFAULT_TAU: dict[str, float] = {"low": 0.10, "medium": 0.05, "high": 0.01, "none": 1.0}
 _BUILTIN_POINTS: dict[str, DecisionPoint] = {
     p.name: p for p in (COMPRESSION, PRETRIM, READ_DEDUPE, SUBAGENT_BRIEF)
 }

@@ -132,6 +132,16 @@ ladder_obs = 20  # a trimming arm unlocks the next more aggressive one only with
 # regret posterior mean <= tau
 pending_max = 500  # decisions awaiting reward kept in the session overlay (oldest evicted)
 regret_window_turns = 6  # a trim is watched for regret this many turns, then credited regret 0
+global_weight = 0.3  # a folded session's evidence enters global/posteriors.json times this (the delta)
+global_age_days = 90  # global entries untouched this long are halved at the next fold
+breaker_window = 50  # circuit breaker: rolling regret rate over the last N settled trims of a point
+breaker_min_obs = 20  # ... evaluated once at least this many are in the window; > 2 x tau trips
+breaker_sessions = 3  # a tripped point uses its safe arm for this many folded sessions, then
+# re-enters with its trimming-arm project evidence reset (designed priors apply again)
+pretrim_min_decisions = 5  # a command becomes a pre-trim candidate after >= N trimming compressions
+pretrim_max_ratio = 0.4  # ... with mean tokens_after / tokens_before <= this and no regret ever
+pretrim_lines = 120  # tail lines kept for a new candidate
+pretrim_max = 200  # candidates kept per project (least recently seen dropped)
 
 # Regret target per tier: a trimming arm is feasible only if its sampled regret is <= tau
 # (high tier additionally needs its regret 95 % upper bound <= tau).

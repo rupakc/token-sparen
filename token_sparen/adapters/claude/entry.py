@@ -21,7 +21,7 @@ from typing import Any, TextIO, cast
 from token_sparen.adapters.claude.translate import EVENT_KINDS, ClaudeAdapter
 from token_sparen.config import Config, load_config, log_error, state_home
 from token_sparen.events import Action, Event, EventKind
-from token_sparen.learn import regret
+from token_sparen.learn import breaker, overlay, regret
 from token_sparen.learn.policy import StaticPolicy
 from token_sparen.mechanisms import (
     boundary,
@@ -157,6 +157,33 @@ def _on_session_start(event: Event, cfg: Config) -> Action:
     return read_dedupe.on_session_start(event, env=HOOK_ENV.get())
 
 
+def _on_breaker_notice(event: Event, cfg: Config) -> Action:
+    env = HOOK_ENV.get()
+    msgs = breaker.notices(event.project_key, state_home(env), env)
+    return Action(user_message="\n".join(msgs) if msgs else None)
+
+
+def _on_fold_pending(event: Event, cfg: Config) -> Action:
+    """Fold left-over sessions of this project (idle >= 1 h; at most 3 per start)."""
+    env = HOOK_ENV.get()
+    overlay.fold_pending(
+        event.project_key,
+        state_home(env),
+        event.project_dir,
+        exclude=event.session_id,
+        env=env,
+        params=cfg.data,
+    )
+    return Action()
+
+
+def _on_fold_spawn(event: Event, cfg: Config) -> Action:
+    """SessionEnd: fold this session in a detached process (never waits for it)."""
+    args = ["fold", "--session", event.session_id, "--project", str(event.project_dir)]
+    overlay.spawn_fold(args, HOOK_ENV.get())
+    return Action()
+
+
 def _on_session_active(event: Event, cfg: Config) -> Action:
     tracking.record_active(event, env=HOOK_ENV.get())
     return Action()
@@ -185,7 +212,10 @@ for _kind, _fn in (
     ("pre_compact", _on_compact_instructions),
     ("session_start", _on_session_start),
     ("session_start", _on_session_active),
+    ("session_start", _on_breaker_notice),  # once per circuit-breaker trip
+    ("session_start", _on_fold_pending),
     ("session_end", _on_regret),  # settles every open regret window
+    ("session_end", _on_fold_spawn),  # after settling: the fold sees every regret outcome
 ):
     register(cast(EventKind, _kind), _contained(cast(Handler, _fn)), always=_fn is _on_track)
 

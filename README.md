@@ -135,8 +135,14 @@ Everything stays on your machine, but some of it is plain text you should know a
     **only as hashes** (not plain text) and up to 32 **file paths** it mentions, used to notice when
     a trim hurt), `last_active.json`
     (the project's most recent session id), `savings_scale.json` (numbers only: recent savings
-    sizes per bucket) and `floor_warned.json`. Project folders are named by a hash, but the files inside hold
-    the plain text above.
+    sizes per bucket), `floor_warned.json`, `posteriors.json` and `breaker.json` (numbers only:
+    learned evidence per bucket and recent regret values per decision point) and `pretrim.json`
+    (**normalised Bash commands** with per-command counts, and the learned pre-trim candidates).
+    The session overlay also keeps the settled regret values of its trims, each with the
+    normalised command, until the session is folded. Project folders are named by a hash, but the
+    files inside hold the plain text above.
+  - `global/posteriors.json`: numbers only (evidence pooled across projects, keyed by decision
+    point, feature bucket and arm); no paths, commands, project keys or session ids.
 - Claude Code `settings.json`: **only** if you run `token-sparen statusline install` (see below),
   with a backup and exact restore. Pruning tools from your settings is planned (M3) and will be
   opt-in too.
@@ -166,7 +172,7 @@ Example (colours on a terminal; `NO_COLOR` or `statusline.ascii = true` simplify
 | `rate` | recent context growth per turn (`+2.4k/turn`) and your 5-hour rate-limit use when Claude Code reports it |
 | `saved` | tokens removed so far, with an approximate dollar figure derived from the session's average cost per token reported by Claude Code. Recovery reads are not yet subtracted (planned, M2), so treat it as gross savings |
 | `trims` | `✂` trims made, `↺` recovery reads (regrets; counted from M2, shows 0 for now) |
-| `learn` | learner state; `cold` until learning ships (M2) |
+| `learn` | learner state: `cold` (< 20 observations), `adapting`, `exploiting` (>= 80 % of recent decisions pick the best-known arm) or `safe-mode` (a decision point is paused by the circuit breaker) |
 
 Choose segments with `statusline.segments`.
 
@@ -244,8 +250,13 @@ are stored as described in [What it writes to disk](#what-it-writes-to-disk). De
 
 Planned for M2: a small constrained bandit chooses, per content type and project, how aggressively
 to trim, under a hard quality constraint (it never trades quality for tokens in a weighted sum).
-Until it ships, fixed conservative defaults apply and `learn` shows `cold`. Repo-fact injection and
-tool pruning are planned for M3; `prune`, `facts`, `fold` and `replay` CLI commands are placeholders.
+Until it ships, fixed conservative defaults apply and `learn` shows `cold`. Already in place:
+when a session ends, a background `token-sparen fold` merges what the session learned into the
+project (and, weighted 0.3, into a cross-project global store that forgets after 90 idle days);
+sessions it missed are folded at the next session start. A circuit breaker pauses a decision point
+for the project for 3 sessions when recent trims caused re-reads at more than twice the target
+rate, and tells you once. Repo-fact injection and tool pruning are planned for M3; `prune`, `facts`
+and `replay` CLI commands are placeholders.
 
 ## Credits and licence
 

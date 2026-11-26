@@ -25,7 +25,9 @@ A decision keeps the max of its signals. A full (1.0) regret is paid at once; a 
 the window expires, which is also when a decision without regret is paid an explicit 0 (silence
 is not evidence). SessionEnd settles everything. Each decision is paid at most once and then
 forgotten. Rewards go to the policy only if it has a ``reward`` method (the learning engine); the
-ledger ``regrets`` counter is kept either way. Everything fails open.
+ledger ``regrets`` counter is kept either way. Every settled payout is also appended to the
+overlay's ``regret_outcomes`` (last 1000) for the session fold (circuit breaker, pre-trim
+candidates; ``learn.overlay``). Everything fails open.
 
 Savings at decision time: ``min(1, removed * expected_resends / p95)`` with the p95 of the last
 64 values of ``removed * expected_resends`` per (point, bucket) in the project store
@@ -53,6 +55,8 @@ from token_sparen.events import Action, Event, SessionCtx
 from token_sparen.store import jsonstore, paths, session
 
 REGRET_KEY = "regret"
+OUTCOMES_KEY = "regret_outcomes"  # settled [decision_id, point, arm, command_sig, value], for fold
+MAX_OUTCOMES = 1000
 WINDOW_TURNS = 6
 FULL_WITHIN_TURNS = 2
 MAX_TRACKED = 200
@@ -448,6 +452,21 @@ def _table(state: dict[str, Any]) -> dict[str, Any]:
     return table
 
 
+def _outcome(did: str, entry: Any, value: float) -> list[Any]:
+    e = entry if isinstance(entry, dict) else {}
+    vals = [e.get("point"), e.get("arm"), e.get("command_sig")]
+    return [did, *(v if isinstance(v, str) else "" for v in vals), value]
+
+
+def _record_outcomes(state: dict[str, Any], rows: list[list[Any]]) -> None:
+    """Append settled payouts to the overlay's ``regret_outcomes`` (bounded, oldest dropped)."""
+    if not rows:
+        return
+    outs = state.get(OUTCOMES_KEY)
+    outs = [*(outs if isinstance(outs, list) else []), *rows]
+    state[OUTCOMES_KEY] = outs[-MAX_OUTCOMES:]
+
+
 def _bump(state: dict[str, Any], key: str, inc: int) -> None:
     if inc:
         state[key] = _int(state.get(key)) + inc
@@ -611,13 +630,17 @@ class RegretDetector:
         evicted: list[Payout] = []
 
         def apply(state: dict[str, Any]) -> dict[str, Any]:
+            evicted.clear()
             table = _table(state)
             table.pop(decision_id, None)
             table[decision_id] = entry
+            rows: list[list[Any]] = []
             while len(table) > MAX_TRACKED:
                 old = next(iter(table))
                 gone = table.pop(old)
                 evicted.append((old, _best(gone) if isinstance(gone, dict) else 0.0))
+                rows.append(_outcome(old, gone, evicted[-1][1]))
+            _record_outcomes(state, rows)
             _bump(state, "regrets", sum(1 for _, v in evicted if v > 0))
             return state
 
@@ -627,10 +650,18 @@ class RegretDetector:
     # --- signals ----------------------------------------------------------------------------
 
     def _process(
-        self, table: dict[str, Any], info: _Info, turn: int, *, settle: bool, final: bool
+        self,
+        table: dict[str, Any],
+        info: _Info,
+        turn: int,
+        *,
+        settle: bool,
+        final: bool,
+        outcomes: list[list[Any]] | None = None,
     ) -> tuple[list[Payout], list[Payout], bool, set[str]]:
         """Apply one event to the table in place: (signals, payouts, changed, read hashes of
-        regretted read de-dupe decisions)."""
+        regretted read de-dupe decisions). Settled payouts are also appended to ``outcomes``
+        as ``[decision_id, point, arm, command_sig, value]``."""
         forget: set[str] = set()
         signals: list[Payout] = []
         payouts: list[Payout] = []
@@ -687,6 +718,8 @@ class RegretDetector:
                     changed = True
             if settle and (best >= FULL or final or turn - decided > window):
                 payouts.append((did, best))
+                if outcomes is not None:
+                    outcomes.append(_outcome(did, entry, best))
                 del table[did]
                 changed = True
         return signals, payouts, changed, forget
@@ -720,7 +753,11 @@ class RegretDetector:
         def apply(state: dict[str, Any]) -> dict[str, Any]:
             cur = _int(state.get("turn")) if turn is None else turn
             table = _table(state)
-            sig, payouts, _, forget = self._process(table, info, cur, settle=settle, final=final)
+            rows: list[list[Any]] = []
+            sig, payouts, _, forget = self._process(
+                table, info, cur, settle=settle, final=final, outcomes=rows
+            )
+            _record_outcomes(state, rows)
             if forget:
                 from token_sparen.mechanisms import read_dedupe  # it owns the `reads` schema
 

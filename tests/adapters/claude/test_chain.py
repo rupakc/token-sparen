@@ -187,7 +187,7 @@ def test_builtin_order() -> None:
     assert names == ["_on_pre_compact", "_on_compact_instructions"]
     assert "session_start" in entry.HANDLERS
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["session_end"]]
-    assert names == ["_on_regret"]
+    assert names == ["_on_regret", "_on_fold_spawn"]
 
 
 def test_builtin_mechanism_errors_are_contained(

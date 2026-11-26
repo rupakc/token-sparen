@@ -3,16 +3,16 @@
 MIT open-source token optimizer plugin for coding agents (Claude Code first). Shipped (M0/M1):
 recoverable output compression, read de-dupe, guards, budget governor, boundary advice, live
 statusline, extensions. Planned (M2/M3): one learning engine (contextual Thompson-sampling bandit
-with a quality constraint), repo-fact learning, tool pruning; today the policy is `StaticPolicy`
-and `fold`/`replay`/`facts`/`prune` are CLI stubs. North star: maximise tokens saved subject to no
-measurable quality loss. Spec: `docs/specs/2026-11-25-token-sparen-design.md`.
-Plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`. Decisions: `MEMORY.md`.
+with a quality constraint), repo-fact learning, tool pruning; today the hooks use `StaticPolicy`
+(the engine, regret detection, session fold and circuit breaker exist) and `replay`/`facts`/
+`prune` are CLI stubs. North star: maximise tokens saved subject to no measurable quality loss.
+Spec: `docs/specs/2026-11-25-token-sparen-design.md`. Plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`. Decisions: `MEMORY.md`.
 
 ## Layout
 - `token_sparen/` core (stdlib only): `cli.py events.py config.py estimate.py transcript.py emit.py recovery.py extensions.py`
   - `store/` JSON+JSONL state, `compress/` compressors, `mechanisms/` decision-point mechanisms
     (compression, guards, read_dedupe, governor, boundary, subagent, tracking)
-  - `learn/` policy and decision log (static arms now; the bandit engine is planned, M2)
+  - `learn/` policy, decision log, engine, regret, session fold (`overlay`), circuit `breaker`
   - `adapters/` host protocol; `adapters/claude/` Claude Code (entry, translate, statusline, settings)
   - `testing/conformance.py` compressor conformance kit
   - `params/defaults.toml` every tunable (hill-climbing surface; packaged inside the package)
