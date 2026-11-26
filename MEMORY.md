@@ -426,3 +426,10 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   <= 0 -> kappa_max, else clamp [2, 20]. Simulation test recovers true kappa 3 and 20.
 - `StoreChain(params=Config.data)`: every `learn.*` lookup falls back per key to the packaged
   default, so user/project/env overrides apply. `bucket_key` rejects `|` or `=` in keys/values.
+- **Overlay lock contention (review round 1, item 4)**: tracking now writes the overlay on every
+  PostToolUse, so `jsonstore.locked` polls from 1 ms doubling to a 5 ms cap, with full jitter
+  (`_jitter`; without it waiters that queued together wake in lockstep and only one wins per
+  round: 10 contenders measured ~45 ms for the last, ~7-15 ms with jitter). `_on_track` moved to
+  the end of both PostToolUse chains, registered `always=True` (`entry.ALWAYS_RUN`) so it still
+  runs after a replacement ends the chain; compression features now see the history before the
+  current call. Perf test: 10 processes, one update each, p95 wait < 20 ms x perf factor.

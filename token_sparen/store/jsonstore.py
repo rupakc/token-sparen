@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import random
 import secrets
 import sys
 import time
@@ -15,7 +16,15 @@ from typing import IO, Any
 from token_sparen.config import log_error
 
 LOCK_TIMEOUT_S = 2.0
-_POLL_S = 0.005
+_POLL_S = 0.001  # first lock retry; doubles per retry up to _POLL_MAX_S
+_POLL_MAX_S = 0.005
+
+
+def _jitter() -> float:
+    """Full jitter in (0, 1]."""
+    return 1.0 - random.random()  # noqa: S311 - scheduling, not crypto
+
+
 _REPLACE_TRIES = 5
 
 
@@ -63,10 +72,12 @@ def locked(path: Path) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as fh:
         deadline = time.monotonic() + LOCK_TIMEOUT_S
+        delay = _POLL_S
         while not _try_lock(fh):
             if time.monotonic() >= deadline:
                 raise StoreBusy(str(lock_path))
-            time.sleep(_POLL_S)
+            time.sleep(delay * _jitter())  # jitter: waiters that queued together spread out
+            delay = min(delay * 2, _POLL_MAX_S)
         try:
             yield
         finally:

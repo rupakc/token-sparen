@@ -45,9 +45,19 @@ _TRUE = {"1", "true"}
 _POST_KINDS = frozenset({"post_tool", "post_tool_failure"})
 
 
-def register(kind: EventKind, fn: Handler) -> None:
-    """Append ``fn`` to the handler chain for ``kind`` (a new list, so snapshots stay valid)."""
+# Handlers that still run after a PostToolUse replacement ended the chain (bookkeeping).
+ALWAYS_RUN: set[Handler] = set()
+
+
+def register(kind: EventKind, fn: Handler, *, always: bool = False) -> None:
+    """Append ``fn`` to the handler chain for ``kind`` (a new list, so snapshots stay valid).
+
+    ``always``: on PostToolUse(+Failure) the handler also runs after an output replacement
+    (its own replacement is ignored); use it for bookkeeping placed at the end of the chain.
+    """
     HANDLERS[kind] = [*HANDLERS.get(kind, []), fn]
+    if always:
+        ALWAYS_RUN.add(fn)
 
 
 # The environment of the running hook (``main``'s ``env``), for handlers that touch state.
@@ -155,20 +165,20 @@ for _kind, _fn in (
     ("pre_tool", _on_governor_stop),
     ("pre_tool", _on_guard),
     ("pre_tool", _on_subagent),
-    ("post_tool", _on_track),
     ("post_tool", _on_governor_post),  # before any replacement ends the chain
     ("post_tool", _on_read_dedupe),
     ("post_tool", _on_compress),
+    ("post_tool", _on_track),  # last + always: its lock wait never eats compression's budget
     # same chain minus de-dupe; the host decides whether a failure result can be replaced
-    ("post_tool_failure", _on_track),
     ("post_tool_failure", _on_governor_post),
     ("post_tool_failure", _on_compress),
+    ("post_tool_failure", _on_track),
     ("pre_compact", _on_pre_compact),  # sets last_compact_turn, clears the read table
     ("pre_compact", _on_compact_instructions),
     ("session_start", _on_session_start),
     ("session_start", _on_session_active),
 ):
-    register(cast(EventKind, _kind), _contained(cast(Handler, _fn)))
+    register(cast(EventKind, _kind), _contained(cast(Handler, _fn)), always=_fn is _on_track)
 
 
 def _join(a: str | None, b: str | None, sep: str) -> str | None:
@@ -186,7 +196,8 @@ def handle(event: Event, cfg: Config) -> Action:
 
     PreToolUse: the first block wins (any rewrite is dropped); otherwise the first rewrite wins and
     later handlers see the rewritten input. PostToolUse(+Failure): the first output replacement
-    ends the chain (read de-dupe runs before compression, so a pointer skips compression).
+    ends the chain (read de-dupe runs before compression, so a pointer skips compression); only
+    handlers registered ``always`` (tracking) still run after it.
     ``inject_context`` and ``user_message`` of all handlers that ran are joined in order.
     """
     result = Action()
@@ -207,6 +218,7 @@ def handle(event: Event, cfg: Config) -> Action:
         elif event.kind in _POST_KINDS:
             if action.replace_output is not None:
                 result.replace_output = action.replace_output
+                _run_always(event, cfg, result, after=fn)
                 return result
         else:
             if result.replace_output is None:
@@ -216,6 +228,13 @@ def handle(event: Event, cfg: Config) -> Action:
             if result.rewrite_input is None:
                 result.rewrite_input = action.rewrite_input
     return result
+
+
+def _run_always(event: Event, cfg: Config, result: Action, *, after: Handler) -> None:
+    chain = HANDLERS.get(event.kind, [])
+    for fn in chain[chain.index(after) + 1 :]:
+        if fn in ALWAYS_RUN:
+            _merge_side(result, fn(event, cfg))
 
 
 class _Output:

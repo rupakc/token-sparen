@@ -247,3 +247,23 @@ def test_session_roundtrip(tmp_path: Path) -> None:
     assert session.read_session(sp) == {}
     assert session.update_session(sp, _incr) == {"n": 1}
     assert session.read_session(sp) == {"n": 1}
+
+
+def test_lock_poll_backs_off_exponentially(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps: list[float] = []
+    fails = {"n": 6}
+
+    def try_lock(fh: object) -> bool:
+        fails["n"] -= 1
+        return fails["n"] < 0
+
+    monkeypatch.setattr(jsonstore, "_try_lock", try_lock)
+    monkeypatch.setattr(jsonstore, "_jitter", lambda: 1.0)
+    monkeypatch.setattr(jsonstore.time, "sleep", sleeps.append)
+    with jsonstore.locked(tmp_path / "c.json"):
+        pass
+    assert sleeps == pytest.approx([0.001, 0.002, 0.004, 0.005, 0.005, 0.005])
+
+
+def test_lock_jitter_in_unit_interval() -> None:
+    assert all(0.0 < jsonstore._jitter() <= 1.0 for _ in range(200))

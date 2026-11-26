@@ -110,6 +110,50 @@ def test_post_tool_first_replace_stops_chain(tmp_path: Path) -> None:
     assert calls == ["first", "second"]
 
 
+def test_always_run_handlers_follow_a_replacement(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def replace(event: Event, cfg: Config) -> Action:
+        calls.append("replace")
+        return Action(replace_output="compressed")
+
+    def skipped(event: Event, cfg: Config) -> Action:
+        calls.append("skipped")
+        return Action()
+
+    def trailer(event: Event, cfg: Config) -> Action:
+        calls.append("trailer")
+        return Action(replace_output="ignored", inject_context="t")
+
+    entry.HANDLERS["post_tool"] = []
+    entry.register("post_tool", replace)
+    entry.register("post_tool", skipped)
+    entry.register("post_tool", trailer, always=True)
+    act = entry.handle(_post_event(tmp_path), Config())
+    assert calls == ["replace", "trailer"]
+    assert act.replace_output == "compressed" and act.inject_context == "t"
+
+
+def test_builtin_tracking_runs_after_compression_replaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from token_sparen.mechanisms import tracking
+    from token_sparen.store import session
+
+    env = _env(tmp_path)
+    token = entry.HOOK_ENV.set(env)
+    try:
+        monkeypatch.setattr(
+            entry.compression, "handle_post_tool", lambda *a, **k: Action(replace_output="c")
+        )
+        ev = _post_event(tmp_path)
+        assert entry.handle(ev, Config()).replace_output == "c"
+        overlay = session.read_session(tracking.overlay_path(ev, env))
+        assert overlay["recent_cats"] == ["shell"]
+    finally:
+        entry.HOOK_ENV.reset(token)
+
+
 def test_other_kinds_merge_all(tmp_path: Path) -> None:
     ev = entry.ADAPTER.parse("SessionEnd", {"session_id": "s"}, _env(tmp_path))
     entry.HANDLERS["session_end"] = [
@@ -125,7 +169,11 @@ def test_builtin_order() -> None:
     # pretrim is post-tool only; the governor's opt-in stop runs before the subagent rewrite
     assert names == ["_on_pre_invalidate", "_on_governor_stop", "_on_guard", "_on_subagent"]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["post_tool"]]
-    assert names == ["_on_track", "_on_governor_post", "_on_read_dedupe", "_on_compress"]
+    # tracking runs last (its lock wait never eats compression's budget) and always runs
+    assert names == ["_on_governor_post", "_on_read_dedupe", "_on_compress", "_on_track"]
+    assert entry.HANDLERS["post_tool"][-1] in entry.ALWAYS_RUN
+    names = [getattr(f, "__name__", "") for f in entry.HANDLERS["post_tool_failure"]]
+    assert names == ["_on_governor_post", "_on_compress", "_on_track"]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["prompt"]]
     assert names == ["_on_prompt", "_on_governor_prompt", "_on_boundary"]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["pre_compact"]]
