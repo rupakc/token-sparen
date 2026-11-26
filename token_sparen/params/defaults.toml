@@ -125,6 +125,26 @@ kappa_default = 6  # prior strength when too few sibling buckets to estimate it
 kappa_min = 2  # method-of-moments kappa is clamped to [kappa_min, kappa_max]
 kappa_max = 20
 kappa_min_siblings = 3  # sibling buckets (each >= min_parent_obs) needed to estimate kappa
+enabled = true  # false -> the static policy (no learning, propensity 1)
+propensity_samples = 64  # Monte-Carlo replays of the Thompson draw to estimate a logged propensity
+pending_max = 500  # decisions awaiting reward kept in the session overlay (oldest evicted)
+cold_obs = 3  # a bucket is "cold" below this many observations (learner state only; the engine
+# does not special-case cold buckets, the prior chain handles them)
+
+# Regret target per tier: a trimming arm is feasible only if its sampled regret is <= tau
+# (high tier additionally needs its regret 95 % upper bound <= tau).
+[learn.tau]
+low = 0.10
+medium = 0.05
+high = 0.01
+none = 1.0
+
+# Propensity floor per tier: probability of choosing the safe arm outright.
+[learn.floor]
+low = 0.05
+medium = 0.05
+high = 0.02
+none = 0.0
 
 # Bucket back-off per decision point: most specific feature set first, [] = the "*" bucket.
 [learn.backoff.compression]

@@ -257,6 +257,15 @@ class Evidence:
             ea, eb, es2 = ea * scale, eb * scale, es2 * scale
         return Evidence(ea, eb, self.n + 1.0, min(ea, es2))
 
+    def __add__(self, other: Evidence) -> Evidence:
+        """Pooled evidence of two scopes (e.g. project + session): every field summed; the cap is
+        not applied (each operand was capped when observed)."""
+        if not isinstance(other, Evidence):
+            return NotImplemented
+        return Evidence(
+            self.ea + other.ea, self.eb + other.eb, self.n + other.n, self.second + other.second
+        )
+
     def posterior(self, prior: Beta) -> Beta:
         return Beta(prior.a + self.ea, prior.b + self.eb, self.n)
 

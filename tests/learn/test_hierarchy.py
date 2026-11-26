@@ -67,7 +67,7 @@ def test_get_scopes_and_missing(tmp_path: Path) -> None:
     sess = session.session_path(home, KEY, "s-1")
     _write(
         sess,
-        {"turn": 3, "posteriors": {"compression": {"*": {"light": _entry(Evidence(5, 0, 2))}}}},
+        {"turn": 3, "evidence": {"compression": {"*": {"light": _entry(Evidence(5, 0, 2))}}}},
     )
     st = StoreChain(KEY, home, session_id="s-1")
     assert st.get("compression", "*", "light", "savings", "project") == Evidence(2, 3, 7)
@@ -150,7 +150,7 @@ def test_corrupt_documents_are_empty(tmp_path: Path, doc: Any) -> None:
 
 def test_session_overlay_without_posteriors(tmp_path: Path) -> None:
     home = tmp_path / "h"
-    _write(session.session_path(home, KEY, "s-1"), {"turn": 1, "posteriors": "bad"})
+    _write(session.session_path(home, KEY, "s-1"), {"turn": 1, "evidence": "bad"})
     st = StoreChain(KEY, home, session_id="s-1")
     assert st.get("compression", "*", "light", "savings", "session") is None
 
@@ -220,7 +220,7 @@ def test_scope_fallback_order(tmp_path: Path) -> None:
     assert mean() == pytest.approx(_shrunk(p_log, 0.6))  # specific beats coarse
     _write(
         session.session_path(home, KEY, "s-1"),
-        {"posteriors": {"compression": {FULL_KEY: {"standard": _entry(_ev(0.9, 50))}}}},
+        {"evidence": {"compression": {FULL_KEY: {"standard": _entry(_ev(0.9, 50))}}}},
     )
     st = StoreChain(KEY, home, session_id="s-1")  # the session is the child, not a parent
     assert prior_for(COMPRESSION, FULL, "standard", "savings", st).mean == pytest.approx(
@@ -431,3 +431,27 @@ def test_kappa_noise_uses_within_bucket_variance(tmp_path: Path) -> None:
     m_bar = statistics.fmean(means)
     between = statistics.pvariance(means) - var_w / (w + 1)
     assert _kappa(home) == pytest.approx(m_bar * (1 - m_bar) / between - 1)
+
+
+def test_child_bucket_is_not_its_own_parent(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    _project(home, {"compression": {FULL_KEY: {"standard": _entry(_ev(0.9, 50))}}})
+    stores = StoreChain(KEY, home)
+    with_own = prior_for(COMPRESSION, FULL, "standard", "savings", stores)
+    skipped = prior_for(COMPRESSION, FULL, "standard", "savings", stores, child_bucket=FULL_KEY)
+    assert with_own.mean == pytest.approx(_shrunk(_ev(0.9, 50), 0.6))
+    assert skipped.mean == pytest.approx(0.6)
+    assert skipped.a + skipped.b == pytest.approx(K0)
+
+
+def test_invalidate_rereads_scope(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    stores = StoreChain(KEY, home, "s-1")
+    assert stores.get("compression", "*", "light", "savings", "session") is None
+    _write(
+        session.session_path(home, KEY, "s-1"),
+        {"evidence": {"compression": {"*": {"light": _entry(Evidence(1, 0, 1))}}}},
+    )
+    assert stores.get("compression", "*", "light", "savings", "session") is None  # cached
+    stores.invalidate("session")
+    assert stores.get("compression", "*", "light", "savings", "session") == Evidence(1, 0, 1)

@@ -8,7 +8,7 @@ read-only, per-instance cached view of three stores with the inner shape
 
 - ``projects/<key>/posteriors.json`` and ``global/posteriors.json``:
   ``{"version": 2, "points": <inner>}`` (version 1 held posteriors: read as empty, logged);
-- the session overlay (``projects/<key>/sessions/<id>.json``) under the key ``posteriors``.
+- the session overlay (``projects/<key>/sessions/<id>.json``) under the key ``evidence``.
 
 ``prior_for`` walks the back-off levels (most specific to ``*``) in project scope, then the same
 in global scope. The first parent with ``n >= min_parent_obs`` real observations lends the mean
@@ -48,7 +48,7 @@ Kind = Literal["savings", "regret"]
 Scope = Literal["session", "project", "global"]
 SCHEMA_VERSION = 2
 POSTERIORS_FILE = "posteriors.json"
-SESSION_KEY = "posteriors"
+SESSION_KEY = "evidence"
 EPS = 1e-3
 DEFAULT_KAPPA = 6.0
 _SCOPES: tuple[Scope, ...] = ("session", "project", "global")
@@ -120,6 +120,10 @@ class StoreChain:
             self._warn(f"{scope} evidence: points is not an object")
             return {}
         return inner
+
+    def invalidate(self, scope: Scope) -> None:
+        """Drop the cached document of ``scope`` (after this process wrote it)."""
+        self._docs.pop(scope, None)
 
     def points(self, scope: Scope) -> dict[str, Any]:
         """The scope's ``{point: {bucket: {arm: ...}}}`` mapping (cached; may be malformed)."""
@@ -225,13 +229,21 @@ def prior_for(
     arm: str,
     kind: Kind,
     stores: StoreChain,
+    *,
+    child_bucket: str | None = None,
 ) -> Beta:
-    """Prior for (point, features, arm, kind): project levels, global levels, designed default."""
+    """Prior for (point, features, arm, kind): project levels, global levels, designed default.
+
+    ``child_bucket``: a project-scope bucket whose evidence is already part of the child (the
+    engine pools project + session evidence of the full bucket); it is skipped as a parent.
+    """
     d = designed_default(point.name, arm, kind, stores.params)
     k0 = max(EPS, stores.learn_param("kappa_default", DEFAULT_KAPPA))
     min_obs = stores.learn_param("min_parent_obs", 5.0)
     for scope in _CHAIN:
         for bucket in backoff_keys(point.name, features, stores.params):
+            if scope == "project" and bucket == child_bucket:
+                continue
             ev = stores.get(point.name, bucket, arm, kind, scope)
             if ev is not None and ev.n >= min_obs:
                 m = (ev.ea + k0 * d) / (ev.ea + ev.eb + k0)

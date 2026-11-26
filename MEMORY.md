@@ -440,3 +440,24 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   `var_within = es2/w - (ea/w)^2`; noise = mean(var_within_i/(w_i+1)). Simulation (sd 0.15
   fractional rewards, n=20): true kappa 3 -> median ~3.6, 6 -> ~6.3. `features.for_point`
   replaces `|`/`=` in values with `_` so `bucket_key` never raises on the hook path.
+
+## 2026-11-26 Task 20: constrained two-posterior Thompson engine
+- `learn/engine.py` `Engine(stores, cfg, rng)`: per trimming arm S and R = `prior_for(...)` +
+  (project + session evidence of the full bucket, `Evidence.__add__`, cap not applied on sum).
+  The safe arm is never sampled or updated (S = R = 0 by definition). Floor first (safe arm with
+  probability `floor[tier]`), else sample R~ then S~ per arm in declared order; feasible iff
+  R~ <= tau (tau >= 1 skips the R draw); high tier pre-filters arms with `R.ucb(0.95) > tau`;
+  max S~ wins, ties to the safe arm then declared order. `[learn.tau]`, `[learn.floor]`,
+  `propensity_samples = 64`, `pending_max = 500`, `enabled = true`, `cold_obs = 3` (learner state
+  only; no cold special-casing) added to defaults.
+- **Child bucket is not its own parent**: since the child is project + session evidence of the
+  full bucket, `prior_for(..., child_bucket=bucket)` skips that bucket in project scope (else the
+  project data would be counted twice: once as the parent mean, once as evidence).
+- **Session overlay key renamed `posteriors` -> `evidence`** (hierarchy `SESSION_KEY`), matching
+  the controller ruling; `pending` holds `{decision_id: [point, bucket, arm, ts]}`, oldest evicted.
+- Propensity = floor*[safe] + (1-floor)*freq over 64 replays with `random.Random(decision_id)`,
+  clamped [1e-3, 1]; ~0.3 ms for 3 trimming arms. Decision ids come from the engine rng (seeded
+  tests are deterministic). decide writes `pending` (one locked overlay update; a failure there is
+  logged and the decision still stands); reward does a lock-free pending pre-check, then one locked
+  update of session evidence and `StoreChain.invalidate("session")`. Errors -> safe arm,
+  propensity 1.0, bucket `error`; NaN/non-numeric rewards ignored + logged, others clamped.
