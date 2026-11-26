@@ -218,8 +218,8 @@ a hard constraint, never a term traded off in a weighted sum.
 - C3 Benchmarks run with **Claude Code only**, under the maintainer's **Claude Max subscription** (no API
   keys): rate-limit-aware scheduling across 5-hour windows and weekly caps (§10.4).
 - C4 The owner's local sessions may contain confidential material: they are used only for local,
-  offline evaluation; only **aggregate numbers** are ever published; no transcript text, paths, ids
-  or project names leave the machine or enter the repo.
+  offline evaluation; **no numbers derived from them are committed or published, aggregates
+  included**; no transcript text, paths, ids or project names leave the machine or enter the repo.
 - C5 MIT licence, copyright "Rupak Chakraborty". Credit TokenEconomizer (MIT) in README/NOTICE.
   Do not reuse code from non-OSI-licensed competitors (e.g. context-mode, ELv2).
 - C6 Anthropic directory rules: hook paths only via `${CLAUDE_PLUGIN_ROOT}`; no unpinned

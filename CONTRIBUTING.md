@@ -38,6 +38,31 @@ private figures; fixtures are synthetic only. `scripts/check_denylist.py` enforc
 private words can be supplied locally through the `TOKEN_SPAREN_DENYLIST` environment variable
 (comma-separated); they are never stored in the repo.
 
+## Offline evaluation (E1 and E3): private-only rules
+
+`token-sparen replay` (E1) and `token-sparen ope` (E3) read real Claude Code sessions and decision
+logs. Those contain confidential material, so:
+
+- **Nothing derived from anyone's real sessions is ever committed**: no transcript text, paths,
+  ids, and no aggregate numbers either (not in the README, `MEMORY.md`, issues-as-files, test
+  fixtures or commit messages). Aggregates from the maintainer's sessions stay in a private folder
+  outside the repository. Tests and fixtures are synthetic.
+- Write reports with `--out` to a path outside any git work tree; the command refuses paths inside
+  one and writes mode 0600.
+- Never tune on the test split: choose parameters on `--split dev`, look at `--split test` once.
+  `--cutoff YYYY-MM-DD` sets the date boundary (sessions before it are dev).
+- Treat an `ope` verdict of `insufficient` as "no answer", not as a pass.
+
+```
+token-sparen replay <transcript files or dirs> --split dev --policy default,static --out <report>
+token-sparen ope --log <decisions.jsonl and decisions.jsonl.1 ...> --target engine-snapshot \
+    --holdout-after YYYY-MM-DD --out <report>
+```
+
+Decision logs are in `~/.token-sparen/projects/<key>/`; `~/.token-sparen/project_keys.json` maps a
+project to its `<key>`. The deterministic evals (E2, `python evals/e2/run.py --strict`) are the only
+ones whose numbers belong in the repo, because their corpus is synthetic.
+
 ## Workflow: Elephant-Goldfish review (EGM)
 
 1. Draft the design or plan first, without code.
@@ -52,6 +77,7 @@ and work with any agent. Record any design decision in `MEMORY.md` with a date (
 ## Guidelines
 
 - Write a failing test first, then the implementation. Keep modules small and typed.
+- Never commit E1/E3 results or numbers derived from real sessions (see above).
 - Commit messages follow conventional commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`,
   `refactor:`, `ci:`); one logical change per commit.
 - Contributors open pull requests; maintainers may push to `main` after the checks pass.

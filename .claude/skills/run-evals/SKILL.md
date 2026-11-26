@@ -4,10 +4,12 @@ description: Use when running the token-sparen evaluations E1 (offline replay), 
 ---
 # Run evals
 - **E2** (CI, deterministic): `python evals/e2/run.py`. Must be 100 %; any miss blocks merge.
-- **E1** (private, free): replay the maintainer's local sessions through each policy on the dev/test
-  split by date. Keep raw results outside the repo; only aggregate tables may be shared, never paths or ids.
-- **E3**: off-policy evaluation on decision logs with propensities (needs the ~2-week dogfooding data).
+- **E1** (private, free): `token-sparen replay <transcripts> --split dev --policy default,static --out <file outside the repo>`
+  (look at `--split test` once, never tune on it). Results from real sessions, aggregates included,
+  are never committed or quoted in the repo; keep them in a private folder outside it.
+- **E3**: `token-sparen ope --log <decisions.jsonl and .1> --target static|engine-snapshot --holdout-after YYYY-MM-DD --out <file outside the repo>`
+  on logged decisions (needs a couple of weeks of logs). Same privacy rule; `insufficient` is not a pass.
 - **E4** (live, Claude Code on a Claude Max subscription): delegate to `bench-runner`; screening before confirmation.
 Reporting: every number carries CI, n, seeds, model and date, and the released plugin hash. Quality
 is judged by non-inferiority at -5 pp on resolved rate; cost by paired bootstrap 95 % CI of the
-median ratio. No claim without a reproducible script in `bench/`.
+median ratio. No claim without a reproducible script committed in the repo (E2 is the only eval with committed numbers).

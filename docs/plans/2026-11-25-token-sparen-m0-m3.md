@@ -412,7 +412,7 @@ token-sparen/
 
 - [ ] Tests: `test_replay_counts_resends`; `test_proxy_regret_detects_elided_reference`; `test_split_by_date`; `test_report_refuses_repo_path`; `test_ips_unbiased_on_synthetic` (known policies, true value within CI in ≥ 90 % of 50 seeds); `test_dr_lower_variance_than_ips`.
 - [ ] FAIL → implement → PASS → commit `feat(evals): offline replay and off-policy evaluation`.
-- [ ] **Run E1 locally**: `token-sparen replay ~/.claude/projects --split dev --out ~/token-sparen-private/reports/e1-baseline.json`; record aggregates in `MEMORY.md` (numbers only).
+- [ ] **Run E1 locally**: `token-sparen replay ~/.claude/projects --split dev --out ~/token-sparen-private/reports/e1-baseline.json`; do NOT record its numbers in the repo (aggregates stay private, outside it).
 - [ ] **M2 goldfish review + drift check**; tag `v0.2.0-m2`; **start dogfooding**: owner installs via `claude plugin marketplace add rupakc/token-sparen` + `claude plugin install token-sparen@token-sparen`, runs `token-sparen statusline install`. Decision logs accumulate locally for ~2 weeks while M3 proceeds.
 
 ---
