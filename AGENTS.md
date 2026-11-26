@@ -6,18 +6,23 @@ equivalent is `CLAUDE.md`; the two must stay consistent.
 ## Project
 token-sparen is an MIT open-source token optimizer for coding agents (Claude Code first). Shipped
 (M0/M1): recoverable tool-output compression, read de-duplication, guards, budget governor,
-boundary advice, live statusline, trusted extensions. M2 (in progress): a learning engine
-(contextual Thompson-sampling bandit with a hard quality constraint) now steers every hook
-decision (`learn/hookpolicy.py`; `[learn] enabled = false` -> static policy). Planned (M3):
-repo-fact learning and tool pruning; `replay`/`facts`/`prune` are stubs.
+boundary advice, live statusline, trusted extensions. M2: a learning engine (contextual
+Thompson-sampling bandit with a hard quality constraint) steers every hook decision
+(`learn/hookpolicy.py`, built lazily per hook; `[learn] enabled = false` -> `StaticPolicy`), with
+regret detection, a session `fold` and a circuit breaker; `replay` (E1) and `ope` (E3) evaluate
+offline into private reports. Defaults are quality-first: file contents are never trimmed and only
+an allow-list of content types is offered for compression. Planned (M3): repo-fact learning and
+tool pruning; `facts`/`prune` are CLI stubs.
 Spec: `docs/specs/2026-11-25-token-sparen-design.md`; plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`;
 decisions: `MEMORY.md`.
 
 ## Layout
-`token_sparen/` (core, stdlib only: `store/ compress/ mechanisms/ learn/ adapters/ testing/`),
-`token_sparen/params/defaults.toml` (all tunables), `hooks/`, `skills/token-sparen/` (the plugin's
-`/token-sparen` skill; no `commands/`), `evals/e2/` (fact-preservation suite), `tests/` (mirrors
-the package, synthetic fixtures only), `scripts/`. `facts/` and `replay/` are planned, not present.
+`token_sparen/` (core, stdlib only: `store/ compress/ mechanisms/ learn/ replay/ adapters/
+testing/`; `learn/` holds policy, decision log, engine, regret, `overlay` (session fold), `breaker`
+and `ope`; `replay/` holds E1 and the private report writer), `token_sparen/params/defaults.toml`
+(all tunables), `hooks/`, `skills/token-sparen/` (the plugin's `/token-sparen` skill; no
+`commands/`), `evals/e2/` (fact-preservation suite), `tests/` (mirrors the package, synthetic
+fixtures only), `scripts/`. `facts/` is planned (M3), not present.
 
 ## Commands (use the repo `.venv`; all must pass before a commit)
 ```
@@ -37,18 +42,26 @@ python scripts/check_denylist.py
 - Outputs under 2000 estimated tokens are never modified (`min_tokens` is floored at 2000); lines matching `ERROR_PATTERNS` are never elided.
 - Never larger: a replacement must not exceed the host's preview of the output.
 - Failed tool results are not replaceable on Claude Code; no PreToolUse command rewriting (pre-trim is a PostToolUse arm).
-- Mechanisms never import `token_sparen.adapters`.
+- Mechanisms and compressors never import `token_sparen.adapters`.
 - Every elision carries the recovery marker and the full text is saved under `<project>/.token-sparen/outputs/`.
 - `TOKEN_SPAREN_DISABLE=1` disables every hook.
 - Config precedence: defaults < user config < project `token-sparen.toml` < env `TOKEN_SPAREN_*` < session overrides (`token-sparen config set`).
-- State root `~/.token-sparen/` (`TOKEN_SPAREN_HOME`); project key is a hash, never a raw path.
+- The project file is deny-by-default: it may only make token-sparen intervene less or keep more,
+  and an unlisted key is user-only (`PROJECT_POLICY` in `config.py`).
+- Quality first: file contents are never trimmed by default (`compression.trim_file_contents`
+  false) and only `compression.allow_ctypes` are offered; the user may widen, a project may narrow.
+- `[learn.hold] compression = true` stops every output trim (pre-trim included), with learning on
+  or off; `allow_ctypes = []` is the config-only switch.
+- State root `~/.token-sparen/` (`TOKEN_SPAREN_HOME`); project key is a hash, never a raw path in
+  shared stores (user-local bookkeeping may hold paths).
 - Settings writes are opt-in, backed up, reversible and documented.
 - Quality is a constraint, never a weighted term. Never tune on the test split.
 - Reimplement, never copy code from references or competitors.
 
 ## Never commit private data
 No employer or organisation names, internal URLs, people, local absolute paths, transcript ids or
-private figures. Private inputs (the owner's local sessions) stay outside the repo.
+private figures. Private inputs (the owner's local sessions) and E1/E3 reports stay outside the
+repo (`--out` must be outside any git tree); never commit numbers derived from them.
 Run `python scripts/check_denylist.py` before every commit.
 
 ## Process
