@@ -1011,3 +1011,20 @@ def test_drop_reads_owned_by_read_dedupe() -> None:
     empty: dict[str, Any] = {}
     read_dedupe.drop_reads(empty, {"aa"})
     assert empty == {}
+
+
+def test_signatures_are_os_independent() -> None:
+    # Windows host paths (backslashes, drive letters) give the same POSIX-style signature
+    win = "C:\\repo"
+    assert normalize_command("npm test", project_dir=win, cwd="C:\\repo\\packages\\a") == (
+        "cd packages/a && npm test"
+    )
+    assert normalize_command("cd packages/a && npm test", project_dir=win) == (
+        "cd packages/a && npm test"
+    )
+    assert normalize_command("cd C:/repo/packages/a && npm test", project_dir=win) == (
+        "cd packages/a && npm test"
+    )
+    assert normalize_command("cd C:\\repo && npm test", project_dir=win) == "npm test"
+    assert normalize_command("cd /c/tools && make", project_dir=win) == "cd /c/tools && make"
+    assert normalize_command("cd D:/x && make", project_dir=win) == "cd D:/x && make"

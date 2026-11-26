@@ -38,6 +38,7 @@ import hashlib
 import json
 import math
 import os
+import posixpath
 import re
 import shlex
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -167,25 +168,43 @@ def read_only(cmd: str) -> bool:
     return True
 
 
+_DRIVE = re.compile(r"^[A-Za-z]:[/\\]")
+
+
+def _posix(path: str) -> str:
+    """A host path (Windows backslashes allowed) in POSIX form."""
+    return path.replace("\\", "/")
+
+
+def _is_abs(path: str) -> bool:
+    """Absolute on every platform: ``/x/...`` (POSIX, Git Bash) or a drive letter."""
+    return path.startswith("/") or _DRIVE.match(path) is not None
+
+
 def _run_dir(dirs: list[str], project_dir: str | None, cwd: str | None) -> str | None:
     """The effective directory a command runs in (the hook's cwd, then any leading ``cd``s),
-    relative to the project when inside it; None when it is the project root (or unknown)."""
-    cur = cwd or project_dir
+    relative to the project when inside it; None when it is the project root (or unknown).
+
+    Resolved with POSIX semantics and rendered with forward slashes on every OS (Claude Code's
+    Bash uses POSIX paths on Windows), so signatures do not depend on the host platform."""
+    cur = None if not (cwd or project_dir) else _posix(cwd or project_dir or "")
     for d in dirs:
-        if cur is None or os.path.isabs(d) or d.startswith("~") or d == "-":
+        d = _posix(d) if _DRIVE.match(d) else d
+        if cur is None or _is_abs(d) or d.startswith("~") or d == "-":
             cur = d
         else:
-            cur = os.path.join(cur, d)
+            cur = posixpath.join(cur, d)
     if cur is None:
         return None
     if not cur.startswith(("~", "-")):
-        cur = os.path.normpath(cur)
+        cur = posixpath.normpath(cur)
     if project_dir:
-        root = os.path.normpath(project_dir)
+        root = posixpath.normpath(_posix(project_dir))
         if cur == root:
             return None
-        if os.path.isabs(cur) and cur.startswith(root.rstrip(os.sep) + os.sep):
-            return os.path.relpath(cur, root)
+        prefix = root.rstrip("/") + "/"
+        if _is_abs(cur) and cur.startswith(prefix):
+            return cur[len(prefix) :]
     return cur
 
 
