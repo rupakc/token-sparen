@@ -1048,3 +1048,9 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   `ope.load_log` joins outcomes by id (max per id; orphans dropped); `regret_known_fraction` =
   evaluated decisions with a joined outcome (safe-arm decisions have none: their reward is 0 by
   definition). Readers that want decisions only skip lines with a `kind`.
+- C4: `ope` reports `savings`, `regret` and `combined` (each IPS/SNIPS/DR with 95 % CIs; the
+  top-level `ips`/`snips`/`dr` keys stay the combined objective `savings - regret / tau`), plus
+  `tau` (the point's tier; the CLI passes the merged config's `[learn.tau]`), `regret_upper`
+  (the larger upper bound of IPS and DR regret; SNIPS is conditional on support, so not used)
+  and `constraint_ok = regret_upper <= tau`. Promotion reads the constraint first, savings
+  second; the combined scalar is kept for continuity, not for decisions.

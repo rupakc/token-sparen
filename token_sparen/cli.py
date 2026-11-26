@@ -853,7 +853,12 @@ def _ope_cmd(args: argparse.Namespace) -> int:
         if since is not None:
             log = [r for r in log if isinstance(r.ts, int | float) and r.ts >= since]
         points = ope.evaluate(
-            log, target, regrets=regrets, n_boot=max(1, args.n_boot), seed=args.seed
+            log,
+            target,
+            regrets=regrets,
+            n_boot=max(1, args.n_boot),
+            seed=args.seed,
+            tau=_tau_config(),
         )
         report.write_private(
             out,
@@ -879,11 +884,28 @@ def _ope_cmd(args: argparse.Namespace) -> int:
             f"clipped {agg['clipped_fraction']:.3f}, "
             f"regret known {agg['regret_known_fraction']:.3f}"
         )
-        for est in ("ips", "snips", "dr"):
-            lo, hi = agg[est]["ci95"]
-            print(f"  {est} {agg[est]['value']:.4f} [{lo:.4f}, {hi:.4f}]")
+        for part in ("savings", "regret", "combined"):
+            for est in ("ips", "snips", "dr"):
+                lo, hi = agg[part][est]["ci95"]
+                print(f"  {part} {est} {agg[part][est]['value']:.4f} [{lo:.4f}, {hi:.4f}]")
+        verdict = "ok" if agg["constraint_ok"] else "VIOLATED"
+        print(
+            f"  constraint {verdict}: regret upper {agg['regret_upper']:.4f} "
+            f"vs tau {agg['tau']:.4f}"
+        )
     print("token-sparen ope: private report written (mode 0600)")
     return 0
+
+
+def _tau_config() -> dict[str, float]:
+    """``[learn.tau]`` of the merged config (numbers in [0, 1] only): the constraint and the
+    combined objective use the user's regret targets."""
+    raw = load_config(Path.cwd(), os.environ).get("learn.tau")
+    out: dict[str, float] = {}
+    for tier, value in raw.items() if isinstance(raw, dict) else ():
+        if isinstance(value, int | float) and not isinstance(value, bool) and 0 <= value <= 1:
+            out[str(tier)] = float(value)
+    return out
 
 
 def _dispatch(args: argparse.Namespace) -> int:

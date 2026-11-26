@@ -351,3 +351,99 @@ def test_ope_cli_holdout_after(
     assert data["points"]["compression"]["logged"] == 3
     assert data["holdout_after"] == "2026-11-10" and "in-sample" in json.dumps(data["notes"])
     assert cli.main([*args, "--holdout-after", "bad"]) == 2
+
+
+# --------------------------------------------------------------------------- M2 close C4
+def true_parts() -> tuple[float, float]:
+    sav = reg = 0.0
+    for c in range(2):
+        for a in range(4):
+            sav += 0.5 * TARGET_P[c][a] * MU[c][a]
+            reg += 0.5 * TARGET_P[c][a] * REG[c][a]
+    return sav, reg
+
+
+def test_savings_and_regret_reported_separately_with_cis() -> None:
+    log, regrets = synth_log(11, n=4000)
+    res = ope.evaluate(log, TableTarget(), regrets=regrets, n_boot=200)["compression"]
+    sav, reg = true_parts()
+    for est in ("ips", "snips", "dr"):
+        s, r, c = res["savings"][est], res["regret"][est], res["combined"][est]
+        assert s["ci95"][0] <= s["value"] <= s["ci95"][1]
+        assert r["ci95"][0] <= r["value"] <= r["ci95"][1]
+        assert abs(s["value"] - sav) < 0.03, (est, s, sav)
+        assert abs(r["value"] - reg) < 0.01, (est, r, reg)
+        assert c == res[est]  # the old keys stay the combined objective
+    # IPS is linear in the reward: combined = savings - regret / tau, decision by decision
+    combined = res["savings"]["ips"]["value"] - LAMBDA * res["regret"]["ips"]["value"]
+    assert abs(res["ips"]["value"] - combined) < 1e-5
+    assert res["tau"] == 0.05 and res["objective"] == "savings - regret / tau"
+
+
+def test_constraint_ok_uses_the_regret_upper_bound() -> None:
+    log, regrets = synth_log(12, n=3000)
+    res = ope.evaluate(log, TableTarget(), regrets=regrets, n_boot=200)["compression"]
+    upper = max(res["regret"][e]["ci95"][1] for e in ("ips", "dr"))
+    assert res["regret_upper"] == round(upper, 6)
+    assert res["constraint_ok"] is (upper <= 0.05)
+    assert res["constraint_ok"] is True  # true regret ~0.02, well under 0.05
+    tight = ope.evaluate(log, TableTarget(), regrets=regrets, n_boot=200, tau={"medium": 0.005})[
+        "compression"
+    ]
+    assert tight["constraint_ok"] is False and tight["tau"] == 0.005
+    assert tight["regret"] == res["regret"]  # tau only moves the bar and the combined value
+
+
+def test_constraint_fails_when_the_target_is_regretted() -> None:
+    log = [_rec(f"d{i}", "standard", 0.5, CTX[0]) for i in range(200)]
+    regrets = {f"d{i}": 1.0 if i % 5 == 0 else 0.0 for i in range(200)}  # 20 % regret
+    res = ope.evaluate(log, StaticPolicy({}), regrets=regrets, n_boot=100)["compression"]
+    assert res["regret"]["ips"]["value"] > 0.3  # weight 2 on every row
+    assert res["constraint_ok"] is False
+
+
+def test_safe_target_always_satisfies_the_constraint() -> None:
+    log, regrets = synth_log(13, n=500)
+    pol = StaticPolicy({"compression": "off"})
+    res = ope.evaluate(log, pol, regrets=regrets, n_boot=50)["compression"]
+    assert res["regret"]["ips"]["value"] == 0.0 and res["savings"]["ips"]["value"] == 0.0
+    assert res["constraint_ok"] is True
+
+
+def test_reward_parts() -> None:
+    rec = _rec("x", "standard", 0.5, CTX[0], 10_000, 4_000)
+    assert ope.reward(rec, 0.5, part="savings") == pytest.approx(0.6)
+    assert ope.reward(rec, 0.5, part="regret") == 0.5
+    assert ope.reward(rec, 0.5) == pytest.approx(0.6 - 0.5 * LAMBDA)
+    safe = _rec("y", "off", 0.5, CTX[0])
+    assert ope.reward(safe, 1.0, part="regret") == 0.0
+    with pytest.raises(ValueError, match="part"):
+        ope.reward(rec, 0.0, part="nope")
+
+
+def test_ope_cli_reports_parts_and_constraint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("TOKEN_SPAREN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    log = _write_log(home / "projects" / KEY / "decisions.jsonl")
+    out = tmp_path / "priv" / "e3.json"
+    assert cli.main(["ope", "--log", str(log), "--target", "static", "--out", str(out)]) == 0
+    point = json.loads(out.read_text(encoding="utf-8"))["points"]["compression"]
+    assert {"savings", "regret", "combined", "tau", "constraint_ok", "regret_upper"} <= set(point)
+    text = capsys.readouterr().out
+    assert "savings" in text and "regret" in text and "constraint" in text
+
+
+def test_ope_cli_uses_the_configured_tau(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.toml").write_text("[learn.tau]\nmedium = 0.001\n", encoding="utf-8")
+    monkeypatch.setenv("TOKEN_SPAREN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    log = _write_log(home / "projects" / KEY / "decisions.jsonl")
+    out = tmp_path / "priv" / "e3.json"
+    assert cli.main(["ope", "--log", str(log), "--target", "static", "--out", str(out)]) == 0
+    point = json.loads(out.read_text(encoding="utf-8"))["points"]["compression"]
+    assert point["tau"] == 0.001

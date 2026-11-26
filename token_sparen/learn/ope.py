@@ -1,10 +1,13 @@
 """E3: off-policy evaluation of a target policy on logged decisions (spec sections 7.8, 10.3).
 
-Reward per decision (evaluation only): ``savings - lambda * regret`` with ``savings`` the
-fraction of the output removed (``(tokens_before - tokens_after) / tokens_before``), ``regret``
-the settled regret value when the log line carries one (``"regret"``; missing counts as 0 and
-is reported as ``regret_known``) and ``lambda = 1 / tau[tier]``. The safe arm's reward is 0 by
-definition.
+Rewards per decision (evaluation only), each estimated on its own: ``savings`` the fraction of
+the output removed (``(tokens_before - tokens_after) / tokens_before``), ``regret`` the settled
+regret value (joined from the log's outcome lines; missing counts as 0 and is reported as
+``regret_known``) and the combined objective ``savings - lambda * regret`` with
+``lambda = 1 / tau[tier]`` (the old ``ips``/``snips``/``dr`` keys). The safe arm's savings and
+regret are 0 by definition. Quality is a constraint, not a weight: ``constraint_ok`` says the
+target's estimated regret is within ``tau`` of the point's tier, judged on the larger upper 95 %
+bound of IPS and DR (``regret_upper``; SNIPS is conditional on support and not used).
 
 Estimators: IPS and self-normalised IPS with importance weights ``pi(a|x) / p_log(a|x)``
 clipped at ``CLIP`` (20; the clipped fraction is reported), and doubly robust with a per
@@ -55,6 +58,8 @@ NOTES = {
     "0, or 1 with the target elsewhere); a lower bound for stochastic loggers, which do not log "
     "the arms they could not choose; IPS and DR cover supported mass only; SNIPS is conditional "
     "on support (rows = decisions it covers)",
+    "constraint": "constraint_ok = regret_upper <= tau (regret_upper: the larger upper 95 % "
+    "bound of the IPS and DR regret estimates); judge a target on savings only when it holds",
     "in_sample": "engine-snapshot on the logs its own learner was trained on is in-sample and "
     "optimistic; use --holdout-after to evaluate only later decisions",
     "regret": "settled regret joins from the log's outcome lines by decision id (recovery read, "
@@ -151,18 +156,39 @@ def as_target(target: Target | Policy) -> Target:
     raise TypeError(f"{type(target).__name__} cannot be evaluated off-policy")
 
 
+PARTS = ("combined", "savings", "regret")
+OBJECTIVE = "savings - regret / tau"
+
+
+def tau_for(point_name: str, tau: Mapping[str, float] | None = None) -> float:
+    """The regret target of a point's tier (``tau`` overrides ``DEFAULT_TAU``; 0 if unknown)."""
+    point = get_point(point_name)
+    taus = DEFAULT_TAU if tau is None else {**DEFAULT_TAU, **tau}
+    return taus.get(point.tier, 0.0) if point is not None else 0.0
+
+
 def reward(
-    rec: DecisionRecord, regret: float | None, tau: Mapping[str, float] | None = None
+    rec: DecisionRecord,
+    regret: float | None,
+    tau: Mapping[str, float] | None = None,
+    *,
+    part: str = "combined",
 ) -> float:
-    """``savings - regret / tau[tier]``; 0 for the safe arm (and an unknown point's savings)."""
+    """One part of a decision's reward: ``savings``, ``regret`` or the ``combined``
+    ``savings - regret / tau[tier]``; 0 for the safe arm (and an unknown point's savings)."""
+    if part not in PARTS:
+        raise ValueError(f"unknown reward part {part!r}")
     point = get_point(rec.point)
     if point is not None and rec.arm == point.safe_arm:
         return 0.0
+    if part == "regret":
+        return regret or 0.0
     before = rec.tokens_before
     savings = (before - rec.tokens_after) / before if before > 0 else 0.0
     savings = min(1.0, max(0.0, savings))
-    taus = DEFAULT_TAU if tau is None else {**DEFAULT_TAU, **tau}
-    t = taus.get(point.tier, 0.0) if point is not None else 0.0
+    if part == "savings":
+        return savings
+    t = tau_for(rec.point, tau)
     lam = 1.0 / t if t > 0 else 0.0
     return savings - lam * (regret or 0.0)
 
@@ -195,11 +221,13 @@ def fit_model(
     log: Sequence[DecisionRecord],
     regrets: Mapping[str, float] | None = None,
     tau: Mapping[str, float] | None = None,
+    *,
+    part: str = "combined",
 ) -> RewardModel:
     regrets = regrets or {}
     model = RewardModel()
     for rec in log:
-        model.observe(rec, reward(rec, regrets.get(rec.decision_id), tau))
+        model.observe(rec, reward(rec, regrets.get(rec.decision_id), tau, part=part))
     return model
 
 
@@ -224,6 +252,7 @@ def _terms(
     model: RewardModel | None,
     clip: float,
     tau: Mapping[str, float] | None,
+    part: str = "combined",
 ) -> _Terms:
     t = _Terms([], [], [])
     for rec in log:
@@ -244,7 +273,7 @@ def _terms(
             t.dr.append(0.0)
             t.full.append(False)
             continue
-        r = reward(rec, known, tau)
+        r = reward(rec, known, tau, part=part)
         w = pi_a / p
         if w > clip:
             w = clip
@@ -307,9 +336,10 @@ def ips(
     n_boot: int = N_BOOT,
     seed: int = 0,
     tau: Mapping[str, float] | None = None,
+    part: str = "combined",
 ) -> Estimate:
     """Inverse propensity scoring with clipped weights."""
-    t = _terms(log, as_target(target), regrets or {}, None, clip, tau)
+    t = _terms(log, as_target(target), regrets or {}, None, clip, tau, part)
     return _estimate(t, _mean(t.ips), _bootstrap_mean(t.ips, n_boot, seed))
 
 
@@ -322,13 +352,14 @@ def snips(
     n_boot: int = N_BOOT,
     seed: int = 0,
     tau: Mapping[str, float] | None = None,
+    part: str = "combined",
 ) -> Estimate:
     """Self-normalised IPS, **conditional on support**: sum(w r) / sum(w) over the decisions
     whose target mass is fully supported (a deterministic logger's row where the target also
     puts mass elsewhere is left out, so unsupported mass is never filled in with the supported
     rows' value). ``rows`` says how many decisions it covers; logs from a stochastic logger
     cannot show which other arms it could choose, so their rows always count as supported."""
-    t = _terms(log, as_target(target), regrets or {}, None, clip, tau)
+    t = _terms(log, as_target(target), regrets or {}, None, clip, tau, part)
     pairs = [(x, w) for x, w, ok in zip(t.ips, t.weights, t.full, strict=True) if ok]
 
     def ratio(sample: Sequence[tuple[float, float]]) -> float:
@@ -351,10 +382,11 @@ def doubly_robust(
     n_boot: int = N_BOOT,
     seed: int = 0,
     tau: Mapping[str, float] | None = None,
+    part: str = "combined",
 ) -> Estimate:
     """Doubly robust: model value under the target plus the weighted residual of the logged arm
     (no model term on unsupported mass)."""
-    t = _terms(log, as_target(target), regrets or {}, model, clip, tau)
+    t = _terms(log, as_target(target), regrets or {}, model, clip, tau, part)
     return _estimate(t, _mean(t.dr), _bootstrap_mean(t.dr, n_boot, seed))
 
 
@@ -436,18 +468,28 @@ def evaluate(
     seed: int = 0,
     tau: Mapping[str, float] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Aggregates per decision point: n, support, clipping, and the IPS/SNIPS/DR estimates."""
+    """Aggregates per decision point: n, support, clipping, and the IPS/SNIPS/DR estimates of
+    savings, regret and the combined objective (the top-level ``ips``/``snips``/``dr``), the
+    point's ``tau`` and ``constraint_ok`` (``regret_upper`` <= ``tau``)."""
     regrets = regrets or {}
     tgt = as_target(target)
     out: dict[str, dict[str, Any]] = {}
     for name in sorted({r.point for r in log}):
-        part = [r for r in log if r.point == name]
+        rows = [r for r in log if r.point == name]
         kw: dict[str, Any] = {"regrets": regrets, "n_boot": n_boot, "seed": seed, "tau": tau}
-        e_ips = ips(part, tgt, **kw)
-        e_snips = snips(part, tgt, **kw)
-        e_dr = doubly_robust(part, tgt, fit_model(part, regrets, tau), **kw)
+        parts: dict[str, dict[str, Estimate]] = {}
+        for part in PARTS:
+            model = fit_model(rows, regrets, tau, part=part)
+            parts[part] = {
+                "ips": ips(rows, tgt, part=part, **kw),
+                "snips": snips(rows, tgt, part=part, **kw),
+                "dr": doubly_robust(rows, tgt, model, part=part, **kw),
+            }
+        e_ips, e_snips, e_dr = (parts["combined"][k] for k in ("ips", "snips", "dr"))
+        t = tau_for(name, tau)
+        upper = max(parts["regret"][k].ci95[1] for k in ("ips", "dr"))
         out[name] = {
-            "logged": len(part),
+            "logged": len(rows),
             "n": e_ips.n,
             "no_context": e_ips.no_context,
             "unsupported": e_ips.unsupported,
@@ -457,5 +499,10 @@ def evaluate(
             "ips": e_ips.to_dict(),
             "snips": e_snips.to_dict(),
             "dr": e_dr.to_dict(),
+            **{p: {k: e.to_dict() for k, e in parts[p].items()} for p in PARTS},
+            "objective": OBJECTIVE,
+            "tau": t,
+            "regret_upper": round(upper, 6),
+            "constraint_ok": upper <= t,
         }
     return out
