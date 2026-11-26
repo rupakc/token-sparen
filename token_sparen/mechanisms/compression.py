@@ -32,16 +32,18 @@ from token_sparen.compress import (
 )
 from token_sparen.config import Config, log_error, state_home
 from token_sparen.estimate import estimate_tokens
-from token_sparen.events import Action, Event, ToolCall
+from token_sparen.events import Action, Event, SessionCtx, ToolCall
+from token_sparen.learn import regret
 from token_sparen.learn.policy import (
     COMPRESSION,
     PRETRIM,
     Decision,
+    DecisionPoint,
     DecisionRecord,
     Policy,
     StaticPolicy,
 )
-from token_sparen.mechanisms import guards, tracking
+from token_sparen.mechanisms import governor, guards, tracking
 from token_sparen.store import jsonl, jsonstore, keycache, paths, session
 
 MIN_TOKENS = 2000  # invariant floor: smaller outputs are never modified, whatever the config says
@@ -157,7 +159,7 @@ def _command_sig(event: Event) -> str:
     assert tool is not None
     cmd = tool.input.get("command")
     if tool.name == "Bash" and isinstance(cmd, str):
-        return cmd[:COMMAND_SIG_CHARS]
+        return regret.normalize_command(cmd)[:COMMAND_SIG_CHARS]
     return tool.name
 
 
@@ -238,6 +240,8 @@ def handle_post_tool(
         return Action()
     if not (replaceable or default_replaceable)(event):
         return Action()  # checked before any work: nothing to save or log if we cannot replace
+    if regret.is_recovery_access(event):
+        return Action()  # the agent asked for the saved full output: never trim it again
     preview = event.output_text
     if estimate_tokens(preview) < _min_tokens(cfg, env, event.project_key):
         return Action()
@@ -258,12 +262,13 @@ def handle_post_tool(
     sctx = tracking.session_ctx(event, overlay, overlay_file)
     level: Level | None = None
     decision: Decision | None = None
+    point: DecisionPoint = COMPRESSION
     store = paths.project_dir_for(state_home(env), event.project_key)
     pretrim_k = guards.pretrim_lines(event, store, cfg, env=env)
     if pretrim_k is not None:  # learned noisy command: maybe a tail-biased level
         pre = policy.decide(PRETRIM, features, sctx)
         if pre.arm == "bounded":
-            decision, level = pre, guards.pretrim_level(cfg, pretrim_k)
+            decision, level, point = pre, guards.pretrim_level(cfg, pretrim_k), PRETRIM
         else:
             _log_decision(event, cfg, env, pre, ctype, before, before, None, tokens_full)
     if decision is None:
@@ -288,6 +293,7 @@ def handle_post_tool(
     max_after = before * (1 - _num(cfg, "compression.min_saving_ratio", 0.15))
     stand_in = _marker_len_ref(event.project_dir)
     chosen: CompressResult | None = None
+    chosen_source = preview
     for source in (full, preview):
         if source is None:
             continue
@@ -296,9 +302,13 @@ def handle_post_tool(
             continue
         probe = f"{result.text}\n{recovery.marker(result.kept_lines, result.total_lines, stand_in)}"
         if len(probe) <= len(preview) and estimate_tokens(probe, est_type) <= max_after:
-            chosen = result
+            chosen, chosen_source = result, source
             break
     if chosen is None:
+        # a trimming arm that found nothing worth trimming: no savings, no possible regret
+        fn = regret.reward_fn(policy)
+        if fn is not None:
+            fn(decision.decision_id, 0.0, 0.0)
         return no_op()
     deadline = _num(cfg, "compression.save_deadline_ms", SAVE_DEADLINE_MS) / 1000
     if time.monotonic() - t0 > deadline:
@@ -318,7 +328,53 @@ def handle_post_tool(
     after = estimate_tokens(body, est_type)
     _count_trim(overlay_file, before - after, env)
     _log_decision(event, cfg, env, decision, ctype, before, after, ref.id, tokens_full)
+    _learn(event, policy, cfg, env, decision, point, sctx, ref.id, chosen_source, body, ctype)
+    regret.reward_savings(
+        policy,
+        decision.decision_id,
+        decision.point,
+        decision.bucket,
+        before - after,
+        regret.expected_resends(governor.remaining_turns(overlay, cfg)),
+        home=home,
+        project_key=event.project_key,
+        env=env,
+    )
     return Action(replace_output=body)
+
+
+def _learn(
+    event: Event,
+    policy: Policy,
+    cfg: Config,
+    env: Mapping[str, str],
+    decision: Decision,
+    point: DecisionPoint,
+    sctx: SessionCtx,
+    recovery_id: str,
+    full: str,
+    kept: str,
+    ctype: str,
+) -> None:
+    """Watch a trim for regret (always: the ledger counts regrets for any policy)."""
+    assert event.tool is not None
+    if decision.arm == point.safe_arm:
+        return
+    path = event.tool.input.get("file_path") if event.tool.name == "Read" else None
+    evicted = regret.RegretDetector(cfg, env).track(
+        sctx,
+        decision.decision_id,
+        point=decision.point,
+        bucket=decision.bucket,
+        arm=decision.arm,
+        recovery_id=recovery_id,
+        command_sig=regret.signature(event.tool.name, event.tool.input),
+        full=full,
+        kept=kept,
+        ctype=ctype,
+        files=[path] if isinstance(path, str) and path else None,
+    )
+    regret.pay(policy, evicted)
 
 
 _SHOW_ID = re.compile(r"`token-sparen show ([0-9a-f]{12})`\]\s*$")

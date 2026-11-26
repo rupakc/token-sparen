@@ -494,3 +494,33 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   Task 21 must report `regret=0.0` explicitly when the regret window expires.
 - `cold_obs` removed from code and defaults (superseded by `ladder_obs`); the plan's mention of it
   is historical.
+
+## 2026-11-26 Task 21: regret detection and savings attribution
+- `learn/regret.py`: `normalize_command` (whitespace collapsed; leading `cd <p> &&|;`, `A=b`,
+  `env A=b` stripped repeatedly; trailing `| tail -n N` / `2>&1` dropped; `sudo` and every other
+  arg kept; <= 500 chars). `signature(tool, input)`: Bash -> normalised command, Read ->
+  `Read:<realpath>` (any range), else `<tool>:<sorted json input>`. `decisions.jsonl`
+  `command_sig` and the pretrim lookup (`guards._normalise`) now use the normalised command.
+- Overlay `regret` = `{decision_id: {point, bucket, arm, recovery_id, command_sig, elided_tokens
+  (<= 64, 8+ chars with a letter, not in kept text or the command, spread over the span),
+  files_in_span (<= 32, elided span first, then kept text), edited_paths_since, decided_turn,
+  ctype, best}}`, last 200 (evicted entries are paid their best so far). Trims are tracked for
+  any policy (ledger `regrets` counts paid regrets > 0); rewards go to the policy only if it has
+  a callable `reward` (duck-typed; StaticPolicy unaffected).
+- Signals: recovery read 1.0; re-run of the same signature within `[learn] regret_window_turns
+  = 6` turns 1.0 (age <= 2) else 0.5, none if a file the output mentions (elided **or kept**,
+  deviation from the brief, see spec revision note) was edited since; >= 2 elided tokens in a
+  prompt or non-edit tool input 0.5; `on_loop(ctx, ids|None)` 0.5 for compression decisions of
+  this turn with an error-bearing ctype. Max per decision: 1.0 paid at once, partials and 0 at
+  expiry (`turn - decided_turn > window`), everything at SessionEnd. Paid entries are removed.
+- Dispatch `_on_regret`: prompt (after the turn count), post_tool (right after the governor,
+  before any replacement), post_tool_failure, session_end. Lock-free pre-check, one locked
+  write only when something changes (~1.2 ms on a 200-entry overlay).
+- `token-sparen show <id>` resolves the session like `session disable` (silently skipped when
+  unresolved; only an existing overlay is touched), marks best = 1.0 (paid by the next hook) and
+  adds the read's tokens to `recovery_read_tokens`; the hook adds tokens for direct reads only.
+- Recovery reads are never compressed or de-duplicated (they are what the agent asked for).
+- Savings at decision time: `min(1, removed * resends / p95)`, resends =
+  `max(1, governor.remaining_turns)` (budget left / per-turn EWMA) else 10; p95 over the last 64
+  values per (point, bucket) in `projects/<key>/savings_scale.json` (current value included);
+  first observation 0.5, nothing removed 0. A trimming arm that ended as a no-op gets (0, 0).

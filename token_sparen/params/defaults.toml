@@ -131,6 +131,7 @@ ladder_obs = 20  # a trimming arm unlocks the next more aggressive one only with
 # regret observations (pooled full bucket, or any back-off level in project/global scope) and a
 # regret posterior mean <= tau
 pending_max = 500  # decisions awaiting reward kept in the session overlay (oldest evicted)
+regret_window_turns = 6  # a trim is watched for regret this many turns, then credited regret 0
 
 # Regret target per tier: a trimming arm is feasible only if its sampled regret is <= tau
 # (high tier additionally needs its regret 95 % upper bound <= tau).

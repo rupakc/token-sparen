@@ -170,15 +170,24 @@ def test_builtin_order() -> None:
     assert names == ["_on_pre_invalidate", "_on_governor_stop", "_on_guard", "_on_subagent"]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["post_tool"]]
     # tracking runs last (its lock wait never eats compression's budget) and always runs
-    assert names == ["_on_governor_post", "_on_read_dedupe", "_on_compress", "_on_track"]
+    # regret detection runs before any replacement can end the chain
+    assert names == [
+        "_on_governor_post",
+        "_on_regret",
+        "_on_read_dedupe",
+        "_on_compress",
+        "_on_track",
+    ]
     assert entry.HANDLERS["post_tool"][-1] in entry.ALWAYS_RUN
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["post_tool_failure"]]
-    assert names == ["_on_governor_post", "_on_compress", "_on_track"]
+    assert names == ["_on_governor_post", "_on_regret", "_on_compress", "_on_track"]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["prompt"]]
-    assert names == ["_on_prompt", "_on_governor_prompt", "_on_boundary"]
+    assert names == ["_on_prompt", "_on_governor_prompt", "_on_boundary", "_on_regret"]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["pre_compact"]]
     assert names == ["_on_pre_compact", "_on_compact_instructions"]
     assert "session_start" in entry.HANDLERS
+    names = [getattr(f, "__name__", "") for f in entry.HANDLERS["session_end"]]
+    assert names == ["_on_regret"]
 
 
 def test_builtin_mechanism_errors_are_contained(

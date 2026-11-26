@@ -1,0 +1,661 @@
+"""Regret detection and savings attribution (spec section 7.5).
+
+Regret signals are the only way the learner finds out that a trim hurt the agent. Every trimming
+decision is tracked in the session overlay under ``regret`` (bounded to the last 200 decisions)
+with what is needed to recognise regret later: the recovery id, the *normalised* command
+signature, up to 64 distinctive tokens of the elided span (8+ characters, absent from the kept
+text) and up to 32 file paths the output mentions (elided span first). Signals, per decision:
+
+1. recovery read of its saved full output (``Read`` of the file, ``cat``/``head``/``tail``/
+   ``less``/``sed``/``grep`` of the path, ``token-sparen show <id>``) -> 1.0;
+2. re-run of the same normalised command within ``[learn] regret_window_turns`` turns -> 1.0 if
+   within 2 turns, else 0.5, unless a file the output mentions was edited since the decision
+   (fix-and-rerun is normal);
+3. a prompt or a non-edit tool input holding >= 2 distinct elided distinctive tokens -> 0.5;
+4. a failure loop in the decision's turn after compressing an error-bearing output (``on_loop``,
+   called by the loop guard) -> 0.5.
+
+A decision keeps the max of its signals. A full (1.0) regret is paid at once; a partial one when
+the window expires, which is also when a decision without regret is paid an explicit 0 (silence
+is not evidence). SessionEnd settles everything. Each decision is paid at most once and then
+forgotten. Rewards go to the policy only if it has a ``reward`` method (the learning engine); the
+ledger ``regrets`` counter is kept either way. Everything fails open.
+
+Savings at decision time: ``min(1, removed * expected_resends / p95)`` with the p95 of the last
+64 values of ``removed * expected_resends`` per (point, bucket) in the project store
+(``savings_scale.json``); the first observation of a bucket is worth 0.5.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import re
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from token_sparen import recovery
+from token_sparen.config import Config, log_error, state_home
+from token_sparen.estimate import estimate_tokens
+from token_sparen.events import Action, Event, SessionCtx
+from token_sparen.store import jsonstore, paths, session
+
+REGRET_KEY = "regret"
+WINDOW_TURNS = 6
+FULL_WITHIN_TURNS = 2
+MAX_TRACKED = 200
+MAX_TOKENS = 64
+MAX_FILES = 32
+MAX_EDITS = 8
+MAX_SIG_CHARS = 500
+SCAN_CHARS = 200_000  # elided text scanned for tokens and paths (sampled evenly beyond this)
+INPUT_SCAN_CHARS = 8000  # prompt / tool input text scanned for elided tokens
+MIN_TOKEN_HITS = 2
+FULL = 1.0
+PARTIAL = 0.5
+ERROR_CTYPES = frozenset({"stacktrace", "test_report", "compiler", "build_log", "log"})
+SCALE_FILE = "savings_scale.json"
+SCALE_KEEP = 64
+SCALE_FIRST = 0.5
+DEFAULT_RESENDS = 10.0
+_READ_TOOLS = frozenset({"Read", "NotebookRead"})
+_READERS = frozenset({"cat", "head", "tail", "less", "more", "sed", "grep", "egrep", "rg", "bat"})
+
+Payout = tuple[str, float]
+
+# --------------------------------------------------------------------------- commands
+_WS = re.compile(r"\s+")
+_WORD = r"""(?:'[^']*'|"(?:[^"\\]|\\.)*"|[^\s;&|'"])+"""
+_LEAD_CD = re.compile(rf"^cd\s+{_WORD}\s*(?:&&|;)\s*")
+_LEAD_ENV = re.compile(r"^env\s+(?=[A-Za-z_][A-Za-z0-9_]*=)")
+_LEAD_ASSIGN = re.compile(rf"^[A-Za-z_][A-Za-z0-9_]*=(?:{_WORD})?\s+")
+_TRAIL_TAIL = re.compile(r"\s*\|\s*tail(?:\s+(?:-n\s*\d+|-\d+|--lines=\d+))?\s*$")
+_TRAIL_REDIR = re.compile(r"\s+2>&1\s*$")
+
+
+def _strip_all(text: str, patterns: Iterable[re.Pattern[str]]) -> str:
+    pats = tuple(patterns)
+    while True:
+        before = text
+        for pat in pats:
+            text = pat.sub("", text, count=1)
+        if text == before:
+            return text
+
+
+def normalize_command(cmd: str) -> str:
+    """Signature of a shell command: whitespace collapsed, leading ``cd <p> &&`` (repeatedly),
+    ``A=b`` assignments and ``env A=b`` removed, a trailing ``| tail -n N`` and ``2>&1`` dropped;
+    every other argument is kept (``sudo`` too). At most 500 characters."""
+    text = _WS.sub(" ", cmd).strip()
+    text = _strip_all(text, (_LEAD_CD, _LEAD_ENV, _LEAD_ASSIGN))
+    text = _strip_all(text, (_TRAIL_TAIL, _TRAIL_REDIR))
+    return text[:MAX_SIG_CHARS]
+
+
+def _realpath(value: str) -> str:
+    try:
+        return os.path.realpath(value)
+    except (OSError, ValueError):
+        return value
+
+
+def signature(tool_name: str, tool_input: Mapping[str, Any]) -> str:
+    """Re-run key of a tool call: the normalised command for Bash, ``Read:<realpath>`` for a
+    file read (any range), else the tool name and its input."""
+    if tool_name == "Bash":
+        cmd = tool_input.get("command")
+        return normalize_command(cmd) if isinstance(cmd, str) else tool_name
+    if tool_name in _READ_TOOLS:
+        path = tool_input.get("file_path")
+        if isinstance(path, str) and path:
+            return f"Read:{_realpath(path)}"[:MAX_SIG_CHARS]
+    try:
+        body = json.dumps(dict(tool_input), sort_keys=True, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        body = ""
+    return f"{tool_name}:{body}"[:MAX_SIG_CHARS]
+
+
+# --------------------------------------------------------------------------- elided span
+_TOKEN = re.compile(r"[A-Za-z0-9_./-]{8,}")
+_FILE = re.compile(
+    r"(?<![\w./-])(?:[A-Za-z]:)?/?(?:[\w.-]+/)*[\w-][\w.-]*\.[A-Za-z][A-Za-z0-9]{0,7}(?![\w/])"
+)
+
+
+def _tokens(text: str) -> Iterator[str]:
+    for m in _TOKEN.finditer(text):
+        tok = m.group().strip("./-")
+        if len(tok) >= 8 and any(c.isalpha() for c in tok):
+            yield tok
+
+
+def _spread(items: list[str], k: int) -> list[str]:
+    """At most ``k`` items, evenly spread over ``items`` (order kept)."""
+    if len(items) <= k:
+        return items
+    return [items[i * len(items) // k] for i in range(k)]
+
+
+def _elided(full: str, kept: str) -> str:
+    """Lines of ``full`` that are not in ``kept``, sampled evenly to ``SCAN_CHARS``."""
+    kept_lines = set(kept.splitlines())
+    lines = [ln for ln in full.splitlines() if ln not in kept_lines]
+    size = sum(len(ln) + 1 for ln in lines)
+    if size > SCAN_CHARS and lines:
+        step = math.ceil(size / SCAN_CHARS)
+        lines = lines[::step]
+    return "\n".join(lines)
+
+
+def distinctive_tokens(full: str, kept: str, exclude: str = "") -> list[str]:
+    """Up to 64 distinctive tokens of the elided span: 8+ characters of ``[A-Za-z0-9_./-]`` with
+    a letter, absent from the kept text and from ``exclude`` (the command), spread over the span.
+    """
+    return _span_tokens(_elided(full, kept), kept, exclude)
+
+
+def _span_tokens(span: str, kept: str, exclude: str) -> list[str]:
+    banned = set(_tokens(kept)) | set(_tokens(exclude))
+    seen: dict[str, None] = {}
+    for tok in _tokens(span):
+        if tok not in banned and tok not in seen:
+            seen[tok] = None
+            if len(seen) >= 64 * MAX_TOKENS:
+                break
+    return _spread(list(seen), MAX_TOKENS)
+
+
+def _files(text: str) -> Iterator[str]:
+    for m in _FILE.finditer(text):
+        path = m.group()
+        yield path[2:] if path.startswith("./") else path
+
+
+def span_files(full: str, kept: str) -> list[str]:
+    """Up to 32 file paths the output mentions: elided span first, then the kept text.
+
+    The kept text counts too: re-running after fixing a failure the agent could see is normal.
+    """
+    return _span_files(_elided(full, kept), kept)
+
+
+def _span_files(span: str, kept: str) -> list[str]:
+    out: dict[str, None] = {}
+    for text in (span, kept[:SCAN_CHARS]):
+        for path in _files(text):
+            out.setdefault(path, None)
+            if len(out) >= MAX_FILES:
+                return list(out)
+    return list(out)
+
+
+def _path_match(edited: str, mentioned: str) -> bool:
+    e = edited.replace("\\", "/")
+    m = mentioned.replace("\\", "/")
+    if m.startswith("/") or (len(m) > 1 and m[1] == ":"):
+        return os.path.normpath(e) == os.path.normpath(m)
+    return e == m or e.endswith("/" + m)
+
+
+# --------------------------------------------------------------------------- recovery reads
+_REC_PATH = re.compile(r"\.token-sparen[/\\]outputs[/\\]([0-9a-f]{12})\.txt")
+_SHOW = re.compile(r"(?:token-sparen|token_sparen|run_cli\.py)\b.*?\bshow\s+([0-9a-f]{12})\b")
+_SPLIT = re.compile(r"[\s|;&()]+")
+
+
+def recovery_reads(event: Event) -> tuple[set[str], set[str]]:
+    """(ids read from recovery files directly, ids read through ``token-sparen show``)."""
+    tool = event.tool
+    if tool is None:
+        return set(), set()
+    if tool.name in _READ_TOOLS:
+        path = tool.input.get("file_path")
+        if isinstance(path, str) and path:
+            rid = recovery.is_recovery_read(event.project_dir, Path(path))
+            if rid is not None:
+                return {rid}, set()
+        return set(), set()
+    cmd = tool.input.get("command") if tool.name == "Bash" else None
+    if not isinstance(cmd, str) or not cmd:
+        return set(), set()
+    shown = set(_SHOW.findall(cmd))
+    direct: set[str] = set()
+    ids = set(_REC_PATH.findall(cmd))
+    if ids and any(os.path.basename(w) in _READERS for w in _SPLIT.split(cmd)):
+        direct = ids
+    return direct, shown
+
+
+def is_recovery_access(event: Event) -> bool:
+    """True when the tool call reads a saved full output (never trim or de-dupe those)."""
+    direct, shown = recovery_reads(event)
+    return bool(direct or shown)
+
+
+# --------------------------------------------------------------------------- detector
+def _int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _best(entry: Mapping[str, Any]) -> float:
+    value = entry.get("best")
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        return 0.0
+    return min(1.0, max(0.0, float(value)))
+
+
+def _strs(value: Any) -> list[str]:
+    return [x for x in value if isinstance(x, str)] if isinstance(value, list) else []
+
+
+def _table(state: dict[str, Any]) -> dict[str, Any]:
+    table = state.get(REGRET_KEY)
+    if not isinstance(table, dict):
+        table = {}
+    state[REGRET_KEY] = table
+    return table
+
+
+def _bump(state: dict[str, Any], key: str, inc: int) -> None:
+    if inc:
+        state[key] = _int(state.get(key)) + inc
+
+
+def _entry(
+    point: str,
+    bucket: str,
+    arm: str,
+    recovery_id: str | None,
+    command_sig: str,
+    full: str,
+    kept: str,
+    ctype: str | None,
+    files: Iterable[str] | None,
+) -> dict[str, Any]:
+    span = _elided(full, kept) if full else ""
+    mentioned: dict[str, None] = dict.fromkeys(files or ())
+    if full:
+        mentioned.update(dict.fromkeys(_span_files(span, kept)))
+    return {
+        "point": point,
+        "bucket": bucket,
+        "arm": arm,
+        "recovery_id": recovery_id,
+        "command_sig": command_sig[:MAX_SIG_CHARS],
+        "elided_tokens": _span_tokens(span, kept, command_sig) if full else [],
+        "files_in_span": list(mentioned)[:MAX_FILES],
+        "edited_paths_since": [],
+        "decided_turn": 0,
+        "ctype": ctype,
+        "best": 0.0,
+    }
+
+
+@dataclass
+class _Info:
+    """What one event can tell the detector."""
+
+    sig: str | None = None
+    recovery_ids: set[str] = field(default_factory=set)
+    tokens: set[str] = field(default_factory=set)
+    edit_path: str | None = None
+    read_tokens: int = 0
+
+    def empty(self) -> bool:
+        return (
+            self.sig is None
+            and not self.recovery_ids
+            and len(self.tokens) < MIN_TOKEN_HITS
+            and self.edit_path is None
+            and not self.read_tokens
+        )
+
+
+def _input_text(tool_input: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    size = 0
+    for value in tool_input.values():
+        if isinstance(value, str):
+            parts.append(value[: INPUT_SCAN_CHARS - size])
+            size += len(parts[-1])
+            if size >= INPUT_SCAN_CHARS:
+                break
+    return "\n".join(parts)
+
+
+def _info(event: Event) -> _Info:
+    info = _Info()
+    tool = event.tool
+    if event.kind == "prompt" and event.prompt:
+        info.tokens = set(_tokens(event.prompt[:INPUT_SCAN_CHARS]))
+        return info
+    if tool is None or event.kind not in ("post_tool", "post_tool_failure"):
+        return info
+    if tool.category == "edit":
+        path = tool.input.get("file_path") or tool.input.get("notebook_path")
+        if isinstance(path, str) and path:
+            info.edit_path = path
+        return info
+    info.sig = signature(tool.name, tool.input)
+    direct, shown = recovery_reads(event)
+    info.recovery_ids = direct | shown
+    if direct and event.output_text:  # `token-sparen show` counts its own tokens
+        info.read_tokens = estimate_tokens(event.output_text)
+    info.tokens = set(_tokens(_input_text(tool.input)))
+    return info
+
+
+def reward_fn(policy: object) -> Callable[[str, float | None, float | None], None] | None:
+    """The policy's ``reward`` method when it learns (duck-typed), else None."""
+    fn = getattr(policy, "reward", None)
+    return fn if callable(fn) else None
+
+
+def pay(policy: object, payouts: Iterable[Payout]) -> None:
+    """Report regret values to a learning policy (no-op for the static policy)."""
+    fn = reward_fn(policy)
+    if fn is None:
+        return
+    for decision_id, value in payouts:
+        fn(decision_id, None, value)
+
+
+class RegretDetector:
+    """Tracks trimming decisions in the session overlay and turns later events into regret."""
+
+    def __init__(self, cfg: Config | None = None, env: Mapping[str, str] | None = None) -> None:
+        self.cfg = cfg or Config()
+        self.env: Mapping[str, str] = os.environ if env is None else env
+
+    @property
+    def window(self) -> int:
+        value = self.cfg.get("learn.regret_window_turns", WINDOW_TURNS)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return WINDOW_TURNS
+
+    def _overlay(self, event: Event) -> Path:
+        return session.session_path(state_home(self.env), event.project_key, event.session_id)
+
+    # --- decisions --------------------------------------------------------------------------
+
+    def track(
+        self,
+        ctx: SessionCtx,
+        decision_id: str,
+        *,
+        point: str,
+        bucket: str,
+        arm: str,
+        recovery_id: str | None,
+        command_sig: str,
+        full: str,
+        kept: str,
+        ctype: str | None,
+        files: Iterable[str] | None = None,
+    ) -> list[Payout]:
+        """Start watching a trimming decision; returns the payouts of decisions evicted to keep
+        the table at 200 (their best regret so far, usually 0). Never raises."""
+        try:
+            entry = _entry(point, bucket, arm, recovery_id, command_sig, full, kept, ctype, files)
+            entry["decided_turn"] = ctx.turn
+            return self._track(ctx, decision_id, entry)
+        except Exception as exc:  # noqa: BLE001 - bookkeeping must never break a hook
+            log_error(self.env, "regret", f"track: {type(exc).__name__}: {exc}")
+            return []
+
+    def _track(self, ctx: SessionCtx, decision_id: str, entry: dict[str, Any]) -> list[Payout]:
+        evicted: list[Payout] = []
+
+        def apply(state: dict[str, Any]) -> dict[str, Any]:
+            table = _table(state)
+            table.pop(decision_id, None)
+            table[decision_id] = entry
+            while len(table) > MAX_TRACKED:
+                old = next(iter(table))
+                gone = table.pop(old)
+                evicted.append((old, _best(gone) if isinstance(gone, dict) else 0.0))
+            _bump(state, "regrets", sum(1 for _, v in evicted if v > 0))
+            return state
+
+        session.update_session(ctx.overlay_path, apply)
+        return evicted
+
+    # --- signals ----------------------------------------------------------------------------
+
+    def _process(
+        self, table: dict[str, Any], info: _Info, turn: int, *, settle: bool, final: bool
+    ) -> tuple[list[Payout], list[Payout], bool]:
+        """Apply one event to the table in place: (signals, payouts, changed)."""
+        signals: list[Payout] = []
+        payouts: list[Payout] = []
+        changed = False
+        window = self.window
+        for did, entry in list(table.items()):
+            if not isinstance(entry, dict):
+                del table[did]
+                changed = True
+                continue
+            value = 0.0
+            decided = _int(entry.get("decided_turn"))
+            if info.recovery_ids and entry.get("recovery_id") in info.recovery_ids:
+                value = FULL
+            edited = _strs(entry.get("edited_paths_since"))
+            if info.edit_path is not None and len(edited) < MAX_EDITS:
+                if any(_path_match(info.edit_path, f) for f in _strs(entry.get("files_in_span"))):
+                    entry["edited_paths_since"] = [*edited, info.edit_path]
+                    changed = True
+            if info.sig is not None and not edited and entry.get("command_sig") == info.sig:
+                age = turn - decided
+                if 0 <= age <= window:
+                    value = max(value, FULL if age <= FULL_WITHIN_TURNS else PARTIAL)
+            if len(info.tokens) >= MIN_TOKEN_HITS:
+                hits = 0
+                for tok in _strs(entry.get("elided_tokens")):
+                    if tok in info.tokens:
+                        hits += 1
+                        if hits >= MIN_TOKEN_HITS:
+                            value = max(value, PARTIAL)
+                            break
+            best = _best(entry)
+            if value > 0.0:
+                signals.append((did, value))
+                if value > best:
+                    entry["best"] = best = value
+                    changed = True
+            if settle and (best >= FULL or final or turn - decided > window):
+                payouts.append((did, best))
+                del table[did]
+                changed = True
+        return signals, payouts, changed
+
+    def _apply(self, path: Path, info: _Info, turn: int | None, settle: bool, final: bool) -> Any:
+        """Lock-free pre-check, then (only if something changes) one locked update.
+        Returns (signals, payouts)."""
+        snapshot = session.read_session(path)
+        now = _int(snapshot.get("turn")) if turn is None else turn
+        table = snapshot.get(REGRET_KEY)
+        if not isinstance(table, dict) or not table:
+            if not info.read_tokens:
+                return [], []
+            table = {}
+        _, _, changed = self._process(table, info, now, settle=settle, final=final)
+        if not changed and not info.read_tokens:
+            return [], []
+        out: dict[str, list[Payout]] = {"signals": [], "payouts": []}
+
+        def apply(state: dict[str, Any]) -> dict[str, Any]:
+            cur = _int(state.get("turn")) if turn is None else turn
+            sig, payouts, _ = self._process(_table(state), info, cur, settle=settle, final=final)
+            _bump(state, "recovery_read_tokens", info.read_tokens)
+            _bump(state, "regrets", sum(1 for _, v in payouts if v > 0))
+            out["signals"], out["payouts"] = sig, payouts
+            return state
+
+        session.update_session(path, apply)
+        return out["signals"], out["payouts"]
+
+    def on_event(self, event: Event, ctx: SessionCtx) -> list[Payout]:
+        """Record the regret signals of ``event`` (max per decision); returns them. Nothing is
+        paid here (``handle`` settles)."""
+        info = _info(event)
+        if info.empty():
+            return []
+        signals, _ = self._apply(ctx.overlay_path, info, ctx.turn, settle=False, final=False)
+        return list(signals)
+
+    def on_loop(self, ctx: SessionCtx, decision_ids: Iterable[str] | None) -> list[Payout]:
+        """Failure loop in this turn: 0.5 regret for compression decisions of this turn that
+        trimmed an error-bearing output (``decision_ids`` None = every tracked decision)."""
+        wanted = None if decision_ids is None else set(decision_ids)
+        out: list[Payout] = []
+
+        def apply(state: dict[str, Any]) -> dict[str, Any]:
+            for did, entry in _table(state).items():
+                if wanted is not None and did not in wanted:
+                    continue
+                if not isinstance(entry, dict) or entry.get("point") != "compression":
+                    continue
+                if entry.get("ctype") not in ERROR_CTYPES:
+                    continue
+                if _int(entry.get("decided_turn")) != ctx.turn:
+                    continue
+                entry["best"] = max(_best(entry), PARTIAL)
+                out.append((did, PARTIAL))
+            return state
+
+        try:
+            session.update_session(ctx.overlay_path, apply)
+        except Exception as exc:  # noqa: BLE001 - fail open
+            log_error(self.env, "regret", f"on_loop: {type(exc).__name__}: {exc}")
+            return []
+        return out
+
+    def run(self, event: Event, policy: object) -> list[Payout]:
+        """Signals of ``event``, then settle (full regrets, expired windows, everything at
+        SessionEnd) and pay the policy. Returns the payouts."""
+        info = _info(event)
+        final = event.kind == "session_end"
+        if info.empty() and event.kind not in ("prompt", "session_end"):
+            # only turn boundaries expire windows; a CLI-recorded full regret waits for one
+            return []
+        _, payouts = self._apply(self._overlay(event), info, None, settle=True, final=final)
+        pay(policy, payouts)
+        return list(payouts)
+
+
+def handle(
+    event: Event, cfg: Config, policy: object, *, env: Mapping[str, str] | None = None
+) -> Action:
+    """Hook dispatch (UserPromptSubmit, PostToolUse(+Failure), SessionEnd). Never raises."""
+    env = os.environ if env is None else env
+    try:
+        RegretDetector(cfg, env).run(event, policy)
+    except Exception as exc:  # noqa: BLE001 - fail open
+        log_error(env, "regret", f"{type(exc).__name__}: {exc}")
+    return Action()
+
+
+def record_recovery_read(
+    overlay: Path, recovery_id: str, tokens: int, env: Mapping[str, str] | None = None
+) -> None:
+    """``token-sparen show <id>`` inside a session: full regret for the decisions that saved
+    this output (paid by the next hook) and the read's tokens in the ledger. Only touches an
+    existing overlay. Never raises."""
+    env = os.environ if env is None else env
+    try:
+        if not overlay.is_file():
+            return
+
+        def apply(state: dict[str, Any]) -> dict[str, Any]:
+            for entry in _table(state).values():
+                if isinstance(entry, dict) and entry.get("recovery_id") == recovery_id:
+                    entry["best"] = FULL
+            _bump(state, "recovery_read_tokens", max(0, tokens))
+            return state
+
+        session.update_session(overlay, apply)
+    except Exception as exc:  # noqa: BLE001 - never break `show`
+        log_error(env, "regret", f"show: {type(exc).__name__}: {exc}")
+
+
+# --------------------------------------------------------------------------- savings
+def expected_resends(remaining_turns: float | None) -> float:
+    """How often a trimmed output would have been re-sent: the governor's projected remaining
+    turns (at least 1), or 10 when unknown."""
+    if remaining_turns is None or not math.isfinite(remaining_turns):
+        return DEFAULT_RESENDS
+    return max(1.0, float(remaining_turns))
+
+
+def _scale_values(raw: Any) -> list[float]:
+    if not isinstance(raw, list):
+        return []
+    return [
+        float(v)
+        for v in raw
+        if not isinstance(v, bool) and isinstance(v, int | float) and math.isfinite(v) and v > 0
+    ]
+
+
+def savings_value(
+    home: Path,
+    project_key: str,
+    point: str,
+    bucket: str,
+    removed: float,
+    resends: float,
+    env: Mapping[str, str] | None = None,
+) -> float:
+    """``min(1, removed * resends / p95)`` over the bucket's last 64 values (this one
+    included); 0.5 for a bucket's first observation, 0 when nothing was removed."""
+    x = max(0.0, float(removed)) * max(1.0, float(resends))
+    if x <= 0.0:
+        return 0.0
+    out = {"v": SCALE_FIRST}
+
+    def apply(state: dict[str, Any]) -> dict[str, Any]:
+        pts = state.get("points")
+        pts = pts if isinstance(pts, dict) else {}
+        buckets = pts.get(point)
+        buckets = buckets if isinstance(buckets, dict) else {}
+        values = _scale_values(buckets.get(bucket))
+        if values:
+            ranked = sorted([*values, x])
+            p95 = ranked[max(0, math.ceil(0.95 * len(ranked)) - 1)]
+            out["v"] = min(1.0, x / p95)
+        buckets[bucket] = [*values, x][-SCALE_KEEP:]
+        pts[point] = buckets
+        return {"version": 1, "points": pts}
+
+    path = paths.project_dir_for(home, project_key) / SCALE_FILE
+    jsonstore.update(path, apply, {}, env)
+    return out["v"]
+
+
+def reward_savings(
+    policy: object,
+    decision_id: str,
+    point: str,
+    bucket: str,
+    removed: float,
+    resends: float,
+    *,
+    home: Path,
+    project_key: str,
+    env: Mapping[str, str],
+) -> None:
+    """Savings reward at decision time, only for a learning policy. Never raises."""
+    fn = reward_fn(policy)
+    if fn is None:
+        return
+    try:
+        value = savings_value(home, project_key, point, bucket, removed, resends, env)
+        fn(decision_id, value, None)
+    except Exception as exc:  # noqa: BLE001 - fail open
+        log_error(env, "regret", f"savings: {type(exc).__name__}: {exc}")

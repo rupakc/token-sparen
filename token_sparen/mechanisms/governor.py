@@ -367,6 +367,20 @@ def cached(
     return _build(cache, cfg or Config(), os.environ if env is None else env, session_id)
 
 
+def remaining_turns(overlay: Mapping[str, Any], cfg: Config | None = None) -> float | None:
+    """Projected turns left in the session budget at the per-turn burn EWMA (no I/O), or None
+    when unknown (no cache, no EWMA yet, burn unknown)."""
+    cache = overlay.get(CACHE)
+    if not isinstance(cache, dict) or cache.get("burn_unknown") is True:
+        return None
+    ewma = cache.get("ewma")
+    if isinstance(ewma, bool) or not isinstance(ewma, int | float) or ewma <= 0:
+        return None
+    burn = _int(cache.get("burn")) or 0
+    budget = _pos_int((cfg or Config()).get("governor.session_budget_tokens")) or DEFAULT_BUDGET
+    return max(0.0, (budget - burn) / float(ewma))
+
+
 def _turn_boundary(cache: dict[str, Any], cfg: Config) -> None:
     """UserPromptSubmit: close the previous turn (its burn feeds the EWMA), open a new one."""
     burn = int(cache["burn"])

@@ -28,6 +28,7 @@ from token_sparen.compress.base import Level, load_level
 from token_sparen.config import Config
 from token_sparen.events import Action, Event
 from token_sparen.learn.policy import PRETRIM
+from token_sparen.learn.regret import normalize_command
 from token_sparen.store import jsonstore
 
 __all__ = ["PRETRIM", "check", "pretrim_level", "pretrim_lines"]
@@ -379,8 +380,8 @@ def check(event: Event, cfg: Config) -> Action:
 
 
 def _normalise(cmd: str) -> str:
-    """Candidate lookup key; exact match until the command normaliser lands (swap here)."""
-    return cmd
+    """Candidate lookup key: the normalised command signature (``learn.regret``)."""
+    return normalize_command(cmd)
 
 
 def _candidate(store: Path, key: str, env: Mapping[str, str]) -> dict[str, Any] | None:

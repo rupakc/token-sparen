@@ -21,6 +21,7 @@ from typing import Any, TextIO, cast
 from token_sparen.adapters.claude.translate import EVENT_KINDS, ClaudeAdapter
 from token_sparen.config import Config, load_config, log_error, state_home
 from token_sparen.events import Action, Event, EventKind
+from token_sparen.learn import regret
 from token_sparen.learn.policy import StaticPolicy
 from token_sparen.mechanisms import (
     boundary,
@@ -84,6 +85,10 @@ def _contained(fn: Handler) -> Handler:
 
 def _on_prompt(event: Event, cfg: Config) -> Action:
     return tracking.handle_prompt(event, cfg, env=HOOK_ENV.get())
+
+
+def _on_regret(event: Event, cfg: Config) -> Action:
+    return regret.handle(event, cfg, POLICY, env=HOOK_ENV.get())
 
 
 def _on_track(event: Event, cfg: Config) -> Action:
@@ -161,22 +166,26 @@ for _kind, _fn in (
     ("prompt", _on_prompt),  # counts the turn first; the governor and boundary see it
     ("prompt", _on_governor_prompt),
     ("prompt", _on_boundary),
+    ("prompt", _on_regret),  # after the turn count: expires regret windows (explicit 0)
     ("pre_tool", _on_pre_invalidate),
     ("pre_tool", _on_governor_stop),
     ("pre_tool", _on_guard),
     ("pre_tool", _on_subagent),
     ("post_tool", _on_governor_post),  # before any replacement ends the chain
+    ("post_tool", _on_regret),  # sees this call before it is itself trimmed or tracked
     ("post_tool", _on_read_dedupe),
     ("post_tool", _on_compress),
     ("post_tool", _on_track),  # last + always: its lock wait never eats compression's budget
     # same chain minus de-dupe; the host decides whether a failure result can be replaced
     ("post_tool_failure", _on_governor_post),
+    ("post_tool_failure", _on_regret),
     ("post_tool_failure", _on_compress),
     ("post_tool_failure", _on_track),
     ("pre_compact", _on_pre_compact),  # sets last_compact_turn, clears the read table
     ("pre_compact", _on_compact_instructions),
     ("session_start", _on_session_start),
     ("session_start", _on_session_active),
+    ("session_end", _on_regret),  # settles every open regret window
 ):
     register(cast(EventKind, _kind), _contained(cast(Handler, _fn)), always=_fn is _on_track)
 

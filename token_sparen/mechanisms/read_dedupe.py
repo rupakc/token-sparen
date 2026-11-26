@@ -23,12 +23,12 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from token_sparen.config import Config, log_error
+from token_sparen.config import Config, log_error, state_home
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event
-from token_sparen.learn import decisions
+from token_sparen.learn import decisions, regret
 from token_sparen.learn.policy import READ_DEDUPE, DecisionRecord, Policy
-from token_sparen.mechanisms import tracking
+from token_sparen.mechanisms import governor, tracking
 from token_sparen.store import jsonstore, session
 
 __all__ = ["POINTER", "READ_DEDUPE", "forget", "handle_post_tool", "invalidate"]
@@ -125,6 +125,8 @@ def handle_post_tool(
         return Action()
     if replaceable is not None and not replaceable(event):
         return Action()
+    if regret.is_recovery_access(event):
+        return Action()  # a saved full output the agent asked for: always deliver it
     try:
         st = os.stat(file_path)
     except OSError:
@@ -174,11 +176,8 @@ def handle_post_tool(
         return Action()
     overlay_file = tracking.overlay_path(event, env)
     overlay = session.read_session(overlay_file)
-    decision = policy.decide(
-        READ_DEDUPE,
-        {"tool_category": tool.category},
-        tracking.session_ctx(event, overlay, overlay_file),
-    )
+    sctx = tracking.session_ctx(event, overlay, overlay_file)
+    decision = policy.decide(READ_DEDUPE, {"tool_category": tool.category}, sctx)
     pointer = POINTER.format(n=found["turn"])
     replaced = decision.arm == "pointer"
     after = estimate_tokens(pointer) if replaced else before
@@ -200,6 +199,31 @@ def handle_post_tool(
     if not replaced:
         return Action()
     _count(event, env, before - after)
+    evicted = regret.RegretDetector(cfg, env).track(
+        sctx,
+        decision.decision_id,
+        point=decision.point,
+        bucket=decision.bucket,
+        arm=decision.arm,
+        recovery_id=None,
+        command_sig=regret.signature(tool.name, tool.input),
+        full="",
+        kept="",
+        ctype=None,
+        files=[file_path],
+    )
+    regret.pay(policy, evicted)
+    regret.reward_savings(
+        policy,
+        decision.decision_id,
+        decision.point,
+        decision.bucket,
+        before - after,
+        regret.expected_resends(governor.remaining_turns(overlay, cfg)),
+        home=state_home(env),
+        project_key=event.project_key,
+        env=env,
+    )
     return Action(replace_output=pointer)
 
 

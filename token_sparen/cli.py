@@ -128,9 +128,26 @@ def _show(args: argparse.Namespace) -> int:
     except OSError:
         print(f"token-sparen: no saved output {args.id} in {path.parent}", file=sys.stderr)
         return 1
-    # Task 21 hook: count this read as a recovery read (ledger recovery_read_tokens) here.
-    _emit(data.decode("utf-8", errors="surrogateescape"))
+    text = data.decode("utf-8", errors="surrogateescape")
+    _record_recovery_read(args, text)
+    _emit(text)
     return 0
+
+
+def _record_recovery_read(args: argparse.Namespace, text: str) -> None:
+    """Inside a session (resolved like `session disable`): a recovery read is full regret for the
+    decision that saved this output, and its tokens go to the ledger. Silent when unresolved."""
+    from token_sparen.estimate import estimate_tokens
+    from token_sparen.learn import regret
+
+    env = os.environ
+    try:
+        key = keycache.cached_project_key(_project_dir(args).resolve(), env)
+        sid = _resolve_session(args, key, env)
+    except (CliError, OSError, ValueError):
+        return
+    overlay = session.session_path(state_home(env), key, sid)
+    regret.record_recovery_read(overlay, args.id, estimate_tokens(text), env)
 
 
 def _exit_code(returncode: int) -> int:
@@ -217,7 +234,7 @@ _LEDGER_KEYS = ("trims", "tokens_removed", "injected_tokens", "recovery_read_tok
 
 
 def _session_id(args: argparse.Namespace, *, required: bool) -> str | None:
-    sid: str | None = args.session or os.environ.get("CLAUDE_SESSION_ID") or None
+    sid: str | None = getattr(args, "session", None) or os.environ.get("CLAUDE_SESSION_ID") or None
     if sid is None and required:
         raise CliError("no session id: pass --session ID or set CLAUDE_SESSION_ID")
     return sid

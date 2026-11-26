@@ -130,8 +130,11 @@ Everything stays on your machine, but some of it is plain text you should know a
     commands), `sessions/<id>.json` (session overlay: the **last user prompt, up to 2000
     characters**, recently read/edited **file paths**, the last 10 tool categories (for the
     learning engine's task phase), identifiers used for task-boundary
-    detection, the token ledger and read de-dupe memory), `last_active.json` (the project's most
-    recent session id) and `floor_warned.json`. Project folders are named by a hash, but the files inside hold
+    detection, the token ledger and read de-dupe memory, and, for each trim of the last few turns,
+    the normalised command, up to 64 **distinctive words copied from the trimmed part of the
+    output** and up to 32 file paths it mentions, used to notice when a trim hurt), `last_active.json`
+    (the project's most recent session id), `savings_scale.json` (numbers only: recent savings
+    sizes per bucket) and `floor_warned.json`. Project folders are named by a hash, but the files inside hold
     the plain text above.
 - Claude Code `settings.json`: **only** if you run `token-sparen statusline install` (see below),
   with a backup and exact restore. Pruning tools from your settings is planned (M3) and will be
