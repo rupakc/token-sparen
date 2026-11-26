@@ -120,6 +120,66 @@ gamma = 0.98  # Beta posterior discount per observation (forgets toward the prio
 posterior_cap = 50  # max a + b of a posterior; whole-vector mean-preserving rescale, so the long-run
 # prior weight is cap-independent (do not "fix" this to scale only the excess over the prior)
 decision_log_max_bytes = 20000000  # projects/<key>/decisions.jsonl rotates past this size
+min_parent_obs = 5  # a parent posterior lends its mean to a child prior only with >= this many real obs
+kappa_default = 6  # prior strength when too few sibling buckets to estimate it
+kappa_min = 2  # method-of-moments kappa is clamped to [kappa_min, kappa_max]
+kappa_max = 20
+kappa_min_siblings = 3  # sibling buckets (each >= min_parent_obs) needed to estimate kappa
+
+# Bucket back-off per decision point: most specific feature set first, [] = the "*" bucket.
+[learn.backoff.compression]
+levels = [["band", "cat", "size", "ctype", "phase"], ["cat", "ctype"], ["ctype"], []]
+
+[learn.backoff.pretrim]
+levels = [["ctype", "size"], ["ctype"], []]
+
+[learn.backoff.read_dedupe]
+levels = [["cat", "size"], ["size"], []]
+
+[learn.backoff.subagent_brief]
+levels = [["phase"], []]
+
+# Designed default prior means (the last link of the prior chain), with strength kappa_default.
+# Hand-set, to be refit in M4 from E1 replay data. A safe arm's mean 0 is stored as Beta(1e-3, kappa).
+[learn.defaults.compression.off]
+savings = 0.0
+regret = 0.0
+
+[learn.defaults.compression.light]
+savings = 0.35
+regret = 0.02
+
+[learn.defaults.compression.standard]
+savings = 0.6
+regret = 0.04
+
+[learn.defaults.compression.aggressive]
+savings = 0.8
+regret = 0.08
+
+[learn.defaults.pretrim.off]
+savings = 0.0
+regret = 0.0
+
+[learn.defaults.pretrim.bounded]
+savings = 0.5
+regret = 0.05
+
+[learn.defaults.read_dedupe.off]
+savings = 0.0
+regret = 0.0
+
+[learn.defaults.read_dedupe.pointer]
+savings = 0.9
+regret = 0.03
+
+[learn.defaults.subagent_brief.off]
+savings = 0.0
+regret = 0.0
+
+[learn.defaults.subagent_brief.on]
+savings = 0.3
+regret = 0.05
 
 [facts]
 # Repo-fact learning: planned (M3), no keys yet.

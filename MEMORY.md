@@ -403,3 +403,15 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   non-editable `pip install .` can run `statusline install`; `LAUNCHER_TEMPLATE` resolves it with
   `importlib.resources`. `scripts/check_wheel.py` now installs and uninstalls the statusline from the
   wheel venv. Supersedes the launcher path in the Task 20 entry above.
+
+## 2026-11-26 Task 19: context features and hierarchical priors
+- Phase precedence: failures >= 30 % -> debug is checked before edits >= 30 % -> build (a failing
+  edit loop is debugging), then reads+searches >= 60 % -> explore, else mixed; < 3 calls -> mixed.
+  The overlay keeps `recent_cats` (last 10 tool categories, a failure as `<cat>!`), written by
+  `tracking.record_paths` on every post-tool hook; `SessionCtx.recent_cats` carries it.
+- Prior chain: project levels (full -> `*`), then global levels, first parent with
+  `n >= min_parent_obs` (5) lends its mean at strength kappa; the session scope is the child, not
+  part of the chain. Designed defaults always use `kappa_default` (6); estimated kappa (method of
+  moments over full-level project siblings, population variance, clamp [2, 20], zero variance ->
+  20) applies to parent-derived priors only. A mean of 0 is stored as `Beta(1e-3, kappa)`.
+- Unknown point/arm default means: savings 0, regret 0.5. Designed defaults are hand-set, refit in M4.

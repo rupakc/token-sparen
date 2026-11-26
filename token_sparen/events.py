@@ -76,3 +76,5 @@ class SessionCtx:
     ctx_pct: float | None
     model: str | None
     overlay_path: Path
+    # The session's last tool categories, oldest first; a failed call is "<category>!".
+    recent_cats: tuple[str, ...] = ()

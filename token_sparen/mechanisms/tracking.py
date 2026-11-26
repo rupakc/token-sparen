@@ -1,7 +1,9 @@
-"""Session overlay bookkeeping used by mechanisms: turn count, last prompt, touched paths.
+"""Session overlay bookkeeping used by mechanisms: turn count, last prompt, touched paths,
+recent tool categories.
 
 The overlay is a per-session local file (never a shared store); it holds the last user prompt
-and the recently touched file paths so compressors can score relevance.
+and the recently touched file paths so compressors can score relevance, and the last tool
+categories (``recent_cats``) from which the learning engine infers the task phase.
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ from token_sparen.store import jsonstore, paths, session
 LAST_ACTIVE_FILE = "last_active.json"
 PROMPT_MAX_CHARS = 2000
 RECENT_PATHS = 20
+RECENT_CATS = 10  # tool calls kept for task-phase inference (learn.features.phase)
+FAILED_SUFFIX = "!"  # a failed tool call is recorded as "<category>!"
 _PATH_CATEGORIES = frozenset({"read", "edit"})
 
 
@@ -36,7 +40,15 @@ def session_ctx(event: Event, overlay: Mapping[str, Any], path: Path) -> Session
         ctx_pct=None,
         model=event.model,
         overlay_path=path,
+        recent_cats=recent_cats(overlay),
     )
+
+
+def recent_cats(overlay: Mapping[str, Any]) -> tuple[str, ...]:
+    value = overlay.get("recent_cats")
+    if not isinstance(value, list):
+        return ()
+    return tuple(c for c in value if isinstance(c, str))[-RECENT_CATS:]
 
 
 def edited_paths(overlay: Mapping[str, Any]) -> list[str]:
@@ -120,16 +132,22 @@ def touched_path(event: Event) -> str | None:
 
 
 def record_paths(event: Event, *, env: Mapping[str, str] | None = None) -> None:
-    """Remember the file a Read/Edit/Write-style tool touched (most recent last, max 20).
+    """Post-tool bookkeeping: the tool category (last 10, failures as ``<cat>!``) and the file a
+    Read/Edit/Write-style tool touched (most recent last, max 20).
 
     Edited files are also kept apart (``edited_paths``) for the PreCompact summary instructions.
     """
-    file_path = touched_path(event)
-    if file_path is None:
+    tool = event.tool
+    if tool is None:
         return
-    edited = event.tool is not None and event.tool.category == "edit"
+    cat = tool.category + (FAILED_SUFFIX if event.kind == "post_tool_failure" else "")
+    file_path = touched_path(event)
+    edited = tool.category == "edit"
 
     def apply(state: dict[str, Any]) -> dict[str, Any]:
+        state["recent_cats"] = [*recent_cats(state), cat][-RECENT_CATS:]
+        if file_path is None:
+            return state
         paths = [p for p in recent_paths(state) if p != file_path]
         state["recent_paths"] = [*paths, file_path][-RECENT_PATHS:]
         if edited:

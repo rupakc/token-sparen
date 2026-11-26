@@ -128,7 +128,8 @@ Everything stays on your machine, but some of it is plain text you should know a
   - `logs/errors.jsonl` and sampled `logs/latency.jsonl`;
   - `projects/<key>/`: `decisions.jsonl` (per-decision log; keeps the first 500 characters of Bash
     commands), `sessions/<id>.json` (session overlay: the **last user prompt, up to 2000
-    characters**, recently read/edited **file paths**, identifiers used for task-boundary
+    characters**, recently read/edited **file paths**, the last 10 tool categories (for the
+    learning engine's task phase), identifiers used for task-boundary
     detection, the token ledger and read de-dupe memory), `last_active.json` (the project's most
     recent session id) and `floor_warned.json`. Project folders are named by a hash, but the files inside hold
     the plain text above.
