@@ -204,7 +204,10 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     # breaker_window / breaker_reentry_scale: neither direction is uniformly safer.
     (("learn", "**"), "user_only", None),
     (("extensions", "**"), "user_only", None),
-    (("facts", "**"), "user_only", None),
+    (("facts", "enabled"), "false_only", None),  # a project may switch injection off
+    (("facts", "max_facts"), "min", COUNT),  # ... or inject fewer facts / tokens
+    (("facts", "max_tokens"), "min", COUNT),
+    (("facts", "**"), "user_only", None),  # withhold_floor, activate_lcb, retire_ucb
     (("prune", "**"), "user_only", None),
     (("ope", "**"), "user_only", None),  # offline evaluation thresholds are the user's
     (("loopguard", "**"), "user_only", None),

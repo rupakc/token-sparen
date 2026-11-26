@@ -5,8 +5,9 @@ recoverable output compression, read de-dupe, guards, budget governor, boundary 
 statusline, extensions. M2 (in progress): one learning engine (contextual Thompson-sampling bandit
 with a quality constraint) steers every hook decision (`learn/hookpolicy.py`, built lazily per
 hook; `[learn] enabled = false` -> `StaticPolicy`), with regret detection, session fold and
-circuit breaker; `replay` (E1) and `ope` (E3) evaluate offline into private reports. Planned (M3):
-repo-fact learning, tool pruning; `facts`/`prune` are CLI stubs. North star: maximise tokens saved subject to no measurable quality loss.
+circuit breaker; `replay` (E1) and `ope` (E3) evaluate offline into private reports. M3: repo-fact
+learning (miners, lifecycle bandit, SessionStart injection) is in; tool pruning is planned
+(`prune` is a CLI stub). North star: maximise tokens saved subject to no measurable quality loss.
 Spec: `docs/specs/2026-11-25-token-sparen-design.md`. Plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`.
 Decisions: `MEMORY.md`.
 
@@ -20,8 +21,9 @@ Decisions: `MEMORY.md`.
   - `adapters/` host protocol; `adapters/claude/` Claude Code (entry, translate, statusline, settings)
   - `testing/conformance.py` compressor conformance kit
   - `params/defaults.toml` every tunable (hill-climbing surface; packaged inside the package)
-  - `facts/` (M3) repo-fact sanitiser (`sanitize`) and fold-time miners + `facts.json` store
-    (`miners`); injection at SessionStart is not wired yet
+  - `facts/` (M3) repo-fact sanitiser (`sanitize`), fold-time miners + `facts.json` store
+    (`miners`), the per-fact bandit lifecycle (`lifecycle`) and SessionStart injection as a
+    labelled data block (`inject`)
 - `hooks/` plugin hooks (`hooks.json`, `run.py`, `run_cli.py`); `skills/token-sparen/` is the
   `/token-sparen` skill (there is no `commands/` directory)
 - `evals/e2/` fact-preservation suite (corpus, `needles.toml`, `run.py`)

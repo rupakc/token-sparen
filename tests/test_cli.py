@@ -342,10 +342,15 @@ def test_session_id_from_env_and_missing(
     assert session.read_session(ov)["disabled"] is True
 
 
-@pytest.mark.parametrize("cmd", ["facts", "prune"])
+@pytest.mark.parametrize("cmd", ["prune"])
 def test_stubs(cmd: str, capsys: pytest.CaptureFixture[str]) -> None:
     assert main([cmd]) == 0
     assert "available after M3" in capsys.readouterr().out
+
+
+def test_facts_is_no_longer_a_stub(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["facts"]) == 2  # an action is required
+    assert "list" in capsys.readouterr().err
 
 
 def test_errors_never_traceback(

@@ -30,9 +30,19 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code 
   characters, no URLs, shell operators, instruction words, secrets or outside paths; fixed
   render templates) and deterministic miners run at fold time over the session transcript
   (command alias, required env var name, test command, build-first, generated dir) into
-  `projects/<key>/facts.json` with session-id digests as evidence (not injected yet).
+  `projects/<key>/facts.json` with session-id digests as evidence.
+- Fact lifecycle and injection (M3): per fact a Beta posterior over "injecting prevents the
+  waste it targets when relevant", a withheld baseline (propensity floor
+  `[facts] withhold_floor = 0.1`, logged per session), candidate -> active -> retired
+  (activation at lcb(0.1) > 0.55 or the 3-session bootstrap; retirement at ucb(0.9) < 0.4 or on
+  contradiction, one for requires_env/build_first, two otherwise). Active facts are injected at
+  SessionStart (startup, resume, clear, compact) as a labelled data block, relevance-ranked,
+  at most 8 facts / 300 tokens, through the emit gate (deduplicated, counted as injected).
+  `token-sparen facts list|forget|disable|enable`. A project file may only disable facts or
+  lower their budget. The sanitiser also rejects `--passphrase` and joined
+  `accesstoken`/`refreshtoken`/`clientsecret`/`privatekey` options with a value.
 - CLI: `stats`, `show`, `run`, `doctor`, `session disable|enable`, `config set`,
-  `statusline`, `extensions`, `fold`, `replay`, `ope`; placeholders for `facts` and `prune` (M3).
+  `statusline`, `extensions`, `fold`, `replay`, `ope`, `facts`; placeholder for `prune` (M3).
 - Trusted extension loading (entry points and content-hash-trusted drop-ins), a compressor
   conformance kit and a versioned extension interface (`EXTENSION_API_VERSION = "1.0"`).
 - Per-session config overrides (`config set`) and a per-session kill switch that finds the

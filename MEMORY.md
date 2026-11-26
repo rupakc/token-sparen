@@ -1142,3 +1142,45 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   and `Basic <tok>` are rejected anywhere; for mysql/psql/mariadb/redis-cli/mongosh also
   `-p<val>` and `-W`/`-a` followed by a token. `miners._program` keeps a subcommand only if it is
   letters/`:_-` (no digits, <= 20 chars) or in a small known vocabulary; else the program alone.
+
+## 2026-11-26 Task 26: fact lifecycle bandit and SessionStart injection
+- `facts/lifecycle.py`: per fact in `facts.json` `status` (candidate|active|retired), `effect`
+  Beta [a, b, n] over "injecting prevents the targeted waste when relevant", `baseline` Beta
+  (withheld relevant sessions), `contradictions`; prior Beta(1, 1), gamma 1, cap 50. Relevance /
+  waste per kind as ruled. `build_first`: the code's subject is the test program and the value
+  the build step (the ruling's "value (test) command" was read as the test command = subject);
+  relevance = ran the subject, waste = subject failure -> successful build -> successful subject.
+  `generated_dir` waste is not detectable -> relevant sessions reward 0.5 (effect and baseline),
+  so the bandit never retires it; no contradiction is defined for it.
+- Contradictions (counted only in sessions where the fact was injected): alias / test_command /
+  build_first = the value command fails with not-found / No module / usage error (`usage:`,
+  unrecognized arguments, unknown command/option, invalid/no such option, missing script);
+  requires_env = the subject ran successfully without the variable being set by the command or
+  an earlier `export` in the session (owner-style conservative call: a wrong fact costs
+  quality, retiring a stale one costs little). Retire at 1 (requires_env, build_first) / 2.
+- Confirmations: a candidate re-derived by the miners in a session that added NEW session
+  evidence (not a re-fold of the same session; `miners.record(after=..., fresh ids)`) and was
+  not injected/withheld adds 1 to `effect`, for the waste -> fix kinds only (alias, env,
+  build_first). Activation: >= 2 sessions and (lcb(0.1) > activate_lcb, 3 confirmations from
+  the prior) or the bootstrap rule (no baseline observation yet and >= 3 sessions; the only
+  route for test_command / generated_dir). Retirement is final; `facts forget` deletes and adds
+  the id to `forgotten` so mining never re-adds it.
+- Withholding: decided at SessionStart per active fact in the showable ranked prefix
+  (stops after `max_facts` offered), probability `withhold_floor` (clamped [0, 0.5]) seeded by
+  blake2b(session|fact) so a resume decides the same; overlay `facts_session = {shown: {id:
+  1 - floor}, withheld: {id: floor}}`. Fold staging moves the log into the staged doc and lists
+  the ids in `facts_done`, so each fact is judged at most once per session even when a session
+  is folded again after a resume. Observation shares the miner's single transcript read
+  (`mine_transcript(tap=...)`) and the same `facts.json` update (fold-id idempotent).
+- `facts/inject.py`: exact wrapper + first data line, `sanitize.render` per line (re-sanitises;
+  unsafe lines skipped), ranked by `last_seen` then effect mean; `build` stops at the first fact
+  that does not fit (no reordering). Sources startup/resume/clear/compact: resume dedupes via
+  `emit.Gate` (same key), clear/compact bump `facts_epoch` in the overlay so the block is
+  injected and counted again (the earlier copy left the context). Hook reads `facts.json` once.
+- Config `[facts]`: enabled = true, withhold_floor 0.1, activate_lcb 0.55, retire_ucb 0.4,
+  max_tokens 300, max_facts 8. PROJECT_POLICY: enabled false_only, max_facts / max_tokens min,
+  rest user-only. CLI `facts list|forget <id>|disable|enable [--project DIR]` (`enable` added
+  as the undo of `disable`; `disabled: true` lives in `facts.json`).
+- Sanitiser carry from Task 25 review: credential option names also `passphrase` and the joined
+  `accesstoken`, `refreshtoken`, `clientsecret`, `privatekey` (plus `access-token`,
+  `refresh_token` spellings).

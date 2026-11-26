@@ -21,6 +21,7 @@ from typing import Any, TextIO, cast
 from token_sparen.adapters.claude.translate import EVENT_KINDS, ClaudeAdapter
 from token_sparen.config import Config, flag_on, load_config, log_error, state_home
 from token_sparen.events import Action, Event, EventKind
+from token_sparen.facts import inject
 from token_sparen.learn import breaker, overlay, regret
 from token_sparen.learn.hookpolicy import HookPolicy
 from token_sparen.learn.policy import Policy, StaticPolicy
@@ -173,6 +174,11 @@ def _on_session_start(event: Event, cfg: Config) -> Action:
     return read_dedupe.on_session_start(event, env=HOOK_ENV.get())
 
 
+def _on_facts(event: Event, cfg: Config) -> Action:
+    """Active repository facts as a labelled data block (``facts.inject``)."""
+    return inject.on_session_start(event, cfg, env=HOOK_ENV.get())
+
+
 def _on_breaker_notice(event: Event, cfg: Config) -> Action:
     env = HOOK_ENV.get()
     msgs = breaker.notices(event.project_key, state_home(env), env)
@@ -229,6 +235,7 @@ for _kind, _fn in (
     ("pre_compact", _on_compact_instructions),
     ("session_start", _on_session_start),
     ("session_start", _on_session_active),
+    ("session_start", _on_facts),
     ("session_start", _on_fold_pending),
     ("session_start", _on_breaker_notice),  # after the fold: a trip it causes is shown now
     ("session_end", _on_regret),  # settles every open regret window

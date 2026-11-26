@@ -114,13 +114,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="YYYY-MM-DD: evaluate only decisions logged on or after this date (UTC)",
     )
     ope_p.add_argument("--out", type=Path, required=True, help="report file outside any repository")
+    facts = sub.add_parser("facts", help="learned repository facts: list, forget, disable")
+    facts_sub = facts.add_subparsers(dest="action", required=True)
+    _project_opt(facts_sub.add_parser("list", help="facts with status, evidence and posterior"))
+    fg = facts_sub.add_parser("forget", help="delete a fact by its 12-hex id (never re-learned)")
+    fg.add_argument("id")
+    _project_opt(fg)
+    _project_opt(facts_sub.add_parser("disable", help="stop injecting facts in this project"))
+    _project_opt(facts_sub.add_parser("enable", help="undo `facts disable`"))
     for name in _STUBS:
         stub = sub.add_parser(name, help="available after M3")
         stub.add_argument("rest", nargs="*")
     return parser
 
 
-_STUBS = ("facts", "prune")
+_STUBS = ("prune",)
 _KEY_RE = re.compile(r"[0-9a-f]{16}")
 _FOLD_TRIES = 5
 _ID_RE = re.compile(r"[0-9a-f]{12}")
@@ -953,6 +961,81 @@ def _ope_thresholds() -> dict[str, Any]:
     return out
 
 
+def _facts_pdir(args: argparse.Namespace) -> Path:
+    key = keycache.cached_project_key(_project_dir(args).resolve(), os.environ)
+    return paths.project_dir_for(state_home(os.environ), key)
+
+
+def _facts_cmd(args: argparse.Namespace) -> int:
+    from token_sparen.facts import lifecycle, miners
+    from token_sparen.facts.sanitize import fact_id, render
+
+    pdir = _facts_pdir(args)
+    store = pdir / miners.FACTS_FILE
+    if args.action == "list":
+        doc = miners.load(pdir, os.environ)
+        if doc.get("disabled") is True:
+            print("fact injection disabled for this project (`token-sparen facts enable`)")
+        table = doc.get("facts")
+        rows = []
+        for fid, raw in table.items() if isinstance(table, dict) else ():
+            fact = miners.parse_entry(raw)
+            if fact is None or fact_id(fact) != fid or not isinstance(raw, dict):
+                continue  # tampered or malformed: never printed
+            post = lifecycle.effect(raw)
+            est = lifecycle.estimated_effect(raw)
+            extra = "" if est is None else f", effect {est:+.2f} vs withheld"
+            rows.append(
+                f"{fid}  {fact.kind:<13} {lifecycle.status(raw):<9} "
+                f"evidence {len(fact.evidence_sessions)}, mean {post.mean:.2f}{extra}\n"
+                f"    {render(fact)}"
+            )
+        if not rows:
+            print("no repository facts learned for this project yet")
+        for row in sorted(rows):
+            print(row)
+        return 0
+    if args.action == "forget":
+        if _ID_RE.fullmatch(args.id) is None:
+            raise CliError("facts forget needs a 12-hex fact id (see `token-sparen facts list`)")
+        found = [False]
+
+        def forget(doc: dict[str, Any]) -> dict[str, Any]:
+            table = doc.get("facts")
+            if isinstance(table, dict) and args.id in table:
+                del table[args.id]
+                found[0] = True
+            raw = doc.get("forgotten")
+            gone = [f for f in raw if isinstance(f, str)] if isinstance(raw, list) else []
+            if found[0] and args.id not in gone:
+                doc["forgotten"] = [*gone, args.id][-miners.MAX_FACTS :]
+            return doc
+
+        if not store.is_file():
+            raise CliError(f"no fact {args.id}", code=1)
+        jsonstore.update(store, forget, {}, os.environ)
+        if not found[0]:
+            raise CliError(f"no fact {args.id}", code=1)
+        print(f"token-sparen facts: forgot {args.id} (it will not be learned again)")
+        return 0
+    off = args.action == "disable"
+
+    def toggle(doc: dict[str, Any]) -> dict[str, Any]:
+        if not doc:
+            doc = {"version": miners.VERSION, "facts": {}}
+        if off:
+            doc["disabled"] = True
+        else:
+            doc.pop("disabled", None)
+        return doc
+
+    pdir.mkdir(parents=True, exist_ok=True)
+    jsonstore.update(store, toggle, {}, os.environ)
+    state = "disabled" if off else "enabled"
+    print(f"token-sparen facts: injection {state} for this project")
+    return 0
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "statusline":
         return _statusline(args)
@@ -970,6 +1053,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         "fold": _fold_cmd,
         "replay": _replay_cmd,
         "ope": _ope_cmd,
+        "facts": _facts_cmd,
     }
     return handlers[args.command](args)
 

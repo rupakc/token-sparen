@@ -39,7 +39,7 @@ import re
 import time
 import tomllib
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -462,15 +462,26 @@ def mine_transcript(
     project_dir: str | None,
     max_bytes: int = MAX_TRANSCRIPT_BYTES,
     env: Mapping[str, str] | None = None,
+    tap: Callable[[ToolResultRecord], None] | None = None,
 ) -> list[Fact]:
-    """Mine one transcript, reading at most ``max_bytes`` (the cut is logged)."""
+    """Mine one transcript, reading at most ``max_bytes`` (the cut is logged). ``tap`` sees
+    every call too (the fact lifecycle observes the session in the same single read)."""
     log_env: Mapping[str, str] = env if env is not None else {}
 
     def on_limit() -> None:
         log_error(log_env, "facts", f"transcript over the {max_bytes} byte budget: mined a prefix")
 
     calls = iter_tool_results(path, max_bytes=max_bytes, on_limit=on_limit)
-    return mine_calls(calls, session_id, project_dir=project_dir)
+    return mine_calls(_tapped(calls, tap), session_id, project_dir=project_dir)
+
+
+def _tapped(
+    calls: Iterable[ToolResultRecord], tap: Callable[[ToolResultRecord], None] | None
+) -> Iterator[ToolResultRecord]:
+    for call in calls:
+        if tap is not None:
+            tap(call)
+        yield call
 
 
 # --------------------------------------------------------------------------- store
@@ -524,9 +535,14 @@ def record(
     env: Mapping[str, str],
     fold_id: str | None = None,
     timeout: float | None = None,
+    after: Callable[[dict[str, Any], set[str]], None] | None = None,
 ) -> int:
     """Merge candidate facts into ``facts.json`` (sessions unioned, idempotent per fold id).
-    Returns the facts written; a future schema version is left untouched (logged)."""
+    Returns the facts written; a future schema version is left untouched (logged). Lifecycle
+    fields of an entry (``facts.lifecycle``) and the document's ``disabled`` / ``forgotten``
+    are kept; a forgotten fact id is never recorded again. ``after(table, fresh)`` runs under
+    the same lock, once per fold id (the lifecycle step); ``fresh`` = the ids that gained new
+    session evidence."""
     if not facts and fold_id is None:
         return 0
     when = time.time() if now is None else now
@@ -543,11 +559,20 @@ def record(
         applied: list[Any] = raw_applied if isinstance(raw_applied, list) else []
         if fold_id is not None and fold_id in applied:
             return doc
+        raw_forgotten = doc.get("forgotten")
+        forgotten = (
+            [f for f in raw_forgotten if isinstance(f, str)]
+            if isinstance(raw_forgotten, list)
+            else []
+        )
+        fresh: set[str] = set()
         for fact in facts:
             safe = sanitize(fact)
             if safe is None:
                 continue
             fid = fact_id(safe)
+            if fid in forgotten:
+                continue
             cur = table.get(fid)
             old = _entry(cur)
             sessions = list(cur["sessions"]) if old is not None and isinstance(cur, dict) else []
@@ -555,8 +580,10 @@ def record(
             for s in sorted(safe.evidence_sessions):
                 if s not in sessions:
                     sessions.append(s)
+                    fresh.add(fid)  # new session evidence (a re-fold of a session adds none)
             prev = cur if isinstance(cur, dict) and old is not None else {}
             table[fid] = {
+                **prev,
                 "kind": safe.kind,
                 "subject": safe.subject,
                 "value": safe.value,
@@ -566,6 +593,8 @@ def record(
                 "contradictions": int(_num(prev.get("contradictions"), 0.0)),
             }
             written[0] += 1
+        if after is not None:
+            after(table, fresh)
         if len(table) > MAX_FACTS:
             order = sorted(
                 table,
@@ -576,6 +605,10 @@ def record(
             for k in order[: len(table) - MAX_FACTS]:
                 del table[k]
         out: dict[str, Any] = {"version": VERSION, "facts": table}
+        if doc.get("disabled") is True:
+            out["disabled"] = True
+        if forgotten:
+            out["forgotten"] = forgotten[-MAX_FACTS:]
         if fold_id is not None:
             out["applied"] = [*[a for a in applied if isinstance(a, str)], fold_id][-APPLIED_MAX:]
         elif applied:
@@ -584,3 +617,19 @@ def record(
 
     jsonstore.update(pdir / FACTS_FILE, fn, {}, env, timeout=timeout)
     return written[0]
+
+
+# --------------------------------------------------------------------------- shared
+# Used by ``facts.lifecycle`` to observe a session with the miners' own vocabulary.
+EDIT_TOOLS = _EDIT_TOOLS
+NOT_FOUND = _NOT_FOUND
+NO_MODULE = _NO_MODULE
+EXPORT = _EXPORT
+ASSIGN = _ASSIGN
+error_text = _error_text
+missing_program = _missing_program
+env_names = _env_names
+set_vars = _set_vars
+relative_path = _relative
+program_of = _program
+parse_entry = _entry

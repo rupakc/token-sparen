@@ -340,3 +340,26 @@ def test_sanitize_rejects_space_separated_credentials(bad: str) -> None:
 )
 def test_sanitize_option_names_use_word_boundaries(good: str) -> None:
     assert sanitize(_f(good)) is not None
+
+
+# --------------------------------------------------------------------------- Task 26 carry
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "app --passphrase hunter",
+        "ssh-keygen --passphrase=x",
+        "app --accesstoken abc",
+        "app --refreshtoken abc",
+        "app --clientsecret abc",
+        "app --privatekey k1",
+        "app --gh-accesstoken abc",
+        "app --refreshtoken=abc",
+    ],
+)
+def test_sanitize_rejects_joined_credential_names(bad: str) -> None:
+    assert sanitize(_f(bad)) is None
+
+
+@pytest.mark.parametrize("good", ["app --passthrough x", "app --privatekeys-dir", "app --tokenize"])
+def test_sanitize_joined_names_keep_word_boundaries(good: str) -> None:
+    assert sanitize(_f(good)) is not None

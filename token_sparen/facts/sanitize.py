@@ -79,8 +79,9 @@ _PW_FLAGS = frozenset({"-W", "-a"})  # take the password as the next argument
 # A credential-named option (whole words of its name): any value, attached or the next token.
 _CRED_OPTION = re.compile(
     r"-{1,2}(?:[a-z0-9]+[-_])*"
-    r"(?:pass(?:word)?|passwd|pwd|pw|token|secret|key|api[-_]?key|apikey|auth|cred(?:ential)?s?"
-    r"|bearer|private[-_]key|client[-_]secret|access[-_]key)"
+    r"(?:pass(?:word|phrase)?|passwd|pwd|pw|token|secret|key|api[-_]?key|apikey|auth"
+    r"|cred(?:ential)?s?|bearer|private[-_]?key|client[-_]?secret|access[-_]?key"
+    r"|access[-_]?token|refresh[-_]?token)"
     r"(?:[-_][a-z0-9]+)*",
     re.IGNORECASE,
 )

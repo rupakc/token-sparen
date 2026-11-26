@@ -242,7 +242,14 @@ savings = 0.3
 regret = 0.05
 
 [facts]
-# Repo-fact learning: planned (M3), no keys yet.
+# Learned repository facts (micro-skills), injected at SessionStart as a labelled data block.
+# A project file may only switch them off or lower max_facts / max_tokens.
+enabled = true
+withhold_floor = 0.1   # per active fact and session: withheld with this probability (baseline)
+activate_lcb = 0.55    # candidate -> active when the effect posterior's lcb(0.1) clears this
+retire_ucb = 0.4       # active -> retired when the effect posterior's ucb(0.9) falls below
+max_tokens = 300       # injected block budget (estimated tokens)
+max_facts = 8
 
 [prune]
 # Tool pruning (opt-in): planned (M3), no keys yet.

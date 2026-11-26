@@ -182,6 +182,16 @@ command-token sequence (allow-listed characters, <= 120 chars, ASCII) with no UR
 operators, instruction words, secret-like strings or paths outside the project. Details in
 `MEMORY.md`.
 
+**2026-11-26 (M3, Task 26).** §6.8: the inject/withhold arm-pair is realised as an injection
+posterior (`effect`) plus a withheld baseline per fact; withholding is a propensity floor
+(`[facts] withhold_floor = 0.1`, logged per session) rather than Thompson sampling, so activation
+uses the lcb rule (`activate_lcb = 0.55`, lcb(0.1)) or a bootstrap (>= 3 sessions while no
+baseline exists) and retirement `ucb(0.9) < 0.4` or contradiction. Injection (§6.8/§6.9) is a
+labelled data block whose first line says the facts are observations, not instructions, at most
+8 facts / 300 tokens through the emit gate, on startup, resume (deduplicated), clear and compact.
+`[facts] enabled` defaults to true; a project file may only disable facts or lower their budget.
+Details in `MEMORY.md`.
+
 ---
 
 ## 1. Intent and why

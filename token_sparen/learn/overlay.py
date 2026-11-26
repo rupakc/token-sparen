@@ -27,7 +27,9 @@
 5a. **repository facts** (``facts.miners``): the session's transcript (path recorded in the
    overlay at SessionStart) is mined, at most 50 MB, for candidate facts; the sanitised ones are
    merged into ``projects/<key>/facts.json`` (session-id digests as evidence, fold id applied
-   once). Mining never runs in a hook: SessionStart spawns the fold of a session that has a
+   once). The same read observes the facts injected or withheld at SessionStart and the same
+   update applies the session's outcome to each fact's lifecycle (``facts.lifecycle``).
+   Mining never runs in a hook: SessionStart spawns the fold of a session that has a
    transcript instead of folding it in-process. A mining failure is logged, the fold goes on;
 5b. **outcome backfill**: staged outcome rows whose live ``decisions.jsonl`` outcome line was
    lost (busy or failing log) are appended, deduplicated by decision id against both log
@@ -63,7 +65,7 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
 from token_sparen.config import Config, log_error, state_home
-from token_sparen.facts import miners
+from token_sparen.facts import lifecycle, miners
 from token_sparen.learn import breaker, decisions, pending
 from token_sparen.learn.beta import Beta, Evidence
 from token_sparen.learn.features import ANY_BUCKET, FEATURE_KEYS, backoff_keys
@@ -339,6 +341,9 @@ def _stage(
         for key in (TRANSCRIPT_KEY, PROJECT_DIR_KEY):
             if isinstance(state.get(key), str):
                 staged[key] = state[key]
+        facts_log = lifecycle.take_log(state)  # each fact is judged once per session
+        if facts_log is not None:
+            staged[lifecycle.SESSION_KEY] = facts_log
         state[FOLDING_KEY] = staged
         state[SESSION_KEY] = {}
         state[OUTCOMES_KEY] = []
@@ -417,7 +422,7 @@ def _fold(
         _breaker_and_project(rep, fid, cells, outcomes, pdir, params, now, cap, env, timeout)
         _global(rep, fid, cells, home, key, params, now, cap, env, timeout)
         _pretrim(rep, fid, outcomes, pdir, params, now, env, timeout)
-        rep.facts = _mine_facts(rep.session_id, fid, staged, pdir, now, env, timeout)
+        rep.facts = _mine_facts(rep.session_id, fid, staged, pdir, now, env, timeout, params)
         rep.backfilled = _backfill(staged.get("outcomes"), pdir, params, env)
 
         # Clear and un-index under one overlay lock: a hook that adds evidence either ran
@@ -489,8 +494,11 @@ def _mine_facts(
     now: float,
     env: Mapping[str, str],
     timeout: float | None,
+    params: Mapping[str, Any] | None = None,
 ) -> int:
-    """Step 5a: mine the session transcript into ``facts.json``; never raises."""
+    """Step 5a: mine the session transcript into ``facts.json`` and, in the same read and the
+    same ``facts.json`` update, apply the session's outcome to the fact lifecycle (injected /
+    withheld facts logged at SessionStart, ``facts.lifecycle``); never raises."""
     raw = staged.get(TRANSCRIPT_KEY)
     if not isinstance(raw, str) or not raw:
         return 0
@@ -501,11 +509,26 @@ def _mine_facts(
         path = Path(raw)
         if not path.is_file():
             return 0
-        root = staged.get(PROJECT_DIR_KEY)
-        found = miners.mine_transcript(
-            path, sid, project_dir=root if isinstance(root, str) else None, env=env
+        raw_root = staged.get(PROJECT_DIR_KEY)
+        root = raw_root if isinstance(raw_root, str) else None
+        shown, withheld = lifecycle.parse_log(staged.get(lifecycle.SESSION_KEY))
+        observer = lifecycle.Observer(lifecycle.in_play(doc, {*shown, *withheld}), root)
+        found = miners.mine_transcript(path, sid, project_dir=root, env=env, tap=observer.feed)
+        settings = lifecycle.settings(params)
+
+        def after(table: dict[str, Any], fresh: set[str]) -> None:
+            lifecycle.apply_session(
+                table,
+                shown=shown,
+                withheld=withheld,
+                obs=observer.results(),
+                mined=fresh,
+                settings=settings,
+            )
+
+        return miners.record(
+            pdir, found, now=now, env=env, fold_id=fid, timeout=timeout, after=after
         )
-        return miners.record(pdir, found, now=now, env=env, fold_id=fid, timeout=timeout)
     except jsonstore.StoreBusy:
         raise
     except Exception as exc:  # noqa: BLE001 - fail open: facts are optional
