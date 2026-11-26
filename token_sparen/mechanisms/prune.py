@@ -396,9 +396,11 @@ def ready(entry: Mapping[str, Any], s: Settings) -> bool:
 
 
 def plan(doc: Mapping[str, Any], s: Settings, fkey: str) -> list[str]:
-    """Candidates that pass every gate and are neither ours nor the user's in this file."""
+    """Candidates that pass every gate and are neither ours nor the user's in this file. Nothing
+    before the project's history has been read once (``seeded``): a tool used before pruning
+    was enabled must never be pruned."""
     tools = doc.get("tools")
-    if not isinstance(tools, dict):
+    if not isinstance(tools, dict) or doc.get("seeded") is not True:
         return []
     entry = _files(doc).get(fkey)
     foreign = _strs(entry.get("foreign")) if isinstance(entry, dict) else []
@@ -482,15 +484,19 @@ def history_files(dirs: Iterable[Path], now: float | None = None) -> list[Path]:
     return out
 
 
-def seed(doc: dict[str, Any], files: Iterable[Path]) -> int:
-    """Add every tool the earlier transcripts used to ``used`` (never a candidate)."""
+def seed(doc: dict[str, Any], files: Sequence[Path]) -> int:
+    """Add every tool the earlier transcripts used to ``used`` (never a candidate). ``seeded``
+    is set only when at least one transcript was read: a miss (no history folder found) stays
+    unseeded, so the first fold seeds from its own transcript's folder. Returns the sessions
+    (transcripts) read."""
     used: set[str] = set()
     for path in files:
         inv = tool_inventory(path, max_bytes=HISTORY_BYTES)
         used |= inv.used - inv.unknown
     _add_names(doc, "used", used)
-    doc["seeded"] = True
-    return len(used)
+    if files:
+        doc["seeded"] = True
+    return len(files)
 
 
 def _history_dirs(writer: DenyWriter, project_dir: Path, env: Mapping[str, str]) -> list[Path]:
@@ -512,10 +518,11 @@ def _fresh(doc: dict[str, Any]) -> dict[str, Any]:
     return doc
 
 
-def _notice(doc: dict[str, Any], text: str) -> None:
-    notes = _strs(doc.get("notices"))
+def _notice(entry: dict[str, Any], text: str) -> None:
+    """A user notice for one checkout (its settings-file record): shown there only."""
+    notes = _strs(entry.get("notices"))
     if text not in notes:
-        doc["notices"] = [*notes, text][-MAX_NOTICES:]
+        entry["notices"] = [*notes, text][-MAX_NOTICES:]
 
 
 def _idle(home: Path, project_key: str, s: Settings) -> bool:
@@ -582,7 +589,7 @@ def _apply(
     exposure = writer.exposure(project_dir)
     if exposure == "tracked":
         _notice(
-            doc,
+            entry,
             f"token-sparen: {target} is tracked by git, so tool pruning did not write it "
             f"(its rules would be committed); untrack it or run `{CLI} prune disable`.",
         )
@@ -591,7 +598,7 @@ def _apply(
     if not res.ok:
         log_error(env, "prune", f"apply: {res.message}")
         if entry.get("refused") != res.message:
-            _notice(doc, f"token-sparen: tool pruning could not write {target}: {res.message}")
+            _notice(entry, f"token-sparen: tool pruning could not write {target}: {res.message}")
         entry["refused"] = res.message
         return []
     entry.pop("refused", None)
@@ -604,13 +611,13 @@ def _apply(
     }
     if res.changed:
         _notice(
-            doc,
+            entry,
             f"token-sparen pruned unused tools: {', '.join(res.changed)} (deny rules in "
             f"{target}); `{CLI} prune restore <tool>` or `{CLI} prune disable` undoes it.",
         )
     if exposure == "unignored":
         _notice(
-            doc,
+            entry,
             f"token-sparen: {target} is not covered by .gitignore; add it there so the deny "
             "rules token-sparen writes are never committed.",
         )
@@ -678,7 +685,7 @@ def fold_session(
             return []
         if transcript is not None and doc.get("seeded") is not True:
             dirs = [*_history_dirs(writer, project_dir, env), transcript.parent]
-            seed(doc, history_files(dict.fromkeys(dirs)))
+            seed(doc, history_files(list(dict.fromkeys(dirs))))
         _check_owned(doc, project_dir, fkey, writer)
         if inv is not None:
             attempted = observe_session(doc, inv, s, fkey)
@@ -698,11 +705,11 @@ def fold_session(
 
 
 # --------------------------------------------------------------------------- CLI helpers
-def enable(home: Path, project_key: str, project_dir: Path, env: Mapping[str, str]) -> int:
-    """Record the project opt-in and seed ``used`` from earlier transcripts (once). Returns the
-    number of tools seeded (0 when seeded before)."""
+def enable(home: Path, project_key: str, project_dir: Path, env: Mapping[str, str]) -> int | None:
+    """Record the project opt-in and seed ``used`` from earlier transcripts. Returns the
+    earlier sessions read, or None when the project was seeded before."""
     writer = WRITER
-    count = [0]
+    count: list[int | None] = [None]
 
     def fn(doc: dict[str, Any]) -> dict[str, Any]:
         doc = _fresh(doc)
@@ -761,6 +768,42 @@ def restore(
         if done:
             jsonstore.write_locked(path, doc)
     return done
+
+
+def restore_everywhere(
+    home: Path,
+    project_key: str,
+    rules: Sequence[str],
+    env: Mapping[str, str],
+    *,
+    reason: str | None = "restored by the user",
+) -> dict[str, list[str]]:
+    """Remove our ``rules`` from every recorded checkout that holds them: {settings file:
+    rules removed there}."""
+    path = store_path(home, project_key)
+    writer = WRITER
+    out: dict[str, list[str]] = {}
+    if writer is None or not path.is_file():
+        return out
+    with jsonstore.locked(path):
+        doc = _fresh(jsonstore.read_locked(path, {}, env))
+        for fkey in list(_files(doc)):
+            done = _restore_file(doc, fkey, rules, reason, writer, env)
+            if done:
+                out[fkey] = done
+        if out:
+            jsonstore.write_locked(path, doc)
+    return out
+
+
+def holders(doc: Mapping[str, Any], tool: str) -> dict[str, list[str]]:
+    """{settings file: our rules covering ``tool`` there} over every recorded checkout."""
+    out: dict[str, list[str]] = {}
+    for fkey in _files(doc):
+        rules = tool_rule(tool, owned_in(doc, fkey))
+        if rules:
+            out[fkey] = rules
+    return out
 
 
 def read_doc(home: Path, project_key: str, env: Mapping[str, str]) -> dict[str, Any]:
@@ -833,8 +876,10 @@ def status_lines(
     kept = _kept(doc)
     if kept:
         lines.append(f"kept (never pruned again): {', '.join(sorted(kept))}")
-    for note in _strs(doc.get("notices")):
-        lines.append(f"notice: {render(note, env)}")
+    if settings_file is not None:
+        entry = _files(doc).get(file_key(settings_file))
+        for note in _strs(entry.get("notices")) if isinstance(entry, dict) else []:
+            lines.append(f"notice: {render(note, env)}")
     lines.append(SAVINGS_NOTE)
     return lines
 
@@ -968,10 +1013,18 @@ def on_session_start(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Ac
                 jsonstore.write_locked(path, doc)
         except (jsonstore.StoreBusy, OSError) as exc:
             log_error(env, "prune", f"session start: {type(exc).__name__}: {exc}")
-    notes = [render(n, env) for n in _strs(doc.get("notices"))]
+    entry = _files(doc).get(fkey)
+    notes = [render(n, env) for n in _strs(entry.get("notices"))] if isinstance(entry, dict) else []
     if notes:
+
+        def clear(doc: dict[str, Any]) -> dict[str, Any]:
+            own = _files(doc).get(fkey)
+            if isinstance(own, dict):
+                own.pop("notices", None)
+            return doc
+
         with contextlib.suppress(jsonstore.StoreBusy, OSError):
-            jsonstore.update(path, _clear_notices, {}, env, timeout=HOOK_LOCK_S)
+            jsonstore.update(path, clear, {}, env, timeout=HOOK_LOCK_S)
     mine = owned_in(doc, fkey)
     line = notice_line(mine, env) if mine else None
     context: str | None = None
@@ -984,8 +1037,3 @@ def on_session_start(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Ac
         context = gate.render(max(NOTICE_TOKENS, estimate_tokens(line)))
     user = "\n".join([*notes, *([line] if line else [])]) or None
     return Action(inject_context=context, user_message=user)
-
-
-def _clear_notices(doc: dict[str, Any]) -> dict[str, Any]:
-    doc.pop("notices", None)
-    return doc

@@ -826,3 +826,121 @@ def test_sibling_checkouts_and_worktree_keep_their_own_rules(
     assert main(["prune", "disable", "--project", str(a)]) == 0
     for d in (a, b, wt):
         assert not _local(d).exists(), d
+
+
+# --------------------------------------------------------------------------- fix round 2
+def test_no_history_found_keeps_unseeded_and_the_fold_seeds(
+    plain_env: dict[str, str], proj: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # the Claude config folder name does not match (P4b): enable finds nothing to seed from
+    _transcript(
+        _home(plain_env).parent / "transcripts" / "earlier.jsonl",
+        listed=None,
+        used=["mcp__figma__get_design"],
+        prompts=2,
+    )
+    _enable(plain_env, proj)
+    out = capsys.readouterr().out
+    assert "found 0 earlier sessions" in out
+    assert "pruning waits until a session has been recorded" in out
+    assert _doc(plain_env, proj).get("seeded") is not True
+    # the first fold seeds from its own transcript's folder: figma was used, never pruned
+    _three(plain_env, proj, listed=["Read", "mcp__figma__get_design", "mcp__beta__ask"])
+    assert _deny(proj) == ["mcp__beta"]
+    assert _doc(plain_env, proj)["seeded"] is True
+
+
+def test_enable_reports_sessions_found(
+    plain_env: dict[str, str], proj: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    hist = tmp_path / "claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(proj))
+    for i in range(2):
+        _transcript(hist / f"h{i}.jsonl", listed=None, used=["Read"], prompts=1)
+    _enable(plain_env, proj)
+    assert "found 2 earlier sessions" in capsys.readouterr().out
+    assert _doc(plain_env, proj)["seeded"] is True
+
+
+def test_nothing_is_pruned_before_seeding_succeeded(env: dict[str, str]) -> None:
+    s = prune.settings({}, {"prune": {"builtins": True}})
+    tools = {"mcp__a": {"s": 9, "p": 900, "r": [1.0, 901.0, 900.0]}}
+    assert prune.plan({"tools": tools}, s, "f") == []
+    assert prune.plan({"tools": tools, "seeded": True}, s, "f") == ["mcp__a"]
+
+
+@pytest.mark.usefixtures("plain_git")
+def test_cli_resolves_the_project_from_a_subdirectory(
+    env: dict[str, str],
+    proj: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    subprocess.run(["git", "-C", str(proj), "init", "-q"], check=True)
+    _enable(env, proj)
+    _three(env, proj, listed=["Read", "mcp__alpha__get", "mcp__beta__ask"])
+    sub = proj / "src" / "deep"
+    sub.mkdir(parents=True)
+    monkeypatch.chdir(sub)
+    capsys.readouterr()
+    assert main(["prune", "status"]) == 0
+    assert "pruned (2): mcp__alpha, mcp__beta" in capsys.readouterr().out
+    assert main(["prune", "restore", "mcp__alpha"]) == 0
+    assert _deny(proj) == ["mcp__beta"]
+    # CLAUDE_PROJECT_DIR wins over the cwd
+    other = proj.parent / "elsewhere"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(proj))
+    assert main(["prune", "disable"]) == 0
+    assert not _local(proj).exists()
+
+
+@pytest.mark.usefixtures("plain_git")
+def test_restore_from_a_sibling_worktree_restores_where_pruned(
+    env: dict[str, str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def git(where: Path, *args: str) -> None:
+        subprocess.run(["git", "-C", str(where), *args], check=True, capture_output=True)
+
+    a = tmp_path / "main"
+    a.mkdir()
+    git(a, "init", "-q")
+    git(a, "remote", "add", "origin", "https://example.invalid/team/repo.git")
+    (a / ".gitignore").write_text(".claude/settings.local.json\n", encoding="utf-8")
+    git(a, "add", ".gitignore")
+    git(a, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "x")
+    wt = tmp_path / "wt"
+    git(a, "worktree", "add", "-q", str(wt))
+    _enable(env, a)
+    for i in range(3):
+        _fold(env, a, f"a{i}", listed=["Read", "mcp__alpha__get"])
+    assert _deny(a) == ["mcp__alpha"] and not _local(wt).exists()
+    capsys.readouterr()
+    assert main(["prune", "restore", "mcp__alpha", "--project", str(wt)]) == 0
+    out = capsys.readouterr().out
+    assert "not pruned" not in out and str(_local(a).resolve()) in out
+    assert not _local(a).exists()
+
+
+@pytest.mark.usefixtures("plain_git")
+def test_notices_are_shown_in_their_own_checkout(env: dict[str, str], tmp_path: Path) -> None:
+    a, b = tmp_path / "ca", tmp_path / "cb"
+    for d in (a, b):
+        d.mkdir()
+        subprocess.run(["git", "-C", str(d), "init", "-q"], check=True)
+        subprocess.run(
+            ["git", "-C", str(d), "remote", "add", "origin", "https://example.invalid/r.git"],
+            check=True,
+        )
+    assert _key(env, a) == _key(env, b)
+    _enable(env, a)
+    for i in range(3):
+        _fold(env, a, f"a{i}", listed=["Read", "mcp__alpha__get"])
+    assert _deny(a) == ["mcp__alpha"]
+    doc = _doc(env, a)
+    assert not doc.get("notices")  # per checkout, never project-wide
+    assert any("mcp__alpha" in n for n in doc["files"][prune.file_key(_local(a))]["notices"])
+    out_b = _hook({**env, "CLAUDE_PROJECT_DIR": str(b)}, "SessionStart", {"source": "startup"})
+    assert "pruned unused tools" not in out_b.get("systemMessage", "")
+    out_a = _hook({**env, "CLAUDE_PROJECT_DIR": str(a)}, "SessionStart", {"source": "startup"})
+    assert "pruned unused tools: mcp__alpha" in out_a["systemMessage"]

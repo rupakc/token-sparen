@@ -415,7 +415,11 @@ your `config.toml` also prunes built-in tools, but only those an SDK `init` reco
 loaded.
 
 What it does: enabling first reads the project's earlier Claude Code transcripts (last 60 days, at
-most 50 MB) so that nothing used before is ever pruned. When a session is folded, token-sparen
+most 50 MB) so that nothing used before is ever pruned, and says how many it found. Nothing is
+pruned until such a read has succeeded: if none were found, the first recorded session's folder
+is read instead. `prune` commands find the project from `--project`, else `CLAUDE_PROJECT_DIR`,
+else the git top level of the current directory; `prune restore <tool>` restores it wherever
+token-sparen pruned it in this project (also in another checkout). When a session is folded, token-sparen
 reads the tools the session had (from the transcript's tool list where Claude Code records one; a
 session without one counts for the tools other sessions listed) and the tools it used, including
 in subagents. A **whole MCP server** none of whose tools was ever used that stayed unused across

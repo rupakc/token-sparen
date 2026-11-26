@@ -1051,13 +1051,37 @@ def _facts_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def _prune_project(args: argparse.Namespace) -> Path:
+    """``--project``, else ``CLAUDE_PROJECT_DIR``, else the git top level of the cwd (a
+    subdirectory resolves to its checkout), else the cwd."""
+    if args.project:
+        return Path(args.project).resolve()
+    env_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env_dir:
+        return Path(env_dir).resolve()
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        proc = None
+    if proc is not None and proc.returncode == 0 and proc.stdout.strip():
+        return Path(proc.stdout.strip()).resolve()
+    return Path.cwd().resolve()
+
+
 def _prune_cmd(args: argparse.Namespace) -> int:
     from token_sparen.adapters.claude import settings  # registers the deny-rule writer
     from token_sparen.mechanisms import prune
 
     env = os.environ
     home = state_home(env)
-    project = _project_dir(args).resolve()
+    project = _prune_project(args)
     key = keycache.cached_project_key(project, env)
     target = settings.local_settings_path(project)
     s = prune.settings_for(load_config(project, env).data, env)
@@ -1074,8 +1098,16 @@ def _prune_cmd(args: argparse.Namespace) -> int:
             "are modest (their tool names and server instructions). Undo with "
             "`token-sparen prune restore <tool>`, `restore --all` or `prune disable`."
         )
-        if seeded:
-            print(f"{seeded} tool(s) used in earlier sessions here will never be pruned.")
+        if seeded is not None:
+            print(
+                f"found {seeded} earlier sessions in the last {prune.HISTORY_DAYS} days; tools "
+                "used there are never pruned."
+            )
+            if seeded == 0:
+                print(
+                    "warning: no earlier Claude Code transcripts were found for this project; "
+                    "pruning waits until a session has been recorded (its folder is read then)."
+                )
         if not s.allow:
             print("note: this project's token-sparen.toml sets [prune] allow = false")
         if settings.git_exposure(project) == "unignored":
@@ -1094,17 +1126,24 @@ def _prune_cmd(args: argparse.Namespace) -> int:
         raise CliError("prune restore needs a tool name or --all")
     doc = prune.read_doc(home, key, env)
     if args.all:
-        done = prune.restore(home, key, None, None, env)  # every recorded checkout
-        print(f"token-sparen prune: restored {', '.join(done)}" if done else "nothing is pruned")
+        every = prune.restore(home, key, None, None, env)  # every recorded checkout
+        print(f"token-sparen prune: restored {', '.join(every)}" if every else "nothing is pruned")
         return 0
-    mine = prune.owned_in(doc, prune.file_key(target))
-    want = prune.tool_rule(args.tool, mine)  # a tool of a pruned server maps to the server
-    if not want:
-        raise CliError(f"{args.tool} is not pruned by token-sparen here", code=1)
-    done = prune.restore(home, key, project, want, env)
-    if not done:
-        raise CliError(f"could not change {target}; see `token-sparen doctor`", code=1)
-    print(f"token-sparen prune: restored {', '.join(done)}")
+    where = prune.holders(doc, args.tool)  # a tool of a pruned server maps to the server
+    here = prune.file_key(target)
+    if not where:
+        raise CliError(f"{args.tool} is not pruned by token-sparen in this project", code=1)
+    restored: dict[str, list[str]]
+    if here in where:
+        restored = {here: prune.restore(home, key, project, where[here], env)}
+    else:  # pruned in another checkout of the project (sibling clone, worktree)
+        wanted = sorted({r for rs in where.values() for r in rs})
+        restored = prune.restore_everywhere(home, key, wanted, env)
+    restored = {f: rs for f, rs in restored.items() if rs}
+    if not restored:
+        raise CliError(f"could not change {', '.join(where)}; see `token-sparen doctor`", code=1)
+    for fkey, rules in restored.items():
+        print(f"token-sparen prune: restored {', '.join(rules)} in {fkey}")
     return 0
 
 

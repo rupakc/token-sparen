@@ -1287,4 +1287,12 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   JSON with duplicate keys is refused (`object_pairs_hook`, also for the statusline); a refused
   write gives one notice per distinct message; `[prune] enabled` and `builtins` are read only
   from `~/.token-sparen/config.toml` (`config.user_config`), never env, session or project.
+- Fix round 2 (coordinator rulings, same day): `seeded` is set only when >= 1 history transcript
+  was read; `plan` returns nothing until `seeded` (safety gate); the first fold with a transcript
+  retries with the Claude config folder plus the transcript's own folder. `prune enable` prints
+  "found N earlier sessions" and, for 0, warns that pruning waits until a session has been
+  recorded. CLI `prune` resolves the project from `--project`, `CLAUDE_PROJECT_DIR`, the git top
+  level of the cwd, then the cwd; `restore <tool>` restores in this checkout when pruned here,
+  else in every recorded checkout holding it, and prints each settings file. User notices are
+  stored and shown per checkout (`files[fkey].notices`).
 
