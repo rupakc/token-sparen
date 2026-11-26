@@ -10,7 +10,7 @@
 
 **Spec:** `docs/specs/2026-11-25-token-sparen-design.md` (read it first; § references below point into it).
 
-**Private inputs (NEVER commit, never quote into the repo):** `~/token-sparen-private/research/{ito_notes,te_notes,landscape_notes}.md` and `~/.claude/projects/**` transcripts. E1 reports go to `~/token-sparen-private/reports/`.
+**Private inputs (NEVER commit, never quote into the repo):** the maintainer's private research notes and local Claude Code session transcripts, kept in a private folder outside the repo. E1 reports go to that folder too.
 
 ## Global Constraints
 
@@ -412,7 +412,7 @@ token-sparen/
 
 - [ ] Tests: `test_replay_counts_resends`; `test_proxy_regret_detects_elided_reference`; `test_split_by_date`; `test_report_refuses_repo_path`; `test_ips_unbiased_on_synthetic` (known policies, true value within CI in ≥ 90 % of 50 seeds); `test_dr_lower_variance_than_ips`.
 - [ ] FAIL → implement → PASS → commit `feat(evals): offline replay and off-policy evaluation`.
-- [ ] **Run E1 locally**: `token-sparen replay ~/.claude/projects --split dev --out ~/token-sparen-private/reports/e1-baseline.json`; do NOT record its numbers in the repo (aggregates stay private, outside it).
+- [ ] **Run E1 locally**: `token-sparen replay <local transcripts dir> --split dev --out <file in a private folder outside the repo>`; do NOT record its numbers in the repo (aggregates stay private, outside it).
 - [ ] **M2 goldfish review + drift check**; tag `v0.2.0-m2`; **start dogfooding**: owner installs via `claude plugin marketplace add rupakc/token-sparen` + `claude plugin install token-sparen@token-sparen`, runs `token-sparen statusline install`. Decision logs accumulate locally for ~2 weeks while M3 proceeds.
 
 ---
