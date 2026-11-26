@@ -29,6 +29,12 @@ ledger ``regrets`` counter is kept either way. Every settled payout is also appe
 overlay's ``regret_outcomes`` (last 1000) for the session fold (circuit breaker, pre-trim
 candidates; ``learn.overlay``). Everything fails open.
 
+The table of watched decisions (up to 200 entries of ~2 KB) lives in a sidecar,
+``sessions/regret/<session>.json`` (``table_path``), not in the session overlay: every hook parses
+and rewrites the overlay several times, so a large table there made each hook's cost grow with the
+session (CI perf: p95 160 ms). Only this module reads the sidecar; a change takes the sidecar lock,
+then (separately, never nested) the overlay lock for outcomes, ledger counters and read de-dupe.
+
 Savings at decision time: ``min(1, removed * expected_resends / p95)`` with the p95 of the last
 64 values of ``removed * expected_resends`` per (point, bucket) in the project store
 (``savings_scale.json``); the first observation of a bucket is worth 0.5.
@@ -446,6 +452,12 @@ def _strs(value: Any) -> list[str]:
     return [x for x in value if isinstance(x, str)] if isinstance(value, list) else []
 
 
+def table_path(overlay: Path) -> Path:
+    """The decision table's sidecar of a session overlay (a subdirectory, so session scans of
+    ``sessions/*.json`` never see it)."""
+    return overlay.parent / "regret" / overlay.name
+
+
 def _table(state: dict[str, Any]) -> dict[str, Any]:
     table = state.get(REGRET_KEY)
     if not isinstance(table, dict):
@@ -641,26 +653,52 @@ class RegretDetector:
 
     def _track(self, ctx: SessionCtx, decision_id: str, entry: dict[str, Any]) -> list[Payout]:
         evicted: list[Payout] = []
+        rows: list[list[Any]] = []
 
-        def apply(state: dict[str, Any]) -> dict[str, Any]:
+        def apply(doc: dict[str, Any]) -> dict[str, Any]:
             evicted.clear()
-            table = _table(state)
+            rows.clear()
+            table = _table(doc)
             table.pop(decision_id, None)
             table[decision_id] = entry
-            rows: list[list[Any]] = []
             while len(table) > MAX_TRACKED:
                 old = next(iter(table))
                 gone = table.pop(old)
                 evicted.append((old, _best(gone) if isinstance(gone, dict) else 0.0))
                 rows.append(_outcome(old, gone, evicted[-1][1]))
-            _record_outcomes(state, rows)
-            _bump(state, "regrets", sum(1 for _, v in evicted if v > 0))
-            return state
+            return doc
 
-        session.update_session(ctx.overlay_path, apply)
+        jsonstore.update(table_path(ctx.overlay_path), apply, {})
         if evicted:
+            self._overlay_after(ctx.overlay_path, rows, regrets=sum(1 for _, v in evicted if v > 0))
             pending.add_overlay(ctx.overlay_path, self.env)
         return evicted
+
+    @staticmethod
+    def _overlay_after(
+        path: Path,
+        rows: list[list[Any]],
+        *,
+        regrets: int = 0,
+        read_tokens: int = 0,
+        forget: set[str] | None = None,
+    ) -> None:
+        """The overlay side of a table change: settled outcomes, ledger counters, forgotten
+        reads (one overlay lock, taken after the sidecar lock was released)."""
+        if not (rows or regrets or read_tokens or forget):
+            return
+
+        def apply(state: dict[str, Any]) -> dict[str, Any]:
+            _record_outcomes(state, rows)
+            if forget:
+                from token_sparen.mechanisms import read_dedupe  # it owns the `reads` schema
+
+                read_dedupe.drop_reads(state, forget)
+            _bump(state, "recovery_read_tokens", read_tokens)
+            _bump(state, "regrets", regrets)
+            return state
+
+        session.update_session(path, apply)
 
     # --- signals ----------------------------------------------------------------------------
 
@@ -753,36 +791,40 @@ class RegretDetector:
     def _apply(self, path: Path, info: _Info, turn: int | None, settle: bool, final: bool) -> Any:
         """Lock-free pre-check, then (only if something changes) one locked update.
         Returns (signals, payouts)."""
-        snapshot = session.read_session(path)
-        now = _int(snapshot.get("turn")) if turn is None else turn
-        table = snapshot.get(REGRET_KEY)
+        side = table_path(path)
+        table = jsonstore.read(side, {}).get(REGRET_KEY) if side.is_file() else None
         if not isinstance(table, dict) or not table:
             if not info.read_tokens:
                 return [], []
             table = {}
+        now = _int(session.read_session(path).get("turn")) if turn is None else turn
         _, _, changed, _ = self._process(table, info, now, settle=settle, final=final)
-        if not changed and not info.read_tokens:
+        if not changed:
+            self._overlay_after(path, [], read_tokens=info.read_tokens)
             return [], []
         out: dict[str, list[Payout]] = {"signals": [], "payouts": []}
+        rows: list[list[Any]] = []
+        forgotten: set[str] = set()
 
-        def apply(state: dict[str, Any]) -> dict[str, Any]:
-            cur = _int(state.get("turn")) if turn is None else turn
-            table = _table(state)
-            rows: list[list[Any]] = []
+        def apply(doc: dict[str, Any]) -> dict[str, Any]:
+            rows.clear()
+            table = _table(doc)
             sig, payouts, _, forget = self._process(
-                table, info, cur, settle=settle, final=final, outcomes=rows
+                table, info, now, settle=settle, final=final, outcomes=rows
             )
-            _record_outcomes(state, rows)
-            if forget:
-                from token_sparen.mechanisms import read_dedupe  # it owns the `reads` schema
-
-                read_dedupe.drop_reads(state, forget)
-            _bump(state, "recovery_read_tokens", info.read_tokens)
-            _bump(state, "regrets", sum(1 for _, v in payouts if v > 0))
+            forgotten.clear()
+            forgotten.update(forget)
             out["signals"], out["payouts"] = sig, payouts
-            return state
+            return doc
 
-        session.update_session(path, apply)
+        jsonstore.update(side, apply, {})
+        self._overlay_after(
+            path,
+            rows,
+            regrets=sum(1 for _, v in out["payouts"] if v > 0),
+            read_tokens=info.read_tokens,
+            forget=forgotten,
+        )
         if out["payouts"]:
             pending.add_overlay(path, self.env)  # settled outcomes await a fold
         return out["signals"], out["payouts"]
@@ -817,7 +859,7 @@ class RegretDetector:
             return state
 
         try:
-            session.update_session(ctx.overlay_path, apply)
+            jsonstore.update(table_path(ctx.overlay_path), apply, {})
         except Exception as exc:  # noqa: BLE001 - fail open
             log_error(self.env, "regret", f"on_loop: {type(exc).__name__}: {exc}")
             return []
@@ -853,20 +895,22 @@ def record_recovery_read(
 ) -> None:
     """``token-sparen show <id>`` inside a session: full regret for the decisions that saved
     this output (paid by the next hook) and the read's tokens in the ledger. Only touches an
-    existing overlay. Never raises."""
+    existing session (its overlay or its decision table). Never raises."""
     env = os.environ if env is None else env
     try:
-        if not overlay.is_file():
+        if not overlay.is_file() and not table_path(overlay).is_file():
             return
 
-        def apply(state: dict[str, Any]) -> dict[str, Any]:
-            for entry in _table(state).values():
+        def mark(doc: dict[str, Any]) -> dict[str, Any]:
+            for entry in _table(doc).values():
                 if isinstance(entry, dict) and entry.get("recovery_id") == recovery_id:
                     entry["best"] = FULL
-            _bump(state, "recovery_read_tokens", max(0, tokens))
-            return state
+            return doc
 
-        session.update_session(overlay, apply)
+        side = table_path(overlay)
+        if side.is_file():
+            jsonstore.update(side, mark, {})
+        RegretDetector._overlay_after(overlay, [], read_tokens=max(0, tokens))
     except Exception as exc:  # noqa: BLE001 - never break `show`
         log_error(env, "regret", f"show: {type(exc).__name__}: {exc}")
 

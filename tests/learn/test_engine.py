@@ -46,6 +46,12 @@ def _overlay(home: Path) -> Path:
     return session.session_path(home, KEY, SID)
 
 
+def _pending_doc(home: Path) -> dict[str, Any]:
+    from token_sparen.learn import engine as engine_mod
+
+    return json.loads(engine_mod.pending_path(_overlay(home)).read_text("utf-8"))
+
+
 def _ctx(home: Path) -> SessionCtx:
     return SessionCtx(SID, KEY, 1, None, None, _overlay(home))
 
@@ -263,7 +269,7 @@ def test_propensity_logged_and_in_unit_interval(tmp_path: Path) -> None:
         assert d.point == "compression"
         assert d.arm in COMPRESSION.arms
         assert 1e-3 <= d.propensity <= 1.0
-    pending = json.loads(_overlay(home).read_text("utf-8"))["pending"]
+    pending = _pending_doc(home)["pending"]
     assert pending[d.decision_id][:3] == ["compression", FULL_KEY, d.arm]
 
 
@@ -319,8 +325,7 @@ def test_safe_arm_never_updated(tmp_path: Path) -> None:
     d = eng.decide(COMPRESSION, FULL, _ctx(home))
     assert d.arm == "off"
     eng.reward(d.decision_id, 0.5, 1.0)
-    doc = json.loads(_overlay(home).read_text("utf-8"))
-    assert "off" not in doc.get("evidence", {}).get("compression", {}).get(FULL_KEY, {})
+    assert not _overlay(home).exists()  # nothing written: the safe arm has no evidence
 
 
 def test_evidence_sum() -> None:
@@ -358,13 +363,13 @@ def test_reward_bookkeeping_and_pending_eviction(tmp_path: Path) -> None:
     eng = _engine(home, extra={"learn": {"pending_max": 3, "floor": {"low": 0.0}}})
     ctx = _ctx(home)
     ds = [eng.decide(READ_DEDUPE, {"cat": "read", "size": "sm"}, ctx) for _ in range(5)]
-    pending = json.loads(_overlay(home).read_text("utf-8"))["pending"]
+    pending = _pending_doc(home)["pending"]
     assert list(pending) == [d.decision_id for d in ds[-3:]]
     ts = pending[ds[-1].decision_id][3]
     assert isinstance(ts, float)
-    before = _overlay(home).read_text("utf-8")
+    before = _pending_doc(home)
     eng.reward(ds[0].decision_id, 1.0, 0.0)  # evicted: no-op
-    assert _overlay(home).read_text("utf-8") == before
+    assert _pending_doc(home) == before and not _overlay(home).exists()
     trimmed = [d for d in ds[-3:] if d.arm != "off"]
     assert trimmed
     d = trimmed[0]
@@ -508,5 +513,23 @@ def test_one_reward_per_kind_per_decision(tmp_path: Path) -> None:
     sav, reg = Evidence.from_list(node["savings"]), Evidence.from_list(node["regret"])
     assert (sav.n, sav.ea) == (1.0, pytest.approx(0.8))
     assert (reg.n, reg.ea) == (1.0, 0.0)
-    assert sorted(doc["pending"][d.decision_id][4]) == ["regret", "savings"]
+    assert sorted(_pending_doc(home)["pending"][d.decision_id][4]) == ["regret", "savings"]
     assert sum("already rewarded" in line for line in _log_lines(home)) == 2
+
+
+def test_pending_decisions_live_outside_the_hot_overlay(tmp_path: Path) -> None:
+    """Up to 500 pending decisions must not inflate the overlay every hook parses (CI perf)."""
+    from token_sparen.learn import engine as engine_mod
+
+    home = tmp_path / "h"
+    eng = _engine(home)
+    ctx = _ctx(home)
+    ds = [eng.decide(COMPRESSION, FULL, ctx) for _ in range(300)]
+    side = engine_mod.pending_path(_overlay(home))
+    assert side.parent.name == "pending" and len(_pending_doc(home)["pending"]) == 300
+    assert not _overlay(home).exists()
+    trim = next(d for d in ds if d.arm != "off")
+    eng.reward(trim.decision_id, 0.5, None)
+    hot = json.loads(_overlay(home).read_text("utf-8"))
+    assert "pending" not in hot and hot["evidence"]["compression"][FULL_KEY][trim.arm]
+    assert _pending_doc(home)["pending"][trim.decision_id][4] == ["savings"]

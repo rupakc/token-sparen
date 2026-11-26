@@ -782,3 +782,28 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   `latency_log_max_bytes` user-only.
 - The `/token-sparen` skill pre-approves `session disable` only (both the `token-sparen` and the
   `run_cli.py` form); `session enable` turns trimming back on and so asks for permission.
+
+## 2026-11-26 CI perf failure after Task 23 (root cause: per-hook cost grew with the session)
+- CI perf (ubuntu, 3.12): `test_hook_latency_p95` p95 160 ms (gate 75 ms). Profiling the 200-call
+  loop: per-call time grew linearly with the call index (local median first 20 / middle / last 20:
+  9.9 / 18.4 / 34.1 ms). The session overlay reached ~400 KB: the regret detector's decision table
+  (up to 200 entries of ~2.2 KB, mostly the hashed elided tokens and file mentions; the perf loop
+  has no prompts, so nothing expires) plus the engine's `pending` (up to 500 entries). Every
+  PostToolUse parsed the overlay ~16 times and rewrote it ~6 times (governor, regret, compression,
+  engine decide/reward, ledger, tracking). No fsync, no lock waits, no rotation involved.
+- Fix: the decision table moves to `sessions/regret/<id>.json` (`regret.table_path`) and pending
+  decisions to `sessions/pending/<id>.json` (`engine.pending_path`); the hot overlay stays ~1 KB.
+  Subdirectories, so `sessions/*.json` scans never see them. Locks are taken one at a time (sidecar,
+  then overlay; never nested). Regret: table change under the sidecar lock, then outcomes/ledger/
+  forgotten reads under the overlay lock (a crash in between loses those outcome rows, payouts
+  still happen). Engine reward: kinds are claimed under the pending lock first, then the evidence
+  is written under the overlay lock (a crash in between loses one observation, never doubles it).
+- After (same loop): local 10.4 / 13.3 / 16.5 ms, p95 17.3 ms (before 28-34). Linux container
+  (python:3.12-slim, 1 CPU): p95 29.3 -> 13.7 ms, last-20 median 28.1 -> 12.9 ms. At 0.5 CPU p95
+  stays ~67 ms in both versions: CFS quota throttling spikes, not session growth.
+- Remaining growth is the regret sidecar (bounded by 200 entries, ~1.5 ms/parse locally), read
+  ~2x and written ~1-2x per trimming hook; its entries could be packed (one string per field,
+  ~30 % cheaper JSON) if needed.
+- `test_session_start_folds_old_unfolded_sessions` flaked on a slow macOS runner (100 ms
+  in-process fold budget): `overlay._monotonic` is now injectable; the test freezes it, and a new
+  test drives a ticking clock to check the budget stops the loop.

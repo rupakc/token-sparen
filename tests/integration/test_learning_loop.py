@@ -172,7 +172,7 @@ def test_learning_disabled_uses_static(tmp_path: Path) -> None:
     recs = decisions(d.home)
     assert all(r["bucket"] == "static" and r["propensity"] == 1.0 for r in recs)
     state = session.read_session(next(d.home.glob("projects/*/sessions/*.json")))
-    assert not state.get("pending") and not state.get("evidence")
+    assert not state.get("evidence") and not list(d.home.glob("projects/*/sessions/pending/*"))
 
 
 def test_cross_project_prior_transfer(tmp_path: Path) -> None:
@@ -201,15 +201,17 @@ def test_engine_drives_compression_by_default(tmp_path: Path) -> None:
     rounds(d, 3, recover=False)
     (rec, *_) = [r for r in decisions(d.home) if r["point"] == "compression"]
     assert rec["bucket"] == "band=unk|cat=shell|size=sm|ctype=test_report|phase=mixed"
-    state = session.read_session(next(d.home.glob("projects/*/sessions/*.json")))
-    assert state.get("pending")
+    side = session.read_session(next(d.home.glob("projects/*/sessions/pending/*.json")))
+    assert side.get("pending")
 
 
 def test_savings_reward_once_per_trimming_decision(tmp_path: Path) -> None:
     d = Driver(tmp_path / "home", tmp_path / "proj", "s-rew")
     arms = rounds(d, 12, recover=False)
     state = session.read_session(next(d.home.glob("projects/*/sessions/*.json")))
-    pending = state["pending"]
+    pending = session.read_session(next(d.home.glob("projects/*/sessions/pending/*.json")))[
+        "pending"
+    ]
     recs = [r for r in decisions(d.home) if r["point"] == "compression"]
     for rec in recs:
         kinds = pending[rec["decision_id"]][4] if len(pending[rec["decision_id"]]) > 4 else []

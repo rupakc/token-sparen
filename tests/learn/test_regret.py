@@ -17,7 +17,7 @@ from token_sparen.learn import regret
 from token_sparen.learn.engine import Engine
 from token_sparen.learn.hierarchy import StoreChain
 from token_sparen.learn.policy import Decision, DecisionPoint, StaticPolicy
-from token_sparen.learn.regret import RegretDetector, normalize_command
+from token_sparen.learn.regret import REGRET_KEY, RegretDetector, normalize_command
 from token_sparen.mechanisms import compression, read_dedupe
 from token_sparen.store import session
 
@@ -165,7 +165,12 @@ def _handle(tmp_path: Path, ev: Event, policy: Any) -> None:
 
 
 def _state(tmp_path: Path) -> dict[str, Any]:
-    return session.read_session(_overlay(tmp_path))
+    """The overlay, with the decision table from its sidecar (``regret.table_path``)."""
+    st = session.read_session(_overlay(tmp_path))
+    side = session.read_session(regret.table_path(_overlay(tmp_path)))
+    if REGRET_KEY in side:
+        st[REGRET_KEY] = side[REGRET_KEY]
+    return st
 
 
 def _bash(tmp_path: Path, command: str, text: str = "ok", cwd: str | None = None) -> Event:
@@ -301,7 +306,7 @@ def test_cli_show_records_recovery_read(tmp_path: Path, monkeypatch: pytest.Monk
     assert main(["show", ref.id]) == 0
     st = session.read_session(ov)
     assert st["recovery_read_tokens"] > 0
-    assert st["regret"]["d9"]["best"] == 1.0
+    assert session.read_session(regret.table_path(ov))[REGRET_KEY]["d9"]["best"] == 1.0
     # the next hook pays it
     rec = Recorder()
     ev = Event("claude", "prompt", SID, proj, key, None, prompt="hi")
@@ -452,7 +457,10 @@ def test_expiry_with_real_engine_records_regret_kind(tmp_path: Path) -> None:
     _track(tmp_path, "d1", turn=1)
     _set_turn(tmp_path, 9)
     _handle(tmp_path, _event(tmp_path, kind="prompt", tool=None, prompt="go"), eng)
-    pending = _state(tmp_path)["pending"]["d1"]
+    from token_sparen.learn import engine as engine_mod
+
+    side = session.read_session(engine_mod.pending_path(_overlay(tmp_path)))
+    pending = side["pending"]["d1"]
     assert pending[4] == ["regret"]
     ev = _state(tmp_path)["evidence"]["compression"]["b1"]["standard"]["regret"]
     assert ev[0] == 0.0 and ev[1] > 0  # a zero observation
@@ -550,11 +558,14 @@ def test_entry_fields(tmp_path: Path) -> None:
 def test_corrupt_state_fails_open(tmp_path: Path) -> None:
     path = _overlay(tmp_path)
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"turn": 3, "regret": {"x": "junk", "y": {"best": "no"}}}), "utf-8")
+    side = regret.table_path(path)
+    side.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"turn": 3}), "utf-8")
+    side.write_text(json.dumps({"regret": {"x": "junk", "y": {"best": "no"}}}), "utf-8")
     rec = Recorder()
     _handle(tmp_path, _bash(tmp_path, "pytest"), rec)
     _handle(tmp_path, _event(tmp_path, kind="prompt", tool=None, prompt="a"), rec)
-    path.write_text(json.dumps({"turn": 3, "regret": [1, 2]}), "utf-8")
+    side.write_text(json.dumps({"regret": [1, 2]}), "utf-8")
     _handle(tmp_path, _bash(tmp_path, "pytest"), rec)
     assert rec.regrets() == []
 
@@ -1028,3 +1039,41 @@ def test_signatures_are_os_independent() -> None:
     assert normalize_command("cd C:\\repo && npm test", project_dir=win) == "npm test"
     assert normalize_command("cd /c/tools && make", project_dir=win) == "cd /c/tools && make"
     assert normalize_command("cd D:/x && make", project_dir=win) == "cd D:/x && make"
+
+
+def test_hot_overlay_stays_small_as_trims_accumulate(tmp_path: Path) -> None:
+    """Per-hook cost must not grow with the decision table: every hook parses and rewrites the
+    session overlay several times, so the (up to 200 x ~2 KB) table lives in a sidecar that only
+    the regret detector reads (CI perf: p95 160 ms with a 400 KB overlay)."""
+    det = RegretDetector(_cfg(tmp_path), _env(tmp_path))
+    ctx = _ctx(tmp_path, 1)
+    full = "\n".join(
+        f"src/pkg/module_{i}.py:{i} identifier_{i:05d}_abcdef value_{i:05d}_ghijkl"
+        for i in range(3000)
+    )
+    for i in range(200):
+        det.track(
+            ctx,
+            f"{i:032x}",
+            point="compression",
+            bucket="b",
+            arm="standard",
+            recovery_id=f"{i:012x}",
+            command_sig=f"pytest -q tests/test_{i}.py",
+            full=full,
+            kept="kept",
+            ctype="log",
+        )
+    hot = _overlay(tmp_path)
+    assert not hot.exists() or hot.stat().st_size < 4096
+    assert REGRET_KEY not in session.read_session(_overlay(tmp_path))
+    assert len(_state(tmp_path)[REGRET_KEY]) == 200
+    side = regret.table_path(_overlay(tmp_path))
+    assert side.parent.name == "regret" and side.name == _overlay(tmp_path).name
+
+
+def test_show_marks_the_sidecar_table(tmp_path: Path) -> None:
+    _track(tmp_path, "d1", recovery_id="abcdef012345")
+    regret.record_recovery_read(_overlay(tmp_path), "abcdef012345", 50, _env(tmp_path))
+    st = _state(tmp_path)
+    assert st[REGRET_KEY]["d1"]["best"] == 1.0 and st["recovery_read_tokens"] == 50

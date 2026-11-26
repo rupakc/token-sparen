@@ -15,6 +15,7 @@ ladder and (high tier) the user opt-in and ucb gate remove arms deterministicall
 propensity is exact (``learn.propensity``: numerical integral of the win probability) mixed with
 the floor, so off-policy estimates stay unbiased. Decision ids are uuid4. Rewards update only
 the session overlay (``evidence``); ``learn.overlay.fold`` merges them into the project store.
+Decisions awaiting a reward live in a sidecar (``pending_path``), not in the overlay.
 A point paused by the project's circuit breaker (``learn.breaker``) gets the safe arm with
 propensity 1. The engine never raises into a hook: on any error it logs and returns the safe
 arm, propensity 1.0, bucket ``error``.
@@ -59,6 +60,13 @@ _EMPTY = Evidence(0.0, 0.0, 0.0, 0.0)
 
 # A trimming arm's sampling parameters: (arm, S.a, S.b, R.a, R.b), in declared order.
 Cand = tuple[str, float, float, float, float]
+
+
+def pending_path(overlay: Path) -> Path:
+    """Decisions awaiting their reward: a sidecar of the session overlay (a subdirectory, so
+    session scans of ``sessions/*.json`` never see it). Up to ``pending_max`` (500) entries stay
+    out of the overlay that every hook parses and rewrites several times."""
+    return overlay.parent / "pending" / overlay.name
 
 
 def _is_num(value: object) -> bool:
@@ -331,7 +339,7 @@ class Engine:
             state[PENDING_KEY] = pending
             return state
 
-        jsonstore.update(self._overlay, fn, {}, self._env)
+        jsonstore.update(pending_path(self._overlay), fn, {}, self._env)
 
     # --- reward -------------------------------------------------------------------------------
 
@@ -380,7 +388,8 @@ class Engine:
         if not values or self._overlay is None:
             return
         path = self._overlay
-        found = self._pending(jsonstore.read(path, {}, self._env), decision_id)
+        side = pending_path(path)
+        found = self._pending(jsonstore.read(side, {}, self._env), decision_id)
         if found is None:
             return  # nothing to update: skip the locked write
         repeat = sorted(k for k in values if k in _received(found[3]))
@@ -397,19 +406,34 @@ class Engine:
         cap = cap if cap > 0.0 else 50.0
         log: Callable[[str], None] = lambda m: log_error(self._env, "engine", m)  # noqa: E731
 
-        def fn(state: dict[str, Any]) -> dict[str, Any]:
-            found = self._pending(state, decision_id)
+        fresh: dict[Kind, float] = {}
+        where: list[str] = []
+
+        def mark(doc: dict[str, Any]) -> dict[str, Any]:
+            """Claim the kinds first (pending sidecar lock), so a racing or repeated reward can
+            never add the same evidence twice; a crash before the evidence write loses one
+            observation, never doubles it."""
+            fresh.clear()
+            found = self._pending(doc, decision_id)
             if found is None:
-                return state
-            *where, entry = found
+                return doc
+            *at, entry = found
             done = _received(entry)
-            fresh = {k: x for k, x in values.items() if k not in done}  # a racing reward won
+            fresh.update({k: x for k, x in values.items() if k not in done})
             if not fresh:
-                return state
+                return doc
+            where[:] = at
             while len(entry) < 4:
                 entry.append(time.time())
             del entry[4:]
             entry.append(sorted(done | set(fresh)))
+            return doc
+
+        jsonstore.update(side, mark, {}, self._env)
+        if not fresh:
+            return
+
+        def fn(state: dict[str, Any]) -> dict[str, Any]:
             node: dict[str, Any] = state
             for key in (SESSION_KEY, *where):
                 child = node.get(key)
