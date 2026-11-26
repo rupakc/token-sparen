@@ -968,3 +968,19 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   they keep their teeth. E2 calls compressors directly (no gate), so its cases are unchanged.
 - Consequence: the learned pre-trim (`make build` noise etc.) only acts on allowed types; plain
   text noise is now left whole unless the user widens `allow_ctypes`.
+
+## 2026-11-26 Task 24b fix round 1 (controller rulings)
+- `families.is_file_dump` (gating only, conservative) is true if **any** simple command dumps a
+  file: split on `&&`, `||`, `;`, `|`, `&` and newlines (raw command, not normalised: that
+  collapses newlines and truncates at 500 chars); `do`/`then`/... keywords dropped, `for ... in`
+  word lists ignored; `find -exec/-execdir/-ok`, `fd -x` commands; `bash -c` scripts; `xargs
+  <dump>`. A dump program counts only with a file operand (or `< file`): `... | head`, `sed -n
+  1,9p` on a pipe, `jq .` on a pipe and here-documents are not file dumps (per-program option
+  tables; sed/awk/jq skip the script operand unless `-e`/`-f`). Added for gating: `sort`, `uniq`,
+  `cut`, `rev`, `strings`, `tac` with a file operand; `python -c`/`node -e` code containing
+  `open(`, `read_text(`, `read_bytes(`, `readFileSync`, `readFile(`; PowerShell/cmd
+  `Get-Content`, `gc`, `type` (case-insensitive). `command_family` keeps the first program (E1
+  comparability); combined short wrapper options (`sudo -iu U`) fixed for both.
+- `compression.is_file_content` also gates any tool whose name matches (case-insensitive)
+  `read_?file|get_file|file_read|read_text|cat_file|view_file|open_file` (MCP tools included),
+  and `PowerShell`/`pwsh` tool commands go through `is_file_dump`.

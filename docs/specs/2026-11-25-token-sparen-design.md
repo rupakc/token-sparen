@@ -143,6 +143,11 @@ stacktrace are not, for lack of evidence; a project may only remove entries, new
 gate and E1. E1 `--policy default` replays the gate with the static arm; `engine` is gated too;
 `static` and arm names stay ungated. A rerun regret no longer charges a recovery read (its
 tokens are already in the baseline); recovery cost is reported per signal.
+Fix round 1: the gate's file-dump check looks at **every** part of a command (chains, pipes,
+loops, `find -exec`, `bash -c`, `xargs`), counts `sort`/`uniq`/`cut`/`rev`/`strings` on a file,
+`python -c`/`node -e` code that opens a file and PowerShell `Get-Content`/`gc`/`type`; tools
+named like `read_file`/`get_file`/`view_file`/... (MCP included) are file content. E1 families
+keep the first program.
 
 ---
 

@@ -56,9 +56,13 @@ All of this is on by default. Nothing is sent anywhere.
     gcc, javac, ...), build and install logs (npm, pip, gradle, docker build, ...);
   - JSON (API responses, MCP tools, `curl`), `pplx` search results and timestamped logs.
 
-  By default it does **not** trim **file contents** (the Read tool, and shell commands that
-  print a file: `cat`, `head`, `tail`, `sed -n`, `less`, `bat`, `nl`, `awk`, `jq <file>`, `xxd`,
-  `... | xargs cat`, `git show <rev>:<path>`), nor plain text, tables or stack traces from any
+  By default it does **not** trim **file contents**: the Read tool; any tool (MCP included)
+  whose name says it reads a file (`read_file`, `ReadFile`, `get_file_contents`, `file_read`,
+  `read_text`, `cat_file`, `view_file`, `open_file`); and any shell or PowerShell command with a
+  part that prints a file, wherever it sits in a chain, pipe or loop (`cat`, `head`, `tail`,
+  `sed -n`, `less`, `bat`, `nl`, `awk`, `jq <file>`, `xxd`, `sort`/`uniq`/`cut`/`rev`/`strings`
+  on a file, `python -c`/`node -e` code that opens a file, `find -exec cat`, `... | xargs cat`,
+  `git show <rev>:<path>`, `Get-Content`/`gc`/`type`). Nor does it trim plain text, tables or stack traces from any
   tool (Agent/Task and web results included). Those outputs are shown in full and never reach
   the learner. To widen it, in your own `~/.token-sparen/config.toml`, env or `config set` (a
   project file may only narrow it):

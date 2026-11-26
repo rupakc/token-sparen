@@ -214,7 +214,10 @@ def _strip(words: list[str]) -> list[str]:
                 words = words[1:]
                 if opt == "--":
                     break
-                if opt in takes_arg and words:
+                combined = (  # `-iu U`: the last flag of a short-option group takes the arg
+                    len(opt) > 2 and opt[1] != "-" and "=" not in opt and f"-{opt[-1]}" in takes_arg
+                )
+                if (opt in takes_arg or combined) and words:
                     words = words[1:]
             words = words[_POSITIONAL.get(head, 0) :]
         elif head in _RUNNERS and len(words) > 1 and words[1] == _RUNNERS[head]:
@@ -367,6 +370,126 @@ def _family(cmd: str, depth: int) -> str:
     return family
 
 
+# ----------------------------------------------------------------------- gating (any segment)
+
+# Programs that print a file when given a file argument (the options that take a separate value).
+_FILE_ARG: dict[str, frozenset[str]] = {
+    "sort": frozenset({"-k", "-t", "-o", "-S", "-T", "--key", "--field-separator", "--output"}),
+    "uniq": frozenset({"-f", "-s", "-w"}),
+    "cut": frozenset({"-d", "-f", "-c", "-b", "--delimiter", "--fields"}),
+    "rev": frozenset(),
+    "strings": frozenset({"-n", "-t", "-e"}),
+    "tac": frozenset({"-s"}),
+}
+# File-dump programs: (options taking a value, leading script operands, options that replace the
+# script operand). Without a file operand they read stdin (`... | head`), which is not a file dump.
+_N = frozenset({"-n", "-c", "--lines", "--bytes"})
+_DUMP_ARGS: dict[str, tuple[frozenset[str], int, frozenset[str]]] = {
+    "head": (_N, 0, frozenset()),
+    "tail": (_N | {"-s", "--pid"}, 0, frozenset()),
+    "sed": (frozenset({"-e", "-f", "-l"}), 1, frozenset({"-e", "-f"})),
+    "awk": (frozenset({"-F", "-v", "-f"}), 1, frozenset({"-f"})),
+    "jq": (frozenset({"-f", "--indent", "--arg", "--argjson"}), 1, frozenset({"-f"})),
+    "bat": (frozenset({"-l", "-r", "-H", "--language", "--line-range"}), 0, frozenset()),
+    "xxd": (frozenset({"-l", "-s", "-c", "-g"}), 0, frozenset()),
+    "od": (frozenset({"-N", "-j", "-t", "-A", "-w"}), 0, frozenset()),
+    "hexdump": (frozenset({"-n", "-s", "-e"}), 0, frozenset()),
+    "nl": (frozenset({"-w", "-s", "-b", "-v", "-i"}), 0, frozenset()),
+}
+_PS_DUMP = frozenset({"get-content", "gc", "type"})  # PowerShell / cmd.exe
+_CODE_READS = re.compile(r"\bopen\s*\(|read_text\s*\(|read_bytes\s*\(|readFileSync|readFile\s*\(")
+_CODE_FLAGS = {"python": ("-c",), "node": ("-e", "-p", "--eval", "--print")}
+_KEYWORDS = frozenset({"do", "then", "else", "elif", "if", "while", "until", "{", "}", "!", "done"})
+_LOOP_HEADS = frozenset({"for", "select", "case"})
+_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+
+
+def _all_segments(cmd: str) -> list[list[str]]:
+    """Every simple command, split on any separator and on newlines."""
+    return [words for words, _sep in _segments(cmd.replace("\n", " ; "))]
+
+
+def _has_file_arg(
+    words: list[str],
+    takes_arg: frozenset[str],
+    script: int = 0,
+    script_opts: frozenset[str] = frozenset(),
+) -> bool:
+    """A file operand after options (and ``script`` leading script operands, none when one of
+    ``script_opts`` was given), or a ``< file`` redirection; a here-document is not a file."""
+    rest = words[1:]
+    operands = 0
+    skip = script
+    only_operands = False
+    while rest:
+        w = rest[0]
+        rest = rest[1:]
+        if w in ("<<", "<<<", "<<-", ">", ">>", "2>", "&>") or w.endswith(">"):
+            rest = rest[1:]  # here-doc / output redirection and its word
+            continue
+        if w == "<":
+            return bool(rest)  # stdin from a file
+        if w == "--" and not only_operands:
+            only_operands = True
+            continue
+        if not only_operands and w.startswith("-") and len(w) > 1:
+            if w in script_opts:
+                skip = 0
+            if w in takes_arg and rest:
+                rest = rest[1:]
+            continue
+        operands += 1
+        if operands > skip:
+            return True
+    return False
+
+
+def _code_reads_file(prog: str, words: list[str]) -> bool:
+    kind = "python" if _PY.fullmatch(prog) else prog if prog in ("node", "deno", "bun") else ""
+    flags = _CODE_FLAGS.get("node" if kind in ("deno", "bun") else kind, ())
+    for i, w in enumerate(words[1:-1], start=1):
+        if w in flags and _CODE_READS.search(words[i + 1]):
+            return True
+    return False
+
+
+def _segment_dumps(words: list[str], depth: int) -> bool:
+    while words and words[0] in _KEYWORDS:
+        words = words[1:]  # `do cat x`, `then tail x`
+    if not words or words[0] in _LOOP_HEADS:
+        return False  # `for f in a b`: a word list, not a command
+    piped_args = os.path.basename(words[0]) == "xargs"
+    words = _strip(words)
+    if not words:
+        return False
+    prog = os.path.basename(words[0])
+    low = prog.lower()
+    if low in _PS_DUMP:
+        return True
+    if prog in _SHELLS:
+        script = _shell_script(words)
+        return script is not None and depth < MAX_DEPTH and _any_dump(script, depth + 1)
+    if prog in ("find", "fd"):
+        for i, w in enumerate(words):
+            if w in _EXEC or w in ("-x", "-X", "--exec", "--exec-batch"):
+                if _segment_dumps(words[i + 1 :], depth):
+                    return True
+    if prog in _FILE_ARG:
+        return _has_file_arg(words, _FILE_ARG[prog])
+    if prog in _DUMP:
+        if piped_args:
+            return True  # `xargs cat`: the operands come from the pipe
+        takes, operands, script_opts = _DUMP_ARGS.get(prog, (frozenset(), 0, frozenset()))
+        return _has_file_arg(words, takes, operands, script_opts)
+    if _code_reads_file(prog, words):
+        return True
+    return _classify(words, depth) == "file_dump"
+
+
+def _any_dump(cmd: str, depth: int) -> bool:
+    return any(_segment_dumps(w, depth) for w in _all_segments(cmd))
+
+
 def command_family(cmd: str) -> str:
     """One of ``FAMILIES`` for a shell command; ``other`` when unknown or unparsable."""
     if not isinstance(cmd, str) or not cmd.strip():
@@ -375,5 +498,13 @@ def command_family(cmd: str) -> str:
 
 
 def is_file_dump(cmd: str) -> bool:
-    """True when the command prints a file's contents (``file_dump`` family)."""
-    return command_family(cmd) == "file_dump"
+    """For gating only (conservative): True when **any** simple command of ``cmd`` prints a
+    file's contents. Every segment counts (split on ``&&``, ``||``, ``;``, ``|``, ``&`` and
+    newlines; ``do``/``then`` bodies; ``find -exec``/``fd -x`` commands; ``bash -c`` scripts;
+    ``xargs <dump>``): the file-dump family, ``sort``/``uniq``/``cut``/``rev``/``strings``/``tac``
+    with a file argument, ``python -c``/``node -e`` code that reads a file (``open(``,
+    ``read_text(``, ``readFileSync`` ...) and PowerShell/cmd ``Get-Content``/``gc``/``type``.
+    ``command_family`` keeps the first program (E1 comparability)."""
+    if not isinstance(cmd, str) or not cmd.strip():
+        return False
+    return _any_dump(cmd, 0)  # not normalised: that collapses newlines and truncates

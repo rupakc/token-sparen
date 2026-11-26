@@ -90,3 +90,89 @@ def test_replay_reexports_the_shared_classifier() -> None:
     from token_sparen.replay import replay
 
     assert replay.command_family is families.command_family
+
+
+# ------------------------------------------------------------- gating: any segment (fix round 1)
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "wc -l app.log && tail -n 3000 app.log",
+        "ls -la logs && cat logs/app.log",
+        "pwd && cat app.log",
+        "git status; cat app.log",
+        "git status\ncat app.log",
+        "make || cat build.log",
+        'for f in *.log; do cat "$f"; done',
+        'while read f; do cat "$f"; done < list.txt',
+        "if [ -f a.log ]; then tail -n 500 a.log; fi",
+        "find . -name '*.log' -exec cat {} \\;",
+        "find . -name '*.log' -exec tail -n 100 {} +",
+        "find . -type f -execdir head -50 {} \\;",
+        "sudo -iu app cat /srv/app.log",
+        "sudo -u app -i cat /srv/app.log",
+        "sort data.csv",
+        "uniq -c counts.txt",
+        "cut -d, -f1,3 data.csv",
+        "cut -d ' ' -f 2 data.txt",
+        "rev notes.txt",
+        "strings -n 8 binary.bin",
+        "tac app.log",
+        "python3 -c \"print(open('app.log').read())\"",
+        "python -c 'import pathlib; print(pathlib.Path(\"a.json\").read_text())'",
+        "node -e \"console.log(require('fs').readFileSync('a.json', 'utf8'))\"",
+        "bash -c 'pwd && cat app.log'",
+        "ls | xargs cat",
+        "cat < app.log",
+        "sed -n '1,400p' big.py",
+        "sed -e 's/a/b/' big.py",
+        "awk '{print $1}' data.txt",
+        "jq . package.json",
+        "head -50 big.py",
+        "Get-Content app.log",
+        "gc app.log -Tail 3000",
+        "type app.log",
+        "cd x && echo start && GET-CONTENT -Path app.log",
+    ],
+)
+def test_gating_file_dump_in_any_segment(cmd: str) -> None:
+    assert families.is_file_dump(cmd) is True
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "pytest -q && git diff",
+        "git log | sort -k2",
+        "cat <<EOF | wc -l",  # a here-document is not a file
+        "pytest -q | tail -n 50",
+        "git log | head -100",
+        "curl -s https://example.org | jq .",
+        "kubectl logs pod | sed -n '1,100p'",
+        "ps aux | sort -k3 | head",
+        "git diff | cut -c1-80",
+        "python3 -c 'print(1 + 1)'",
+        "node -e 'console.log(42)'",
+        "for i in 1 2 3; do echo $i; done",
+        "find . -name '*.py' -exec wc -l {} +",
+        "npm test || echo failed",
+        "",
+        "'unbalanced",
+    ],
+)
+def test_gating_not_a_file_dump(cmd: str) -> None:
+    assert families.is_file_dump(cmd) is False
+
+
+@pytest.mark.parametrize(
+    ("cmd", "family"),
+    [
+        ("wc -l app.log && tail -n 3000 app.log", "listing"),  # replay keeps the first program
+        ("pwd && cat app.log", "other"),
+        ("sort data.csv", "other"),
+        ("sudo -iu app cat /srv/app.log", "file_dump"),  # combined short options fixed
+    ],
+)
+def test_replay_family_stays_first_program(cmd: str, family: str) -> None:
+    assert families.command_family(cmd) == family

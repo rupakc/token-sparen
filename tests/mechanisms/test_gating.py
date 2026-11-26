@@ -354,3 +354,52 @@ def test_invalid_allow_ctypes_falls_back_to_defaults(tmp_path: Path, raw: Any) -
         assert allowed == frozenset({"text"})  # non-strings dropped
     else:
         assert allowed == frozenset(compression.DEFAULT_ALLOW_CTYPES)
+
+
+# --------------------------------------------------------------------------- fix round 1
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "wc -l app.log && tail -n 3000 app.log",
+        'for f in *.log; do cat "$f"; done',
+        "find . -name '*.log' -exec cat {} \\;",
+        "python3 -c \"print(open('app.log').read())\"",
+    ],
+)
+def test_chained_and_looped_dumps_of_an_allowed_type_untouched(tmp_path: Path, cmd: str) -> None:
+    ev = _bash(tmp_path, cmd, big_log())
+    assert detect(big_log(), ev.tool) == "log"
+    _untouched(tmp_path, ev)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "mcp__fs__read_file",
+        "mcp__files__ReadFile",
+        "mcp__repo__get_file_contents",
+        "mcp__x__file_read",
+        "mcp__x__read_text_file",
+        "mcp__x__cat_file",
+        "mcp__editor__view_file",
+        "mcp__editor__open_file",
+        "read_file",
+    ],
+)
+def test_file_reading_tools_are_file_content(tmp_path: Path, name: str) -> None:
+    ev = _event(tmp_path, _tool(name, {"path": "a.log"}), big_log())
+    assert compression.gated(ev, "log", _cfg(tmp_path)) == "file_content"
+    _untouched(tmp_path, ev)
+
+
+def test_other_mcp_tools_are_not_file_content(tmp_path: Path) -> None:
+    ev = _event(tmp_path, _tool("mcp__api__list_users", {}), big_json())
+    assert compression.gated(ev, "json", _cfg(tmp_path)) is None
+
+
+@pytest.mark.parametrize("cmd", ["Get-Content app.log", "gc app.log", "type app.log"])
+def test_powershell_tool_dumps_are_file_content(tmp_path: Path, cmd: str) -> None:
+    ev = _event(tmp_path, _tool("PowerShell", {"command": cmd}), big_log())
+    assert compression.gated(ev, "log", _cfg(tmp_path)) == "file_content"
