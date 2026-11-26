@@ -145,3 +145,44 @@ def test_fact_id_is_sha1_prefix() -> None:
     assert len(a) == 12 and all(c in "0123456789abcdef" for c in a)
     assert a == fact_id(Fact("test_command", "tests", "pytest", frozenset()))
     assert a != fact_id(_f("pytest -q"))
+
+
+# --------------------------------------------------------------------------- fix round 1
+ARGV_SECRETS = [
+    "mysql -pS3cretPw",
+    "mysql -u root -pS3cretPw shop",
+    "psql -pHunter2",
+    "mariadb -ptopsecret db",
+    "app --password=Hunter2pw",
+    "app --passwd:Hunter2pw",
+    "app --token=abc",
+    "cli --api-key=abc",
+    "cli --api_key:abc",
+    "cli --apikey=abc",
+    "cli --auth=abc",
+    "cli --credentials=x",
+    "cli Bearer:abc",
+    "PASSWORD=x make",
+    "DB_PWD=x make",
+    "mysql -u admin:pa55word@db",
+    "git clone admin:pw@host",
+    "deploy sk_live_abc123",
+    "deploy sk_test_abc123",
+    "git glpat-abc123",
+    "maps AIzaSyA0",
+    "x npm_abc123",
+    "slack xapp-1-abc",
+    "slack xoxb-1",
+    "slack xoxp-1",
+    "gh ghs_abc",
+    "gh github_pat_abc",
+]
+
+
+@pytest.mark.parametrize("bad", ARGV_SECRETS)
+def test_sanitize_rejects_secrets_in_argv(bad: str) -> None:
+    assert sanitize(_f(bad)) is None
+
+
+def test_sanitize_keeps_plain_mysql_prompt_flag() -> None:
+    assert sanitize(_f("mysql -p shop")) is not None

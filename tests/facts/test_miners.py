@@ -138,7 +138,7 @@ def test_miner_requires_env(tmp_path: Path) -> None:
     assert sorted(_kinds(facts, "requires_env")) == [
         ("make run", "REDIS_HOST"),
         ("npm test", "DATABASE_URL"),
-        ("python app.py", "API_TOKEN"),
+        ("python", "API_TOKEN"),
     ]
     assert all(secret not in f.value and secret not in f.subject for f in facts)
 
@@ -336,3 +336,33 @@ def test_mining_ignores_sidechains_and_bad_input(tmp_path: Path) -> None:
 def test_session_digest_is_blake2b_8() -> None:
     d = miners.session_digest("abc")
     assert len(d) == 16 and d != "abc" and d == miners.session_digest("abc")
+
+
+# --------------------------------------------------------------------------- fix round 1
+def test_requires_env_and_build_first_keep_program_and_subcommand_only(tmp_path: Path) -> None:
+    log = (
+        Log()
+        .prompt()
+        .bash("mysql -u admin -pS3cretPw shop", "MYSQL_HOST is not set", err=True)
+        .bash("MYSQL_HOST=db mysql -u admin -pS3cretPw shop")
+        .bash("make test ARGS=x1", "1 failed", err=True)
+        .bash("make build OPT=fast")
+        .bash("make test ARGS=x1")
+        .bash("npm test -- --grep slow", "failed", err=True)
+        .bash("npm run build -- --prod")
+        .bash("npm test -- --grep slow")
+    )
+    facts = _mine(tmp_path, log)
+    assert _kinds(facts, "requires_env") == [("mysql", "MYSQL_HOST")]
+    assert sorted(_kinds(facts, "build_first")) == [
+        ("make test", "make build"),
+        ("npm test", "npm run build"),
+    ]
+    assert all("S3cret" not in f.subject + f.value for f in facts)
+
+
+def test_program_of_compound_command_is_empty() -> None:
+    assert miners._program("cd sub && make test") == ""
+    assert miners._program("python -m pytest -q") == "python -m pytest"
+    assert miners._program("yarn run lint --fix") == "yarn run lint"
+    assert miners._program("mysql -u x") == "mysql"

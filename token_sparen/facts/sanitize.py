@@ -33,6 +33,15 @@ _SECRET = re.compile(
     r"|AKIA|ASIA"  # AWS access key ids
     r"|(?<![A-Za-z0-9])xox"  # Slack tokens
 )
+# Credentials passed on the command line: a credential-named option or assignment with a value,
+# user:password@host, and well-known token prefixes.
+_ARGV_SECRET = re.compile(
+    r"(?i:(?:pass(?:word)?|passwd|pwd|token|secret|api[-_]?key|auth|cred|bearer)[^ ]*[=:])"
+    r"|[^ ]+:[^ ]+@"
+    r"|(?<![A-Za-z0-9])(?:sk_live_|sk_test_|glpat-|AIza|npm_|xapp-|xoxb-|xoxp-|ghs_|github_pat_)"
+)
+_PW_CLIENTS = frozenset({"mysql", "psql", "mariadb"})
+_SHORT_PW = re.compile(r"-p.+")
 _DRIVE = re.compile(r"^[A-Za-z]:")
 _VAR_NAME = re.compile(r"[A-Z][A-Z0-9_]{2,}")
 
@@ -92,8 +101,13 @@ def _clean(text: object, project_dir: str | None) -> bool:
         return False
     if _TOKENS.fullmatch(text) is None:  # also rejects ; | & > < $ quotes and whitespace runs
         return False
-    if _INSTRUCTION.search(text) or _SECRET.search(text):
+    if _INSTRUCTION.search(text) or _SECRET.search(text) or _ARGV_SECRET.search(text):
         return False
+    tokens = text.split(" ")
+    if any(posixpath.basename(t) in _PW_CLIENTS for t in tokens) and any(
+        _SHORT_PW.fullmatch(t) for t in tokens
+    ):
+        return False  # mysql -pSECRET
     return _paths_ok(text, project_dir)
 
 

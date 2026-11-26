@@ -126,6 +126,27 @@ def _launches(head: list[str], program: str) -> bool:
     return len(pre) == 2 and _PYTHON.fullmatch(pre[0]) is not None and pre[1] == "-m"
 
 
+_SUBCOMMAND = re.compile(r"[a-z][a-z0-9:_-]*")
+_RUNNERS = frozenset({"npm", "pnpm", "yarn", "bun"})
+
+
+def _program(norm: str) -> str:
+    """Program + subcommand only (``mysql``, ``make build``, ``npm run build``,
+    ``python -m pytest``): options, files and arguments, which may carry secrets, are dropped.
+    Empty (no fact) for a compound command (``cd x && ...``, pipes)."""
+    if not _simple(norm):
+        return ""
+    words = norm.split(" ")
+    if len(words) >= 3 and _PYTHON.fullmatch(words[0]) and words[1] == "-m":
+        return " ".join(words[:3])
+    if len(words) >= 3 and words[0] in _RUNNERS and words[1] == "run":
+        if _SUBCOMMAND.fullmatch(words[2]):
+            return " ".join(words[:3])
+    if len(words) >= 2 and _SUBCOMMAND.fullmatch(words[1]):
+        return " ".join(words[:2])
+    return words[0]
+
+
 def _error_text(text: str) -> str:
     if len(text) <= 2 * ERROR_SCAN_CHARS:
         return text
@@ -259,7 +280,7 @@ class _Miner:
                 if norm in self.failed_tests and self.prev is not None:
                     pnorm, pok, pfam = self.prev
                     if pok and pfam == "build":
-                        self.emit("build_first", norm, pnorm)
+                        self.emit("build_first", _program(norm), _program(pnorm))
                 self.failed_tests.discard(norm)
         else:
             err = _error_text(text)
@@ -299,7 +320,7 @@ class _Miner:
             left: list[tuple[str, str]] = []
             for fnorm, name in self.env_waits:
                 if base == fnorm and (name in own or name in self.exported):
-                    self.emit("requires_env", fnorm, name)
+                    self.emit("requires_env", _program(fnorm), name)
                 else:
                     left.append((fnorm, name))
             self.env_waits = left
