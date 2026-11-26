@@ -64,7 +64,8 @@ NOTES = {
     "optimistic; use --holdout-after to evaluate only later decisions",
     "regret": "settled regret joins from the log's outcome lines by decision id (recovery read, "
     "re-run, asking for elided content: > 0; window expiry, session end, eviction, a trimming "
-    "no-op: 0); regret_known_fraction = evaluated decisions with a joined outcome; a decision "
+    "no-op: 0); regret_known_fraction = evaluated trimming (non-safe-arm) decisions with a "
+    "joined outcome (1.0 when none needs one); a decision "
     "still unsettled (or whose outcome was lost) counts as regret 0",
 }
 N_BOOT = 1000
@@ -82,6 +83,7 @@ class Estimate:
     unsupported: int  # decisions with logging propensity <= 0
     no_context: int
     regret_known: int
+    needs_outcome: int
     rows: int = -1  # decisions the value is normalised over (-1: all n)
     conditional: bool = False  # SNIPS: value conditional on support (not the target's value)
 
@@ -167,6 +169,12 @@ def tau_for(point_name: str, tau: Mapping[str, float] | None = None) -> float:
     return taus.get(point.tier, 0.0) if point is not None else 0.0
 
 
+def _trims(rec: DecisionRecord) -> bool:
+    """A logged non-safe arm: a decision that should get a settled regret outcome."""
+    point = get_point(rec.point)
+    return point is None or rec.arm != point.safe_arm
+
+
 def reward(
     rec: DecisionRecord,
     regret: float | None,
@@ -242,7 +250,8 @@ class _Terms:
     unsupported: int = 0
     unsupported_mass: float = 0.0
     no_context: int = 0
-    regret_known: int = 0
+    regret_known: int = 0  # decisions needing an outcome (non-safe arm) that have one
+    needs_outcome: int = 0  # evaluated decisions with a non-safe arm
 
 
 def _terms(
@@ -262,7 +271,9 @@ def _terms(
             continue
         t.n += 1
         known = regrets.get(rec.decision_id)
-        t.regret_known += known is not None
+        if _trims(rec):
+            t.needs_outcome += 1
+            t.regret_known += known is not None
         pi_a = float(probs.get(rec.arm, 0.0))
         p = rec.propensity
         if not isinstance(p, int | float) or not math.isfinite(p) or p <= 0.0:
@@ -324,6 +335,7 @@ def _estimate(t: _Terms, value: float, ci: tuple[float, float]) -> Estimate:
         unsupported=t.unsupported,
         no_context=t.no_context,
         regret_known=t.regret_known,
+        needs_outcome=t.needs_outcome,
     )
 
 
@@ -495,7 +507,9 @@ def evaluate(
             "unsupported": e_ips.unsupported,
             "unsupported_mass": round(e_ips.unsupported_mass, 6),
             "clipped_fraction": round(e_ips.clipped_fraction, 6),
-            "regret_known_fraction": round(e_ips.regret_known / e_ips.n, 6) if e_ips.n else 0.0,
+            "regret_known_fraction": (
+                round(e_ips.regret_known / e_ips.needs_outcome, 6) if e_ips.needs_outcome else 1.0
+            ),
             "ips": e_ips.to_dict(),
             "snips": e_snips.to_dict(),
             "dr": e_dr.to_dict(),

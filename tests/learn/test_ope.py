@@ -447,3 +447,13 @@ def test_ope_cli_uses_the_configured_tau(tmp_path: Path, monkeypatch: pytest.Mon
     assert cli.main(["ope", "--log", str(log), "--target", "static", "--out", str(out)]) == 0
     point = json.loads(out.read_text(encoding="utf-8"))["points"]["compression"]
     assert point["tau"] == 0.001
+
+
+def test_regret_known_fraction_counts_only_decisions_needing_an_outcome() -> None:
+    log = [_rec(f"s{i}", "off", 0.5, CTX[0]) for i in range(6)]  # safe arm: no outcome ever
+    log += [_rec(f"t{i}", "standard", 0.5, CTX[0]) for i in range(4)]
+    regrets = {"t0": 0.0, "t1": 1.0, "t2": 0.0}
+    res = ope.evaluate(log, StaticPolicy({}), regrets=regrets, n_boot=10)["compression"]
+    assert res["regret_known_fraction"] == 0.75  # 3 of the 4 trimming decisions
+    only_safe = ope.evaluate(log[:6], StaticPolicy({}), n_boot=10)["compression"]
+    assert only_safe["regret_known_fraction"] == 1.0  # nothing needs an outcome
