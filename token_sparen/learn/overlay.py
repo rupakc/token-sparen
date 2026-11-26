@@ -31,6 +31,11 @@
    update applies the session's outcome to each fact's lifecycle (``facts.lifecycle``).
    Mining never runs in a hook: SessionStart spawns the fold of a session that has a
    transcript instead of folding it in-process. A mining failure is logged, the fold goes on;
+5a'. **tool pruning** (``mechanisms.prune``, opt-in): the same transcript (and its subagent
+   transcripts) adds per-tool "available but unused" evidence to ``projects/<key>/prune.json``,
+   restores a pruned tool the session tried to use, and, when the project is idle, writes the
+   deny rules of the candidates that clear the high-tier gate (else marks them pending for the
+   next idle session start). Never raises but ``StoreBusy``; any other failure is logged;
 5b. **outcome backfill**: staged outcome rows whose live ``decisions.jsonl`` outcome line was
    lost (busy or failing log) are appended, deduplicated by decision id against both log
    generations (the log's lock is taken alone, after the pre-trim step);
@@ -41,7 +46,7 @@ so a re-run after a crash between steps applies nothing twice; re-folding a fold
 finds nothing staged. **Lock order** (``LOCK_ORDER``), the same everywhere: the project's
 ``posteriors.json`` lock is held for the whole fold (it serialises folds of a project); under
 it ``breaker.json``, then ``global/posteriors.json``, then ``pretrim.json``, then
-``facts.json``, then the session
+``facts.json``, then ``prune.json``, then the session
 overlay, then ``pending.json`` (the pending-fold index, ``learn.pending``) are taken one at a
 time, each innermost. Hooks only ever take the overlay or the index lock alone, so no cycle is
 possible.
@@ -79,6 +84,7 @@ from token_sparen.learn.hierarchy import (
 )
 from token_sparen.learn.policy import DecisionPoint, get_point
 from token_sparen.learn.regret import OUTCOMES_KEY
+from token_sparen.mechanisms import prune
 from token_sparen.store import jsonstore, session
 from token_sparen.store.paths import project_dir_for
 
@@ -88,6 +94,7 @@ LOCK_ORDER = (
     "global/posteriors.json",
     "pretrim.json",
     "facts.json",
+    "prune.json",
     "overlay",
     "pending.json",
 )
@@ -145,6 +152,7 @@ class FoldReport:
     aged: int = 0  # global entries halved for age
     skipped: int = 0  # invalid session evidence entries (point / bucket / arm) not merged
     facts: int = 0  # candidate repository facts mined from the session and recorded
+    pruned: list[str] = field(default_factory=list)  # deny rules written by this fold
     tripped: list[str] = field(default_factory=list)
     reentered: list[str] = field(default_factory=list)
 
@@ -157,6 +165,8 @@ class FoldReport:
         )
         if self.facts:
             text += f", {self.facts} fact candidates"
+        if self.pruned:
+            text += f", pruned {', '.join(self.pruned)}"
         if self.aged:
             text += f", {self.aged} global entries aged"
         if self.tripped:
@@ -424,6 +434,7 @@ def _fold(
         _pretrim(rep, fid, outcomes, pdir, params, now, env, timeout)
         mined = _mine_facts(rep.session_id, fid, staged, pdir, now, env, timeout, params)
         rep.facts = max(0, mined)
+        rep.pruned = _prune(fid, staged, home, key, params, env, timeout)
         rep.backfilled = _backfill(staged.get("outcomes"), pdir, params, env)
 
         # Clear and un-index under one overlay lock: a hook that adds evidence either ran
@@ -542,6 +553,35 @@ def _mine_facts(
     except Exception as exc:  # noqa: BLE001 - fail open: facts are optional
         log_error(env, "fold", f"facts: {type(exc).__name__}: {exc}")
         return MINING_FAILED
+
+
+def _prune(
+    fid: str,
+    staged: Mapping[str, Any],
+    home: Path,
+    key: str,
+    params: Mapping[str, Any] | None,
+    env: Mapping[str, str],
+    timeout: float | None,
+) -> list[str]:
+    """Step 5a': opt-in tool pruning (``mechanisms.prune``); never raises but StoreBusy."""
+    try:
+        return prune.fold_session(
+            fid,
+            staged,
+            home,
+            key,
+            params=params,
+            env=env,
+            timeout=timeout,
+            transcript_key=TRANSCRIPT_KEY,
+            project_dir_key=PROJECT_DIR_KEY,
+        )
+    except jsonstore.StoreBusy:
+        raise
+    except Exception as exc:  # noqa: BLE001 - fail open: pruning is optional
+        log_error(env, "fold", f"prune: {type(exc).__name__}: {exc}")
+        return []
 
 
 def _reset(points: dict[str, Any], name: str, scale: float) -> None:

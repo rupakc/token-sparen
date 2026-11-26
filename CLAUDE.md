@@ -6,15 +6,16 @@ statusline, extensions. M2 (in progress): one learning engine (contextual Thomps
 with a quality constraint) steers every hook decision (`learn/hookpolicy.py`, built lazily per
 hook; `[learn] enabled = false` -> `StaticPolicy`), with regret detection, session fold and
 circuit breaker; `replay` (E1) and `ope` (E3) evaluate offline into private reports. M3: repo-fact
-learning (miners, lifecycle bandit, SessionStart injection) is in; tool pruning is planned
-(`prune` is a CLI stub). North star: maximise tokens saved subject to no measurable quality loss.
+learning (miners, lifecycle bandit, SessionStart injection) and opt-in tool pruning
+(`mechanisms/prune.py`, deny rules via `adapters/claude/settings.py`) are in. North star:
+maximise tokens saved subject to no measurable quality loss.
 Spec: `docs/specs/2026-11-25-token-sparen-design.md`. Plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`.
 Decisions: `MEMORY.md`.
 
 ## Layout
 - `token_sparen/` core (stdlib only): `cli.py events.py config.py estimate.py transcript.py emit.py recovery.py extensions.py`
   - `store/` JSON+JSONL state, `compress/` compressors, `mechanisms/` decision-point mechanisms
-    (compression, guards, read_dedupe, governor, boundary, subagent, tracking)
+    (compression, guards, read_dedupe, governor, boundary, subagent, tracking, prune)
   - `learn/` policy, decision log, engine, regret, session fold (`overlay`), circuit `breaker`,
     `ope` (off-policy evaluation)
   - `replay/` E1 offline replay and the private report writer (`--out` outside any git tree)

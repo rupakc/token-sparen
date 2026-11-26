@@ -1227,3 +1227,45 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   `_checker` also treats npm/pnpm/yarn/bun scripts (`run X` or direct `yarn X`) and make/just/
   task targets matching lint|typecheck|type-check|check|clippy|format|fmt|vet|style, plus
   `cargo clippy|fmt|vet`, `go vet|fmt`, as non-regenerating.
+
+## 2026-11-27 Task 27: opt-in tool pruning with in-session recovery
+- `mechanisms/prune.py` (host-neutral) + `adapters/claude/settings.py` (`ClaudeDenyWriter`,
+  registered into `prune.WRITER` on import; entry and the `fold`/`prune` CLI import it). Store
+  `projects/<key>/prune.json`: `enabled` (project opt-in), `tools` {rule: s, p, r=[a, b, n]},
+  `used`, `known` (listed names, fallback for sessions without a list), `owned` (rules we wrote),
+  `foreign` (rules the user already had: skipped, never owned), `created` (dir/file/permissions/
+  deny we created, for the exact revert), `kept` {rule: reason}, `pending`, `notices`, `applied`
+  fold ids. Lock order: after `facts.json`, before the overlay.
+- Enabling: `prune enable` (store) or user/env `[prune] enabled = true`; project file: `enabled`
+  and every threshold user-only, `allow` false_only (off + revert at next fold / session start).
+  No evidence is collected and no file is created until enabled.
+- Tool list: Claude Code interactive transcripts have no documented tool list; we read the SDK
+  `system/init.tools` record and `attachment.deferred_tools_delta` (`addedNames` minus
+  `removedNames`) when present (both observed/undocumented formats; a missing list falls back
+  to the project's `known` names from other sessions). Subagent transcripts
+  (`<stem>/subagents/*.jsonl`, <= 50) add uses.
+- Evidence: a session with prompts > 0 adds s += 1, p += prompts and `prompts` zero-regret
+  observations (closed form, cap 1000) to each candidate available and unused. Gate: s >= 3,
+  p >= 15, ucb(0.95) <= tau 0.01 (prior Beta(1, 1): ~300 unused prompts). Protected: brief list
+  + ToolSearch, Task* prefix, plan mode, SendMessage, MultiEdit, LS, ever-used tools/servers,
+  `kept`. MCP: server-level rules only.
+- Apply: idle = `tracking.last_active` older than idle_minutes (60). Fold applies when idle,
+  else `pending`; SessionStart (`_on_prune_start`, before `_on_session_active`) applies a pending
+  plan when the gap before this session was idle. Restores never wait.
+- Recovery detection (owner ruling asked "PermissionDenied if documented"): PermissionDenied is
+  documented for auto-mode denials only and a bare-denied tool is absent from the model's list,
+  so direct-use handlers (PreToolUse, PostToolUseFailure incl. "No such tool available: X",
+  PermissionDenied - new hook) are defensive. The realistic paths: ToolSearch query naming a
+  pruned tool (PostToolUse; restore + additionalContext "run ToolSearch again"), user prompt
+  naming it (name, camel words "web search", MCP server full name or last segment >= 4 chars),
+  fold transcript scan, a rule the user deleted. Each: rule removed, regret 1.0, `kept`.
+- Writer: strict JSON object (else refuse), `permissions`/`deny` shape checked, one pristine
+  backup `settings.local.json.token-sparen.bak`, stamp re-check with one retry, removes the last
+  occurrence of an owned rule only; cleanup on the last owned rule removes containers/file/dir we
+  created (if empty) and drops our backup when it equals the file. `git ls-files` tracked ->
+  never written (notice); untracked and not ignored -> notice to add it to .gitignore (never
+  edited). git runs with a 2 s timeout, only when applying.
+- `restore <tool>` / `restore --all`: regret 1.0 and kept for good (user said the tool is
+  needed); `disable` and the `allow = false` revert: no regret, not kept. Savings: count only
+  (`⊘ N` statusline segment `pruned`, `stats` line, `pruned_tools` in stats JSON).
+

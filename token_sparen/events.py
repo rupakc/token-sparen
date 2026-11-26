@@ -17,6 +17,7 @@ EventKind = Literal[
     "post_tool_failure",
     "pre_compact",
     "session_end",
+    "permission_denied",
     "statusline",
 ]
 

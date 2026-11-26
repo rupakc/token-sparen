@@ -227,9 +227,15 @@ Everything stays on your machine, but some of it is plain text you should know a
   - `global/posteriors.json`: numbers only (evidence pooled across projects, keyed by decision
     point, feature bucket and arm, plus recent fold ids per salted project tag); no paths,
     commands, project keys or session ids. `secret` (random, mode 0600) salts those tags.
+  - `projects/<key>/prune.json` (only once you run `token-sparen prune enable` or enable pruning
+    in your own config): whether pruning is enabled here, **tool names** (built-in and MCP)
+    the project's sessions listed and used, per candidate tool counts of sessions and prompts and
+    a learned regret posterior (numbers), the deny rules token-sparen wrote and the path of the
+    settings file it wrote them to, tools restored once, and pending notices.
 - Claude Code `settings.json`: **only** if you run `token-sparen statusline install` (see below),
-  with a backup and exact restore. Pruning tools from your settings is planned (M3) and will be
-  opt-in too.
+  with a backup and exact restore.
+- `<project>/.claude/settings.local.json`: **only** if you opt in to
+  [tool pruning](#tool-pruning-opt-in), with a backup and exact restore.
 - Hooks fail open: any internal error or a hook slower than 400 ms returns "no change" and logs one
   line to `errors.jsonl`.
 
@@ -378,8 +384,55 @@ cannot turn learning off, so a project that wants less trimming sets
 project (and, weighted 0.3, into a cross-project global store that forgets after 90 idle days);
 sessions it missed are folded at the next session start. A circuit breaker pauses a decision point
 for the project for 3 sessions when the learner's recent trims clearly caused re-reads at more than
-twice the target rate, and tells you once. Tool pruning is planned for M3; `prune` is a
-placeholder. The starting values of the learner's priors are hand-set for now.
+twice the target rate, and tells you once. The starting values of the learner's priors are
+hand-set for now.
+
+### Tool pruning (opt-in)
+
+Every tool definition the model can see costs tokens on every request, used or not. Tool pruning
+removes tools a project never uses from the model's context. It **writes your project's
+`.claude/settings.local.json`**, so it is off until you opt in per project:
+
+```
+token-sparen prune enable     # opt this project in (or [prune] enabled = true in ~/.token-sparen/config.toml)
+token-sparen prune status     # state, pruned tools, candidates and their evidence
+token-sparen prune restore WebFetch   # give one tool back now (it is never pruned again)
+token-sparen prune restore --all      # remove every rule token-sparen wrote (exact revert)
+token-sparen prune disable    # opt out; also restores everything
+```
+
+What it does: when a session is folded, token-sparen reads the tools the session had (from the
+transcript's tool list where Claude Code records one; a session without one counts for the tools
+other sessions of the project listed) and the tools it used, including in subagents. A built-in
+tool, or a **whole MCP server** none of whose tools was used, that stayed unused across at least
+3 sessions and 15 prompts becomes a candidate; it is pruned only once a deliberately strict
+regret bound clears (about 300 unused prompts with the defaults). Never pruned: `Read`, `Edit`,
+`Write`, `Bash`, `Grep`, `Glob`, `Agent`/`Task*`, `TodoWrite`, `AskUserQuestion`, `Skill`,
+`ToolSearch`, plan mode, `SendMessage`, and any tool ever used in the project. Pruning adds a
+bare `permissions.deny` entry such as `"WebFetch"` or `"mcp__server"`, which removes the tool
+from the model's context. Because that changes the prompt, rules are written only when the
+project has been idle for at least 60 minutes (at a fold, or at the start of the next session
+before its first request), never mid-session.
+
+What it writes: only those deny entries, appended to `permissions.deny`; every other key and
+every rule you wrote stays as it is, and a rule you already had is never claimed. Before the
+first change the file is copied once to `settings.local.json.token-sparen.bak`; writes are atomic
+and re-check the file just before replacing it. A file that is not a JSON object, or that is
+tracked by git, is never written. If `.claude/settings.local.json` is not covered by your
+`.gitignore`, you are told once (token-sparen does not edit `.gitignore`). A project's
+`token-sparen.toml` cannot enable pruning; `[prune] allow = false` there switches it off and
+reverts token-sparen's rules.
+
+Recovery: each session start shows one line, `Pruned (unused here): A, B — run \`token-sparen
+prune restore <tool>\` if needed.`, to you and to the model. If the agent searches for a pruned
+tool with ToolSearch, tries to call it, or you name it in a prompt (`web search`, `WebFetch`, an
+MCP server's name), token-sparen removes its rule immediately and tells you; the tool is back from
+the next request and is never pruned again. A rule you delete yourself counts the same way.
+`restore --all` and `disable` remove exactly the rules token-sparen wrote, and the file (and the
+`.claude` folder) again if token-sparen created them.
+
+Savings are not estimated: hooks cannot see how large a tool definition is, so the statusline
+(`⊘ N`) and `token-sparen stats` show only the number of pruned tools.
 
 ### Learned repository facts
 

@@ -18,6 +18,7 @@ from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from typing import Any, TextIO, cast
 
+from token_sparen.adapters.claude import settings as _settings  # noqa: F401 - registers the deny writer
 from token_sparen.adapters.claude.translate import EVENT_KINDS, ClaudeAdapter
 from token_sparen.config import Config, flag_on, load_config, log_error, state_home
 from token_sparen.events import Action, Event, EventKind
@@ -30,6 +31,7 @@ from token_sparen.mechanisms import (
     compression,
     governor,
     guards,
+    prune,
     read_dedupe,
     subagent,
     tracking,
@@ -212,21 +214,42 @@ def _on_session_active(event: Event, cfg: Config) -> Action:
     return Action()
 
 
+def _on_prune_start(event: Event, cfg: Config) -> Action:
+    """Deferred pruning (idle gap measured before this session counts as active) + notice."""
+    return prune.on_session_start(event, cfg, env=HOOK_ENV.get())
+
+
+def _on_prune_prompt(event: Event, cfg: Config) -> Action:
+    return prune.on_prompt(event, cfg, env=HOOK_ENV.get())
+
+
+def _on_prune_tool(event: Event, cfg: Config) -> Action:
+    return prune.on_tool(event, cfg, env=HOOK_ENV.get())
+
+
+def _on_prune_search(event: Event, cfg: Config) -> Action:
+    return prune.on_tool_search(event, cfg, env=HOOK_ENV.get())
+
+
 for _kind, _fn in (
     ("prompt", _on_prompt),  # counts the turn first; the governor and boundary see it
     ("prompt", _on_governor_prompt),
     ("prompt", _on_boundary),
     ("prompt", _on_regret),  # after the turn count: expires regret windows (explicit 0)
+    ("prompt", _on_prune_prompt),  # the user named a pruned tool: restore it
+    ("pre_tool", _on_prune_tool),  # first: a later block ends the chain; never blocks itself
     ("pre_tool", _on_pre_invalidate),
     ("pre_tool", _on_governor_stop),
     ("pre_tool", _on_guard),
     ("pre_tool", _on_subagent),
+    ("post_tool", _on_prune_search),  # ToolSearch for a pruned tool: restore it
     ("post_tool", _on_governor_post),  # before any replacement ends the chain
     ("post_tool", _on_regret),  # sees this call before it is itself trimmed or tracked
     ("post_tool", _on_read_dedupe),
     ("post_tool", _on_compress),
     ("post_tool", _on_track),  # last + always: its lock wait never eats compression's budget
     # same chain minus de-dupe; the host decides whether a failure result can be replaced
+    ("post_tool_failure", _on_prune_tool),
     ("post_tool_failure", _on_governor_post),
     ("post_tool_failure", _on_regret),
     ("post_tool_failure", _on_compress),
@@ -234,12 +257,14 @@ for _kind, _fn in (
     ("pre_compact", _on_pre_compact),  # sets last_compact_turn, clears the read table
     ("pre_compact", _on_compact_instructions),
     ("session_start", _on_session_start),
+    ("session_start", _on_prune_start),  # before _on_session_active records this session
     ("session_start", _on_session_active),
     ("session_start", _on_facts),
     ("session_start", _on_fold_pending),
     ("session_start", _on_breaker_notice),  # after the fold: a trip it causes is shown now
     ("session_end", _on_regret),  # settles every open regret window
     ("session_end", _on_fold_spawn),  # after settling: the fold sees every regret outcome
+    ("permission_denied", _on_prune_tool),
 ):
     register(cast(EventKind, _kind), _contained(cast(Handler, _fn)), always=_fn is _on_track)
 

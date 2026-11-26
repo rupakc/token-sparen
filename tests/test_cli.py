@@ -185,6 +185,7 @@ def test_stats_json_schema(env: dict[str, str], capsys: pytest.CaptureFixture[st
         "recovery_read_tokens",
         "injected_tokens",
         "session",
+        "pruned_tools",
     }
     assert data["project_key"] == key and data["sessions"] == 1
     assert data["decisions"] == {
@@ -342,10 +343,9 @@ def test_session_id_from_env_and_missing(
     assert session.read_session(ov)["disabled"] is True
 
 
-@pytest.mark.parametrize("cmd", ["prune"])
-def test_stubs(cmd: str, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main([cmd]) == 0
-    assert "available after M3" in capsys.readouterr().out
+def test_prune_is_no_longer_a_stub(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["prune"]) == 2  # an action is required
+    assert "status" in capsys.readouterr().err
 
 
 def test_facts_is_no_longer_a_stub(capsys: pytest.CaptureFixture[str]) -> None:

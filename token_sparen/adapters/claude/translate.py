@@ -19,6 +19,7 @@ EVENT_KINDS: dict[str, EventKind] = {
     "PostToolUseFailure": "post_tool_failure",
     "PreCompact": "pre_compact",
     "SessionEnd": "session_end",
+    "PermissionDenied": "permission_denied",
 }
 _CATEGORIES: dict[str, ToolCategory] = {
     "Bash": "shell",

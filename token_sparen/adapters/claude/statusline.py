@@ -27,14 +27,14 @@ from typing import Any, TextIO
 
 from token_sparen.config import Config, flag, flag_on, load_config, log_error, state_home
 from token_sparen.events import SessionCtx
-from token_sparen.mechanisms import governor, tracking
+from token_sparen.mechanisms import governor, prune, tracking
 from token_sparen.store import jsonstore, keycache, session
 
 GLYPH = "⛁ ts"
 GLYPH_ASCII = "ts"
 SEP = " │ "
 SEP_ASCII = " | "
-SEGMENTS = ("ctx", "burn", "rate", "saved", "trims", "learn")
+SEGMENTS = ("ctx", "burn", "rate", "saved", "trims", "learn", "pruned")
 LEARN_STATES = frozenset({"cold", "adapting", "exploiting", "safe-mode"})
 WINDOWS = "windows.json"
 WINDOW_TTL_S = 7 * 86400
@@ -313,6 +313,10 @@ def _render(payload: Mapping[str, Any], env: Mapping[str, str]) -> tuple[str, bo
             )
         elif name == "learn":
             parts.append(f"learn: {_learner_state(project_key, env)}")
+        elif name == "pruned" and project_key:
+            n = prune.pruned_count(state_home(env), project_key, env)
+            if n:  # a count only: hooks cannot measure the definitions' size
+                parts.append(f"pruned {n}" if ascii_ else f"⊘ {n}")
     line = (SEP_ASCII if ascii_ else SEP).join([head, *parts])
     return " ".join(line.splitlines()), ascii_
 

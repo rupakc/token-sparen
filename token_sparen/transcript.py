@@ -8,6 +8,7 @@ mid-file ends the iteration; a line that is not JSON, or nests too deeply to dec
 from __future__ import annotations
 
 import json
+import re
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -368,3 +369,76 @@ def first_field(path: Path, key: str, max_records: int = 50) -> Any:
         if i + 1 >= max_records:
             break
     return None
+
+
+# --------------------------------------------------------------------------- tool inventory
+_NO_SUCH_TOOL = re.compile(r"No such tool available: ([A-Za-z0-9_.:-]+)")
+
+
+@dataclass
+class ToolInventory:
+    """Which tools one transcript shows as available, used and attempted (tool pruning).
+
+    ``listed`` is None when the transcript carries no tool list: Claude Code's interactive
+    transcripts have no documented one, so it is read from the SDK's ``system``/``init`` record
+    (``tools``) or from ``deferred_tools_delta`` attachments (``addedNames`` / ``removedNames``)
+    when present. ``unknown`` holds tools the model called that the host did not have ("No such
+    tool available: X"), i.e. attempted uses of a removed tool.
+    """
+
+    used: set[str] = field(default_factory=set)
+    listed: set[str] | None = None
+    prompts: int = 0
+    unknown: set[str] = field(default_factory=set)
+
+    def merge(self, other: ToolInventory) -> None:
+        """Add a subagent transcript: its uses count, its prompts do not."""
+        self.used |= other.used
+        self.unknown |= other.unknown
+        if other.listed is not None:
+            self.listed = (self.listed or set()) | other.listed
+
+
+def _names(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        name = (
+            item if isinstance(item, str) else item.get("name") if isinstance(item, dict) else None
+        )
+        if isinstance(name, str) and name:
+            out.append(name)
+    return out
+
+
+def tool_inventory(
+    path: Path, *, max_bytes: int | None = None, on_limit: Callable[[], None] | None = None
+) -> ToolInventory:
+    """Stream ``path`` once into a ``ToolInventory`` (never raises; bounded like ``_records``)."""
+    inv = ToolInventory()
+    for rec in _records(path, max_bytes, on_limit):
+        kind = rec.get("type")
+        if kind == "system" and rec.get("subtype") == "init" and "tools" in rec:
+            inv.listed = (inv.listed or set()) | set(_names(rec.get("tools")))
+            continue
+        att = rec.get("attachment")
+        if kind == "attachment" and isinstance(att, dict):
+            if att.get("type") == "deferred_tools_delta":
+                listed = (inv.listed or set()) | set(_names(att.get("addedNames")))
+                inv.listed = listed - set(_names(att.get("removedNames")))
+            continue
+        content = _message(rec).get("content")
+        if kind == "assistant":
+            for block in _blocks(content):
+                name = block.get("name")
+                if block.get("type") == "tool_use" and isinstance(name, str) and name:
+                    inv.used.add(name)
+        elif kind == "user":
+            if is_prompt(rec):
+                inv.prompts += 1
+                continue
+            for block in _blocks(content):
+                if block.get("type") == "tool_result" and block.get("is_error") is True:
+                    inv.unknown.update(_NO_SUCH_TOOL.findall(_result_text(block.get("content"))))
+    return inv

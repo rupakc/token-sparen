@@ -122,13 +122,18 @@ def build_parser() -> argparse.ArgumentParser:
     _project_opt(fg)
     _project_opt(facts_sub.add_parser("disable", help="stop injecting facts in this project"))
     _project_opt(facts_sub.add_parser("enable", help="undo `facts disable`"))
-    for name in _STUBS:
-        stub = sub.add_parser(name, help="available after M3")
-        stub.add_argument("rest", nargs="*")
+    pr = sub.add_parser("prune", help="opt-in learned tool pruning: status, enable, restore")
+    pr_sub = pr.add_subparsers(dest="action", required=True)
+    _project_opt(pr_sub.add_parser("status", help="state, pruned tools and candidates"))
+    _project_opt(pr_sub.add_parser("enable", help="opt this project in (user action)"))
+    _project_opt(pr_sub.add_parser("disable", help="opt out and restore every pruned tool"))
+    rs = pr_sub.add_parser("restore", help="restore <tool> now, or --all (exact revert)")
+    rs.add_argument("tool", nargs="?")
+    rs.add_argument("--all", action="store_true", help="remove every deny rule we wrote")
+    _project_opt(rs)
     return parser
 
 
-_STUBS = ("prune",)
 _KEY_RE = re.compile(r"[0-9a-f]{16}")
 _FOLD_TRIES = 5
 _ID_RE = re.compile(r"[0-9a-f]{12}")
@@ -332,7 +337,14 @@ def _stats_data(args: argparse.Namespace) -> dict[str, Any]:
         "recovery_read_tokens": recovered,
         "injected_tokens": injected,
         "session": ledger,
+        "pruned_tools": _pruned_count(home, key, env),
     }
+
+
+def _pruned_count(home: Path, key: str, env: Mapping[str, str]) -> int:
+    from token_sparen.mechanisms import prune
+
+    return prune.pruned_count(home, key, env)
 
 
 def _stats(args: argparse.Namespace) -> int:
@@ -349,6 +361,8 @@ def _stats(args: argparse.Namespace) -> int:
         f"decision log: tokens before {data['tokens_before']}, after {data['tokens_after']}, "
         f"saved {data['saved']}"
     )
+    if data["pruned_tools"]:
+        print(f"pruned tools: {data['pruned_tools']} (`token-sparen prune status`)")
     for point, arms in sorted(data["decisions"].items()):
         print(f"  {point}: " + ", ".join(f"{a}={n}" for a, n in sorted(arms.items())))
     ledger = data["session"]
@@ -760,6 +774,7 @@ def _fold_one(sid: str, key: str, home: Path, params: Mapping[str, Any]) -> Any:
 
 
 def _fold_cmd(args: argparse.Namespace) -> int:
+    from token_sparen.adapters.claude import settings  # noqa: F401 - registers the deny writer
     from token_sparen.learn import overlay
 
     env = os.environ
@@ -1036,12 +1051,59 @@ def _facts_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def _prune_cmd(args: argparse.Namespace) -> int:
+    from token_sparen.adapters.claude import settings  # registers the deny-rule writer
+    from token_sparen.mechanisms import prune
+
+    env = os.environ
+    home = state_home(env)
+    project = _project_dir(args).resolve()
+    key = keycache.cached_project_key(project, env)
+    target = settings.local_settings_path(project)
+    s = prune.settings(load_config(project, env).data)
+    if args.action == "status":
+        doc = prune.read_doc(home, key, env)
+        print("\n".join(prune.status_lines(doc, s, target)))
+        return 0
+    if args.action == "enable":
+        prune.set_enabled(home, key, True, env)
+        print(
+            "token-sparen prune: enabled for this project (opt-in). Tools available but never "
+            f"used across enough sessions will be denied in {target} (backed up once to "
+            f"{target.name}{settings.BACKUP_SUFFIX}), only while the project is idle. Undo with "
+            "`token-sparen prune restore <tool>`, `restore --all` or `prune disable`."
+        )
+        if not s.allow:
+            print("note: this project's token-sparen.toml sets [prune] allow = false")
+        if settings.git_exposure(project) == "unignored":
+            print(f"warning: {target} is not covered by .gitignore; add it there.")
+        return 0
+    if args.action == "disable":
+        prune.set_enabled(home, key, False, env)
+        done = prune.restore(home, key, project, None, env, reason=None)
+        print(
+            "token-sparen prune: disabled for this project"
+            + (f"; restored {', '.join(done)}" if done else "")
+        )
+        if s.enabled:
+            print("note: [prune] enabled = true in your config still enables it here")
+        return 0
+    if args.all == (args.tool is not None):
+        raise CliError("prune restore needs a tool name or --all")
+    doc = prune.read_doc(home, key, env)
+    if args.tool is not None and args.tool not in prune.owned(doc):
+        raise CliError(f"{args.tool} is not pruned by token-sparen here", code=1)
+    want = None if args.all else [args.tool]
+    done = prune.restore(home, key, project, want, env)
+    if not done and prune.owned(doc):
+        raise CliError(f"could not change {target}; see `token-sparen doctor`", code=1)
+    print(f"token-sparen prune: restored {', '.join(done)}" if done else "nothing is pruned here")
+    return 0
+
+
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "statusline":
         return _statusline(args)
-    if args.command in _STUBS:
-        print(f"token-sparen {args.command}: available after M3")
-        return 0
     handlers = {
         "show": _show,
         "run": _run_cmd,
@@ -1054,6 +1116,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         "replay": _replay_cmd,
         "ope": _ope_cmd,
         "facts": _facts_cmd,
+        "prune": _prune_cmd,
     }
     return handlers[args.command](args)
 

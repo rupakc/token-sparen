@@ -30,8 +30,9 @@ EVENTS = [
     "PostToolUseFailure",
     "PreCompact",
     "SessionEnd",
+    "PermissionDenied",
 ]
-TOOL_EVENTS = {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
+TOOL_EVENTS = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied"}
 
 
 @pytest.fixture(autouse=True)

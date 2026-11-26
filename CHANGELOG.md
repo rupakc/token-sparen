@@ -6,9 +6,16 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code plugin) and M2
-(learning, offline evaluation, quality-first defaults and config safety). M3 is not started.
+(learning, offline evaluation, quality-first defaults and config safety). M3 is in progress.
 
 ### Added
+- Opt-in learned tool pruning (`token-sparen prune status|enable|disable|restore <tool>|restore
+  --all`): never-used built-in tools and whole unused MCP servers are denied in the project's
+  `.claude/settings.local.json` (owned rules only, one backup, stamp re-check, tracked files
+  refused, `.gitignore` warning) after >= 3 sessions / 15 prompts and a high-tier regret bound,
+  only while the project is idle; one-line SessionStart notice; immediate restore (regret 1.0,
+  kept for good) when the agent searches for or calls a pruned tool, the user names it, or the
+  fold sees an attempt; `PermissionDenied` hook; `⊘ N` statusline segment and `stats` count.
 - Repository bootstrap: package skeleton, CLI `--version`, CI, deny-list check, MIT licence and
   NOTICE.
 - Core: canonical events and actions, layered config (defaults, user, project, environment,
@@ -54,7 +61,7 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code 
   credential word (`--dbpassword`, `--sshkey`, `--npmtoken`) or contains `bearer` is treated
   as a secret.
 - CLI: `stats`, `show`, `run`, `doctor`, `session disable|enable`, `config set`,
-  `statusline`, `extensions`, `fold`, `replay`, `ope`, `facts`; placeholder for `prune` (M3).
+  `statusline`, `extensions`, `fold`, `replay`, `ope`, `facts`, `prune`.
 - Trusted extension loading (entry points and content-hash-trusted drop-ins), a compressor
   conformance kit and a versioned extension interface (`EXTENSION_API_VERSION = "1.0"`).
 - Per-session config overrides (`config set`) and a per-session kill switch that finds the

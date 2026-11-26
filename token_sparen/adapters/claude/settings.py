@@ -22,12 +22,14 @@ import secrets
 import shlex
 import shutil
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from token_sparen.config import state_home
+from token_sparen.mechanisms import prune
+from token_sparen.mechanisms.prune import WriteResult
 from token_sparen.store import jsonstore
 
 BACKUP_SUFFIX = ".token-sparen.bak"
@@ -346,3 +348,193 @@ def uninstall_statusline(
         what = "original statusline restored" if had else "statusline removed"
         return InstallResult(True, action, f"token-sparen: {what} in {settings_file}")
     raise AssertionError("unreachable")  # pragma: no cover
+
+
+# --------------------------------------------------------------------------- tool pruning
+# Deny rules in the project's ``.claude/settings.local.json`` (``mechanisms.prune``). The same
+# rules as the statusline write: strict JSON object or refuse, one pristine backup
+# (``settings.local.json.token-sparen.bak``), atomic replace after a stamp re-check (one re-read
+# and retry), symlinks followed. Only ``permissions.deny`` entries are added or removed; every
+# other key keeps its value and order. A file tracked by git is never written.
+LOCAL_SETTINGS = Path(".claude") / "settings.local.json"
+GIT_TIMEOUT_S = 2.0
+
+
+def local_settings_path(project_dir: Path) -> Path:
+    return project_dir / LOCAL_SETTINGS
+
+
+def _git(project_dir: Path, *args: str) -> int | None:
+    """Return code of a git command in ``project_dir``; None when git is unavailable."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_dir), *args],
+            capture_output=True,
+            timeout=GIT_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.returncode
+
+
+def git_exposure(project_dir: Path) -> str | None:
+    """``"tracked"``, ``"unignored"`` (in a git work tree, untracked, not ignored) or None."""
+    rel = LOCAL_SETTINGS.as_posix()
+    if _git(project_dir, "rev-parse", "--is-inside-work-tree") != 0:
+        return None
+    if _git(project_dir, "ls-files", "--error-unmatch", "--", rel) == 0:
+        return "tracked"
+    return "unignored" if _git(project_dir, "check-ignore", "-q", "--", rel) == 1 else None
+
+
+def _deny_list(data: dict[str, Any]) -> list[Any]:
+    perms = data.get("permissions", {})
+    if not isinstance(perms, dict):
+        raise _Invalid("permissions is not an object; nothing was changed")
+    deny = perms.get("deny", [])
+    if not isinstance(deny, list):
+        raise _Invalid("permissions.deny is not a list; nothing was changed")
+    return deny
+
+
+def _prune_failure(exc: BaseException) -> WriteResult:
+    if isinstance(exc, _Changed):
+        return WriteResult(False, message=f"{exc} kept changing while we wrote it")
+    return WriteResult(False, message=f"{type(exc).__name__}: {exc}")
+
+
+def add_deny_rules(path: Path, rules: Sequence[str]) -> WriteResult:
+    """Append the bare ``rules`` not yet in ``permissions.deny`` (a ``prune.WriteResult``)."""
+    target = _target(path)
+    for attempt in (0, 1):
+        stamp = _stamp(target)
+        try:
+            data, existed = _load(target)
+            deny = _deny_list(data)
+        except _Invalid as exc:
+            return WriteResult(False, message=str(exc))
+        present = [r for r in rules if r in deny]
+        new = [r for r in dict.fromkeys(rules) if r not in deny]
+        if not new:
+            return WriteResult(True, [], present)
+        created = {
+            "dir": not target.parent.exists(),
+            "file": not existed,
+            "permissions": "permissions" not in data,
+            "deny": not isinstance(data.get("permissions"), dict)
+            or "deny" not in data["permissions"],
+        }
+        try:
+            backup = target.with_name(target.name + BACKUP_SUFFIX)
+            if existed and not backup.exists():
+                shutil.copy2(target, backup)
+            perms = data.setdefault("permissions", {})
+            perms["deny"] = [*deny, *new]
+            _write(target, data, stamp)
+        except (OSError, ValueError, _Changed) as exc:
+            if isinstance(exc, _Changed) and attempt == 0:
+                continue
+            return _prune_failure(exc)
+        return WriteResult(True, new, present, created)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def remove_deny_rules(
+    path: Path,
+    rules: Sequence[str],
+    created: Mapping[str, bool],
+    cleanup: bool,
+) -> WriteResult:
+    """Remove one occurrence (the last) of each rule; with ``cleanup`` (no rule of ours left)
+    also remove the containers we created, the file and directory if we created them and they
+    are empty, and our backup when it equals the file it backs up."""
+    target = _target(path)
+    for attempt in (0, 1):
+        stamp = _stamp(target)
+        try:
+            data, existed = _load(target)
+            deny = list(_deny_list(data))
+        except _Invalid as exc:
+            return WriteResult(False, message=str(exc))
+        if not existed:
+            return WriteResult(True, [], list(rules))
+        removed: list[str] = []
+        for rule in rules:
+            for i in range(len(deny) - 1, -1, -1):
+                if deny[i] == rule:
+                    del deny[i]
+                    removed.append(rule)
+                    break
+        missing = [r for r in rules if r not in removed]
+        if not removed and not cleanup:
+            return WriteResult(True, [], missing)
+        perms = data.get("permissions")
+        if isinstance(perms, dict):
+            perms["deny"] = deny
+            if cleanup and created.get("deny") and not deny:
+                del perms["deny"]
+            if cleanup and created.get("permissions") and not perms:
+                del data["permissions"]
+        try:
+            if cleanup and created.get("file") and not data:
+                if _stamp(target) != stamp:
+                    raise _Changed(str(target))
+                target.unlink()
+                if created.get("dir"):
+                    with contextlib.suppress(OSError):
+                        target.parent.rmdir()  # only when empty
+            else:
+                _write(target, data, stamp)
+                if cleanup:
+                    _drop_backup(target, data)
+        except (OSError, ValueError, _Changed) as exc:
+            if isinstance(exc, _Changed) and attempt == 0:
+                continue
+            return _prune_failure(exc)
+        return WriteResult(True, removed, missing)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _drop_backup(target: Path, data: Mapping[str, Any]) -> None:
+    """Our backup is redundant once the file holds exactly its content again."""
+    backup = target.with_name(target.name + BACKUP_SUFFIX)
+    try:
+        if json.loads(backup.read_text(encoding="utf-8")) == data:
+            backup.unlink()
+    except (OSError, ValueError):
+        return
+
+
+def deny_rules(path: Path) -> set[str] | None:
+    try:
+        data, _ = _load(_target(path))
+        return {r for r in _deny_list(data) if isinstance(r, str)}
+    except _Invalid:
+        return None
+
+
+class ClaudeDenyWriter:
+    """``mechanisms.prune.DenyWriter`` for Claude Code."""
+
+    def settings_file(self, project_dir: Path) -> Path:
+        return local_settings_path(project_dir)
+
+    def exposure(self, project_dir: Path) -> str | None:
+        return git_exposure(project_dir)
+
+    def add(self, project_dir: Path, rules: Sequence[str]) -> WriteResult:
+        return add_deny_rules(local_settings_path(project_dir), list(rules))
+
+    def remove(
+        self, project_dir: Path, rules: Sequence[str], created: Mapping[str, bool], cleanup: bool
+    ) -> WriteResult:
+        return remove_deny_rules(local_settings_path(project_dir), list(rules), created, cleanup)
+
+    def present(self, project_dir: Path) -> set[str] | None:
+        return deny_rules(local_settings_path(project_dir))
+
+
+prune.register_writer(ClaudeDenyWriter())

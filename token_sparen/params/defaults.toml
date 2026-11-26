@@ -118,7 +118,7 @@ cooldown_turns = 10
 enabled = true  # the brief is still a decision point (static default arm: off)
 
 [statusline]
-segments = ["ctx", "burn", "rate", "saved", "trims", "learn"]
+segments = ["ctx", "burn", "rate", "saved", "trims", "learn", "pruned"]
 ascii = false  # true: ASCII glyphs (ts, |, x, r) instead of the symbols
 color = true  # NO_COLOR in the environment also turns colours off
 parse_budget_ms = 20  # transcript catch-up per render (the governor's cache keeps the rest)
@@ -252,7 +252,17 @@ max_tokens = 300       # injected block budget (estimated tokens)
 max_facts = 8
 
 [prune]
-# Tool pruning (opt-in): planned (M3), no keys yet.
+# Learned tool pruning (opt-in, spec 6.10): never-used tools are denied in the project's
+# .claude/settings.local.json. Enable per project with `token-sparen prune enable` (or here /
+# TOKEN_SPAREN_PRUNE__ENABLED for every project); a project's token-sparen.toml can never enable
+# it, only switch it off with `allow = false`. Every key but `allow` is user-only.
+enabled = false
+allow = true          # false: never prune here, and revert our rules at the next fold
+min_sessions = 3      # sessions with the tool available and unused before it is a candidate
+min_prompts = 15      # ... spanning at least this many prompts
+idle_minutes = 60     # apply only when the project was idle this long (prompt cache)
+tau = 0.01            # high tier: regret ucb must be <= tau
+ucb_q = 0.95
 
 [loopguard]
 # Failure-loop guard: planned (M3), no keys yet.

@@ -167,11 +167,19 @@ def test_other_kinds_merge_all(tmp_path: Path) -> None:
 def test_builtin_order() -> None:
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["pre_tool"]]
     # pretrim is post-tool only; the governor's opt-in stop runs before the subagent rewrite
-    assert names == ["_on_pre_invalidate", "_on_governor_stop", "_on_guard", "_on_subagent"]
+    # pruning recovery runs first: a later block ends the chain, and it never blocks itself
+    assert names == [
+        "_on_prune_tool",
+        "_on_pre_invalidate",
+        "_on_governor_stop",
+        "_on_guard",
+        "_on_subagent",
+    ]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["post_tool"]]
     # tracking runs last (its lock wait never eats compression's budget) and always runs
     # regret detection runs before any replacement can end the chain
     assert names == [
+        "_on_prune_search",
         "_on_governor_post",
         "_on_regret",
         "_on_read_dedupe",
@@ -180,14 +188,28 @@ def test_builtin_order() -> None:
     ]
     assert entry.HANDLERS["post_tool"][-1] in entry.ALWAYS_RUN
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["post_tool_failure"]]
-    assert names == ["_on_governor_post", "_on_regret", "_on_compress", "_on_track"]
+    assert names == [
+        "_on_prune_tool",
+        "_on_governor_post",
+        "_on_regret",
+        "_on_compress",
+        "_on_track",
+    ]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["prompt"]]
-    assert names == ["_on_prompt", "_on_governor_prompt", "_on_boundary", "_on_regret"]
+    assert names == [
+        "_on_prompt",
+        "_on_governor_prompt",
+        "_on_boundary",
+        "_on_regret",
+        "_on_prune_prompt",
+    ]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["pre_compact"]]
     assert names == ["_on_pre_compact", "_on_compact_instructions"]
     assert "session_start" in entry.HANDLERS
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["session_end"]]
     assert names == ["_on_regret", "_on_fold_spawn"]
+    names = [getattr(f, "__name__", "") for f in entry.HANDLERS["permission_denied"]]
+    assert names == ["_on_prune_tool"]
 
 
 def test_builtin_mechanism_errors_are_contained(

@@ -79,6 +79,18 @@
           }
         ]
       }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PermissionDenied",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }

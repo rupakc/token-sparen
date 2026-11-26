@@ -155,6 +155,19 @@ def test_segments_configurable(tmp_path: Path) -> None:
     assert statusline.render(_payload(tmp_path, t), env) == "⛁ ts 42% ctx │ learn: cold"
 
 
+def test_pruned_segment_shows_a_count_only(tmp_path: Path) -> None:
+    from token_sparen.mechanisms import prune
+
+    env = _env(tmp_path, NO_COLOR="1")
+    t = _transcript(tmp_path, [_assistant("m1", 1000)])
+    assert "⊘" not in statusline.render(_payload(tmp_path, t), env)  # nothing pruned: no segment
+    path = _overlay(tmp_path, env, "s-1").parents[1] / prune.PRUNE_FILE
+    path.write_text(json.dumps({"owned": ["WebFetch", "mcp__srv"]}), encoding="utf-8")
+    assert statusline.render(_payload(tmp_path, t), env).endswith("learn: cold │ ⊘ 2")
+    ascii_env = {**env, "TOKEN_SPAREN_STATUSLINE__ASCII": "true"}
+    assert statusline.render(_payload(tmp_path, t), ascii_env).endswith("| pruned 2")
+
+
 def test_dollars_hidden_without_cost(tmp_path: Path) -> None:
     env = _env(tmp_path, NO_COLOR="1")
     t = _transcript(tmp_path, [_assistant("m1", 1000)])

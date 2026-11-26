@@ -193,6 +193,23 @@ approximated by recency), at most 8 facts / 300 tokens through the emit gate, on
 `[facts] enabled` defaults to true; a project file may only disable facts or lower their budget.
 Details in `MEMORY.md`.
 
+**2026-11-27 (M3, Task 27).** §6.10 as built: the keep/prune arm is a per-candidate Beta over
+"pruning would have caused a restore" (prior Beta(1, 1), each unused prompt in a session where the
+tool was available is a zero-regret observation, a restore is 1.0), gated like every high-tier
+point (`ucb(0.95) <= 0.01`, about 300 unused prompts) plus `[prune] min_sessions = 3`,
+`min_prompts = 15`; no Thompson exploration (a prune is a settings write, not a per-call arm).
+Candidates are built-in tools and **whole MCP servers** (`mcp__server`, none of whose tools was
+used), never single MCP tools (tool search defers them, so they cost little). Available tools
+come from the transcript (SDK `init.tools`, `deferred_tools_delta` attachments); a session
+without a list counts for the tools other sessions listed. The idle gate is checked at fold and,
+for a deferred plan, at the next SessionStart before the session counts as active (the start of
+a session after >= 60 idle minutes is still between sessions for the prompt cache). Restore:
+`token-sparen prune restore <tool>` (not `token-sparen restore`); attempted use is detected via
+ToolSearch queries (PostToolUse), PreToolUse / PostToolUseFailure / PermissionDenied (defensive:
+a denied tool is not in the model's tool list), user prompts naming the tool, and at fold from
+the transcript ("No such tool available"); a restored tool is kept for good. Claude Code only.
+Details in `MEMORY.md`.
+
 ---
 
 ## 1. Intent and why
