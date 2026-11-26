@@ -342,3 +342,10 @@ Append-only. One entry per decision: date, decision, reason. Newest at the botto
   never in the first item, and only when `…same` is shorter than the value (output never grows).
   Line counts are unchanged (the line is kept, its value abbreviated, like `…(+N chars)`); the
   full document stays recoverable through the marker. E2 stays 153/153.
+- **Extension interface version** `token_sparen.EXTENSION_API_VERSION = "1.0"`. A drop-in or the
+  module defining an entry-point object may set `TOKEN_SPAREN_EXTENSION["api"]` (`"1.x"`, `"1.0"`,
+  `"1"`); undeclared counts as compatible. Another major (or an unreadable value) is skipped: a
+  drop-in's literal `api` is read with `ast` before execution (status `skipped:api 2.0 (needs
+  1.x)` in `extensions list`, never executed); a computed value fails at import (disabled,
+  logged); an entry point is skipped after load with one log line (its listing loads nothing,
+  so it shows no api status).

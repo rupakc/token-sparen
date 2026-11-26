@@ -818,3 +818,98 @@ def test_conformance_catches_bad_compressors(comp: Any, needle: str) -> None:
     issues = conformance.check_compressor(comp)
     assert issues
     assert any(needle in issue for issue in issues), issues
+
+
+# --- interface version ---------------------------------------------------------------------
+
+
+def test_extension_api_version_constant() -> None:
+    import token_sparen
+
+    assert token_sparen.EXTENSION_API_VERSION == "1.0"
+
+
+@pytest.mark.parametrize(
+    ("declared", "ok"),
+    [
+        (None, True),
+        ("1.x", True),
+        ("1.0", True),
+        ("1", True),
+        ("2.0", False),
+        ("0.9", False),
+        ("x.1", False),
+        (2, False),
+        ("", False),
+    ],
+)
+def test_api_compatible(declared: Any, ok: bool) -> None:
+    assert extensions.api_compatible(declared)[0] is ok
+
+
+def test_dropin_with_incompatible_api_is_skipped(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    ext = _home(env) / "extensions"
+    good_src = _DROPIN.format(
+        sentinel=str(ext.parent / "g.imported"), handles={"table"}, body="'g'"
+    )
+    good_src = good_src.replace(
+        '{"compressors": [FirstLine]}', '{"api": "1.x", "compressors": [FirstLine]}'
+    )
+    good, _ = _dropin(ext, "a_good.py", source=good_src)
+    bad_src = _DROPIN.format(sentinel=str(ext.parent / "b.imported"), handles={"log"}, body="'b'")
+    bad_src = bad_src.replace(
+        '{"compressors": [FirstLine]}', '{"api": "2.0", "compressors": [FirstLine]}'
+    )
+    bad, bad_sentinel = _dropin(ext, "b_future.py", source=bad_src)
+    for p in (good, bad):
+        extensions.trust(p, _home(env), env)
+    loaded = _load(env)
+    statuses = {d.path.name: d.status for d in loaded.dropins}
+    assert statuses["a_good.py"] == "trusted"
+    assert statuses["b_future.py"].startswith("skipped:api")
+    assert loaded.compressor_for("table").compress("x\ny", LEVEL, CTX).text == "g"
+    assert (
+        isinstance(loaded.compressor_for("log"), TextCompressor)
+        or loaded.compressor_for("log").name != "first-line"
+    )
+    assert not bad_sentinel.exists()  # never executed
+    extensions.reset()
+    assert main(["extensions", "list"]) == 0
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if "b_future.py" in ln)
+    assert "api 2.0" in line and "1.x" in line
+
+
+def test_dynamic_incompatible_api_disabled_at_import(env: dict[str, str]) -> None:
+    src = "V = '3' + '.0'\nTOKEN_SPAREN_EXTENSION = {'api': V, 'signals': [print]}\n"
+    path, _ = _dropin(_home(env) / "extensions", source=src)
+    extensions.trust(path, _home(env), env)
+    loaded = _load(env)
+    assert loaded.signals() == []
+    assert any("api" in e["error"] and "3.0" in e["error"] for e in _logged(env))
+
+
+def test_entry_point_incompatible_api_skipped(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import types
+
+    mod = types.ModuleType("fake_future_ext")
+    mod.TOKEN_SPAREN_EXTENSION = {"api": "2.1"}  # type: ignore[attr-defined]
+
+    def future_signal(record: Any) -> float:
+        return 0.0
+
+    def current_signal(record: Any) -> float:
+        return 1.0
+
+    future_signal.__module__ = "fake_future_ext"
+    monkeypatch.setitem(sys.modules, "fake_future_ext", mod)
+    groups = {
+        "token_sparen.signals": [_EPObj("future", future_signal), _EPObj("now", current_signal)]
+    }
+    monkeypatch.setattr(extensions, "_entry_points", lambda group: groups.get(group, []))
+    assert _load(env).signals() == [current_signal]
+    assert any("future" in e["error"] and "2.1" in e["error"] for e in _logged(env))

@@ -17,7 +17,13 @@ directories, files not owned by the current user and world-writable files are sk
 
 A drop-in declares what it provides in a module-level dict::
 
-    TOKEN_SPAREN_EXTENSION = {"compressors": [...], "decision_points": [...], "signals": [...]}
+    TOKEN_SPAREN_EXTENSION = {"api": "1.x", "compressors": [...], "decision_points": [...],
+                              "signals": [...]}
+
+``api`` (optional) names the extension interface version it was written for; a major version
+other than ``token_sparen.EXTENSION_API_VERSION``'s is skipped with the reason shown by
+``token-sparen extensions list`` (a literal value is checked before the drop-in is executed).
+Entry points declare it the same way in the module that defines the loaded object.
 
 Any failure (import error, bad manifest, wrong type, exception, dropped error line) disables the
 extension for the rest of the process with one ``errors.jsonl`` line; the hook never crashes.
@@ -25,6 +31,7 @@ extension for the rest of the process with one ``errors.jsonl`` line; the hook n
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import errno
 import hashlib
@@ -42,6 +49,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
+from token_sparen import EXTENSION_API_VERSION
 from token_sparen.compress.base import Compressor, is_compressor, registry, unwrap
 from token_sparen.config import Config, log_error
 from token_sparen.learn import policy
@@ -60,6 +68,9 @@ MAX_DROPIN_BYTES = 1_000_000
 PREVIEW_LINES = 40
 OVERRIDE_ENV = "TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE"
 _MANIFEST_KEYS = frozenset({"compressors", "decision_points", "signals"})
+_API_KEY = "api"
+_API_RE = re.compile(r"(\d+)(?:\.(?:\d+|x))?")
+_API_MAJOR = EXTENSION_API_VERSION.split(".", 1)[0]
 _SHA_RE = re.compile(r"[0-9a-f]{64}")
 
 __all__ = [
@@ -67,6 +78,7 @@ __all__ = [
     "DropIn",
     "LoadedExtensions",
     "UnsafeFile",
+    "api_compatible",
     "discover",
     "entry_point_listing",
     "load_extensions",
@@ -142,6 +154,38 @@ def _read_checked(path: Path) -> bytes:
     if len(data) > MAX_DROPIN_BYTES:
         raise UnsafeFile("too-large")
     return data
+
+
+def api_compatible(declared: Any) -> tuple[bool, str]:
+    """(compatible, reason) for a declared ``api`` value; undeclared counts as compatible."""
+    if declared is None:
+        return True, ""
+    want = f"{_API_MAJOR}.x"
+    if not isinstance(declared, str):
+        return False, f"api {declared!r} is not a string (needs {want})"
+    m = _API_RE.fullmatch(declared.strip())
+    if m is None:
+        return False, f"api {declared!r} unreadable (needs {want})"
+    if m.group(1) != _API_MAJOR:
+        return False, f"api {declared.strip()} (needs {want})"
+    return True, ""
+
+
+def _literal_api(data: bytes) -> Any:
+    """A literal ``TOKEN_SPAREN_EXTENSION["api"]`` from the source, without executing it."""
+    try:
+        tree = ast.parse(data)
+    except (SyntaxError, ValueError):
+        return None  # importing it fails later and is logged then
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == MANIFEST for t in node.targets):
+            continue
+        for key, value in zip(node.value.keys, node.value.values, strict=True):
+            if isinstance(key, ast.Constant) and key.value == _API_KEY:
+                return value.value if isinstance(value, ast.Constant) else None
+    return None
 
 
 def _sha(data: bytes) -> str:
@@ -223,7 +267,12 @@ def discover(project_dir: Path, home: Path, env: Mapping[str, str]) -> list[Drop
             if trust is None:
                 trust = _read_trust(home, env)
             if sha in trust:
-                found.append(DropIn(path, "trusted", sha, data))
+                ok, reason = api_compatible(_literal_api(data))
+                found.append(
+                    DropIn(path, "trusted", sha, data)
+                    if ok
+                    else DropIn(path, f"skipped:{reason}", sha)
+                )
                 continue
             real = os.path.realpath(path)
             known = any(e.get("path") == real for e in trust.values())
@@ -234,11 +283,16 @@ def discover(project_dir: Path, home: Path, env: Mapping[str, str]) -> list[Drop
 def _validate_manifest(raw: Any) -> dict[str, list[Any]]:
     if not isinstance(raw, dict):
         raise TypeError(f"{MANIFEST} missing or not a dict (got {type(raw).__name__})")
-    unknown = sorted(str(k) for k in raw if k not in _MANIFEST_KEYS)
+    unknown = sorted(str(k) for k in raw if k not in _MANIFEST_KEYS and k != _API_KEY)
     if unknown:
         raise ValueError(f"{MANIFEST} has unknown keys {unknown}")
+    ok, reason = api_compatible(raw.get(_API_KEY))
+    if not ok:
+        raise ValueError(f"{MANIFEST}: incompatible {reason}")
     out: dict[str, list[Any]] = {}
     for key, items in raw.items():
+        if key == _API_KEY:
+            continue
         if not isinstance(items, list | tuple):
             raise TypeError(f"{MANIFEST}[{key!r}] must be a list")
         out[key] = list(items)
@@ -378,7 +432,14 @@ class LoadedExtensions:
         for ep in eps:
             name = getattr(ep, "name", "?")
             try:
-                out.append(convert(ep.load()))
+                obj = ep.load()
+                manifest = getattr(sys.modules.get(getattr(obj, "__module__", "")), MANIFEST, None)
+                declared = manifest.get(_API_KEY) if isinstance(manifest, dict) else None
+                ok, reason = api_compatible(declared)
+                if not ok:
+                    self._log("entry_points", f"{group} {name}: skipped: incompatible {reason}")
+                    continue
+                out.append(convert(obj))
             except (Exception, SystemExit) as exc:  # noqa: BLE001 - skip broken plugins
                 self._log("entry_points", f"{group} {name}: {type(exc).__name__}: {exc}")
         return out
