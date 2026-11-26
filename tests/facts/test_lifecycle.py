@@ -598,7 +598,7 @@ def test_spellings_of_the_same_runner_and_red_phase_never_retire(
     for cmd, ok in session:
         log.bash(cmd, "ok" if ok else "1 failed", err=not ok)
     obs = _observe(log, tmp_path, PYTEST)
-    assert obs[fid].relevant and not obs[fid].contradicted
+    assert not obs[fid].contradicted
     table = _table(PYTEST, status="active", effect=[9.0, 1.0, 8.0])
     for _ in range(2):
         lifecycle.apply_session(table, shown={fid}, withheld={}, obs=obs, mined=set(), settings=S)
@@ -617,11 +617,64 @@ def test_npm_test_script_spellings_are_one_runner(tmp_path: Path) -> None:
     assert not o.contradicted and not o.waste
 
 
-def test_red_phase_is_waste_not_contradiction(tmp_path: Path) -> None:
+def test_red_phase_is_neutral(tmp_path: Path) -> None:
+    """Ordinary test failures of the fact's own runner say nothing about the fact."""
     fid = fact_id(PYTEST)
     log = Log().prompt().bash("python -m pytest -q", "2 failed", err=True)
+    log.bash("pytest tests/a.py", "1 failed", err=True)
+    o = _observe(log, tmp_path, PYTEST)[fid]
+    assert not o.relevant and not o.contradicted and not o.waste_event
+    for n in (4, 10):
+        table = _table(PYTEST, status="active", effect=[4.0, 1.0, 3.0])
+        for _ in range(n):
+            lifecycle.apply_session(
+                table, shown={fid}, withheld={}, obs={fid: o}, mined=set(), settings=S
+            )
+        assert table[fid]["status"] == "active"
+        assert table[fid]["effect"] == [4.0, 1.0, 3.0]  # no update at all
+
+
+def test_own_runner_not_found_is_waste(tmp_path: Path) -> None:
+    fid = fact_id(PYTEST)
+    log = Log().prompt().bash("pytest -q", "zsh: command not found: pytest", err=True)
     o = _observe(log, tmp_path, PYTEST)[fid]
     assert o.relevant and o.waste and not o.contradicted
+
+
+def test_one_other_run_per_session_still_retires_a_replaced_runner(tmp_path: Path) -> None:
+    fid = fact_id(PYTEST)
+    table = _table(PYTEST, status="active", effect=[9.0, 1.0, 8.0])
+    sessions = 0
+    while table[fid]["status"] != "retired" and sessions < 3:
+        obs = _observe(Log().prompt().bash("tox -e py", "ok"), tmp_path, PYTEST)
+        lifecycle.apply_session(table, shown={fid}, withheld={}, obs=obs, mined=set(), settings=S)
+        sessions += 1
+    assert table[fid]["status"] == "retired" and sessions == 2
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        "npm run lint",
+        "pnpm run typecheck",
+        "yarn run type-check",
+        "bun run format",
+        "npm run lint:fix",
+        "yarn lint",
+        "make lint",
+        "make check",
+        "just fmt",
+        "task vet",
+        "make style",
+        "cargo clippy",
+        "go vet ./...",
+        "cargo fmt",
+    ],
+)
+def test_lint_scripts_are_not_regeneration(tmp_path: Path, check: str) -> None:
+    fid = fact_id(GEN)
+    log = Log().prompt().call("Edit", {"file_path": f"{PROJECT}/dist/a.js"}).bash(check)
+    assert not _observe(log, tmp_path, GEN)[fid].waste_event
 
 
 def test_regenerated_ignores_lint_and_typecheck(tmp_path: Path) -> None:

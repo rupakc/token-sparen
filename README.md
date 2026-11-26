@@ -394,7 +394,8 @@ prevented. Only one test command is active at a time. A fact is retired for good
 wrong (its command fails with "not found" or a usage error after it was injected, or another
 test runner replaced it: a required variable or build step on the first such session, other
 facts on the second; different spellings of the same runner, such as `python -m pytest` and
-`uv run pytest`, count as one, and failing tests never count against a test command), when it
+`uv run pytest`, count as one, and a session whose tests merely failed tells nothing about a
+test command), when it
 looks unneeded (the original command works again in two sessions; tests passed without the build
 in sessions where the fact was left out, on two different days), when sessions show it does not prevent the failure it
 targets or that sessions without it do as well, and, for test commands and generated

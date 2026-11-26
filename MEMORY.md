@@ -1219,3 +1219,11 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   generated_dir regenerated ignores ruff/mypy/flake8/eslint/pyright/pylint/prettier,
   `tsc --noEmit`, `black --check`. build_first unneeded counts only in withheld sessions and
   retires once seen on 2 distinct UTC days (`unneeded_days`); alias unneeded unchanged.
+- Fix round 3: test_command outcome per session - replaced (another normalised runner had >= 1
+  successful run while the own runner never ran) = contradiction + waste; own runner failed
+  with not-found/usage = waste; own runner succeeded = success; anything else (red phase:
+  only ordinary failures of the own runner) is neutral (Obs not relevant: no reward, no
+  stale count; waste events still recorded for activation). Retire still at 2 contradictions.
+  `_checker` also treats npm/pnpm/yarn/bun scripts (`run X` or direct `yarn X`) and make/just/
+  task targets matching lint|typecheck|type-check|check|clippy|format|fmt|vet|style, plus
+  `cargo clippy|fmt|vet`, `go vet|fmt`, as non-regenerating.
