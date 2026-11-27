@@ -787,7 +787,7 @@ def test_notice_names_the_plugin_launcher(env: dict[str, str], proj: Path) -> No
     _three(env, proj)
     root = str(proj.parent / "plugin root")
     out = _hook({**env, "CLAUDE_PLUGIN_ROOT": root}, "SessionStart", {"source": "startup"})
-    cmd = f'python3 "{root}/hooks/run_cli.py" prune restore <tool>'
+    cmd = f'python3 -I "{root}/hooks/run_cli.py" prune restore <tool>'
     assert f"run `{cmd}` if needed." in out["hookSpecificOutput"]["additionalContext"]
     assert cmd in out["systemMessage"]
 

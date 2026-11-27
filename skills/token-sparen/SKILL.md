@@ -8,11 +8,11 @@ allowed-tools:
   - Bash(token-sparen doctor:*)
   - Bash(token-sparen session disable:*)
   - Bash(token-sparen prune restore:*)
-  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" stats:*)'
-  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" show:*)'
-  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" doctor:*)'
-  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" session disable:*)'
-  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" prune restore:*)'
+  - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" stats:*)'
+  - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" show:*)'
+  - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" doctor:*)'
+  - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" session disable:*)'
+  - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" prune restore:*)'
 ---
 
 # token-sparen
@@ -22,7 +22,7 @@ the model sees them, and keeps the full text on disk so nothing is lost. File co
 `cat`, ...) and plain text such as subagent replies are shown in full by default.
 
 ## Running the CLI
-Run the plugin's bundled CLI, exactly `python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>`:
+Run the plugin's bundled CLI, exactly `python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>`:
 it is the plugin's own version, the one its hooks use. Only if that cannot run (no `python3`, or
 the file is missing), run `token-sparen <args>` (same arguments; it may be another version). If
 neither runs, reply that token-sparen works in Claude Code only and run nothing else. Below,

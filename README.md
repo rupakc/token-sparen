@@ -15,25 +15,62 @@ shows a live token meter. Everything runs locally.
 
 ## Status
 
-Pre-release (see `token-sparen --version`). The mechanisms below work today; how strongly to trim is learned per
-project from your own sessions (see [How it learns](#how-it-learns)), starting conservatively.
-There are **no published benchmark numbers yet**, so this README makes no savings claims; measure
-on your own sessions with `/token-sparen` or `token-sparen stats`. Both report **net** savings:
+v1.0 target, Claude Code only (other hosts are planned for a later release). The mechanisms below
+work today; how strongly to trim is learned per project from your own sessions (see
+[How it learns](#how-it-learns)), starting conservatively. This README makes no savings claims
+beyond the [Evidence](#evidence) section below; measure on your own sessions with `/token-sparen`
+or `token-sparen stats`. Both report **net** savings:
 tokens removed by trims, minus the tokens the agent spent re-reading trimmed output, minus the
 tokens token-sparen itself injected (`stats` also prints the gross figure and both parts; the
 statusline `saved` segment uses the same net figure). Net can be zero or negative.
+
+## Evidence
+
+<!-- evidence:start -->
+No published benchmark results yet. Results appear here only from the live benchmark (E4), each with its 95 % CI, number of tasks, seeds, model, date and the plugin hash it measured.
+<!-- evidence:end -->
 
 ## Requirements
 
 - Claude Code: the minimum, 2.1.121, is declared in the plugin manifest; tested with 2.1.332.
   Replacing a tool result needs the `updatedToolOutput` hook feature, which older hosts do not
   have: hooks would run, but nothing would be trimmed.
-- `python3` >= 3.11 on your `PATH` (the hooks run `python3`). No other runtime dependencies.
-  macOS's system `python3` is often older than 3.11: check with `python3 --version`, and run
-  `/token-sparen doctor` (below) first if you are unsure. Hooks fail open, so an old Python means
-  token-sparen silently does nothing rather than breaking your session.
-- macOS and Linux. Windows: hooks need a `python3` on `PATH` (`token-sparen doctor` suggests
-  `py -3` or `python` if it is missing), and the statusline launcher is not supported yet.
+- Python >= 3.11 somewhere on your machine. No other runtime dependencies. The hooks start
+  `python3 -I`; if that `python3` is older (macOS ships 3.9, Ubuntu 22.04 3.10), the launcher
+  finds a newer Python and re-runs the hook on it: `TOKEN_SPAREN_PYTHON` (a path or command
+  name, if you set one), then `python3.15` ... `python3.11` and `python3` on your `PATH` (on
+  Windows also `py -3.15` ... `py -3.11` and `py -3`), then `uv python find ">=3.11"` if `uv`
+  is installed (with downloads disabled; set `TOKEN_SPAREN_NO_UV=1` to skip uv). A candidate is
+  used only if it reports version >= 3.11 itself. The choice is cached in
+  `~/.token-sparen/launcher.json`, so the search runs once (again when `python3` or the chosen
+  interpreter changes or disappears); the whole search is bounded to 2 seconds. The cost of the
+  extra interpreter start is measured by `tests/perf/test_launcher_reexec.py`: about 40-55 ms
+  per hook call on the development machine, paid only when your `python3` is older than 3.11
+  (without the launcher those hooks would not run at all); you avoid it by putting Python >= 3.11
+  first on your `PATH` as `python3`. `token-sparen doctor` names the interpreter the hooks
+  actually use and fails if there is none.
+- `TOKEN_SPAREN_PYTHON` must be set in the environment Claude Code is started from (your shell
+  profile); `config.toml` cannot set it, because the launcher runs before any Python >= 3.11 can
+  read it. It is honoured only if it resolves outside the current project and its git work tree
+  and, on macOS/Linux, the interpreter file and its directory are owned by you or root and not
+  writable by group or others (a repository's committed Claude Code settings can set environment
+  variables); otherwise it is skipped with one line in `logs/errors.jsonl`. Some installers
+  (for example python.org's macOS framework, group `admin` writable) fail this check; such a
+  Python is still found through `PATH` (`python3.12` etc.).
+- macOS and Linux. Windows: hooks need a `python3` on `PATH` to start (`token-sparen doctor`
+  suggests `py -3` or `python` if it is missing), and the statusline launcher is not supported yet.
+
+**Troubleshooting: "token-sparen is inactive" / nothing is ever trimmed.** The hooks found no
+Python >= 3.11. They keep your session working (fail open), show this warning at most once a day
+and log one line a day to `~/.token-sparen/logs/errors.jsonl` (`"kind": "launcher"`). Install
+Python 3.11 or newer (python.org, Homebrew, your package manager, or `uv python install 3.12`), or
+`export TOKEN_SPAREN_PYTHON=/path/to/python3.12` in your shell profile, and restart Claude Code.
+A "nothing found" result is remembered for up to 10 minutes; a new `python3.x` on `PATH` is
+noticed at once, but a Python installed only through uv (found by `uv python find`) is picked up
+after those 10 minutes (or delete `~/.token-sparen/launcher.json`). Then run
+`token-sparen doctor` in a terminal: its `hook python` line shows which interpreter the hooks
+will use. `doctor` itself needs a Python >= 3.11 too: `python3 -I <plugin dir>/hooks/run_cli.py
+doctor` finds one the same way, and says so when there is none.
 
 ## Install
 
@@ -42,13 +79,18 @@ claude plugin marketplace add rupakc/token-sparen
 claude plugin install token-sparen@token-sparen
 ```
 
+The marketplace entry tracks the `release/claude` branch of this repository (the built plugin
+tree). To work on token-sparen itself, see [CONTRIBUTING.md](CONTRIBUTING.md) for the development
+install.
+
 That is all the plugin needs. Start a new Claude Code session afterwards (or reload plugins) so
 the hooks are picked up.
 
 **Using the CLI as a plugin-only user.** You do not need the `token-sparen` command: ask Claude
 `/token-sparen` (stats), `/token-sparen doctor`, `/token-sparen disable`, and it runs the bundled CLI
 for you. To run it yourself in a terminal, call the bundled launcher from the plugin directory:
-`python3 <plugin dir>/hooks/run_cli.py <args>` (for example `... stats`). The plugin directory is the
+`python3 -I <plugin dir>/hooks/run_cli.py <args>` (for example `... stats`; it re-launches on a
+Python >= 3.11 the same way the hooks do). The plugin directory is the
 `installPath` entry for `token-sparen` in `~/.claude/plugins/installed_plugins.json`.
 
 Optional: the `token-sparen` console command (handy in your own terminal). It is **not published on PyPI yet**;
@@ -257,7 +299,13 @@ Everything stays on your machine, but some of it is plain text you should know a
     checkout**, its project key, the deny rules token-sparen wrote there and what it created,
     rules about to be written, and pending notices; kept here, beside the statusline record, so a
     changed git remote never loses track of a rule);
-  - `logs/errors.jsonl` and sampled `logs/latency.jsonl`; `logs/once.json` (short hashes of
+  - `launcher.json`: the hook launcher's cached interpreter choice (only used when your `python3`
+    is older than 3.11): per hashed key (plugin directory, `python3`, `PATH`,
+    `TOKEN_SPAREN_PYTHON`) the **path of the chosen Python**, how it was found and its
+    modification time, or that none was found (re-checked after 10 minutes or when a candidate
+    appears);
+  - `logs/errors.jsonl` and sampled `logs/latency.jsonl`; `logs/launcher-warned-<date>` (empty
+    marker: the "no Python >= 3.11" warning was already given today); `logs/once.json` (short hashes of
     store path and session, so a broken or newer state file is reported once per session);
   - `recovery/<hash>/<id>`: one empty file per recovery file this install saved, per checkout (the
     folder name is a hash of the checkout path), so `show` never serves a file a repository
@@ -457,6 +505,13 @@ credentials, every time a hook uses it. Only trust code you have read or whose a
 The runtime checks (error lines kept, line counts consistent, failures disabled) protect you from
 *buggy* extensions, not *malicious* ones. Trust follows content, not location: an identical copy of
 a trusted file in another project also loads.
+
+## Settings it may change (statusline, tool pruning)
+
+Two opt-in features write Claude Code settings, each backed up and reversible: the
+[live statusline](#live-statusline-opt-in) (`token-sparen statusline install`) and
+[tool pruning](#tool-pruning-opt-in) (deny rules, only on git confirmation). Nothing else edits
+your settings; details are in [What it writes to disk](#what-it-writes-to-disk).
 
 ## Privacy
 
@@ -716,6 +771,11 @@ print aggregate numbers only (no paths, ids or text), and write a JSON report wi
 report path must be outside any git work tree, so a report can never be committed by accident. (On Windows file modes do not apply: keep the report inside your user profile, whose
 default permissions are private to you.)
 While they run, error log lines keep only where an error happened, never its message.
+
+## Documentation
+
+See the [docs/user](docs/user) folder (privacy and security notes), the project site and the
+repository wiki; [CHANGELOG.md](CHANGELOG.md) lists changes.
 
 ## Credits and licence
 

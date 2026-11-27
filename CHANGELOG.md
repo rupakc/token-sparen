@@ -38,13 +38,40 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
 - A v1 `posteriors.json` is copied to `posteriors.v1.bak.json` before it is rewritten.
 - `doctor` prints the plugin version and the `token-sparen` on PATH and warns
   `CLI x differs from plugin y; the plugin's hooks use y` when they differ (a warning only).
-- The `/token-sparen` skill runs the plugin's bundled CLI first (`python3
+- The `/token-sparen` skill runs the plugin's bundled CLI first (`python3 -I
   "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"`), `token-sparen` on PATH only as a fallback, and
   when neither runs replies that token-sparen works in Claude Code only.
 - Known gap: recovery files saved by 0.x stay on disk and readable at the path in their marker,
   but `token-sparen show <id>` serves only ids this install registered (M6 security), so it
   refuses ids saved before the upgrade.
 
+### Hook launcher finds a Python >= 3.11 (M5 Task 1)
+
+- Fixed: the hooks silently did nothing when the `python3` on `PATH` was older than 3.11 (macOS
+  ships 3.9). `hooks/run.py` now re-launches itself on a Python >= 3.11 found by
+  `hooks/_pyfind.py`: `TOKEN_SPAREN_PYTHON`, `python3.15` ... `python3.11`, `python3`, on Windows
+  `py -3.15` ... `py -3.11` / `py -3`, then `uv python find ">=3.11"` (never downloads;
+  `TOKEN_SPAREN_NO_UV=1` skips it). Each candidate must report >= 3.11 itself; the choice is
+  cached in `~/.token-sparen/launcher.json` and re-checked when `python3` or the chosen
+  interpreter changes or disappears. POSIX re-launches with `execv`, Windows with a child process
+  on inherited stdio (exit code passed through); `TOKEN_SPAREN_REEXEC` stops a second hop and is
+  removed before the hook runs. The search is bounded to 2 s; `launcher.json` is private
+  (0600). Measured cost: about 40-55 ms per hook call (`tests/perf/test_launcher_reexec.py`),
+  paid only when `python3` is older than 3.11.
+- `TOKEN_SPAREN_PYTHON` follows the env-path safety rule: honoured only outside the current
+  project / git work tree, and (POSIX) when the interpreter and its directory are owned by the
+  user or root and not group/world-writable; re-checked on every cache hit, a rejection logged
+  once. The test-only `TOKEN_SPAREN_LAUNCHER_FORCE_REEXEC` needs a `TOKEN_SPAREN_HOME` the state
+  root accepts.
+- With no Python >= 3.11 the hooks stay a no-op, show one warning (`systemMessage`) and log one
+  `errors.jsonl` line (`"kind": "launcher"`) at most once a day.
+- `run_cli.py` (the `/token-sparen` CLI fallback) and the statusline launcher use the same search.
+- `doctor`: new `hook python` line names the interpreter the hooks actually use and how it was
+  found; it fails when there is none.
+- Hardening: hook commands, the CLI fallback and the re-launch run Python isolated (`-I`; the
+  re-launch also `-S`), so `PYTHONPATH`, `PYTHONSTARTUP` and the user site directory (which a
+  repository's committed settings could set) never load code into a hook. The skill's
+  pre-approved CLI commands now read `python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" ...`.
 ### Security and privacy review (M6)
 
 - `TOKEN_SPAREN_*` environment variables may only narrow, like a project's

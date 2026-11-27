@@ -14,7 +14,7 @@ import token_sparen.cli as cli
 from token_sparen.cli import main
 
 ROOT = Path(__file__).resolve().parents[1]
-BOOT = 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>'
+BOOT = 'python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>'
 
 
 def _plugin(root: Path, version: str) -> Path:
