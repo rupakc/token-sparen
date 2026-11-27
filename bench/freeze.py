@@ -1,18 +1,19 @@
 """Frozen read-only plugin per stage (ruling M5-B3; dry runs need no tag, ruling M6-B2).
 
-`freeze` exports the hashed plugin content (`scripts.plugin_hash.PLUGIN_PATHS`) of one git ref
-with `git archive` into a new directory, makes it read-only (files 0444, dirs 0555) and records
-its commit and `plugin_hash`. `verify` re-checks a frozen copy before every run.
+`freeze` writes the hashed plugin content (`scripts.plugin_hash.PLUGIN_PATHS`) of one git ref
+into a new directory as the blobs are stored in git (`git ls-tree` + `git cat-file --batch`:
+no checkout conversion, so no `core.autocrlf`, `eol`, `export-subst` or `export-ignore`
+effect; the hash is identical on every OS for the same commit), makes it read-only (files 0444,
+or 0555 when committed as 100755; dirs 0555) and records its commit and `plugin_hash`.
+`verify` re-checks a frozen copy before every run.
 """
 
 from __future__ import annotations
 
-import io
 import os
 import shutil
 import stat
 import subprocess
-import tarfile
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,10 +43,10 @@ class FrozenPlugin:
     plugin_hash: str
 
 
-def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+def _git(repo: Path, *args: str, stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
     env = {k: v for k, v in os.environ.items() if k not in _GIT_REDIRECTS}
     return subprocess.run(  # noqa: S603
-        ["git", "-C", str(repo), *args], capture_output=True, check=False, env=env
+        ["git", "-C", str(repo), *args], capture_output=True, check=False, env=env, input=stdin
     )
 
 
@@ -72,31 +73,58 @@ def _is_tag_of(repo: Path, ref: str, commit: str) -> bool:
     return proc.returncode == 0 and proc.stdout.decode("ascii").strip() == commit
 
 
-def _present_paths(repo: Path, commit: str) -> list[str]:
+def _tree_blobs(repo: Path, commit: str) -> list[tuple[str, str, str]]:
+    """(mode, blob sha, POSIX path) of every committed file under `PLUGIN_PATHS`."""
     wanted = [p.rstrip("/") for p in PLUGIN_PATHS]
-    proc = _git(repo, "ls-tree", "-z", "--name-only", commit, "--", *wanted)
+    proc = _git(repo, "ls-tree", "-r", "-z", "--full-tree", commit, "--", *wanted)
     if proc.returncode != 0:
         raise FreezeError(f"git ls-tree failed: {proc.stderr.decode(errors='replace').strip()}")
-    present = [p for p in proc.stdout.decode("utf-8").split("\0") if p]
-    if MANIFEST not in present:
+    entries: list[tuple[str, str, str]] = []
+    for record in proc.stdout.decode("utf-8").split("\0"):
+        if not record:
+            continue
+        meta, path = record.split("\t", 1)
+        mode, kind, sha = meta.split(" ")
+        if mode == "120000":
+            raise FreezeError(f"symlink in plugin tree at {commit}: {path}")
+        if kind != "blob" or mode not in ("100644", "100755"):
+            raise FreezeError(f"refusing non-regular tree entry {path!r} (mode {mode})")
+        parts = path.split("/")
+        if path.startswith("/") or any(part in ("", ".", "..") for part in parts):
+            raise FreezeError(f"refusing unsafe path {path!r}")
+        entries.append((mode, sha, path))
+    if MANIFEST not in {path for _, _, path in entries}:
         raise FreezeError(f"{MANIFEST} missing at {commit}")
-    return present
+    return entries
 
 
-def _extract(archive: bytes, into: Path) -> set[str]:
-    """Extract regular files and dirs; return the POSIX paths of executable files."""
-    executable: set[str] = set()
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
-        for member in tar.getmembers():
-            if not (member.isfile() or member.isdir()):
-                raise FreezeError(f"refusing non-regular archive member {member.name!r}")
-            if member.isfile() and member.mode & 0o111:
-                executable.add(member.name)
-        if hasattr(tarfile, "data_filter"):
-            tar.extractall(into, filter="data")
-        else:  # pragma: no cover - Python < 3.11.4
-            tar.extractall(into)  # noqa: S202 - members checked above
-    return executable
+def _read_blobs(repo: Path, shas: list[str]) -> list[bytes]:
+    """Raw blob contents, in order, via one `git cat-file --batch`."""
+    proc = _git(repo, "cat-file", "--batch", stdin="".join(f"{s}\n" for s in shas).encode())
+    if proc.returncode != 0:
+        raise FreezeError(f"git cat-file failed: {proc.stderr.decode(errors='replace').strip()}")
+    out, pos, blobs = proc.stdout, 0, []
+    for sha in shas:
+        end = out.index(b"\n", pos)
+        got, kind, size = out[pos:end].decode("ascii").split(" ")
+        if got != sha or kind != "blob":
+            raise FreezeError(f"unexpected git cat-file record for {sha}")
+        start = end + 1
+        blobs.append(out[start : start + int(size)])
+        pos = start + int(size) + 1
+    return blobs
+
+
+def _write_blobs(repo: Path, commit: str, into: Path) -> set[str]:
+    """Write the plugin blobs under ``into``; return the paths committed as executable."""
+    entries = _tree_blobs(repo, commit)
+    for (_, _, path), data in zip(
+        entries, _read_blobs(repo, [s for _, s, _ in entries]), strict=True
+    ):
+        target = into.joinpath(*path.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    return {path for mode, _, path in entries if mode == "100755"}
 
 
 def _drop_unhashed(root: Path) -> None:
@@ -132,23 +160,18 @@ def freeze(repo: Path, ref: str, dest: Path, *, dry_run: bool = False) -> Frozen
 
     A real stage freezes a plain tag name only (``v1.0.0-rc1`` or ``refs/tags/v1.0.0-rc1``);
     ``dry_run=True`` accepts any committed ref (tests, CI dry runs). The export is of the
-    committed ref, never of uncommitted working-tree edits. `git archive` applies the ref's
-    ``.gitattributes`` (eol, export-ignore, export-subst); today only ``eol=lf`` applies, so the
-    frozen bytes equal a checkout of the same commit (tested).
+    committed ref, never of uncommitted working-tree edits, and holds the blobs byte for byte
+    as stored (the hash of a commit does not depend on the OS or on git's checkout settings).
     """
     if dest.exists():
         raise FreezeError(f"destination exists: {dest}")
     commit = _resolve_commit(repo, ref)
     if not dry_run and not _is_tag_of(repo, ref, commit):
         raise FreezeError(f"ref {ref!r} is not a tag; only tagged commits are frozen for a stage")
-    paths = _present_paths(repo, commit)
-    proc = _git(repo, "archive", "--format=tar", commit, "--", *paths)
-    if proc.returncode != 0:
-        raise FreezeError(f"git archive failed: {proc.stderr.decode(errors='replace').strip()}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{dest.name}.", dir=dest.parent))
     try:
-        executable = _extract(proc.stdout, staging)
+        executable = _write_blobs(repo, commit, staging)
         _drop_unhashed(staging)
         _make_read_only(staging, executable, include_root=False)
         staging.rename(dest)
