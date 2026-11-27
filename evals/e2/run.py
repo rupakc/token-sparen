@@ -29,7 +29,7 @@ if __package__ in (None, ""):  # `python evals/e2/run.py` from a checkout
 
 from token_sparen import recovery
 from token_sparen.compress import CompressContext, detect, load_level, registry
-from token_sparen.config import _MISSING, _dig, _leaves, _same_type, load_config, packaged_defaults
+from token_sparen.config import load_config, validate_overlay
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import ToolCall
 
@@ -141,20 +141,6 @@ def _toml_dump(node: Mapping[str, Any], prefix: tuple[str, ...] = ()) -> str:
             path = (*prefix, str(k))
             text += f"\n[{'.'.join(path)}]\n" + _toml_dump(v, path)
     return text
-
-
-def validate_overlay(params: Mapping[str, Any]) -> None:
-    """Raise ValueError unless every overlay leaf is a packaged-default key of the right type."""
-    defaults = packaged_defaults()
-    for path, value in _leaves(dict(params), ()):
-        key = ".".join(path)
-        base = _dig(defaults, path)
-        if base is _MISSING:
-            raise ValueError(f"params overlay: unknown key {key!r}")
-        if not _same_type(value, base):
-            raise ValueError(
-                f"params overlay: {key!r} must be {type(base).__name__}, got {value!r}"
-            )
 
 
 def run(levels: Sequence[str] = LEVELS, params: Mapping[str, Any] | None = None) -> E2Report:

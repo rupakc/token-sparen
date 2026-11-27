@@ -120,3 +120,27 @@ def test_params_flag_loads_overlay_file(tmp_path: Path, capsys: pytest.CaptureFi
     f.write_text("[compression.levels.standard]\nhead = 400\n", encoding="utf-8")
     assert e2.main(["--params", str(f), "--json"]) == 0
     assert "inline_rate" in capsys.readouterr().out
+
+
+def test_optional_key_overlay_reaches_guard() -> None:
+    ok = {"guards": {"pretrim_bounded_keep_ratio": 0.35}}
+    assert e2.run(levels=("standard",), params=ok).failures == []
+    from token_sparen.config import OPTIONAL_KEYS
+
+    assert "guards.pretrim_bounded_keep_ratio" in OPTIONAL_KEYS
+    with pytest.raises(ValueError, match="overlay"):
+        e2.run(levels=("standard",), params={"guards": {"pretrim_bounded_keep_ratio": "x"}})
+    with pytest.raises(ValueError, match="overlay"):
+        e2.run(levels=("standard",), params={"guards": {"pretrim_bounded_keep_ratio": 2.0}})
+
+
+def test_optional_key_overlay_is_loaded_by_config(tmp_path: Path) -> None:
+    from token_sparen.config import load_config
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.toml").write_text(
+        e2._toml_dump({"guards": {"pretrim_bounded_keep_ratio": 0.5}})
+    )
+    cfg = load_config(tmp_path, {"TOKEN_SPAREN_HOME": str(home)})
+    assert cfg.get("guards.pretrim_bounded_keep_ratio") == 0.5

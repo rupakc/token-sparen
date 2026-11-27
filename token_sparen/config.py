@@ -439,6 +439,9 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
 UNSET_FOLLOWS: dict[tuple[str, ...], tuple[str, ...]] = {
     ("guards", "pretrim_bounded_keep_ratio"): ("compression", "levels", "standard", "keep_ratio"),
 }
+# Keys intentionally absent from the packaged defaults (unset means "follow another key"), with
+# their expected types. The single source for what a params overlay may set beyond the defaults.
+OPTIONAL_KEYS: Mapping[str, type] = {"guards.pretrim_bounded_keep_ratio": float}
 SAFETY_WARNED_FILE = "config_safety_warned.json"
 
 
@@ -627,6 +630,27 @@ def _warn_once(env: Mapping[str, str], project_dir: Path, key: str, value: Any) 
             "make token-sparen intervene less or keep more (see README); set it in "
             "~/.token-sparen/config.toml, a TOKEN_SPAREN_* variable or `token-sparen config set`",
         )
+
+
+def validate_overlay(params: Mapping[str, Any]) -> None:
+    """Raise ValueError unless every leaf of ``params`` is a packaged-default key (same type)
+    or an ``OPTIONAL_KEYS`` key (a bounded number for the ratio keys)."""
+    defaults = packaged_defaults()
+    for path, value in _leaves(dict(params), ()):
+        key = ".".join(path)
+        base = _dig(defaults, path)
+        if base is _MISSING:
+            want = OPTIONAL_KEYS.get(key)
+            if want is None:
+                raise ValueError(f"params overlay: unknown key {key!r}")
+            base = want()
+        if not _same_type(value, base):
+            raise ValueError(
+                f"params overlay: {key!r} must be {type(base).__name__}, got {value!r}"
+            )
+        rule = _rule(path)
+        if rule is not None and not _in_bounds(value, rule[1]):
+            raise ValueError(f"params overlay: {key!r} out of range: {value!r}")
 
 
 def user_config(env: Mapping[str, str]) -> dict[str, Any]:
