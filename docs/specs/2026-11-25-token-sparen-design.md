@@ -649,6 +649,14 @@ attribute reward to it. Tier governs exploration (§7.6).
 - Optional one-time directives (e.g. "be concise in prose; never shorten code") injected once per
   session. Off by default; enabled only if the live benchmark shows non-inferior quality. (Evidence
   from the landscape: a plain "be concise" prompt captures most of what terse-output plugins claim.)
+- **Amended (M5 Task 2)**: off by default in v1.0; E4 decides whether the README recommends the
+  opt-in; a default change needs a new confirmation. Shipped as `[output_style] enabled = false`,
+  `directive = "concise"` (`mechanisms/outputstyle.py`, a fixed `DIRECTIVES` table: "Be concise
+  in prose. Never shorten code, commands, file paths, error messages or quoted tool output.").
+  Injected at SessionStart as `[token-sparen output style] <directive>` once per context epoch
+  (sources `startup`, `clear`, `compact`; never `resume`), through the emit gate (deduped and
+  counted as injected tokens). Static: not a decision point, never explored. A project file may
+  only switch it off; the directive is user-only; an unknown name is off (logged once).
 
 ### 6.7 Subagent shaping — tier: medium
 - For hosts with subagents (Claude Code Task/Agent tool): an arm that appends a short brief asking

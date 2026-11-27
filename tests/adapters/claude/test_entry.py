@@ -433,3 +433,8 @@ def test_after_emit_work_runs_after_the_response_and_fails_open(tmp_path: Path) 
     assert entry.main("PostToolUse", io.StringIO(_bash_payload()), out, _env(tmp_path)) == 0
     assert seen and "updatedToolOutput" in seen[0]  # the response was written first
     assert any("after emit: RuntimeError: late boom" in e["error"] for e in _errors(tmp_path))
+
+
+def test_output_style_runs_after_facts_on_session_start() -> None:
+    names = [getattr(fn, "__name__", "") for fn in entry.HANDLERS["session_start"]]
+    assert names.index("_on_output_style") == names.index("_on_facts") + 1
