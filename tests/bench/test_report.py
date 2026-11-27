@@ -289,7 +289,7 @@ def test_every_number_has_ci_and_n(tmp_path: Path) -> None:
         assert needle in head, needle
     assert "django/django" in text and "sphinx-doc/sphinx" in text  # per-repo tables
     assert "| astropy/astropy | preflight 1 |" in text
-    assert "`astropy__astropy-7`: grading preflight: flaky_gold (swebench5-arm64)" in text
+    assert "`astropy__astropy-7`: grading preflight: the gold patch resolved only once" in text
     # passes the docs figure lint only as the exact re-render of its e4.json (README, docs
     # pages and release notes pass no re-render and never get the generated allowance)
     assert report.lint_report(out) == []
@@ -337,7 +337,13 @@ def test_e4_json_validates_and_has_confirmatory_diff(tmp_path: Path) -> None:
         if r["metric"] == "cost_ratio_median" and r["arm"] == "token-sparen"
     ]
     assert cost and cost[0]["estimate"] == pytest.approx(0.8)
-    assert doc["exclusions"] and any("rtk" in x["reason"] for x in doc["exclusions"])
+    assert {
+        "instance_id": "django__django-1003",
+        "reason": "run_unrunnable",
+        "arm": "rtk",
+        "seed": 0,
+        "cause": "api",
+    } in doc["exclusions"]
     assert doc["gate"] == {
         "verdict": "passed",
         "reasons": [],
@@ -396,7 +402,7 @@ def test_publish_writes_docs_evidence_only_for_confirmation(tmp_path: Path) -> N
     assert (repo / "docs/benchmarks/c1-confirmation/report.md").is_file()
 
     # refused: a stage with a pending (never finished) key is not completely graded
-    pend = build(tmp_path / "p", pending=True)
+    pend = build(tmp_path / "p", pending=True, gate=FakeGate("failed", ["one_sided_pending"]))
     repo2 = tmp_path / "repo2"
     with pytest.raises(report.ReportError, match="graded"):
         report.publish(pend, repo2)
@@ -492,7 +498,9 @@ def test_screening_is_labelled_descriptive_without_noninferiority(tmp_path: Path
 
 
 def test_gate_and_power_verdict_open_the_report(tmp_path: Path) -> None:
-    failed = _report_text(build(tmp_path / "f", gate=FakeGate("failed", ["lower bound low"])))
+    failed = _report_text(
+        build(tmp_path / "f", gate=FakeGate("failed", ["lower_bound_not_above_margin"]))
+    )
     first = failed.splitlines()[3]
     assert first.startswith("**Release gate: failed.**") and "Power: powered" in first
     assert "95 % CI [" in first and "n = 80" in first
@@ -572,3 +580,63 @@ def test_publish_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     del hdr["plugin_version"]
     with pytest.raises(report.ReportError, match="plugin_version"):
         build(tmp_path / "v", header=hdr)
+
+
+# --------------------------------------------------------------------------- fix round 2
+
+
+def _rewrite(out: Path, doc: dict[str, Any]) -> None:
+    """Write a hand-edited e4.json and re-render everything from it consistently."""
+    (out / "e4.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    (out / "report.md").write_text(report.render_report(doc), encoding="utf-8")
+    for name, text in report.render_figures(doc).items():
+        (out / "figures" / f"{name}.svg").write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize("where", ["disclosures", "exclusion_reason", "gate_reasons"])
+def test_free_text_in_e4_json_is_rejected(tmp_path: Path, where: str) -> None:
+    """The reviewer's re-review probe: a figure smuggled through free text inside e4.json."""
+    out = build(tmp_path)
+    doc = json.loads((out / "e4.json").read_text(encoding="utf-8"))
+    if where == "disclosures":
+        doc["report"]["disclosures"].append(SMUGGLED)
+    elif where == "exclusion_reason":
+        doc["exclusions"][0]["reason"] = SMUGGLED
+    else:
+        doc["gate"]["reasons"].append(SMUGGLED)
+    assert e4.validate_e4(doc), where  # load_e4 rejects any non-code text
+    (out / "e4.json").write_text(json.dumps(doc), encoding="utf-8")
+    with pytest.raises(e4.E4Error):
+        report.publish(out, tmp_path / "repo")
+    assert not (tmp_path / "repo").exists()
+
+
+@pytest.mark.parametrize("where", ["method", "pin"])
+def test_other_strings_in_e4_json_are_figure_linted(tmp_path: Path, where: str) -> None:
+    out = build(tmp_path)
+    doc = json.loads((out / "e4.json").read_text(encoding="utf-8"))
+    if where == "method":
+        doc["results"][1]["method"] += "; " + SMUGGLED
+    else:
+        doc["arms"][-1]["pin"] = SMUGGLED
+    _rewrite(out, doc)
+    assert any("42%" in p for p in report.lint_report(out))
+    with pytest.raises(report.ReportError, match="42%"):
+        report.publish(out, tmp_path / "repo")
+
+
+def test_codes_are_closed_and_templates_pass_the_figure_lint() -> None:
+    assert set(report.DISCLOSURE_TEXT) == set(e4.DISCLOSURE_CODES)
+    assert set(report.GATE_REASON_TEXT) == set(e4.GATE_REASON_CODES)
+    assert set(report.EXCLUSION_TEXT) == set(e4.EXCLUSION_REASONS)
+    for stage in ("screening", "confirmation"):
+        for arms in ((), ("tokeneconomizer", "caveman", "headroom")):
+            for code in e4.DISCLOSURE_CODES:
+                assert figure_violations(report.disclosure_text(code, arms, stage)) == [], code
+    for text in (*report.GATE_REASON_TEXT.values(), *report.EXCLUSION_TEXT.values()):
+        assert figure_violations(text) == [], text
+
+
+def test_gate_verdict_contradicting_the_gate_check_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(report.ReportError, match="contradicts"):
+        build(tmp_path, pending=True, gate=FakeGate("passed"))

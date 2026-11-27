@@ -143,12 +143,12 @@ def test_gate_consistent_with_non_inferiority_and_power() -> None:
     _confirmatory(doc)["ci95"] = [-6.0, 2.4]
     _confirmatory(doc)["non_inferior"] = False
     assert any("gate" in e for e in e4.validate_e4(doc))  # passed while not non-inferior
-    doc["gate"] = {"verdict": "failed", "reasons": ["resolved-diff lower bound <= -5 pp"]}
+    doc["gate"] = {"verdict": "failed", "reasons": ["lower_bound_not_above_margin"]}
     assert e4.validate_e4(doc) == []
     doc = _doc()
     doc["power"]["verdict"] = "underpowered"
     assert any("gate" in e for e in e4.validate_e4(doc))
-    doc["gate"] = {"verdict": "underpowered", "reasons": ["pool too small"]}
+    doc["gate"] = {"verdict": "underpowered", "reasons": ["underpowered_owner_decides"]}
     assert e4.validate_e4(doc) == []
 
 

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/rupakc/token-sparen/bench/e4.schema.json",
   "title": "token-sparen E4 benchmark evidence (e4.json)",
-  "description": "Published by `python -m bench report --publish` (confirmation: docs/evidence/e4.json); read by the M6 release gate. Cross-field rules checked by bench.e4.validate_e4 beyond this schema: exactly one result with metric resolved_diff_pp and confirmatory true, which compares arm token-sparen to baseline baseline with margin_pp -5 and non_inferior == (ci95[0] > margin_pp); no other result is confirmatory; every result arm/baseline names a listed arm; arm names unique and include baseline and token-sparen; date.from <= date.to; ci95[0] <= ci95[1]; screening has power null, gate null or not passed, and style_rule not recommend_opt_in; confirmation has power and gate; gate passed needs non_inferior and power powered; gate underpowered needs power underpowered. Additional fields are allowed (additive changes keep schema_version); removing or changing a field bumps it.",
+  "description": "Published by `python -m bench report --publish` (confirmation: docs/evidence/e4.json); read by the M6 release gate. Cross-field rules checked by bench.e4.validate_e4 beyond this schema: exactly one result with metric resolved_diff_pp and confirmatory true, which compares arm token-sparen to baseline baseline with margin_pp -5 and non_inferior == (ci95[0] > margin_pp); no other result is confirmatory; every result arm/baseline names a listed arm; arm names unique and include baseline and token-sparen; date.from <= date.to; ci95[0] <= ci95[1]; screening has power null, gate null or not passed, and style_rule not recommend_opt_in; confirmation has power and gate; gate passed needs non_inferior and power powered; gate underpowered needs power underpowered. Free text is closed: exclusions[].reason and .cause, gate.reasons[] and report.disclosures[] are codes from the $defs enums (the report renders their prose from fixed templates). Additional fields are allowed (additive changes keep schema_version); removing or changing a field bumps it.",
   "type": "object",
   "required": [
     "schema_version",
@@ -78,8 +78,11 @@
         "type": "object",
         "required": ["instance_id", "reason"],
         "properties": {
-          "instance_id": {"type": "string", "minLength": 1},
-          "reason": {"type": "string", "minLength": 1}
+          "instance_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+          "reason": {"$ref": "#/$defs/exclusion_reason"},
+          "arm": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+          "seed": {"type": "integer", "minimum": 0},
+          "cause": {"$ref": "#/$defs/exclusion_cause"}
         }
       }
     },
@@ -103,12 +106,75 @@
       "required": ["verdict", "reasons"],
       "properties": {
         "verdict": {"enum": ["passed", "failed", "underpowered"]},
-        "reasons": {"type": "array", "items": {"type": "string"}}
+        "reasons": {"type": "array", "items": {"$ref": "#/$defs/gate_reason"}}
       }
     },
-    "style_rule": {"enum": ["recommend_opt_in", "keep_off", "not_run"]}
+    "style_rule": {"enum": ["recommend_opt_in", "keep_off", "not_run"]},
+    "report": {
+      "type": "object",
+      "properties": {
+        "disclosures": {"type": "array", "items": {"$ref": "#/$defs/disclosure"}}
+      }
+    }
   },
   "$defs": {
+    "exclusion_reason": {
+      "enum": [
+        "run_unrunnable",
+        "run_incomplete",
+        "run_ungraded",
+        "preflight_build",
+        "preflight_gold_fail",
+        "preflight_flaky_gold",
+        "preflight_noop_pass",
+        "preflight_harness_error"
+      ]
+    },
+    "exclusion_cause": {
+      "enum": [
+        null,
+        "auth",
+        "api",
+        "rate",
+        "docker",
+        "proxy",
+        "load",
+        "leak",
+        "disk",
+        "unknown",
+        "harness_error",
+        "no_grade"
+      ]
+    },
+    "gate_reason": {
+      "enum": [
+        "plan_hash_not_release",
+        "plugin_hash_mismatch",
+        "frozen_run_without_hash",
+        "treatment_not_live",
+        "model_mismatch",
+        "claude_code_version_mismatch",
+        "e2_failed",
+        "clearly_inferior",
+        "underpowered_owner_decides",
+        "lower_bound_not_above_margin",
+        "too_few_paired_tasks",
+        "one_sided_pending",
+        "excess_exclusions_imputed",
+        "outside_plan_ignored"
+      ]
+    },
+    "disclosure": {
+      "enum": [
+        "labels",
+        "network",
+        "competitor_defaults",
+        "tokeneconomizer_headless",
+        "caveman_inert",
+        "headroom_proxy",
+        "platform"
+      ]
+    },
     "result": {
       "type": "object",
       "required": ["metric", "arm", "baseline", "estimate", "ci95", "n", "method", "confirmatory"],

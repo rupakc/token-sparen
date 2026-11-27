@@ -35,6 +35,10 @@ from bench.arms import load_arms
 from bench.e4 import (
     BASELINE_ARM,
     CONFIRMATORY_METRIC,
+    DISCLOSURE_CODES,
+    EXCLUSION_CAUSES,
+    EXCLUSION_REASONS,
+    GATE_REASON_CODES,
     MARGIN_PP,
     TREATMENT_ARM,
     E4Error,
@@ -302,34 +306,83 @@ def _preflight(path: Path | None) -> dict[str, str]:
     }
 
 
-def _disclosures(arms: Sequence[str], stage: str) -> list[str]:
-    def ran(name: str) -> str:
-        return "ran in this stage" if name in arms else "not run in this stage"
+# Fixed prose for every code e4.json may carry (re-review ruling N1): e4.json holds codes and
+# numbers only; these templates are the only text the report adds, and they pass the figure lint.
+DISCLOSURE_TEXT: Mapping[str, str] = {
+    "labels": "",  # stage-dependent, see `disclosure_text`
+    "network": "Network access: agents and the grader had network access; egress was not "
+    "restricted (the tools need it, and some evaluation scripts install packages with pip).",
+    "competitor_defaults": "Competitors ran in their documented default configuration at the "
+    "pins listed above.",
+    "tokeneconomizer_headless": "TokenEconomizer ({ran}): it does not learn from headless "
+    "`claude -p` sessions, so this comparison understates what it does interactively.",
+    "caveman_inert": "caveman ({ran}): its documentation starts scripted `claude -p` runs with "
+    "caveman off unless `CAVEMAN_DEFAULT_MODE` is set; a run whose liveness probe found an arm "
+    "inert is `infra_fail/load` and never graded (counts per arm above).",
+    "headroom_proxy": "headroom ({ran}): `headroom wrap` puts a local proxy on the request path, "
+    "so the proxy process handles the OAuth token and all API traffic; its egress was not "
+    "restricted either.",
+    "platform": "Platform: the pool holds only SWE-bench Verified tasks with an arm64 image (the "
+    "agent runs in the image it is graded in); the counts of tasks without one are listed "
+    "above, and tasks excluded by the grading preflight are listed below.",
+}
+_LABELS = {
+    "confirmation": "Labels: only the token-sparen vs baseline resolved difference on the gate "
+    "seed (the release gate's test) is confirmatory; every other number is descriptive.",
+    "screening": "Labels: a screening is descriptive only; it describes the screening freeze "
+    "(plugin hash above), not a release, and none of its numbers is a claim.",
+}
+_DISCLOSURE_ARM = {
+    "tokeneconomizer_headless": "tokeneconomizer",
+    "caveman_inert": "caveman",
+    "headroom_proxy": "headroom",
+}
+GATE_REASON_TEXT: Mapping[str, str] = {
+    "plan_hash_not_release": "the plan's frozen plugin hash is not the release hash",
+    "plugin_hash_mismatch": "a run's plugin hash differs from the plan's",
+    "frozen_run_without_hash": "a frozen-plugin run has no plugin hash",
+    "treatment_not_live": "a token-sparen run was not live",
+    "model_mismatch": "a run's model id differs from the plan's",
+    "claude_code_version_mismatch": "a run's Claude Code version differs from the plan's",
+    "e2_failed": "the E2 fact-preservation suite did not pass",
+    "clearly_inferior": "clearly inferior: point below the margin and upper bound below zero",
+    "underpowered_owner_decides": "underpowered: not failed; the owner decides in the "
+    "gate-decision file",
+    "lower_bound_not_above_margin": "the lower bound is not above the margin",
+    "too_few_paired_tasks": "too few paired tasks for the gate to pass",
+    "one_sided_pending": "one-sided exclusions still await re-runs",
+    "excess_exclusions_imputed": "the excess of token-sparen-only exclusions was imputed as "
+    "failures",
+    "outside_plan_ignored": "runs or exclusions on tasks outside the plan were ignored",
+}
+EXCLUSION_TEXT: Mapping[str, str] = {
+    "run_unrunnable": "unrunnable after its retries",
+    "run_incomplete": "no final outcome yet (re-run pending)",
+    "run_ungraded": "final run without a grade",
+    "preflight_build": "grading preflight: the evaluation image did not build",
+    "preflight_gold_fail": "grading preflight: the gold patch did not resolve",
+    "preflight_flaky_gold": "grading preflight: the gold patch resolved only once of two",
+    "preflight_noop_pass": "grading preflight: a no-op patch resolved the task",
+    "preflight_harness_error": "grading preflight: harness error",
+}
 
-    labels = (
-        "Labels: only the token-sparen vs baseline resolved difference on seed 0 (the release "
-        "gate's test) is confirmatory; every other number is descriptive."
-        if stage == "confirmation"
-        else "Labels: a screening is descriptive only; it describes the screening freeze (plugin "
-        "hash above), not a release, and none of its numbers is a claim."
-    )
-    return [
-        labels,
-        "Network access: agents and the grader had network access; egress was not restricted "
-        "(the tools need it, and some evaluation scripts install packages with pip).",
-        "Competitors ran in their documented default configuration at the pins listed above.",
-        f"TokenEconomizer ({ran('tokeneconomizer')}): it does not learn from headless "
-        "`claude -p` sessions, so this comparison understates what it does interactively.",
-        f"caveman ({ran('caveman')}): its documentation starts scripted `claude -p` runs with "
-        "caveman off unless `CAVEMAN_DEFAULT_MODE` is set; a run whose liveness probe found an "
-        "arm inert is `infra_fail/load` and never graded (counts per arm above).",
-        f"headroom ({ran('headroom')}): `headroom wrap` puts a local proxy on the request path, "
-        "so the proxy process handles the OAuth token and all API traffic; its egress was not "
-        "restricted either.",
-        "Platform: the pool holds only SWE-bench Verified tasks with an arm64 image (the agent "
-        "runs in the image it is graded in); the counts of tasks without one are listed above, "
-        "and tasks excluded by the grading preflight are listed below.",
-    ]
+
+def disclosure_text(code: str, arms: Sequence[str], stage: str) -> str:
+    """The fixed prose of a disclosure code (``{ran}`` from the stage's arms)."""
+    if code == "labels":
+        return _LABELS["confirmation" if stage == "confirmation" else "screening"]
+    arm = _DISCLOSURE_ARM.get(code)
+    ran = "ran in this stage" if arm in arms else "not run in this stage"
+    return DISCLOSURE_TEXT[code].format(ran=ran)
+
+
+def _exclusion_line(x: Mapping[str, Any]) -> str:
+    text = f"- `{x['instance_id']}`: {EXCLUSION_TEXT[x['reason']]}"
+    if "arm" in x:
+        text += f"; arm `{x['arm']}`, seed {x['seed']}"
+    if x.get("cause"):
+        text += f"; cause `{x['cause']}`"
+    return text
 
 
 def _inert_runs(led: Ledger, stage: str, arms: Sequence[str]) -> dict[str, int]:
@@ -436,7 +489,7 @@ def _report_extra(
             "pending": gate_check.pending,
         },
         "per_repo": per_repo,
-        "disclosures": _disclosures(summ.arms, stage),
+        "disclosures": list(DISCLOSURE_CODES),
     }
 
 
@@ -518,21 +571,34 @@ def _document(
     problems = _plan_problems(summ, header, frozen)
     if gate is not None:
         problems += _gate_problems(gate, header)
+    if gate is not None:
+        unknown = [r for r in gate.reasons if r not in GATE_REASON_CODES]
+        if unknown:
+            problems.append(f"{len(unknown)} gate reason(s) are not codes of the closed list")
+        check = summ.gate(TREATMENT_ARM, n_boot=n_boot)
+        if gate.verdict == "passed" and (
+            check.pending or check.estimate.n < check.min_tasks or not check.passed
+        ):
+            problems.append("the gate verdict 'passed' contradicts the report's gate check")
     if problems:
         raise ReportError("refusing to report: " + "; ".join(problems))
     mode, version = load_grade_mode()
     pre = _preflight(preflight)
     campaign = str(header["campaign"])
-    exclusions = [
+    exclusions: list[dict[str, Any]] = [
         {
             "instance_id": e.instance_id,
-            "reason": f"{e.reason} ({e.cause or 'pending re-run'}) for arm {e.arm}, seed {e.seed}",
+            "reason": f"run_{e.reason}",
+            "arm": e.arm,
+            "seed": e.seed,
+            "cause": e.cause if e.cause in EXCLUSION_CAUSES else "unknown",
         }
         for e in summ.exclusions
     ]
-    exclusions += [
-        {"instance_id": i, "reason": f"grading preflight: {why} ({mode})"} for i, why in pre.items()
-    ]
+    for iid, why in pre.items():
+        code = f"preflight_{why}"
+        reason = code if code in EXCLUSION_REASONS else "preflight_harness_error"
+        exclusions.append({"instance_id": iid, "reason": reason})
     if style_rule is None:
         style_rule = "not_run" if STYLE_ARM not in summ.arms else "keep_off"
     gate_doc: dict[str, Any] | None = None
@@ -649,7 +715,12 @@ def _claims(doc: Mapping[str, Any]) -> list[str]:
     gate_line = (
         "not evaluated"
         if gate is None
-        else gate["verdict"] + (f" ({'; '.join(gate['reasons'])})" if gate["reasons"] else "")
+        else gate["verdict"]
+        + (
+            f" ({'; '.join(GATE_REASON_TEXT[r] for r in gate['reasons'])})"
+            if gate["reasons"]
+            else ""
+        )
     )
     arms = ", ".join(
         f"`{a['name']}` ({a['kind']}{', pin `' + a['pin'] + '`' if a['pin'] else ''})"
@@ -705,7 +776,10 @@ def _claims(doc: Mapping[str, Any]) -> list[str]:
         "",
         "### Disclosures",
         "",
-        *(f"- {line}" for line in rep["disclosures"]),
+        *(
+            f"- {disclosure_text(code, [a['name'] for a in doc['arms']], doc['stage'])}"
+            for code in rep["disclosures"]
+        ),
         "",
     ]
 
@@ -738,7 +812,7 @@ def render_report(doc: Mapping[str, Any]) -> str:
         "",
         "## Exclusions",
         "",
-        *(f"- `{x['instance_id']}`: {x['reason']}" for x in doc["exclusions"]),
+        *(_exclusion_line(x) for x in doc["exclusions"]),
         *(["- none"] if not doc["exclusions"] else []),
         "",
         "## Figures",
@@ -836,7 +910,21 @@ def lint_report(report_dir: Path) -> list[str]:
             problems += [
                 f"report.md: figure {v!r}" for v in figure_violations(actual, rendered=text)
             ]
+    for where, value in _strings(doc, "e4.json"):
+        problems += [f"{where}: figure {v!r}" for v in figure_violations(value)]
     return problems
+
+
+def _strings(node: Any, where: str) -> list[tuple[str, str]]:
+    """Every string leaf of a JSON document with its path (each is figure-linted on its own,
+    without the generated-section allowance)."""
+    if isinstance(node, str):
+        return [(where, node)]
+    if isinstance(node, Mapping):
+        return [s for k, v in node.items() for s in _strings(v, f"{where}.{k}")]
+    if isinstance(node, list):
+        return [s for i, v in enumerate(node) for s in _strings(v, f"{where}[{i}]")]
+    return []
 
 
 def _published_problems(doc: Mapping[str, Any]) -> list[str]:
@@ -845,6 +933,8 @@ def _published_problems(doc: Mapping[str, Any]) -> list[str]:
     if not isinstance(rep, Mapping) or set(rep) != REPORT_KEYS:
         return ["the report object does not have exactly the generated keys"]
     problems: list[str] = []
+    if rep["disclosures"] != list(DISCLOSURE_CODES):
+        problems.append("the disclosures are not the full fixed list")
     comp = rep["completeness"]
     if not isinstance(comp, Mapping) or comp.get("complete") is not True:
         problems.append(f"stage {doc['stage']!r} is not completely graded: {comp!r}")
@@ -953,6 +1043,7 @@ __all__: Sequence[str] = (
     "ReportError",
     "assert_e4_source",
     "build_report",
+    "disclosure_text",
     "format_result",
     "generated_block",
     "lint_report",
