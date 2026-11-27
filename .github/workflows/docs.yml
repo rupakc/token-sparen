@@ -65,6 +65,17 @@ jobs:
       - run: python scripts/check_denylist.py --path _site --require-private-words
         env:
           TOKEN_SPAREN_DENYLIST: ${{ secrets.TOKEN_SPAREN_DENYLIST }}
+      - run: python scripts/build_wiki.py --out _wiki --ref "$TAG"
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+      - run: python scripts/check_denylist.py --path _wiki --require-private-words
+        env:
+          TOKEN_SPAREN_DENYLIST: ${{ secrets.TOKEN_SPAREN_DENYLIST }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: wiki
+          path: _wiki
+          if-no-files-found: error
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3.0.1
         with:
           path: _site
@@ -81,3 +92,42 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4.0.5
+
+  # Syncs the generated pages into the repository's wiki. OWNER ACTION O3: create the first wiki
+  # page once in the GitHub UI (Wiki tab) so the .wiki repository exists; until then the checkout
+  # below fails. Only this workflow writes the wiki; manual wiki edits are overwritten.
+  wiki:
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: wiki
+          path: _wiki
+      - id: co
+        continue-on-error: true
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: wiki
+          token: ${{ github.token }}
+      - if: steps.co.outcome == 'failure'
+        run: |
+          echo "::error::wiki checkout failed. OWNER ACTION O3: create the first wiki page in the GitHub UI, then re-run."
+          exit 1
+      - env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          cd wiki
+          find . -maxdepth 1 -name '*.md' -type f -delete
+          cp ../_wiki/*.md .
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "wiki already up to date"; exit 0
+          fi
+          git commit -m "docs: sync wiki from $TAG"
+          git push
