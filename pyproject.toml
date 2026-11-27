@@ -70,3 +70,6 @@ select = ["E", "F", "I", "UP", "B", "PLW1514"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+# `mypy` with no arguments checks the runtime package and the dev-time E4 harness (bench/
+# is never shipped: see scripts/check_wheel.py); bench imports scripts.plugin_hash
+files = ["token_sparen", "bench"]

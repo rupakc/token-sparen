@@ -21,6 +21,13 @@ REQUIRED_FILES = (
     "token_sparen/__main__.py",
     "token_sparen/testing/conformance.py",
 )
+# dev-time trees that must never ship in the wheel (bench/: M5 E4 harness)
+FORBIDDEN_PREFIXES = ("bench/", "scripts/", "tests/", "evals/", "docs/")
+
+
+def forbidden_entries(names: set[str]) -> list[str]:
+    """Wheel entries under a dev-time tree (sorted)."""
+    return sorted(n for n in names if n.startswith(FORBIDDEN_PREFIXES))
 
 
 def _run(argv: list[str], cwd: Path, home: Path) -> subprocess.CompletedProcess[str]:
@@ -53,7 +60,6 @@ def main() -> int:
         tmp = Path(tmp_s)
         dist = tmp / "dist"
         home = tmp / "home"
-        home = tmp / "home"
         _run(
             [sys.executable, "-m", "build", "--wheel", "--outdir", str(dist), str(ROOT)], tmp, home
         )
@@ -63,6 +69,9 @@ def main() -> int:
         missing += [f for f in REQUIRED_FILES if f not in names]
         if missing:
             sys.exit(f"FAIL wheel is missing: {missing}")
+        forbidden = forbidden_entries(names)
+        if forbidden:
+            sys.exit(f"FAIL wheel ships dev-time files: {forbidden[:10]}")
         sys.path.insert(0, str(ROOT))
         try:
             from token_sparen import __version__
