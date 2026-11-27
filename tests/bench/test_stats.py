@@ -180,20 +180,24 @@ def test_summarise_pairs_counts_and_exclusions() -> None:
 
     s = stats.summarise(ledger, grades, stage="screening")
     assert s.tasks == ("django__django-1", "django__django-2")
-    assert {(x.instance_id, x.reason) for x in s.exclusions} == {
-        ("astropy__astropy-4", "unrunnable"),
-        ("sphinx-doc__sphinx-3", "ungraded"),
+    assert set(s.exclusions) == {
+        stats.Exclusion("astropy__astropy-4", "unrunnable", "token-sparen", 0, "unknown"),
+        stats.Exclusion("sphinx-doc__sphinx-3", "ungraded", "baseline", 0, "harness_error"),
     }
+    assert s.excluded_by_arm == {"baseline": 1, "token-sparen": 1}
+    assert s.excluded("token-sparen") == {"astropy__astropy-4"}
+    assert s.exclusion_rate("token-sparen") == pytest.approx(2 / 4)
     assert s.arms == ("baseline", "token-sparen")
     assert s.seeds == (0,)
     assert s.counts["tasks"] == 2
     assert s.counts["excluded"] == 2
     assert s.counts["infra_fail"] == 2
     assert s.counts["invalidated"] == 1
-    assert s.counts["runs"] == 4
+    assert s.counts["runs"] == 6  # every graded final run, also of tasks excluded for the other arm
     assert s.resolved("token-sparen") == {
         "django__django-1": {0: False},
         "django__django-2": {0: True},
+        "sphinx-doc__sphinx-3": {0: True},
     }
     assert s.costs("baseline")["django__django-2"] == {0: 4.0}
     assert s.resolved_rate("baseline") == 1.0
@@ -202,9 +206,37 @@ def test_summarise_pairs_counts_and_exclusions() -> None:
     assert s.cost_ratio("token-sparen", n_boot=200).point == pytest.approx((0.5 + 0.25) / 2)
     assert s.resolved_diff("token-sparen", n_boot=200).point == pytest.approx(-0.5)
     repos = s.per_repo()
-    assert set(repos) == {"django/django"}
+    assert set(repos) == {"django/django", "sphinx-doc/sphinx", "astropy/astropy"}
     assert repos["django/django"]["token-sparen"] == stats.RepoCounts(tasks=2, runs=2, resolved=1)
     assert {r.plugin_hash for r in s.runs} == {"a" * 64}
+
+
+def test_exclusion_cause_from_ledger_sub_and_missing_grade() -> None:
+    ledger = [
+        {**_end("token-sparen", 0, "a-1", status="infra_fail"), "sub": "load"},
+        _end("baseline", 0, "a-1"),
+        _end("token-sparen", 0, "a-2"),
+    ]
+    s = stats.summarise(ledger, {_key("baseline", 0, "a-1"): True}, stage="screening")
+    assert set(s.exclusions) == {
+        stats.Exclusion("a-1", "unrunnable", "token-sparen", 0, "load"),
+        stats.Exclusion("a-2", "ungraded", "token-sparen", 0, "no_grade"),
+    }
+
+
+def test_range_invalidate_requires_at() -> None:
+    ledger = [_end("baseline", 0, "a-1"), {"kind": "invalidate", "from": 0.0, "to": 1.0}]
+    with pytest.raises(ValueError, match="'at'"):
+        stats.summarise(ledger, {}, stage="screening")
+    timed = [{**_end("baseline", 0, "a-1"), "at": 0.5}, {"kind": "invalidate", "from": 0, "to": 1}]
+    s = stats.summarise(timed, {_key("baseline", 0, "a-1"): True}, stage="screening")
+    assert s.runs == ()
+    assert s.exclusions[0].reason == "incomplete"
+
+
+def test_cost_ratio_needs_two_tasks_message() -> None:
+    with pytest.raises(ValueError, match="cost in both arms"):
+        stats.median_cost_ratio({"a": {0: 1.0}}, {"a": {0: 0.0}})
 
 
 def test_repo_of_instance_id() -> None:
@@ -256,36 +288,124 @@ def test_tango_paired_published_values() -> None:
         stats.tango_paired(0, -1, 0, 3)
 
 
-def test_majority_outcome() -> None:
-    assert stats.majority({0: True, 1: True, 2: False})
-    assert not stats.majority({0: True, 1: False, 2: False})
-    assert not stats.majority({0: True, 1: False})  # a tie counts as unresolved (both arms)
-    assert stats.majority({0: True})
+def _one_seed(n: int, p: float, rng: random.Random) -> dict[str, dict[int, bool]]:
+    return {f"t{i}": {0: rng.random() < p} for i in range(n)}
 
 
-def test_ni_gate_is_min_of_bootstrap_and_tango() -> None:
+def test_ni_gate_is_min_of_bootstrap_and_tango_on_seed_zero() -> None:
     rng = random.Random(3)
-    arm = {f"t{i}": {s: rng.random() < 0.6 for s in range(3)} for i in range(80)}
-    base = {f"t{i}": {s: rng.random() < 0.6 for s in range(3)} for i in range(80)}
-    diffs = [
-        statistics.fmean(arm[f"t{i}"].values()) - statistics.fmean(base[f"t{i}"].values())
-        for i in range(80)
-    ]
+    arm = _one_seed(80, 0.6, rng)
+    base = _one_seed(80, 0.6, rng)
+    diffs = [int(arm[t][0]) - int(base[t][0]) for t in sorted(arm)]
     boot_lo, boot_hi = stats.percentile(
         lambda idx: statistics.fmean(diffs[i] for i in idx), 80, n_boot=500, seed=1
     )
-    n11 = n10 = n01 = n00 = 0
-    for t in arm:
-        a, b = stats.majority(arm[t]), stats.majority(base[t])
-        n11 += a and b
-        n10 += a and not b
-        n01 += b and not a
-        n00 += not a and not b
-    nc = stats.tango_paired(n11, n10, n01, n00)
+    n10, n01 = diffs.count(1), diffs.count(-1)
+    n11 = sum(arm[t][0] and base[t][0] for t in arm)
+    tango = stats.tango_paired(n11, n10, n01, 80 - n11 - n10 - n01)
     g = stats.ni_gate(arm, base, n_boot=500, seed=1)
-    assert g.lo == pytest.approx(min(boot_lo, nc.lo))
-    assert g.hi == pytest.approx(max(boot_hi, nc.hi))
+    assert g.lo == pytest.approx(min(boot_lo, tango.lo))
+    assert g.hi == pytest.approx(max(boot_hi, tango.hi))
     assert g.point == pytest.approx(statistics.fmean(diffs))
     assert g.n == 80
     assert g.method == stats.GATE_METHOD
     assert stats.non_inferior(g) == (g.lo > -0.05)
+
+
+def test_extra_seeds_cannot_change_the_gate() -> None:
+    """Review ruling I1: only the pre-specified seed 0 enters the gate."""
+    rng = random.Random(8)
+    arm1 = _one_seed(90, 0.6, rng)
+    base1 = _one_seed(90, 0.6, rng)
+    one = stats.gate_decision(arm1, base1, n_boot=400, seed=2)
+    for extra in (1, 2):  # 2- and 3-seed inputs, adversarial extra seeds
+        arm = {t: {**v, **dict.fromkeys(range(1, extra + 1), False)} for t, v in arm1.items()}
+        base = {t: {**v, **dict.fromkeys(range(1, extra + 1), True)} for t, v in base1.items()}
+        many = stats.gate_decision(arm, base, n_boot=400, seed=2)
+        assert many == one
+        assert stats.resolved_diff(arm, base, n_boot=50).point != one.estimate.point
+
+
+def test_gate_min_tasks() -> None:
+    assert stats.gate_min_tasks() == 73
+    assert stats.tango_paired(73, 0, 0, 0).lo > -0.05 >= stats.tango_paired(72, 0, 0, 0).lo
+    # identical arms below the minimum cannot pass, at the minimum they can
+    same = {f"t{i}": {0: i % 2 == 0} for i in range(72)}
+    small = stats.gate_decision(same, same, n_boot=200)
+    assert not small.passed
+    assert any("cannot pass" in r for r in small.reasons)
+    same73 = {f"t{i}": {0: i % 2 == 0} for i in range(73)}
+    assert stats.gate_decision(same73, same73, n_boot=200).passed
+
+
+def _gate_data(n: int, extra_arm_x: int, extra_base_x: int) -> tuple[Any, Any, set[str], set[str]]:
+    """n identical, all-resolved tasks in both arms, plus excluded tasks of either arm whose
+    other arm is resolved (arm-only) or unresolved (base-only)."""
+    arm = {f"t{i}": {0: True} for i in range(n)}
+    base = {f"t{i}": {0: True} for i in range(n)}
+    arm_x = {f"xa{i}" for i in range(extra_arm_x)}
+    base_x = {f"xb{i}" for i in range(extra_base_x)}
+    base.update({t: {0: True} for t in arm_x})  # baseline resolved where token-sparen excluded
+    arm.update({t: {0: False} for t in base_x})  # arm unresolved where baseline excluded
+    return arm, base, arm_x, base_x
+
+
+def test_exclusion_rule_balanced_within_two_passes() -> None:
+    """Review ruling I2: |arm-only − ref-only| ≤ 2 → the primary bound decides."""
+    arm, base, ax, bx = _gate_data(150, 6, 4)
+    g = stats.gate_decision(arm, base, arm_excluded=ax, base_excluded=bx, n_boot=300)
+    assert (g.excluded_arm, g.excluded_ref, g.excluded_both) == (6, 4, 0)
+    assert g.balanced
+    assert g.worst_case is not None
+    assert not stats.non_inferior(g.worst_case)  # 10 imputed failures of 160 → −6.25 pp
+    assert stats.non_inferior(g.estimate)
+    assert g.passed
+
+
+def test_exclusion_rule_unbalanced_needs_worst_case() -> None:
+    # 3 more arm-only than ref-only exclusions: unbalanced; worst case (−3/303) still passes
+    arm, base, ax, bx = _gate_data(300, 3, 0)
+    ok = stats.gate_decision(arm, base, arm_excluded=ax, base_excluded=bx, n_boot=300)
+    assert not ok.balanced
+    assert ok.worst_case is not None
+    assert ok.worst_case.point == pytest.approx(-3 / 303)
+    assert stats.non_inferior(ok.worst_case)
+    assert ok.passed
+    # 12 arm-only exclusions: the worst case fails → the gate fails although the primary passes
+    arm, base, ax, bx = _gate_data(300, 12, 0)
+    bad = stats.gate_decision(arm, base, arm_excluded=ax, base_excluded=bx, n_boot=300)
+    assert stats.non_inferior(bad.estimate)
+    assert bad.worst_case is not None
+    assert not stats.non_inferior(bad.worst_case)
+    assert not bad.passed
+    assert any("unbalanced" in r for r in bad.reasons)
+    # tasks excluded in both arms are neither imputed nor counted as one-sided
+    both = stats.gate_decision(arm, base, arm_excluded=ax, base_excluded=ax, n_boot=300)
+    assert (both.excluded_arm, both.excluded_ref, both.excluded_both) == (0, 0, 12)
+    assert both.worst_case is None
+    assert both.passed
+
+
+def test_summary_gate_uses_seed_zero_exclusions_per_arm() -> None:
+    ledger: list[dict[str, Any]] = []
+    grades: dict[str, bool | None] = {}
+    for i in range(100):
+        for arm in ("baseline", "token-sparen", "rtk"):
+            ledger.append(_end(arm, 0, f"r__r-{i}"))
+            grades[_key(arm, 0, f"r__r-{i}")] = True
+    # token-sparen unrunnable on 4 tasks at seed 0: unbalanced (4 vs 0); worst case 4/100 fails?
+    for i in range(4):
+        ledger.append({"kind": "invalidate", "key": _key("token-sparen", 0, f"r__r-{i}")})
+        ledger.append({**_end("token-sparen", 0, f"r__r-{i}", status="infra_fail"), "sub": "api"})
+    # a competitor's exclusions never cost the confirmatory pair
+    for i in range(50, 60):
+        ledger.append({"kind": "invalidate", "key": _key("rtk", 0, f"r__r-{i}")})
+    s = stats.summarise(ledger, grades, stage="screening")
+    g = s.gate(n_boot=300)
+    assert (g.excluded_arm, g.excluded_ref) == (4, 0)
+    assert g.estimate.n == 96
+    assert g.worst_case is not None
+    assert g.worst_case.point == pytest.approx(-4 / 100)
+    assert g.passed == stats.non_inferior(g.worst_case)
+    assert s.excluded_by_arm == {"rtk": 10, "token-sparen": 4}
+    assert s.resolved_diff("token-sparen", n_boot=100).n == 96

@@ -1,4 +1,4 @@
-"""§10.5 statistics for E4: BCa task-cluster bootstrap, exact McNemar, non-inferiority.
+"""§10.5 statistics for E4: task-cluster bootstrap, exact paired intervals, non-inferiority.
 
 Every interval resamples *tasks* (clusters): the seeds of one task are not independent, so a
 task is drawn with all of its seeds and its per-task value (mean over seeds) is what the
@@ -6,16 +6,17 @@ statistic sees. Stdlib only; every resampling takes an explicit seed.
 
 - Cost: `median_cost_ratio` — per-task cost = mean of ``run_cost`` over seeds, ratio arm/base per
   task, point = median ratio, BCa 95 % CI.
-- Quality: `resolved_diff` — per-task resolved rate (mean over seeds), point = mean of the paired
-  differences, BCa 95 % CI (descriptive). The confirmatory gate is `ni_gate` (ruling M5-T9):
-  lower bound = min(task-cluster percentile bootstrap, Tango score on per-task majority
-  outcomes), then `non_inferior` (``lo > margin``, −5 pp).
+- Quality (descriptive): `resolved_diff` — per-task resolved rate (mean over seeds), point = mean
+  of the paired differences, BCa 95 % CI.
+- Quality (confirmatory; ruling M5-T9 and its review rulings I1/I2): `gate_decision` on exactly
+  one pre-specified seed per task (`GATE_SEED` = 0; other seeds never enter): lower bound =
+  min(task-cluster percentile bootstrap, Tango score) > −5 pp, plus the exclusion rule (balanced
+  within `BALANCE_TOLERANCE` tasks, or the worst-case imputation also passes).
 - Alongside, per seed: `mcnemar_conditional_exact` (Clopper–Pearson on the discordant pairs,
   mapped to the difference scale; labelled "conditional exact").
 
 `summarise` turns ledger records (Task 7) and grades (Task 8) into a `Summary` that pairs arms
-by task and lists exclusions with the reason names published in ``e4.json``.
-"""
+by task and lists exclusions per arm, seed and cause."""
 
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ import bisect
 import math
 import random
 import statistics
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -178,6 +179,8 @@ def median_cost_ratio(
     kept = [t for t in tasks if b[t] > 0]
     dropped += len(tasks) - len(kept)
     ratios = [a[t] / b[t] for t in kept]
+    if len(ratios) < 2:
+        raise ValueError(f"need >= 2 tasks with a cost in both arms (base > 0), got {len(ratios)}")
     lo, hi = bca(
         lambda idx: statistics.median([ratios[i] for i in idx]),
         len(ratios),
@@ -208,12 +211,16 @@ def resolved_diff(
 #
 # Ruling M5-T9: the task-cluster bootstrap alone is liberal with few tasks, so the confirmatory
 # lower bound is min(percentile bootstrap lower bound clustered by task, a paired score lower
-# bound of the difference of per-task majority outcomes); pass iff min > −5 pp. The ruling
-# allows Newcombe hybrid score or Tango score; Tango is used: in the simulation at 80 tasks
-# with sparse one-sided discordance (f = 0.1, one seed) Newcombe's bound let 8.8 % of
-# margin-true confirmations pass (nominal 2.5 %), Tango 2.0 % (task-9 report).
+# bound); pass iff min > −5 pp. Of the two scores the ruling allowed, Tango is used: at 80 tasks
+# with sparse one-sided discordance Newcombe's hybrid score let 8.8 % of margin-true
+# confirmations pass (nominal 2.5 %), Tango 2.0 % (task-9 report).
+# Review ruling I1: exactly one pre-specified seed per task enters the gate (majority outcomes
+# over several seeds shrink the difference and broke the type-I guarantee); other seeds are
+# descriptive only. Review ruling I2: exclusions are attributed to an arm; see `gate_decision`.
 
-GATE_METHOD = "min(bootstrap-percentile-task-cluster, tango-score-majority)"
+GATE_SEED = 0
+BALANCE_TOLERANCE = 2
+GATE_METHOD = "min(bootstrap-percentile-task-cluster, tango-score), seed 0"
 
 
 def percentile(
@@ -316,33 +323,46 @@ def tango_paired(n11: int, n10: int, n01: int, n00: int, *, alpha: float = 0.05)
     return Estimate(point, lo, hi, n, "tango-score")
 
 
-def majority(by_seed: Mapping[int, bool | None] | Iterable[bool]) -> bool:
-    """A task's majority outcome over its seeds; a tie counts as unresolved (in every arm)."""
-    values = [bool(v) for v in (by_seed.values() if isinstance(by_seed, Mapping) else by_seed)]
-    return 2 * sum(values) > len(values)
-
-
 def gate_bound(
     percentile_lo: float, percentile_hi: float, cells: tuple[int, int, int, int], alpha: float
 ) -> tuple[float, float]:
     """(min, max) of the percentile and Tango limits — shared by `ni_gate` and the power
-    simulation so the plan uses the gate actually applied."""
+    simulation so the plan uses the gate actually applied. The published interval is this union
+    (it need not be centred on the point; `GATE_METHOD` labels it)."""
     nc = tango_paired(*cells, alpha=alpha)
     return min(percentile_lo, nc.lo), max(percentile_hi, nc.hi)
+
+
+def gate_min_tasks(margin: float = MARGIN, alpha: float = 0.05) -> int:
+    """Fewest paired tasks with which the gate can pass at all: with zero discordant pairs the
+    Tango lower bound is −g(n) and must exceed ``margin`` (74 at −5 pp, α = 0.05)."""
+    n = 2
+    while tango_paired(n, 0, 0, 0, alpha=alpha).lo <= margin:
+        n += 1
+    return n
+
+
+def _gate_outcomes(
+    runs: Mapping[str, Mapping[int, bool | None]], gate_seed: int
+) -> dict[str, bool]:
+    return {t: bool(v[gate_seed]) for t, v in runs.items() if v.get(gate_seed) is not None}
 
 
 def ni_gate(
     arm: Mapping[str, Mapping[int, bool | None]],
     base: Mapping[str, Mapping[int, bool | None]],
     *,
+    gate_seed: int = GATE_SEED,
     n_boot: int = 10000,
     alpha: float = 0.05,
     seed: int = 0,
 ) -> Estimate:
-    """The confirmatory non-inferiority interval (method `GATE_METHOD`); point = mean over paired
-    tasks of the per-task resolved-rate difference; `non_inferior` applies the margin."""
-    tasks, a, b, dropped = _paired(arm, base)
-    diffs = [a[t] - b[t] for t in tasks]
+    """The confirmatory interval (method `GATE_METHOD`) on seed ``gate_seed`` only: tasks with
+    that seed's outcome in both arms; point = arm − base resolved rate; other seeds ignored."""
+    a, b = _gate_outcomes(arm, gate_seed), _gate_outcomes(base, gate_seed)
+    tasks = sorted(a.keys() & b.keys())
+    dropped = len(a.keys() | b.keys()) - len(tasks)
+    diffs = [int(a[t]) - int(b[t]) for t in tasks]
     p_lo, p_hi = percentile(
         lambda idx: math.fsum(diffs[i] for i in idx) / len(idx),
         len(diffs),
@@ -350,16 +370,97 @@ def ni_gate(
         alpha=alpha,
         seed=seed,
     )
-    n11 = n10 = n01 = n00 = 0
-    for t in tasks:
-        x = majority({s: v for s, v in arm[t].items() if v is not None})
-        y = majority({s: v for s, v in base[t].items() if v is not None})
-        n11 += x and y
-        n10 += x and not y
-        n01 += y and not x
-        n00 += not x and not y
-    lo, hi = gate_bound(p_lo, p_hi, (n11, n10, n01, n00), alpha)
+    n10 = sum(d > 0 for d in diffs)
+    n01 = sum(d < 0 for d in diffs)
+    n11 = sum(a[t] and b[t] for t in tasks)
+    cells = (n11, n10, n01, len(tasks) - n11 - n10 - n01)
+    lo, hi = gate_bound(p_lo, p_hi, cells, alpha)
     return Estimate(math.fsum(diffs) / len(diffs), lo, hi, len(diffs), GATE_METHOD, dropped)
+
+
+@dataclass(frozen=True)
+class GateCheck:
+    """Confirmatory decision. ``passed`` = primary lower bound > margin AND (the one-sided
+    exclusions are balanced within ``tolerance`` tasks OR the worst case also passes)."""
+
+    estimate: Estimate  # primary: tasks with the gate seed's outcome in both arms
+    worst_case: Estimate | None  # one-sided exclusions imputed against the arm; None if none
+    excluded_arm: int  # tasks excluded for the arm only (gate seed)
+    excluded_ref: int  # tasks excluded for the reference only
+    excluded_both: int
+    tolerance: int
+    min_tasks: int
+    passed: bool
+    reasons: tuple[str, ...]
+
+    @property
+    def balanced(self) -> bool:
+        return abs(self.excluded_arm - self.excluded_ref) <= self.tolerance
+
+
+def gate_decision(
+    arm: Mapping[str, Mapping[int, bool | None]],
+    base: Mapping[str, Mapping[int, bool | None]],
+    *,
+    arm_excluded: Collection[str] = (),
+    base_excluded: Collection[str] = (),
+    gate_seed: int = GATE_SEED,
+    margin: float = MARGIN,
+    tolerance: int = BALANCE_TOLERANCE,
+    n_boot: int = 10000,
+    alpha: float = 0.05,
+    seed: int = 0,
+) -> GateCheck:
+    """Review ruling I2. ``*_excluded`` = tasks whose gate-seed key of that arm has no graded
+    final outcome. Worst case: an arm-only exclusion counts as an arm failure, a reference-only
+    exclusion as a reference success (each where the other arm's gate-seed outcome exists);
+    tasks excluded in both arms stay out."""
+    arm_x, base_x = set(arm_excluded), set(base_excluded)
+    arm_only, base_only = arm_x - base_x, base_x - arm_x
+    a_out = {t: v for t, v in _gate_outcomes(arm, gate_seed).items() if t not in arm_x}
+    b_out = {t: v for t, v in _gate_outcomes(base, gate_seed).items() if t not in base_x}
+    kw: dict[str, Any] = {"gate_seed": gate_seed, "n_boot": n_boot, "alpha": alpha, "seed": seed}
+    primary = ni_gate(
+        {t: {gate_seed: v} for t, v in a_out.items()},
+        {t: {gate_seed: v} for t, v in b_out.items()},
+        **kw,
+    )
+    impute_arm = {t for t in arm_only if t in b_out}
+    impute_base = {t for t in base_only if t in a_out}
+    worst: Estimate | None = None
+    if impute_arm or impute_base:
+        worst_arm = {t: {gate_seed: v} for t, v in a_out.items()}
+        worst_arm.update({t: {gate_seed: False} for t in impute_arm})
+        worst_base = {t: {gate_seed: v} for t, v in b_out.items()}
+        worst_base.update({t: {gate_seed: True} for t in impute_base})
+        worst = ni_gate(worst_arm, worst_base, **kw)
+    min_tasks = gate_min_tasks(margin, alpha)
+    balanced = abs(len(arm_only) - len(base_only)) <= tolerance
+    primary_ok = non_inferior(primary, margin)
+    worst_ok = worst is not None and non_inferior(worst, margin)
+    reasons: list[str] = []
+    if primary.n < min_tasks:
+        reasons.append(f"{primary.n} paired tasks < {min_tasks}: the gate cannot pass")
+    if not primary_ok:
+        reasons.append(f"lower bound {primary.lo:.4f} <= margin {margin}")
+    if not balanced:
+        lo = "n/a" if worst is None else f"{worst.lo:.4f}"
+        verdict = "passes" if worst_ok else f"fails ({lo} <= margin {margin})"
+        reasons.append(
+            f"exclusions unbalanced ({len(arm_only)} vs {len(base_only)}, tolerance "
+            f"{tolerance}); worst case {verdict}"
+        )
+    return GateCheck(
+        estimate=primary,
+        worst_case=worst,
+        excluded_arm=len(arm_only),
+        excluded_ref=len(base_only),
+        excluded_both=len(arm_x & base_x),
+        tolerance=tolerance,
+        min_tasks=min_tasks,
+        passed=primary_ok and (balanced or worst_ok),
+        reasons=tuple(reasons),
+    )
 
 
 # --------------------------------------------------------------------------- summaries
@@ -367,8 +468,16 @@ def ni_gate(
 
 @dataclass(frozen=True)
 class Exclusion:
+    """One run key without a graded final outcome. ``reason``: ``unrunnable`` (infra failures,
+    no final), ``incomplete`` (no final, no infra failure), ``ungraded`` (final, no grade);
+    ``cause``: the last infra ``sub`` (e.g. ``api``, ``load``), ``harness_error`` (grade None)
+    or ``no_grade`` (key absent from the grades); None for ``incomplete``."""
+
     instance_id: str
-    reason: str  # unrunnable | incomplete | ungraded
+    reason: str
+    arm: str = ""
+    seed: int = 0
+    cause: str | None = None
 
 
 @dataclass(frozen=True)
@@ -401,21 +510,43 @@ def repo_of(instance_id: str) -> str:
 
 @dataclass(frozen=True)
 class Summary:
+    """``runs`` = every graded final run; a task leaves a pairing (arm, vs) when any key of
+    either arm is excluded (other arms' exclusions do not cost the pair); ``tasks`` = tasks
+    without any exclusion; ``excluded_by_arm`` = tasks with ≥ 1 excluded key of that arm."""
+
     stage: str
     reference: str
     arms: tuple[str, ...]
     seeds: tuple[int, ...]
-    tasks: tuple[str, ...]  # tasks with a final, graded outcome for every key seen
+    tasks: tuple[str, ...]
     runs: tuple[RunRow, ...]
     exclusions: tuple[Exclusion, ...]
     counts: Mapping[str, int] = field(default_factory=dict)
+    excluded_by_arm: Mapping[str, int] = field(default_factory=dict)
 
-    def _per_task(self, arm: str, value: Callable[[RunRow], float | None]) -> dict[str, Any]:
+    def _per_task(self, arm: str, value: Callable[[RunRow], Any]) -> dict[str, Any]:
         out: dict[str, dict[int, Any]] = {}
         for r in self.runs:
             if r.arm == arm:
                 out.setdefault(r.instance_id, {})[r.seed] = value(r)
         return out
+
+    def excluded(self, arm: str, *, seed: int | None = None) -> set[str]:
+        """Tasks with an excluded key of ``arm`` (at ``seed``, or at any seed)."""
+        return {
+            e.instance_id
+            for e in self.exclusions
+            if e.arm == arm and (seed is None or e.seed == seed)
+        }
+
+    def _pair(
+        self, arm: str, vs: str | None, value: Callable[[RunRow], Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        ref = vs or self.reference
+        out = self.excluded(arm) | self.excluded(ref)
+        a = {t: v for t, v in self._per_task(arm, value).items() if t not in out}
+        b = {t: v for t, v in self._per_task(ref, value).items() if t not in out}
+        return a, b
 
     def resolved(self, arm: str) -> dict[str, dict[int, bool]]:
         return self._per_task(arm, lambda r: r.resolved)
@@ -428,20 +559,44 @@ class Summary:
         return math.fsum(means.values()) / len(means) if means else math.nan
 
     def resolved_diff(self, arm: str, vs: str | None = None, **kw: Any) -> Estimate:
-        return resolved_diff(self.resolved(arm), self.resolved(vs or self.reference), **kw)
+        return resolved_diff(*self._pair(arm, vs, lambda r: r.resolved), **kw)
 
-    def gate(self, arm: str, vs: str | None = None, **kw: Any) -> Estimate:
-        """The applied non-inferiority interval (`ni_gate`)."""
-        return ni_gate(self.resolved(arm), self.resolved(vs or self.reference), **kw)
+    def gate(
+        self,
+        arm: str = "token-sparen",
+        vs: str | None = None,
+        *,
+        gate_seed: int = GATE_SEED,
+        **kw: Any,
+    ) -> GateCheck:
+        """The confirmatory decision (`gate_decision`) on seed ``gate_seed`` with this stage's
+        exclusions of the two arms at that seed."""
+        ref = vs or self.reference
+        return gate_decision(
+            self.resolved(arm),
+            self.resolved(ref),
+            arm_excluded=self.excluded(arm, seed=gate_seed),
+            base_excluded=self.excluded(ref, seed=gate_seed),
+            gate_seed=gate_seed,
+            **kw,
+        )
 
     def cost_ratio(self, arm: str, vs: str | None = None, **kw: Any) -> Estimate:
-        return median_cost_ratio(self.costs(arm), self.costs(vs or self.reference), **kw)
+        return median_cost_ratio(*self._pair(arm, vs, lambda r: r.cost), **kw)
+
+    def exclusion_rate(self, arm: str, vs: str | None = None, *, seed: int = GATE_SEED) -> float:
+        """Share of the tasks seen for ``arm`` or ``vs`` that are excluded for either at
+        ``seed`` (the power plan inflates its size by this)."""
+        ref = vs or self.reference
+        out = self.excluded(arm, seed=seed) | self.excluded(ref, seed=seed)
+        seen = {r.instance_id for r in self.runs if r.arm in (arm, ref) and r.seed == seed} | out
+        return len(out) / len(seen) if seen else 0.0
 
     def discordance(
         self, arm: str, vs: str | None = None, *, seed: int | None = None
     ) -> tuple[int, int, int]:
         """(n10, n01, n) over (task, seed) pairs; n10 = arm resolved and ``vs`` not."""
-        a, b = self.resolved(arm), self.resolved(vs or self.reference)
+        a, b = self._pair(arm, vs, lambda r: r.resolved)
         n10 = n01 = n = 0
         for task in a.keys() & b.keys():
             for s in a[task].keys() & b[task].keys():
@@ -471,7 +626,8 @@ class Summary:
 def _parse_key(raw: Any) -> tuple[str, str, int, str] | None:
     """(stage, arm, seed, instance_id) from a RunKey id ``campaign/stage/arm/seed/iid`` or dict."""
     if isinstance(raw, Mapping):
-        parts: list[Any] = [raw.get(k) for k in ("campaign", "stage", "arm", "seed", "instance_id")]
+        names = ("campaign", "stage", "arm", "seed", "instance_id")
+        parts: list[Any] = [raw.get(k) for k in names]
     elif isinstance(raw, str):
         parts = list(raw.split("/", 4))
     else:
@@ -504,18 +660,18 @@ def summarise(
     stage: str,
     reference: str = "baseline",
 ) -> Summary:
-    """Final graded runs of one stage, paired by task.
+    """Final graded runs of one stage.
 
-    ``ledger`` = the ledger records in append order (``kind`` start / end / invalidate / …,
-    ``key`` = RunKey id or mapping); ``grades`` = RunKey id → resolved (None = harness error).
-    A key's final outcome is its last non-invalidated ``end`` with status ok or agent_fail
-    (``invalidate`` with a ``key`` reopens it; with ``from``/``to`` it reopens ends whose ``at``
-    lies in that range). A task is excluded from every pairing when any key of it has no final
-    outcome (``unrunnable`` after an infra failure, else ``incomplete``) or no grade
-    (``ungraded``)."""
+    ``ledger`` = the ledger records in append order (Task 7 shapes: ``kind`` start / end /
+    invalidate / …, ``key`` = RunKey id or mapping, ``status``, ``sub``, ``at``, ``run_cost``,
+    ``plugin_hash``, ``model``, ``claude_code_version``, ``live``, ``repo``); ``grades`` =
+    RunKey id → resolved (None = harness error). A key's final outcome is its last
+    non-invalidated ``end`` with status ok or agent_fail (``invalidate`` with a ``key`` reopens
+    it; with ``from``/``to`` it reopens ends whose ``at`` lies in that range — an end without
+    ``at`` then raises). Every key without a graded final outcome is an `Exclusion`."""
     ends: dict[tuple[str, int, str], list[Mapping[str, Any]]] = {}
     key_ids: dict[tuple[str, int, str], str] = {}
-    infra_keys: set[tuple[str, int, str]] = set()
+    infra_sub: dict[tuple[str, int, str], str] = {}
     hashes: dict[tuple[str, int, str], str] = {}
     counts = {"infra_fail": 0, "invalidated": 0}
     for rec in ledger:
@@ -526,7 +682,9 @@ def summarise(
                 continue
             counts["invalidated"] += 1
             for k, lst in ends.items():
-                ends[k] = [e for e in lst if not (lo <= e.get("at", math.nan) <= hi)]
+                if any(e.get("at") is None for e in lst):
+                    raise ValueError(f"range invalidate, but an end of {key_ids[k]} has no 'at'")
+                ends[k] = [e for e in lst if not lo <= e["at"] <= hi]
             continue
         parsed = _parse_key(rec.get("key"))
         if parsed is None or parsed[0] != stage:
@@ -537,25 +695,31 @@ def summarise(
         if kind == "start" and rec.get("plugin_hash"):
             hashes[k] = str(rec["plugin_hash"])
         elif kind == "end":
-            if rec.get("status") in GRADED_STATUSES:
+            status = str(rec.get("status", ""))
+            if status in GRADED_STATUSES:
                 ends[k].append(rec)
-            elif str(rec.get("status", "")).startswith("infra_fail"):
+            elif status.startswith("infra_fail"):
                 counts["infra_fail"] += 1
-                infra_keys.add(k)
+                infra_sub[k] = str(rec.get("sub") or status.partition("/")[2] or "unknown")
         elif kind == "invalidate":
             counts["invalidated"] += 1
             ends[k] = []
 
-    reasons: dict[str, str] = {}
+    exclusions: list[Exclusion] = []
     rows: list[RunRow] = []
     for k in sorted(ends):
         arm, seed, iid = k
         if not ends[k]:
-            reasons.setdefault(iid, "unrunnable" if k in infra_keys else "incomplete")
+            if k in infra_sub:
+                exclusions.append(Exclusion(iid, "unrunnable", arm, seed, infra_sub[k]))
+            else:
+                exclusions.append(Exclusion(iid, "incomplete", arm, seed, None))
             continue
-        grade = grades.get(key_ids[k])
+        kid = key_ids[k]
+        grade = grades.get(kid)
         if grade is None:
-            reasons.setdefault(iid, "ungraded")
+            cause = "harness_error" if kid in grades else "no_grade"
+            exclusions.append(Exclusion(iid, "ungraded", arm, seed, cause))
             continue
         end = ends[k][-1]
         cost = end.get("run_cost", _field(end, "run_cost"))
@@ -575,25 +739,29 @@ def summarise(
                 live=None if live is None else bool(live),
             )
         )
-    kept = tuple(r for r in rows if r.instance_id not in reasons)
-    tasks = tuple(sorted({r.instance_id for r in kept}))
+    excluded_tasks = {e.instance_id for e in exclusions}
+    tasks = tuple(sorted({r.instance_id for r in rows} - excluded_tasks))
+    by_arm: dict[str, set[str]] = {}
+    for e in exclusions:
+        by_arm.setdefault(e.arm, set()).add(e.instance_id)
     by_status: dict[str, int] = {}
-    for r in kept:
+    for r in rows:
         by_status[r.status] = by_status.get(r.status, 0) + 1
     return Summary(
         stage=stage,
         reference=reference,
-        arms=tuple(sorted({r.arm for r in kept})),
-        seeds=tuple(sorted({r.seed for r in kept})),
+        arms=tuple(sorted({r.arm for r in rows} | set(by_arm))),
+        seeds=tuple(sorted({r.seed for r in rows})),
         tasks=tasks,
-        runs=kept,
-        exclusions=tuple(Exclusion(i, r) for i, r in sorted(reasons.items())),
+        runs=tuple(rows),
+        exclusions=tuple(exclusions),
         counts={
-            "runs": len(kept),
+            "runs": len(rows),
             "tasks": len(tasks),
-            "excluded": len(reasons),
+            "excluded": len(excluded_tasks),
             "ok": by_status.get("ok", 0),
             "agent_fail": by_status.get("agent_fail", 0),
             **counts,
         },
+        excluded_by_arm={a: len(t) for a, t in sorted(by_arm.items())},
     )
