@@ -5,6 +5,56 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+First stable release: token-sparen for Claude Code. It trims bulky tool output before the model
+reads it, keeps every trimmed byte recoverable, and learns from your own sessions which
+trimming is worth its risk. Quality comes first: when in doubt, nothing is trimmed.
+
+### What you get
+
+- A Claude Code plugin (hooks, the `/token-sparen` skill, an optional statusline) and a
+  `token-sparen` command-line tool, both with a standard-library-only runtime.
+- Trimming of long command, file and search output that always keeps error lines, always leaves
+  short outputs alone, and appends a marker naming the saved full text; `token-sparen show <id>`
+  prints it back.
+- Learning that stays on your machine: per-project and cross-session evidence, remembered facts
+  that are re-injected only when they help, and a quality-first default that moves only on
+  strong evidence.
+- Guards for long sessions: budget and context notices, a loop guard, and opt-in tool pruning.
+- Safe by default: every settings write is opt-in, backed up and reversible; a kill switch
+  (`TOKEN_SPAREN_DISABLE=1`) turns every hook into a no-op; hooks fail open.
+- Documentation at the project site, built from `docs/user`, including install, upgrade,
+  uninstall, troubleshooting and a privacy and security page.
+- Measured results are published only in the Evidence table of the release notes and the
+  Evidence page, each with its confidence interval; this changelog states none.
+
+### What changed since the 0.x milestones
+
+- The hook launcher finds a Python 3.11 or newer on its own, so hooks no longer silently do
+  nothing when `python3` on `PATH` is older.
+- Environment variables may only narrow settings; widen in `~/.token-sparen/config.toml` or
+  with `token-sparen config set`. Keys that only the user file may set are ignored from the
+  environment.
+- State directories are owner-only, recovery files are never written or read through symbolic
+  links, and `token-sparen show` serves only outputs this install saved for this checkout.
+- `doctor` reports the plugin version, the interpreter the hooks use and a warning when the
+  command-line tool and the plugin differ.
+- The plugin installs from the `release/claude` branch, which is updated only by releases.
+
+### Upgrade notes
+
+- State written by any 0.x milestone loads unchanged, or is quarantined with one log line;
+  nothing learned is lost.
+- Newer state is never downgraded: an older command-line tool treats files written by a newer
+  version as read-only and tells you which version to run.
+- Recovery files from 0.x versions stay on disk at the path in their marker, but `token-sparen show`
+  refuses ids saved before the upgrade.
+- The Python floor is 3.11.
+- See the upgrade and uninstall pages of the documentation for the full path.
+
+<!-- pre-1.0 milestones -->
+
+## Pre-1.0 milestones
+
 Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones M0
 (foundations), M1 (Claude Code plugin), M2 (learning, offline evaluation, quality-first defaults
 and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`

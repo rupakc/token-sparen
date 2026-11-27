@@ -12,6 +12,25 @@ python -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 ```
 
+The documentation build needs the `docs` extra (`pip install -e ".[docs]"`, Python-Markdown).
+To try the plugin from a checkout, run Claude Code with `claude --plugin-dir .` (a development
+install); users install from the marketplace, which tracks the `release/claude` branch.
+
+## Documentation
+
+`docs/user/` is the single source of the user documentation. `site/` holds only the HTML
+template and stylesheet. `python scripts/build_site.py` renders the site from `docs/user/`; never edit the
+generated pages. The site is deployed from release tags, not from every push to `main`. Savings and quality results appear
+only in the rendered Evidence table (`scripts/docs_lint.py` enforces the figure rule).
+
+## Releases
+
+Releases are cut by the maintainer from tags; see `docs/release/runbook.md` and the `release`
+skill. In short: an owner-signed annotated tag `vX.Y.Z` on a `chore(release): vX.Y.Z` commit on
+`main` starts the workflow, which needs two owner approvals (`release`, then `pypi`). Release
+notes are the curated `CHANGELOG.md` section; contributors add user-facing entries under
+`[Unreleased]` and keep milestone detail below `<!-- pre-1.0 milestones -->`.
+
 ## Checks (all must pass before a commit)
 
 ```

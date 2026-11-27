@@ -7,6 +7,16 @@ Status: APPROVED 2026-11-25 (with §6.12 live statusline added at approval) · D
 
 ## Revision log
 
+**2026-11-27 (M6 release engineering).** The user documentation source is `docs/user` with the
+`site/` templates, rendered with Python-Markdown (`docs` extra); the site is
+generated from it. A release is cut from tags: an owner-signed annotated `vX.Y.Z` tag starts a
+workflow with two owner approvals (`release`, then `pypi`); release notes are the curated
+CHANGELOG section (no figure outside the Evidence table) plus a fixed footer. `release/claude`
+is the install branch for the marketplace and the Claude Code directory, updated by
+fast-forward commits only. The explorer, zips and npm packaging move to v1.1. The release-gate
+override remains only as amended by M5 (an `underpowered` verdict plus the owner's decision
+file). Directory surfaces are Claude Code only.
+
 **2026-11-27 (M4 final review).** Corrects the "M4 outcome" entry below: **tuned parameters are
 unchanged**, but default-on correctness changes shipped in M4 and are test-backed, not E1-backed:
 the long-context window latch (governor and `band` feature, see the Task 6 entry); stack-frame

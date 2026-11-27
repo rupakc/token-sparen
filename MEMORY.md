@@ -1764,3 +1764,11 @@ and the two new issues they found.
   manual edit and exits 1; statusline by its launcher command;
   everything else prints `NewerSchema.advice(command)`. v1 posteriors copied to
   `posteriors.v1.bak.json` first.
+
+## 2026-11-27 M6 Task 11: release docs and changelog layout
+- CHANGELOG `[Unreleased]` is a curated, figure-free v1.0 summary (what you get, what changed,
+  upgrade notes) so `release_notes.py` passes the docs figure rule; milestone history lives below
+  `<!-- pre-1.0 milestones -->` under `## Pre-1.0 milestones`. The bump creates the single
+  `## [1.0.0]` heading. No allowlist entries were added to `docs_lint`.
+- Release skill points to `docs/release/runbook.md`; the tag, `release` and `pypi` approvals stay
+  owner actions. Spec revision log has the M6 entry.
