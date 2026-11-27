@@ -33,7 +33,9 @@ tool result stops counting (the agent has it from elsewhere). Within ``[learn]
 regret_window_turns`` user turns: a later assistant text block or tool input (edits included:
 Read -> Edit of text only the elided part held) with >= 2 such tokens, or a re-run of the same
 ``regret.signature`` (normalised command, same file read), is a full regret (1.0); a user prompt
-with >= 2 is partial (0.5, the span stays watched). A trim keeps its maximum; partials are paid
+with >= 2 is partial (0.5, the span stays watched). Every trim is watched for the re-run signal,
+like the live detector tracks every trimming decision; the token signals need >= 2 distinctive
+tokens (``watched_spans`` counts those trims). A trim keeps its maximum; partials are paid
 at expiry, eviction or the session end. At most ``MAX_WATCHED`` spans are watched (the oldest is
 evicted and paid, counted in ``evicted``). ``proxy_regrets`` is the sum of values.
 
@@ -626,13 +628,13 @@ class _Session:
     def _trimmed(
         self,
         decision: Decision,
-        span: _Span | None,
+        span: _Span,
         removed: float,
         before: float,
         redo: Callable[[str], float | None],
     ) -> None:
-        """A trim was made (``span``: its watched span, None when it is not watched; ``redo``:
-        the removal another arm would make on the same output, None if it would not trim)."""
+        """A trim was made (``span``: its watched span; ``redo``: the removal another arm would
+        make on the same output, None if it would not trim)."""
 
     def _untrimmed(self, decision: Decision) -> None:
         """A trimming arm was chosen but found nothing worth trimming."""
@@ -845,18 +847,20 @@ class _Session:
                 d = regret.token_digest(v)
                 if d not in self.seen:
                     digests[d] = i
-        span: _Span | None = None
+        # every trim is watched for a re-run of its signature (as the live detector tracks every
+        # trimming decision); its distinctive tokens count only when there are >= 2 of them
         if len(set(digests.values())) >= regret.MIN_TOKEN_HITS:
             self._add(ctype, "watched", 1, cat, fam)
-            sig = self._signature(rec.tool_name, rec.input)
-            span = _Span(digests, ctype, self.turn, sig, cat, frozenset(paths), fam, before)
+        else:
+            digests, paths = {}, set()
+        sig = self._signature(rec.tool_name, rec.input)
+        span = _Span(digests, ctype, self.turn, sig, cat, frozenset(paths), fam, before)
         self._trimmed(decision, span, removed, before, redo)
-        if span is not None:
-            self.watched.append(span)
-            while len(self.watched) > MAX_WATCHED:
-                self._settle(self.watched.popleft())
-                for acc in self.accs:
-                    acc.evicted += 1
+        self.watched.append(span)
+        while len(self.watched) > MAX_WATCHED:
+            self._settle(self.watched.popleft())
+            for acc in self.accs:
+                acc.evicted += 1
         return True
 
 

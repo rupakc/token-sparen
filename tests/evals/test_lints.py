@@ -11,11 +11,9 @@ from pathlib import Path
 import pytest
 
 from evals.challengers import lints, lints_sim
-from token_sparen.config import Config, packaged_defaults
 from token_sparen.learn.features import FEATURE_KEYS
 from token_sparen.learn.policy import COMPRESSION
 from token_sparen.replay import sim_lane
-from token_sparen.replay.runner import apply_overlay
 
 ARMS = COMPRESSION.arms
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "replay"))  # synthetic corpus
@@ -122,9 +120,8 @@ def test_token_sparen_never_imports_evals() -> None:
 def test_lints_runs_through_the_sim_lane(tmp_path: Path) -> None:
     from test_sim_lane import LEARN, corpus
 
-    cfg = apply_overlay(Config(data=packaged_defaults()), LEARN)
     src = corpus(tmp_path / "t", sessions=30)
-    res = lints_sim.run([src], seed=3, cutoff=date(2026, 11, 1), cfg=cfg)
+    res = lints_sim.run([src], seed=3, cutoff=date(2026, 11, 1), overlay=LEARN)
     assert res.worker_errors == {}
     view = sim_lane.summary(res.by_split["all"]["sim"])
     cand = view["candidate"]["points"]["compression"]
@@ -133,8 +130,9 @@ def test_lints_runs_through_the_sim_lane(tmp_path: Path) -> None:
     assert last.get("aggressive", 0.0) < 0.05  # LinTS also learns that aggressive regrets
     assert last.get("aggressive", 0.0) <= first.get("aggressive", 0.0)
     assert cand["proxy_regret"] > 0  # ... from the proxy regret the lane fed it
-    assert view["reference"]["points"]["compression"]["decisions"] == 150
-    again = lints_sim.run([src], seed=3, cutoff=date(2026, 11, 1), cfg=cfg, jobs=2)
+    # the reference runs the packaged defaults, which never offer plain text for compression
+    assert "compression" not in view["reference"]["points"]
+    again = lints_sim.run([src], seed=3, cutoff=date(2026, 11, 1), overlay=LEARN, jobs=2)
     assert again.by_split == res.by_split
 
 

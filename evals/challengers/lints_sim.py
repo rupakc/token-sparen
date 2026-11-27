@@ -3,8 +3,10 @@
 The candidate learner of the ``sim`` lane is replaced by LinTS (one model per project group,
 in memory, updated once per trimming decision when its proxy regret settles, together with the
 savings the hook would have rewarded); the reference stays the shipped engine with current
-defaults, on the same outputs. Informational only (M4 Task 11 compares LinTS and the engine on
-dev); promotion is out of scope and LinTS is never wired to hooks.
+defaults, on the same outputs. Not like-for-like: LinTS has no circuit breaker, exploration
+floor or safe-exploration ladder, and logs propensity 1. Informational only (M4 Task 11
+compares LinTS and the engine on dev); promotion is out of scope and LinTS is never wired to
+hooks.
 
     python evals/challengers/lints_sim.py <transcripts...> --out PRIVATE.json [--split dev]
 
@@ -15,7 +17,6 @@ Real-data runs follow the M4 rules: the report goes through ``replay.report.writ
 from __future__ import annotations
 
 import argparse
-import os
 import random
 import sys
 from collections.abc import Mapping, Sequence
@@ -27,7 +28,7 @@ if __package__ in (None, ""):  # `python evals/challengers/lints_sim.py` from a 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from evals.challengers.lints import DIM, LinTS, encode
-from token_sparen.config import Config, load_config
+from token_sparen.config import Config, packaged_defaults
 from token_sparen.events import SessionCtx
 from token_sparen.learn.breaker import tau_for
 from token_sparen.learn.policy import COMPRESSION, Decision, DecisionPoint
@@ -48,7 +49,7 @@ class LinTSChooser:
         )
         self.rng = random.Random(f"lints|{seed}")
         self._n = 0
-        self._pending: dict[str, list[Any]] = {}  # decision id -> [arm, x, savings]
+        self._pending: dict[str, list[Any]] = {}  # decision id -> [arm, x, savings, regret]
 
     def start_session(self, session_id: str, project_key: str, now: float) -> None:
         return None
@@ -63,18 +64,22 @@ class LinTSChooser:
         x = encode(features)
         arm = self.model.choose(x, self.rng)
         if arm != COMPRESSION.safe_arm:
-            self._pending[did] = [arm, x, None]
+            self._pending[did] = [arm, x, None, None]
         return Decision(did, point.name, arm, 1.0, BUCKET)
 
     def reward(self, decision: Decision, savings: float | None, regret: float | None) -> None:
+        """Savings and regret arrive separately, in either order (the lane delivers savings
+        once the re-sends are known); the model is updated once both are in."""
         entry = self._pending.get(decision.decision_id)
         if entry is None:
             return
-        if savings is not None:
+        if savings is not None and entry[2] is None:
             entry[2] = savings
-        if regret is not None:
+        if regret is not None and entry[3] is None:
+            entry[3] = regret
+        if entry[2] is not None and entry[3] is not None:
             del self._pending[decision.decision_id]
-            self.model.update(entry[0], entry[1], entry[2] or 0.0, regret)
+            self.model.update(entry[0], entry[1], entry[2], entry[3])
 
     def outcome(self, decision: Decision, value: float, signal: str) -> None:
         return None  # no circuit breaker around the challenger
@@ -108,7 +113,7 @@ def run(
         jobs=jobs,
         cutoff=cutoff,
         split=split,
-        cfg=cfg or load_config(Path.cwd(), os.environ),
+        cfg=cfg or Config(data=packaged_defaults()),  # ignored by the lane (packaged only)
     )
 
 

@@ -523,6 +523,17 @@ def test_rerun_of_same_command_is_regret(tmp_path: Path) -> None:
     assert rep2.proxy_regrets == 0
 
 
+def test_rerun_regrets_a_trim_without_distinctive_tokens(tmp_path: Path) -> None:
+    """Every trim is watched for a re-run (as the live detector tracks every trim), even when
+    its elided span holds fewer than 2 distinctive tokens (it is then not a watched span)."""
+    flat = "\n".join(f"line {i % 7} alpha beta gamma delta lorem ipsum" for i in range(900))
+    s = Session().prompt().call("m1", tool=_bash("t1")).result("t1", flat)
+    s.call("m2", tool=_bash("t2"))
+    rep = replay.run([s.write(tmp_path / "a.jsonl")], "static", "all", CUTOFF)
+    assert rep.trimmed == 1 and rep.watched_spans == 0
+    assert rep.proxy_regrets == 1 and rep.regret_signals == {"rerun": 1}
+
+
 def test_tokens_sampled_after_removing_seen(tmp_path: Path) -> None:
     """100 elided tokens the agent saw before crowd the 64-token sample unless removed first."""
     seen = [f"seentoken{i:03d}" for i in range(100)]

@@ -8,28 +8,34 @@ them back through the compression lane's machinery (``replay._Session``: the pro
 
 - **decide**: ``Engine.decide`` with the session's features (pending entry, propensity, ladder,
   breaker), exactly as the PostToolUse hook asks it;
-- **savings**: at decision time, from the tokens the chosen arm removed on that output
-  (``before - tokens_after``, as the compression lane measures them), through
-  ``regret.reward_savings`` (the hook's ``[learn] savings_reward`` mode, ``counterfactual``
-  computing the other arms on the same output); the expected re-sends are the hook's value when
-  the governor has no projection (``regret.expected_resends(None)``: the governor is not
-  simulated). A trimming arm that found nothing to trim gets savings 0 and regret 0 at once, as in
-  the hook;
-- **regret**: the replay's proxy regret of that trim (``replay`` module docstring), delivered
+- **savings**: from the tokens the chosen arm removed on that output (``before -
+  tokens_after``, as the compression lane measures them), through ``regret.reward_savings`` (the
+  hook's ``[learn] savings_reward`` mode; ``counterfactual`` measures the other arms on the same
+  output at trim time). The re-sends are the **actual** later API calls of the session before
+  the next compaction (the calls the compression lane prices the removal on; at least 1, as
+  ``regret.expected_resends``), so the reward is delivered when they are known: at the next
+  compaction or the session end. A trimming arm that found nothing to trim gets savings 0 and
+  regret 0 at once, as in the hook;
+- **regret**: the replay's proxy regret of that trim (``replay`` module docstring; every trim is
+  watched for a re-run of its signature, token signals need >= 2 distinctive tokens), delivered
   once, when the proxy settles: a full regret at once, a partial one or 0 at the expiry of its
-  window, an eviction or the session end; a trim with too few distinctive tokens to watch is paid
-  0 at its window's expiry (or the session end). Every payout is also a ``regret_outcomes`` row
-  of the session overlay, so the circuit breaker judges the learner as it would live. A session
-  that fails mid-way (counted in ``sessions_failed``) pays nothing more but is still folded;
+  window, an eviction or the session end. Every payout is also a ``regret_outcomes`` row of the
+  session overlay, so the circuit breaker judges the learner as it would live. A session that
+  fails mid-way (counted in ``sessions_failed``, per group too) is still settled as SessionEnd
+  would (every open trim paid its best value so far, every pending savings reward delivered,
+  each role on its own) and folded;
 - **fold**: at each session end, ``overlay.fold(..., mine_facts=False, prune=False)``: engine
   evidence only (posteriors, back-off aggregates, global, breaker, pre-trim candidates), dated
   by the session's day.
 
-**Reference.** The same run, on the same outputs, also runs a reference learner with the run's
-configuration *without* the lane's ``overlay`` (current defaults), with the same random draws
-(common random numbers: the engine's rng is seeded by run seed, group and session, not role),
-so a proposal and the defaults are compared paired per project group. With no overlay the two
-rows are identical.
+**Configs.** Both roles are built from the **packaged defaults only**
+(``config.packaged_defaults``): the run's config (user ``config.toml``, project file,
+``TOKEN_SPAREN_*`` env) is ignored. The candidate is packaged defaults + the lane's ``overlay``;
+the reference is the packaged defaults (current defaults), run in the same pass on the same
+outputs with the same random draws (common random numbers: the engine's rng is seeded by run
+seed, group and session, not role), so a proposal and the defaults are compared paired per
+project group. With no overlay the two rows are identical. The measurement itself (the regret
+window) is the reference's for both roles, so an overlay cannot shorten its own regret window.
 
 **Isolation.** Each lane instance (one project group) creates a temporary directory with one
 state root per role (``<tmp>/<role>/.token-sparen``, also the role's ``HOME``), passes it to
@@ -73,7 +79,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from token_sparen.config import Config, state_home
+from token_sparen.config import Config, packaged_defaults, state_home
 from token_sparen.estimate import Prices
 from token_sparen.events import SessionCtx
 from token_sparen.learn import overlay, regret
@@ -281,6 +287,17 @@ class _Shim:
         self._fn(savings, regret)
 
 
+@dataclass
+class _Pending:
+    """A trim whose savings reward waits for its re-send count."""
+
+    decision: Decision
+    removed: float
+    before: float
+    best: float  # counterfactual mode: the largest removal over the trimming arms
+    calls: int = 0  # later API calls so far (before the next compaction)
+
+
 class _SimSession(_Session):
     """One role's replay of one session, feeding its chooser."""
 
@@ -291,12 +308,12 @@ class _SimSession(_Session):
         super().__init__((role.accs[split],), self.tap, cfg, prices, role.window, None, cwd, True)
         self.role, self.split = role, split
         self._spans: dict[int, tuple[Decision, list[Any]]] = {}
-        self._open: list[tuple[Decision, list[Any], int]] = []  # unwatched trims
+        self._savings: list[_Pending] = []  # trims whose re-sends are still being counted
 
     def _trimmed(
         self,
         decision: Decision,
-        span: _Span | None,
+        span: _Span,
         removed: float,
         before: float,
         redo: Callable[[str], float | None],
@@ -306,39 +323,57 @@ class _SimSession(_Session):
         row = self.role.point(self.split, decision.point)
         row["trims"] += 1
         row["savings_tokens"] += int(removed)
-
-        def max_removed() -> float:
-            best = removed
+        best = removed
+        if regret.savings_mode(self.role.cfg) == "counterfactual":  # measured now, text at hand
             for arm in COMPRESSION.arms:
                 if arm not in (COMPRESSION.safe_arm, decision.arm):
                     other = redo(arm)
                     if other is not None:
                         best = max(best, other)
-            return best
+        self._savings.append(_Pending(decision, removed, before, best))
+        self._spans[id(span)] = (decision, rec)
+
+    def on_call(self, rec: AssistantRecord) -> None:
+        super().on_call(rec)
+        for pend in self._savings:
+            pend.calls += 1
+
+    def on_compaction(self) -> None:
+        super().on_compaction()
+        self._deliver()
+
+    def _deliver(self) -> None:
+        """Savings rewards of the trims so far: their re-sends are known now."""
+        pending, self._savings = self._savings, []
+        for pend in pending:
+            self._reward_savings(pend)
+
+    def _reward_savings(self, pend: _Pending) -> None:
+        decision = pend.decision
+        row = self.role.point(self.split, decision.point)
 
         def give(savings: float | None, regret_value: float | None) -> None:
             if savings is not None:
                 row["savings_reward"] += float(savings)
             self.role.chooser.reward(decision, savings, regret_value)
 
+        def max_removed() -> float:
+            return pend.best
+
         regret.reward_savings(
             _Shim(give),
             decision.decision_id,
             decision.point,
             decision.bucket,
-            removed,
-            regret.expected_resends(None),
+            pend.removed,
+            regret.expected_resends(float(pend.calls)),
             home=self.role.home,
             project_key=self.project_key,
             env=self.role.env,
             cfg=self.role.cfg,
-            before=before,
+            before=pend.before,
             max_removed=max_removed,
         )
-        if span is not None:
-            self._spans[id(span)] = (decision, rec)
-        else:
-            self._open.append((decision, rec, self.turn))
 
     def _untrimmed(self, decision: Decision) -> None:
         self.role.chooser.reward(decision, 0.0, 0.0)  # the hook's no-op: nothing to regret
@@ -355,22 +390,13 @@ class _SimSession(_Session):
             value = span.best if span.best > 0 else 0.0
             self._pay(entry[0], entry[1], value, span.signal if value > 0 else "")
 
-    def on_prompt(self, ev: Prompt) -> None:
-        super().on_prompt(ev)
-        if any(self.turn - t > self.window for _, _, t in self._open):
-            keep = []
-            for decision, rec, t in self._open:
-                if self.turn - t > self.window:
-                    self._pay(decision, rec, 0.0, "")
-                else:
-                    keep.append((decision, rec, t))
-            self._open = keep
-
     def finish(self) -> None:
-        super().finish()
-        for decision, rec, _ in self._open:
-            self._pay(decision, rec, 0.0, "")
-        self._open = []
+        """Session end (also after a failure): settle every watched trim, deliver every pending
+        savings reward."""
+        try:
+            super().finish()
+        finally:
+            self._deliver()
 
 
 # --------------------------------------------------------------------------- lane
@@ -392,18 +418,23 @@ class SimLane:
     ``chooser_factory`` (``"module:callable"`` or None), ``prices`` (in-process)."""
 
     history = True
-    base_config = True  # the runner hands over the run's config; the overlay is applied here
 
     def __init__(self, cfg: Config, params: Mapping[str, Any]) -> None:
         factory = resolve_factory(params.get("chooser_factory"))
-        candidate_cfg = runner.apply_overlay(cfg, params.get("overlay"))
+        # packaged defaults only: the run's config (user, project, env layers) never shapes a role
+        reference_cfg = Config(data=packaged_defaults())
+        candidate_cfg = runner.apply_overlay(reference_cfg, params.get("overlay"))
+        self.window = _window(reference_cfg)  # one measurement for both roles
         seed = params.get("seed", 0)
         self.seed = seed if isinstance(seed, int) and not isinstance(seed, bool) else 0
         prices = params.get("prices")
         self.prices = prices if isinstance(prices, Prices) else Prices.load(candidate_cfg)
         self.root = Path(tempfile.mkdtemp(prefix="token-sparen-sim-"))
         self._cleanup = weakref.finalize(self, shutil.rmtree, str(self.root), True)
-        self.factories = {"candidate": (candidate_cfg, factory), "reference": (cfg, EngineChooser)}
+        self.factories = {
+            "candidate": (candidate_cfg, factory),
+            "reference": (reference_cfg, EngineChooser),
+        }
         self.roles: dict[str, _Role] = {}
         self.group: str | None = None
         self.counts = {p: {"sessions": 0, "sessions_failed": 0} for p in SPLITS}
@@ -422,7 +453,7 @@ class SimLane:
                 if state_home(env) != home:
                     raise RuntimeError("the simulation state root would not be honoured")
                 chooser = factory(cfg, env, home, f"{self.seed}|{group}")
-                self.roles[name] = _Role(name, cfg, home, env, chooser, _window(cfg))
+                self.roles[name] = _Role(name, cfg, home, env, chooser, self.window)
         return self.roles
 
     def _start(self, info: SessionInfo) -> None:
@@ -456,10 +487,9 @@ class SimLane:
     def end_session(self, info: SessionInfo) -> None:
         if info is not self._current:
             return  # no event of its chain: not a session
-        if not self._failed:
+        for sess in self._sessions:  # each role settles on its own, even after a failure
             try:
-                for sess in self._sessions:
-                    sess.finish()
+                sess.finish()
             except Exception:  # noqa: BLE001 - counted, never described
                 self._failed = True
         self._current, self._sessions = None, []
@@ -566,10 +596,14 @@ def summary(raw: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-def pairs(raw: Mapping[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
-    """Per project group and role, the per-point figures (``{group: {role: {point: ...}}}``):
-    the paired samples of a candidate-versus-reference comparison (Task 9, Task 11)."""
-    out: dict[str, dict[str, dict[str, Any]]] = {}
+def pairs(raw: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Per project group and role, the per-point figures (``{group: {role: {point: ...},
+    "sessions_failed": n}}``): the paired samples of a candidate-versus-reference comparison
+    (Task 9, Task 11); a group with failed sessions can be dropped as a pair."""
+    out: dict[str, dict[str, Any]] = {}
     for group, roles in sorted(raw.get("groups", {}).items()):
-        out[group] = {role: _role_view(roles.get(role, {}))["points"] for role in ROLES}
+        row: dict[str, Any] = {role: _role_view(roles.get(role, {}))["points"] for role in ROLES}
+        acc = roles.get("candidate", {}).get("acc", {})
+        row["sessions_failed"] = acc.get("sessions_failed", 0)  # drop such pairs if needed
+        out[group] = row
     return out

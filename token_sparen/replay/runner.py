@@ -37,12 +37,10 @@ the group goes on.
 import time: a missing name is looked up once as the module ``token_sparen.replay.<name>_lane``
 (or ``params["module"]``), which registers itself on import; a lane registered at run time in
 the parent exists only for ``jobs=1``. ``params`` may hold ``overlay`` (config keys applied over
-the loaded config), ``seed`` and ``label`` (the report key, default the name); a factory with
-``base_config = True`` receives the run's config without the overlay and applies it itself (the
-``sim`` lane also runs a reference learner without it). A lane's ``report()`` maps a split to
-a mergeable dict. A lane with a ``feed_record(record, session)`` method is also shown every
-parsed record of the session (system and attachment records too) before the runner registers
-its ids, so ``session.run_ids`` still tells copied history apart;
+the loaded config), ``seed`` and ``label`` (the report key, default the name). A lane's
+``report()`` maps a split to a mergeable dict. A lane with a ``feed_record(record, session)``
+method is also shown every parsed record of the session (system and attachment records too)
+before the runner registers its ids, so ``session.run_ids`` still tells copied history apart;
 it must not raise (an exception fails the session for every lane). Reports of different groups
 are combined by ``merge_reports``. The default merge adds numbers exactly (floats summed as
 fractions, so a run's figures depend neither on scheduling nor on resumes), ORs booleans and
@@ -634,11 +632,8 @@ def _replay_session(
 def _replay_group(task: _Task, counters: dict[str, int]) -> dict[str, dict[str, Any]]:
     lanes: list[tuple[str, Lane]] = []
     for name, params in task.specs:
+        cfg = apply_overlay(task.cfg, params.get("overlay"))
         factory = lane_factory(name, _module(params))
-        # a factory marked ``base_config`` gets the run's config and applies ``overlay`` itself
-        # (the simulation lane also runs a reference learner without the overlay)
-        base = getattr(factory, "base_config", False) is True
-        cfg = task.cfg if base else apply_overlay(task.cfg, params.get("overlay"))
         lanes.append((_label((name, params)), factory(cfg, dict(params))))
     history = [lane for _, lane in lanes if getattr(lane, "history", False)]
     scans = sorted(

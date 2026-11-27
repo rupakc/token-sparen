@@ -16,10 +16,12 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   project group, in a temporary state root deleted afterwards (its own `HOME` and
   `TOKEN_SPAREN_HOME`, passed explicitly; no fact miner, settings writer or git call): decide on
   every output the compression point is offered, savings reward from the tokens the chosen arm
-  removes on that output (the hook's `[learn] savings_reward` mode), the replay's proxy regret
+  removes on that output (the hook's `[learn] savings_reward` mode, re-sends = the trim's actual
+  later API calls before the next compaction, delivered once known), the replay's proxy regret
   delivered once when it settles (also as a circuit-breaker outcome), and an engine-only session
-  fold (`mine_facts=False, prune=False`). A reference engine with the run's configuration minus
-  the lane's `overlay` runs in the same pass on the same outputs with the same random draws, so
+  fold (`mine_facts=False, prune=False`). Both roles use the packaged defaults only (the
+  run's user, project and env config is ignored): the candidate adds the lane's `overlay`, the
+  reference engine (current defaults) runs in the same pass on the same outputs with the same random draws, so
   proposals compare paired per project group. Per split and group: decisions, arm share and
   proxy regret per trim by epoch (thirds), tokens removed, net savings (minus the compression
   lane's recovery-read estimate), breaker trips; `sim_lane.summary` / `sim_lane.pairs` render
@@ -29,9 +31,11 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   posteriors per arm over a 32-wide one-hot context, the engine's regret constraint) runs
   through it with `evals/challengers/lints_sim.py`. Never wired to hooks; the package never
   imports `evals`.
-- The compression replay gained no-op learner hooks (`_trimmed`, `_untrimmed`, `_settled`); its
-  output is unchanged. A lane factory with `base_config = True` receives the run's config
-  without its overlay.
+- The compression replay gained no-op learner hooks (`_trimmed`, `_untrimmed`, `_settled`).
+- Fix (compression lane): every trim is now watched for a re-run of its command / re-read of its
+  file, as the live detector tracks every trim; before, a trim whose elided span held fewer than
+  2 distinctive tokens could never be regretted (`proxy_regrets` can rise; `watched_spans` still
+  counts the trims with distinctive tokens).
 
 ### M4 engine options (default off)
 

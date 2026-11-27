@@ -1597,14 +1597,20 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 
 - `sim` lane = `replay._Session` subclass per role (candidate, reference) feeding a `Chooser`
   (`EngineChooser`: one `Engine` per session, outcome rows + `overlay.fold(..., mine_facts=False,
-  prune=False)` at session end, `now` = session day + index). Reference = the run's config
-  without the lane's overlay (factory flag `base_config`), not the packaged defaults, so a
-  user-config run still pairs like with like. Both roles share the engine rng seed
+  prune=False)` at session end, `now` = session day + index). Both roles are built from the
+  packaged defaults only (fix round 1, ruling I1): candidate = defaults + overlay, reference =
+  defaults; the run's user/project/env config is ignored (no runner flag). Both roles measure
+  with the reference's regret window (review M3). Both roles share the engine rng seed
   (`seed|group|session`): common random numbers, identical rows when the overlay is empty.
 - Savings reward: `regret.reward_savings` with removed = `before - tokens_after` (compression
-  lane units) and resends = `expected_resends(None)` (10; the governor is not simulated). Regret:
-  span best at settle (full at once; partial/0 at expiry, eviction or session end); unwatched
-  trims paid 0 at window expiry or session end; trimming-arm no-ops (0, 0) at once without an
+  lane units) and resends = the trim's actual later API calls before the next compaction
+  (ruling I3: an oracle by choice, the calls the lane prices; at least 1), so it is delivered at
+  the next compaction or session end; counterfactual's best arm is measured at trim time.
+  Regret: span best at settle (full at once; partial/0 at expiry, eviction or session end).
+  Ruling I2 (2026-11-27): every trim is watched for a signature re-run in the shared replay
+  machinery (compression lane too, deliberate correctness fix); token signals still need >= 2
+  distinctive tokens. Failed sessions are settled per role as SessionEnd would and counted per
+  group (`pairs()[g]["sessions_failed"]`). Trimming-arm no-ops (0, 0) at once without an
   outcome row, as in the hook. Only the compression point is simulated (pre-trim candidates
   need the decision log, which the replay does not write).
 - Isolation: per-lane `tempfile.mkdtemp`, one state root per role, explicit env mappings
@@ -1618,4 +1624,8 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - LinTS: x . theta sampled directly as N(x . mean, v^2 x B^-1 x) (exact for a scalar draw, O(d^2));
   one-hot vocab with a fallback slot per feature (band unk, cat other, size md, ctype unk,
   phase mixed) = 32 dims; no breaker around it.
-
+- Review notes for Tasks 9/11 (not fixed here): one learner trajectory per group per seed (run
+  k >= 3 seeds and average per group before the bootstrap); the replay proxy is harsher than live
+  (re-run and >= 2 tokens in assistant text are 1.0), so "regret per trim <= tau" leans toward
+  rejection (method doc); only compression is simulated, so pre-trim / read-dedupe keys go to
+  static lanes and Task 11's sim check says "compression"; LinTS has no breaker, floor or ladder.

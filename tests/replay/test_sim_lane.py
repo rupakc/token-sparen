@@ -9,6 +9,7 @@ from __future__ import annotations
 import builtins
 import io
 import os
+import random
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import date
@@ -44,22 +45,40 @@ LEARN: dict[str, Any] = {
         },
     },
 }
-BASE = apply_overlay(Config(data=packaged_defaults()), LEARN)
+DEFAULTS = Config(data=packaged_defaults())
+_WORDS = "alpha beta gamma delta lorem ipsum dolor amet copy move sync file slot node".split()
 
 
-def output(tag: str, k: int) -> tuple[str, tuple[str, str]]:
-    """~4300 tokens; line 35 (kept by light and standard, elided by aggressive) holds two
-    distinctive tokens unique to this output."""
+def output(tag: str, k: int, log: bool = False) -> tuple[str, tuple[str, str]]:
+    """~4300 tokens of text (``log``: a ~6000-token log, a content type the packaged defaults
+    offer); line 35 (kept by light and standard, elided by aggressive) holds two distinctive
+    tokens unique to this output."""
     a, b = f"zqvarlok{tag}x{k}", f"plimtrex{tag}y{k}"
-    return big_output(seed=k + 7, extra={35: f"note {a} linked with {b}"}), (a, b)
+    if not log:
+        return big_output(seed=k + 7, extra={35: f"note {a} linked with {b}"}), (a, b)
+    rng = random.Random(k)
+    lines = [
+        f"2026-10-01T09:{i // 60:02d}:{i % 60:02d}Z INFO worker{i % 5} "
+        + " ".join(rng.choice(_WORDS) for _ in range(6))
+        for i in range(400)
+    ]
+    lines[35] = f"2026-10-01T09:00:35Z INFO worker0 note {a} linked with {b}"
+    return "\n".join(lines), (a, b)
 
 
-def session(tag: str, ts: str, n: int = 5, cite: bool = True, sidechain: bool = False) -> Session:
+def session(
+    tag: str,
+    ts: str,
+    n: int = 5,
+    cite: bool = True,
+    sidechain: bool = False,
+    log: bool = False,
+) -> Session:
     """``n`` large Bash outputs; with ``cite`` the agent then names the line-35 tokens (a full
     proxy regret exactly when the trim elided that line, i.e. under ``aggressive``)."""
     s = Session(f"s{tag}", ts).prompt("please run the checks")
     for k in range(n):
-        text, (a, b) = output(tag, k)
+        text, (a, b) = output(tag, k, log)
         s.call(f"m{k}a", tool=(f"t{k}", "Bash", {"command": f"make step{k}"}), sidechain=sidechain)
         s.result(f"t{k}", text, sidechain=sidechain)
         if cite:
@@ -68,18 +87,30 @@ def session(tag: str, ts: str, n: int = 5, cite: bool = True, sidechain: bool = 
     return s
 
 
-def corpus(root: Path, sessions: int = 30, groups: int = 1, cite: bool = True) -> Path:
+def corpus(
+    root: Path, sessions: int = 30, groups: int = 1, cite: bool = True, log: bool = False
+) -> Path:
     for g in range(groups):
         for i in range(sessions):
             ts = f"2026-10-{1 + i % 28:02d}T{9 + i // 28:02d}:00:00.000Z"
             tag = f"{g}{i:02d}"
-            session(tag, ts, cite=cite).write(root / f"proj{g}" / f"s{tag}.jsonl")
+            session(tag, ts, cite=cite, log=log).write(root / f"proj{g}" / f"s{tag}.jsonl")
     return root
 
 
 def run(
-    root: Path, *, jobs: int = 1, split: str = "all", cfg: Config = BASE, **params: Any
+    root: Path,
+    *,
+    jobs: int = 1,
+    split: str = "all",
+    cfg: Config = DEFAULTS,
+    overlay: Mapping[str, Any] | None = LEARN,
+    **params: Any,
 ) -> runner.RunResult:
+    """The sim lane; the candidate gets ``overlay`` (default ``LEARN``), the reference runs the
+    packaged defaults (``cfg``, the run's config, is ignored by the lane)."""
+    if overlay is not None:
+        params["overlay"] = dict(overlay)
     return runner.run_parallel(
         [root], [("sim", params)], jobs=jobs, cutoff=CUTOFF, split=split, cfg=cfg
     )
@@ -216,10 +247,13 @@ def test_sim_never_writes_outside_temp_root(
     for name in ("add_deny_rules", "remove_deny_rules", "install_statusline"):
         monkeypatch.setattr(settings, name, _Recorder(calls, f"settings.{name}"))
     monkeypatch.setattr(prune, "WRITER", _Recorder(calls, "prune.WRITER"))
-    real_home = Path(os.environ["HOME"])
+    home = tmp_path / "fakehome"  # a fake user home (never the real one)
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
     state = tmp_path / "state"  # the user's state root: never touched either
     monkeypatch.setenv("TOKEN_SPAREN_HOME", str(state))
-    before = sorted(p.relative_to(real_home) for p in real_home.rglob("*"))
+    before = sorted(p.relative_to(home) for p in home.rglob("*"))
     roots: list[str] = []
     made = sim_lane.tempfile.mkdtemp
 
@@ -234,7 +268,7 @@ def test_sim_never_writes_outside_temp_root(
     assert [b for b in bad if b not in roots] == []  # (mkdtemp creates the root itself)
     assert calls == []
     assert roots and not any(os.path.exists(r) for r in roots)  # deleted afterwards
-    assert sorted(p.relative_to(real_home) for p in real_home.rglob("*")) == before
+    assert sorted(p.relative_to(home) for p in home.rglob("*")) == before
     assert not state.exists()
     row = raw(res)
     assert row["sessions"] == 4 and row["sessions_failed"] == 0
@@ -256,11 +290,12 @@ def test_sim_reproducible_with_seed(tmp_path: Path) -> None:
 
 
 def test_reference_runs_current_defaults_paired_per_group(tmp_path: Path) -> None:
-    src = corpus(tmp_path / "t", sessions=4, groups=2)
-    same = sim_lane.pairs(raw(run(src, seed=2)))
+    src = corpus(tmp_path / "t", sessions=4, groups=2, log=True, cite=False)
+    same = sim_lane.pairs(raw(run(src, seed=2, overlay=None)))
     assert len(same) == 2
     for row in same.values():  # no overlay: the same learner with the same draws
         assert row["candidate"] == row["reference"]
+        assert row["sessions_failed"] == 0
     held = raw(run(src, seed=2, overlay={"learn": {"hold": {"compression": True}}}))
     view = sim_lane.summary(held)
     assert comp(view)["savings_tokens"] == 0  # the proposal holds compression ...
@@ -275,8 +310,9 @@ def test_reference_runs_current_defaults_paired_per_group(tmp_path: Path) -> Non
 def test_report_fields_per_split_and_point(tmp_path: Path) -> None:
     src = tmp_path / "t"
     for i in range(3):
-        session(f"d{i}", f"2026-10-0{i + 1}T09:00:00.000Z").write(src / "p" / f"d{i}.jsonl")
-        session(f"e{i}", f"2026-11-1{i}T09:00:00.000Z").write(src / "p" / f"e{i}.jsonl")
+        d, e = f"2026-10-0{i + 1}T09:00:00.000Z", f"2026-11-1{i}T09:00:00.000Z"
+        session(f"d{i}", d, log=True).write(src / "p" / f"d{i}.jsonl")
+        session(f"e{i}", e, log=True).write(src / "p" / f"e{i}.jsonl")
     res = run(src, seed=4)
     for part in ("dev", "test"):
         view = sim_lane.summary(raw(res, part))
@@ -302,19 +338,17 @@ def test_report_fields_per_split_and_point(tmp_path: Path) -> None:
 
 
 def test_breaker_trips_are_counted(tmp_path: Path) -> None:
-    cfg = apply_overlay(
-        BASE,
-        {
-            "learn": {
-                "breaker_min_obs": 5,
-                "breaker_every": 5,
-                "breaker_lcb_q": 0.2,
-                "defaults": {"compression": {"aggressive": {"savings": 0.95, "regret": 0.0}}},
-                "kappa_regret": 200,
-            }
-        },
-    )
-    res = run(corpus(tmp_path / "t", sessions=6), seed=1, cfg=cfg)
+    trips = {
+        "learn": {
+            "breaker_min_obs": 5,
+            "breaker_every": 5,
+            "breaker_lcb_q": 0.2,
+            "defaults": {"compression": {"aggressive": {"savings": 0.95, "regret": 0.0}}},
+            "kappa_regret": 200,
+        }
+    }
+    overlay = apply_overlay(Config(data=LEARN), trips).data
+    res = run(corpus(tmp_path / "t", sessions=6), seed=1, overlay=overlay)
     view = sim_lane.summary(raw(res))
     assert comp(view)["breaker_trips"] >= 1
     assert view["candidate"]["breaker_trips"] == comp(view)["breaker_trips"]
@@ -364,31 +398,76 @@ def test_chooser_factory_by_path_rewards_each_decision_once(tmp_path: Path) -> N
     assert all(c[3] == 1.0 for c in regrets)  # every aggressive trim elided the cited line
     assert all(0.0 < (c[2] or 0.0) <= 1.0 for c in savings)
     assert row["proxy_regret_per_trim"]["all"] == 1.0
-    # the reference is the production engine, unaffected by the injected chooser
-    assert comp(sim_lane.summary(raw(res)), "reference")["arm_share"]["1"] != {"aggressive": 1.0}
+    # the reference is the production engine on the packaged defaults, which never offer plain
+    # text to the compression point: no decision at all
+    assert "compression" not in sim_lane.summary(raw(res))["reference"]["points"]
 
 
 def test_bad_chooser_factory_rejected() -> None:
     with pytest.raises(ValueError, match="module:callable"):
-        sim_lane.SimLane(BASE, {"chooser_factory": "no-colon-here"})
+        sim_lane.SimLane(DEFAULTS, {"chooser_factory": "no-colon-here"})
 
 
-def test_unwatched_trims_paid_zero_at_expiry(tmp_path: Path) -> None:
-    """A trim whose elided span holds no distinctive token is never watched: it is still paid
-    regret 0 once, when its window expires (or at the session end)."""
+def test_trims_without_distinctive_tokens_still_regret_on_rerun(tmp_path: Path) -> None:
+    """Every trim is watched for a re-run of its command, as live: one with no distinctive
+    token is regretted (1.0) by the re-run, one never re-run is paid 0 once (expiry or end)."""
     CALLS.clear()
     s = Session("sflat", "2026-10-02T09:00:00.000Z").prompt("go")
     flat = "\n".join(f"line {i % 7} alpha beta gamma delta lorem ipsum" for i in range(900))
     s.call("m1", tool=("t1", "Bash", {"command": "make flat"})).result("t1", flat)
+    s.prompt("again")
+    s.call("m2", tool=("t2", "Bash", {"command": "make flat"})).result("t2", flat)
     for i in range(8):
         s.prompt(f"step {i}")
-    s.call("m2", tool=("t2", "Bash", {"command": "make flat2"})).result("t2", flat)
+    s.call("m3", tool=("t3", "Bash", {"command": "make other"})).result("t3", flat)
     s.write(tmp_path / "t" / "p" / "a.jsonl")
     res = run(tmp_path / "t", chooser_factory="test_sim_lane:AlwaysAggressive")
     assert res.worker_errors == {}
-    regrets = [c for c in CALLS if c[3] is not None]
-    assert [c[3] for c in regrets] == [0.0, 0.0]
-    assert comp(sim_lane.summary(raw(res)))["decisions"] == 2
+    regrets = [(c[0], c[3]) for c in CALLS if c[3] is not None]
+    assert regrets == [("d1", 1.0), ("d2", 0.0), ("d3", 0.0)]
+    view = sim_lane.summary(raw(res))
+    assert comp(view)["decisions"] == 3 and comp(view)["proxy_regret"] == 1.0
+    assert comp(view)["proxy_regret"] == view["candidate"]["acc"]["proxy_regrets"]
+
+
+def test_savings_use_the_actual_resends(tmp_path: Path) -> None:
+    """The savings reward counts the trim's actual later calls before the next compaction:
+    counterfactual mode, the chosen arm removes the most, so savings = min(1, calls / R)."""
+    CALLS.clear()
+    s = Session("sres", "2026-10-02T09:00:00.000Z").prompt("go")
+    s.call("m1", tool=("t1", "Bash", {"command": "make a"})).result("t1", output("r", 1)[0])
+    s.call("m2", text="one").call("m3", text="two").call("m4", text="three")
+    s.compact().call("m5", text="after the compaction")
+    s.call("m6", tool=("t2", "Bash", {"command": "make b"})).result("t2", output("r", 2)[0])
+    s.write(tmp_path / "t" / "p" / "a.jsonl")
+    overlay = apply_overlay(
+        Config(data=LEARN), {"learn": {"savings_reward": "counterfactual", "resend_horizon": 20}}
+    ).data
+    res = run(tmp_path / "t", overlay=overlay, chooser_factory="test_sim_lane:AlwaysAggressive")
+    assert res.worker_errors == {}
+    savings = {c[0]: c[2] for c in CALLS if c[2] is not None}
+    assert savings["d1"] == pytest.approx(3 / 20)  # m2..m4; nothing after the compaction
+    assert savings["d2"] == pytest.approx(1 / 20)  # no later call: at least one re-send
+
+
+def test_run_config_never_shapes_either_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both roles come from the packaged defaults: the run's config (a user config.toml with
+    learning off and other keep ratios, TOKEN_SPAREN_* env) changes nothing."""
+    src = corpus(tmp_path / "t", sessions=3, log=True)
+    plain = run(src, seed=7)
+    user = apply_overlay(
+        DEFAULTS,
+        {
+            "learn": {"enabled": False},
+            "compression": {"levels": {"light": {"keep_ratio": 0.9}}, "allow_ctypes": ["text"]},
+        },
+    )
+    monkeypatch.setenv("TOKEN_SPAREN_LEARN__ENABLED", "false")
+    assert run(src, seed=7, cfg=user).by_split == plain.by_split
+    view = sim_lane.summary(raw(plain))
+    assert comp(view, "reference")["decisions"] == 15  # log is offered by the defaults
 
 
 def test_failed_session_counted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -398,8 +477,10 @@ def test_failed_session_counted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         raise RuntimeError("boom")
 
     monkeypatch.setattr(sim_lane._SimSession, "on_prompt", boom)
-    row = raw(run(src, seed=0))
-    assert row["sessions_failed"] == 2 and row["sessions"] == 0
+    res = raw(run(src, seed=0))
+    assert res["sessions_failed"] == 2 and res["sessions"] == 0
+    for row in sim_lane.pairs(res).values():
+        assert row["sessions_failed"] == 2  # per group, so such pairs can be dropped
 
 
 def test_lane_registered_under_sim() -> None:
