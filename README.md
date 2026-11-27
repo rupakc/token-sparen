@@ -681,6 +681,10 @@ report path must be outside any git work tree, so a report can never be committe
 default permissions are private to you.)
 While they run, error log lines keep only where an error happened, never its message.
 
+## Documentation
+
+The user documentation lives in [`docs/user/`](docs/user/index.md): [install](docs/user/install.md), [support matrix](docs/user/support.md), [upgrade](docs/user/upgrade.md), [uninstall](docs/user/uninstall.md), [configuration](docs/user/configuration.md), [troubleshooting](docs/user/troubleshooting.md), [privacy and security](docs/user/privacy-security.md) and one page per mechanism.
+
 ## Credits and licence
 
 Cross-session ideas were inspired by TokenEconomizer (MIT, arXiv 2610.22732); no code was copied.
