@@ -22,7 +22,9 @@ Every later record has ``kind`` (one of `RECORD_KINDS`) and ``at`` (epoch second
   ``status = "infra_fail"``, ``sub = "disk"`` (never counted by the breaker).
 * ``invalidate`` (operator command): ``key`` or a time range ``from`` / ``to`` over the ``at`` of
   earlier ``end`` records, and ``reason``. It reopens the key(s): their earlier ends no longer
-  count, as final or as infra attempts. It does not cascade: the later keys of a
+  count, as final or as infra attempts. In confirmation it may reopen only keys without a
+  graded end (`Ledger.invalidate` refuses otherwise; the gate refuses a ledger where one was
+  reopened anyway: `Ledger.reopened_graded`). It does not cascade: the later keys of a
   ``state = "stream"`` stream keep their finals built on the reopened key's old state; to rerun
   a stream from a point, invalidate a time range covering it.
 * ``promote``: ``stream``, ``key`` and ``attempt``: that attempt's learner state became the
@@ -93,6 +95,8 @@ MAX_INFRA_ATTEMPTS = 3
 # cause that is not the key's (rate, disk floor, an expired token, a leak)
 NOT_AN_ATTEMPT = frozenset({"rate", "disk", "auth", "leak"})
 LOCK_TIMEOUT_S = 30.0
+# the stage whose graded runs are never reopened (M5 Task 10 ruling N3)
+PROTECTED_STAGE = "confirmation"
 
 
 class LedgerError(ValueError):
@@ -389,6 +393,30 @@ class Ledger:
             runs.append(FinalRun(key_id, key.stage, key.arm, key.seed, key.instance_id, patch))
         return runs
 
+    def reopened_graded(self, stage: str) -> list[str]:
+        """Keys of ``stage`` whose graded end (``ok`` / ``agent_fail``) was reopened by an
+        ``invalidate`` (by key or time range) or a ``retry`` record. In confirmation this is
+        never allowed (M5 Task 10 ruling N3: re-running a graded run is outcome-selective);
+        the release gate refuses while any exists."""
+        ends: dict[str, list[dict[str, Any]]] = {}
+        hit: set[str] = set()
+        for rec in self.records():
+            kind, key = rec.get("kind"), rec.get("key")
+            if kind == "end" and isinstance(key, str):
+                ends.setdefault(key, []).append(rec)
+            elif kind in ("retry", "invalidate") and isinstance(key, str):
+                if any(e.get("status") in GRADED for e in ends.get(key, [])):
+                    hit.add(key)
+                ends[key] = []
+            elif kind == "invalidate" and rec.get("from") is not None and rec.get("to") is not None:
+                lo, hi = float(rec["from"]), float(rec["to"])
+                for k, lst in ends.items():
+                    gone = [e for e in lst if lo <= float(e.get("at", 0.0)) <= hi]
+                    if any(e.get("status") in GRADED for e in gone):
+                        hit.add(k)
+                    ends[k] = [e for e in lst if e not in gone]
+        return sorted(k for k in hit if _stage_of(k) == stage)
+
     def invalidate(
         self,
         key: RunKey | None,
@@ -397,7 +425,20 @@ class Ledger:
         start: float | None = None,
         end: float | None = None,
     ) -> None:
-        """Operator command: reopen ``key``, or every key whose ``end`` lies in [start, end]."""
+        """Operator command: reopen ``key``, or every key whose ``end`` lies in [start, end].
+        Refused when it would reopen a graded confirmation run (ruling N3): only keys whose
+        attempts all ended in infra failures may be re-run there."""
+        if key is not None and key.stage == PROTECTED_STAGE and self.final(key) is not None:
+            raise LedgerError(f"{key.id} has a graded outcome: confirmation runs are never re-run")
+        if key is None and start is not None and end is not None:
+            for k, lst in self._ends().items():
+                if _stage_of(k) == PROTECTED_STAGE and any(
+                    e.get("status") in GRADED and start <= float(e.get("at", 0.0)) <= end
+                    for e in lst
+                ):
+                    raise LedgerError(
+                        f"the range reopens {k}, a graded outcome: confirmation never re-runs those"
+                    )
         if key is not None:
             self.append({"kind": "invalidate", "key": key.id, "reason": reason})
         elif start is not None and end is not None and start <= end:
@@ -407,6 +448,11 @@ class Ledger:
 
     def iter_kind(self, kind: str) -> Iterator[dict[str, Any]]:
         return (r for r in self.records() if r.get("kind") == kind)
+
+
+def _stage_of(key_id: str) -> str | None:
+    parts = key_id.split("/")
+    return parts[1] if len(parts) == 5 else None
 
 
 def _final_of(ends: list[dict[str, Any]]) -> dict[str, Any] | None:

@@ -19,7 +19,7 @@ import pytest
 from bench import gate as g
 from bench import stages
 from bench.grade import grades_path
-from bench.ledger import Ledger
+from bench.ledger import Ledger, LedgerError, RunKey
 from bench.power import FlipModel, PowerPlan
 from bench.stats import Exclusion, RunRow, Summary
 
@@ -193,22 +193,23 @@ def test_gate_passes_on_noninferior_valid_run(store: Store) -> None:
     res = g.gate(ledger=store(_confirm()), **KW)
     assert res.verdict == "passed", res.reasons
     assert res.check is not None and res.check.passed and res.check.estimate.n == 100
-    assert res.as_e4() == {"verdict": "passed", "reasons": res.reasons}
+    assert res.as_e4() == {"verdict": "passed", "reasons": []} and res.reasons == []
+    assert any("resolved-diff" in d for d in res.details)
     # the persisted plan's pins, for the report (Task 11)
     assert (res.plugin_hash, res.model, res.claude_code_version) == (HASH, MODEL, VERSION)
     assert (res.plugin_version, res.price_confirmed_on) == (PLUGIN_VERSION, PRICED)
     assert res.plan_sha256 is not None and len(res.plan_sha256) == 64
     # inferior → failed; cost never enters the gate
     bad = g.gate(ledger=store(_confirm(harmed=10)), **KW)
-    assert bad.verdict == "failed" and any("lower bound" in r for r in bad.reasons)
+    assert bad.verdict == "failed" and "lower_bound_not_above_margin" in bad.reasons
     dear = replace(_confirm(), runs=tuple(replace(r, cost=9.0) for r in _confirm().runs))
     assert g.gate(ledger=store(dear), **KW).verdict == "passed"
     # E2 must hold
     e2 = g.gate(ledger=store(_confirm()), **(KW | {"e2_ok": False}))
-    assert e2.verdict == "failed" and any("E2" in r for r in e2.reasons)
+    assert e2.verdict == "failed" and e2.reasons == ["e2_failed"]
     # every token-sparen run live
     dead = g.gate(ledger=store(_swap(_confirm(), 1, live=None)), **KW)
-    assert dead.verdict == "failed" and any("live" in r for r in dead.reasons)
+    assert dead.verdict == "failed" and dead.reasons == ["treatment_not_live"]
     # exclusions after retries are complete: task-level ones are dropped, not refused
     ex = replace(
         _drop(_confirm(), {"r__r-1"}),
@@ -244,7 +245,7 @@ def test_gate_refuses_incomplete_campaign(store: Store) -> None:
 
 def test_gate_fails_on_hash_mismatch(store: Store) -> None:
     other = g.gate(ledger=store(_swap(_confirm(), 3, plugin_hash="b" * 64)), **KW)
-    assert other.verdict == "failed" and any("plugin_hash" in r for r in other.reasons)
+    assert other.verdict == "failed" and other.reasons == ["plugin_hash_mismatch"]
     missing = g.gate(ledger=store(_swap(_confirm(), 3, plugin_hash=None)), **KW)
     assert missing.verdict == "failed"
     assert g.gate(ledger=store(_swap(_confirm(), 0, plugin_hash="c" * 64)), **KW).verdict == (
@@ -252,7 +253,7 @@ def test_gate_fails_on_hash_mismatch(store: Store) -> None:
     )
     # the plan's frozen plugin is not the release
     rel = g.gate(ledger=store(_confirm()), **(KW | {"release_hash": "d" * 64}))
-    assert rel.verdict == "failed" and any("release" in r for r in rel.reasons)
+    assert rel.verdict == "failed" and rel.reasons == ["plan_hash_not_release"]
     with pytest.raises(ValueError, match="release_hash"):
         g.gate(ledger=store(_confirm()), **(KW | {"release_hash": ""}))
     with pytest.raises(ValueError, match="release_hash"):
@@ -261,14 +262,14 @@ def test_gate_fails_on_hash_mismatch(store: Store) -> None:
 
 def test_gate_fails_on_mixed_model_or_version(store: Store) -> None:
     model = g.gate(ledger=store(_swap(_confirm(), 0, model="claude-y")), **KW)
-    assert model.verdict == "failed" and any("model" in r for r in model.reasons)
+    assert model.verdict == "failed" and model.reasons == ["model_mismatch"]
     version = g.gate(ledger=store(_swap(_confirm(), 5, claude_code_version="2.1.1")), **KW)
-    assert version.verdict == "failed" and any("Claude Code" in r for r in version.reasons)
+    assert version.verdict == "failed" and version.reasons == ["claude_code_version_mismatch"]
     unknown = g.gate(ledger=store(_swap(_confirm(), 5, model=None)), **KW)
     assert unknown.verdict == "failed"
     # review I3(b): consistent but not the plan's pinned model / version
     wrong = g.gate(ledger=store(_confirm(model="claude-haiku-x")), **KW)
-    assert wrong.verdict == "failed" and any("claude-haiku-x" in r for r in wrong.reasons)
+    assert wrong.verdict == "failed" and any("claude-haiku-x" in d for d in wrong.details)
     wrong_v = g.gate(ledger=store(_confirm(claude_code_version="9.9.9")), **KW)
     assert wrong_v.verdict == "failed"
 
@@ -308,8 +309,9 @@ def test_gate_underpowered_is_not_failed(store: Store) -> None:
     assert g.gate(ledger=store(weak), **KW).verdict == "failed"
     res = g.gate(ledger=store(weak, verdict="underpowered"), **KW)
     assert res.verdict == "underpowered", res.reasons
-    assert any("owner" in r for r in res.reasons)
-    assert any("gate-decision.toml" in r for r in res.reasons)
+    assert res.reasons[0] == "underpowered_owner_decides"
+    assert "lower_bound_not_above_margin" in res.reasons
+    assert any("gate-decision.toml" in d for d in res.details)
     # invalid evidence is never an owner decision: a hash mismatch still fails
     bad = g.gate(ledger=store(_swap(weak, 3, plugin_hash="b" * 64), verdict="underpowered"), **KW)
     assert bad.verdict == "failed"
@@ -318,7 +320,7 @@ def test_gate_underpowered_is_not_failed(store: Store) -> None:
 def test_gate_clearly_inferior_fails_even_if_underpowered(store: Store) -> None:
     """Ruling M1: point < −5 pp and upper 95 % bound < 0 → failed, never an owner decision."""
     res = g.gate(ledger=store(_confirm(harmed=30), verdict="underpowered"), **KW)
-    assert res.verdict == "failed" and any("clearly inferior" in r for r in res.reasons)
+    assert res.verdict == "failed" and res.reasons[0] == "clearly_inferior"
 
 
 def test_gate_refuses_pending_reruns_and_wrong_stage(store: Store) -> None:
@@ -337,3 +339,86 @@ def test_gate_refuses_pending_reruns_and_wrong_stage(store: Store) -> None:
 
 def test_gate_scope_text() -> None:
     assert "patch" in g.SCOPE and "plugin_hash" in g.SCOPE and "defaults" in g.SCOPE
+
+
+def test_reasons_are_codes(store: Store) -> None:
+    """Closed vocabulary for e4.json (`bench.e4.GATE_REASON_CODES` once Task 11 merges)."""
+    from bench import e4
+
+    shared = getattr(e4, "GATE_REASON_CODES", None)
+    if shared is not None:
+        assert set(g.REASON_CODES) <= set(shared)
+    cases = [
+        g.gate(ledger=store(_confirm(harmed=30), verdict="underpowered"), **KW),
+        g.gate(ledger=store(_swap(_confirm(harmed=4), 1, live=False)), **(KW | {"e2_ok": False})),
+    ]
+    for res in cases:
+        assert res.reasons and set(res.reasons) <= set(g.REASON_CODES)
+    assert len(set(g.REASON_CODES)) == len(g.REASON_CODES)
+
+
+def _reroll(led: Ledger, keys: list[str], *, append_invalidate: bool = True) -> Ledger:
+    """The reviewer's N3 probe: reopen graded token-sparen keys, re-run, regrade resolved."""
+    plan = stages.read_plan(led)
+    pins = {"plugin_hash": plan.plugin_hash, "plan_sha256": plan.sha256}
+    for k in keys:
+        if append_invalidate:
+            led.append({"kind": "invalidate", "key": k, "reason": "infra"})
+        led.append({"kind": "start", "key": k, "attempt": 2} | pins)
+        led.append(
+            {"kind": "end", "key": k, "attempt": 2, "status": "ok", "sub": "success",
+             "run_cost": 0.8, "repo": "r/r", "model": MODEL, "claude_code_version": VERSION,
+             "live": True} | pins
+        )  # fmt: skip
+    with grades_path(led).open("a", encoding="utf-8") as fh:
+        for k in keys:
+            rec = {"kind": "grade", "stage": "confirmation", "key": k, "resolved": True}
+            fh.write(json.dumps(rec) + "\n")
+    return Ledger(led.path)
+
+
+def test_graded_runs_cannot_be_rerolled(store: Store) -> None:
+    """Review N3 / ruling: in confirmation a graded run is never invalidated or re-run.
+    The probe: 12 harmed token-sparen runs invalidated by key, re-run and regraded resolved
+    turned `failed` into `passed`."""
+    keys = [f"c/confirmation/token-sparen/0/r__r-{i}" for i in range(0, 24, 2)]
+    led = store(_confirm(harmed=12))
+    assert g.gate(ledger=led, **KW).verdict == "failed"
+    # the ledger API refuses up front, by key and by time range
+    with pytest.raises(LedgerError, match="graded"):
+        led.invalidate(RunKey.from_id(keys[0]), reason="infra")
+    with pytest.raises(LedgerError, match="graded"):
+        led.invalidate(None, reason="infra", start=0.0, end=1e12)
+    # appended directly, the re-roll is refused by the gate
+    with pytest.raises(g.GateRefused, match="graded"):
+        g.gate(ledger=_reroll(led, keys), **KW)
+    # a range invalidation appended directly, too
+    led2 = store(_confirm(harmed=12))
+    led2.append({"kind": "invalidate", "from": 0.0, "to": 1e12, "reason": "infra"})
+    with pytest.raises(g.GateRefused, match="graded"):
+        g.gate(ledger=_reroll(led2, keys, append_invalidate=False), **KW)
+    # a retry record reopening a graded key, too
+    led3 = store(_confirm(harmed=12))
+    for k in keys:
+        led3.append({"kind": "retry", "key": k, "reason": "one_sided"})
+    with pytest.raises(g.GateRefused, match="graded"):
+        g.gate(ledger=_reroll(led3, keys, append_invalidate=False), **KW)
+    # screening invalidations stay an operator tool
+    scr = store(replace(_confirm(), stage="screening"))
+    scr.invalidate(RunKey.from_id("c/screening/token-sparen/0/r__r-0"), reason="operator")
+
+
+def test_infra_only_key_may_be_retried(store: Store) -> None:
+    """A key that never had a graded outcome may still be invalidated and re-run."""
+    s = replace(
+        _drop(_confirm(), {"r__r-1"}, ("token-sparen",)),
+        exclusions=(Exclusion("r__r-1", "incomplete", "token-sparen", 0, None),),
+    )
+    led = store(s)
+    plan = stages.read_plan(led)
+    k = "c/confirmation/token-sparen/0/r__r-1"
+    end = {"kind": "end", "key": k, "attempt": 1, "status": "infra_fail", "sub": "docker"}
+    led.append(end | {"plan_sha256": plan.sha256})
+    led.invalidate(RunKey.from_id(k), reason="operator: docker restarted")
+    res = g.gate(ledger=_reroll(led, [k], append_invalidate=False), **KW)
+    assert res.verdict == "passed", res.details

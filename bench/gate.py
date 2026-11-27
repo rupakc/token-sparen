@@ -6,7 +6,9 @@ power verdict, with a content hash, written before the first run; every run reco
 that hash — `bench.stages.read_plan`). The summary is built from the ledger and its grades file,
 never passed in. Any run key outside the plan (task, arm or seed) refuses the gate.
 
-The gate refuses (`GateRefused`) on anything but a complete confirmation: every planned task
+The gate refuses (`GateRefused`) when a graded confirmation run was reopened (invalidate or
+retry) — re-running graded runs is outcome-selective (ruling N3) — and on anything but a
+complete confirmation: every planned task
 needs, in baseline and token-sparen at the plan's seed, a graded final run or an exclusion that
 stays after retries (no size tolerance); keys that were never started, are incomplete or await
 grading block it, as do one-sided keys awaiting re-runs.
@@ -29,7 +31,7 @@ measurement.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from bench.ledger import Ledger
@@ -60,15 +62,34 @@ SCOPE = (
 
 GateVerdict = Literal["passed", "failed", "underpowered"]
 
+# Closed vocabulary of `GateResult.reasons` (the `gate_reason` enum of e4.schema.json, owned by
+# Task 11 as `bench.e4.GATE_REASON_CODES`; a test checks this is a subset once both meet).
+# Human-readable text with figures goes to `GateResult.details`, never into e4.json.
+REASON_CODES: tuple[str, ...] = (
+    "plan_hash_not_release",
+    "plugin_hash_mismatch",
+    "frozen_run_without_hash",
+    "treatment_not_live",
+    "model_mismatch",
+    "claude_code_version_mismatch",
+    "e2_failed",
+    "clearly_inferior",
+    "underpowered_owner_decides",
+    "lower_bound_not_above_margin",
+    "too_few_paired_tasks",
+    "one_sided_pending",
+    "excess_exclusions_imputed",
+)
+
 
 class GateRefused(ValueError):
-    """The gate cannot be decided on this summary (yet)."""
+    """The gate cannot be decided on this ledger (yet)."""
 
 
 @dataclass(frozen=True)
 class GateResult:
     verdict: GateVerdict
-    reasons: list[str]
+    reasons: list[str]  # codes from `REASON_CODES`
     check: GateCheck | None = None
     plan_sha256: str | None = None
     # pins of the persisted plan (what the report publishes; Task 11)
@@ -77,39 +98,59 @@ class GateResult:
     model: str | None = None  # the exact model id every run recorded
     claude_code_version: str | None = None
     price_confirmed_on: str | None = None
+    details: list[str] = field(default_factory=list)  # human-readable, for the operator only
 
     def as_e4(self) -> dict[str, Any]:
-        """The ``gate`` object of ``e4.json``."""
+        """The ``gate`` object of ``e4.json`` (codes only)."""
         return {"verdict": self.verdict, "reasons": list(self.reasons)}
 
 
-def _validity(confirm: Summary, plan: StagePlan, release_hash: str, e2_ok: bool) -> list[str]:
-    problems: list[str] = []
+Finding = tuple[str, str]  # (code, detail)
+
+
+def _validity(confirm: Summary, plan: StagePlan, release_hash: str, e2_ok: bool) -> list[Finding]:
+    problems: list[Finding] = []
     if plan.plugin_hash != release_hash:
-        problems.append("the plan's frozen plugin_hash is not the release hash")
+        problems.append(("plan_hash_not_release", "the plan's frozen plugin is not the release"))
     wrong = {r.plugin_hash for r in confirm.runs if r.plugin_hash not in (None, plan.plugin_hash)}
     if wrong:
-        problems.append(f"plugin_hash differs from the plan's in {len(wrong)} value(s)")
+        problems.append(("plugin_hash_mismatch", f"{len(wrong)} other plugin_hash value(s)"))
     unhashed = sum(1 for r in confirm.runs if r.arm in FROZEN_ARMS and r.plugin_hash is None)
     if unhashed:
-        problems.append(f"{unhashed} frozen-plugin run(s) without a plugin_hash")
+        problems.append(("frozen_run_without_hash", f"{unhashed} frozen-plugin run(s) unhashed"))
     dead = sum(1 for r in confirm.runs if r.arm == TREATMENT and r.live is not True)
     if dead:
-        problems.append(f"{dead} token-sparen run(s) not live")
-    for what, want, values in (
-        ("model id", plan.model, [r.model for r in confirm.runs]),
+        problems.append(("treatment_not_live", f"{dead} token-sparen run(s) not live"))
+    for code, want, values in (
+        ("model_mismatch", plan.model, [r.model for r in confirm.runs]),
         (
-            "Claude Code version",
+            "claude_code_version_mismatch",
             plan.claude_code_version,
             [r.claude_code_version for r in confirm.runs],
         ),
     ):
         off = sorted({str(v) for v in values if v != want})
         if off:
-            problems.append(f"run {what}(s) {', '.join(off)} differ from the plan's {want!r}")
+            problems.append(
+                (code, f"run value(s) {', '.join(off)} differ from the plan's {want!r}")
+            )
     if not e2_ok:
-        problems.append("E2 fact-preservation did not pass")
+        problems.append(("e2_failed", "E2 fact-preservation did not pass"))
     return problems
+
+
+def _statistics(check: GateCheck) -> list[Finding]:
+    est = check.estimate
+    out: list[Finding] = []
+    if check.pending:
+        out.append(("one_sided_pending", f"{check.pending} one-sided exclusion(s) to re-run"))
+    if est.n < check.min_tasks:
+        out.append(("too_few_paired_tasks", f"{est.n} paired tasks < {check.min_tasks}"))
+    if not est.lo > MARGIN:
+        out.append(("lower_bound_not_above_margin", f"lower bound {est.lo:+.4f} <= {MARGIN}"))
+    if check.imputed:
+        out.append(("excess_exclusions_imputed", f"{len(check.imputed)} imputed as failures"))
+    return out
 
 
 def _outside(key: str, plan: StagePlan) -> bool:
@@ -141,6 +182,12 @@ def gate(
         plan = read_plan(ledger)
     except PlanError as exc:
         raise GateRefused(f"confirmation plan: {exc}") from exc
+    reopened = ledger.reopened_graded("confirmation")
+    if reopened:
+        raise GateRefused(
+            f"{len(reopened)} graded confirmation run(s) were reopened (invalidate/retry) and "
+            f"re-run, e.g. {reopened[0]}: graded runs are never re-run (ruling N3)"
+        )
     stray = sorted(
         {
             str(r["key"])
@@ -168,13 +215,13 @@ def gate(
     check = scoped.gate(TREATMENT, REFERENCE, gate_seed=plan.seed, n_boot=n_boot, seed=seed)
     est = check.estimate
     invalid = _validity(scoped, plan, release_hash, e2_ok)
-    stat = list(check.reasons)
+    stat = _statistics(check)
     bound = f"resolved-diff {est.point:+.4f}, 95 % bound [{est.lo:+.4f}, {est.hi:+.4f}], n {est.n}"
 
-    def result(verdict: GateVerdict, reasons: list[str]) -> GateResult:
+    def result(verdict: GateVerdict, findings: list[Finding], *extra: str) -> GateResult:
         return GateResult(
             verdict,
-            [*reasons, bound],
+            [code for code, _ in findings],
             check,
             plan.sha256,
             plugin_hash=plan.plugin_hash,
@@ -182,13 +229,15 @@ def gate(
             model=plan.model,
             claude_code_version=plan.claude_code_version,
             price_confirmed_on=plan.price_confirmed_on,
+            details=[*extra, *(f"{code}: {text}" for code, text in findings), bound],
         )
 
     if invalid:
         return result("failed", [*invalid, *stat])
     if est.point < MARGIN and est.hi < 0:
-        return result("failed", ["clearly inferior: point below −5 pp and upper bound < 0", *stat])
+        inferior = ("clearly_inferior", "point below −5 pp and upper bound < 0")
+        return result("failed", [inferior, *stat])
     if plan.verdict == "underpowered":
-        note = f"underpowered: not failed; the owner decides in {DECISION_FILE}"
-        return result("underpowered", [note, *(f"descriptive: {r}" for r in stat)])
+        note = ("underpowered_owner_decides", f"not failed; the owner decides in {DECISION_FILE}")
+        return result("underpowered", [note, *stat], "statistical findings are descriptive")
     return result("passed" if check.passed else "failed", stat)
