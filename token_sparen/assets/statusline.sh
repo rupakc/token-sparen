@@ -2,7 +2,8 @@
 # token-sparen statusline launcher (POSIX sh). Always prints one line and exits 0.
 #   sh statusline.sh                                 render our statusline
 #   sh statusline.sh --compose -- '<original cmd>'   original first line + " | " + ours
-# The active copy of the plugin is resolved at every run: $TOKEN_SPAREN_ROOT, then
+# The active copy of the plugin is resolved at every run: $TOKEN_SPAREN_ROOT (only outside the
+# current project / git work tree and owned by the user), then
 # installed_plugins.json (newest), then the plugin cache (newest), then FALLBACK_ROOT (set by
 # `token-sparen statusline install`). Nothing found: an empty line (compose: the original only).
 FALLBACK_ROOT=''
@@ -41,9 +42,48 @@ def newest(paths):
     return max(good, key=mtime) if good else None
 
 
+def real(path):
+    return os.path.normcase(os.path.realpath(path))
+
+
+def inside(path, root):
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def work_tree(start):
+    cur = start
+    while True:
+        if os.path.exists(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def trusted(path):
+    """A $TOKEN_SPAREN_ROOT outside the current project (its dir, the cwd and their git work
+    trees; a directory containing the home dir is no project) and, on POSIX, owned by us: a
+    committed settings env must not make the statusline run code from the repository."""
+    try:
+        target = real(path)
+        home = real(os.path.expanduser("~"))
+        for raw in (os.environ.get("CLAUDE_PROJECT_DIR") or "", os.getcwd()):
+            if not raw:
+                continue
+            for root in (real(raw), work_tree(real(raw))):
+                if root and not inside(home, root) and inside(target, root):
+                    return False
+        if os.name == "posix" and hasattr(os, "getuid"):
+            return os.stat(target).st_uid == os.getuid()
+        return True
+    except Exception:
+        return False
+
+
 def resolve(fallback):
     root = os.environ.get("TOKEN_SPAREN_ROOT")
-    if usable(root):
+    if usable(root) and trusted(root):
         return root
     config = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
     plugins = os.path.join(config, "plugins")

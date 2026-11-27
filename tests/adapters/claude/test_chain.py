@@ -24,7 +24,9 @@ def _handlers() -> Iterator[None]:
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
-    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home"), "CLAUDE_PROJECT_DIR": str(tmp_path)}
+    proj = tmp_path / "proj"  # the state root lies outside the project (review M5)
+    proj.mkdir(parents=True, exist_ok=True)
+    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home"), "CLAUDE_PROJECT_DIR": str(proj)}
     env.update(extra)
     return env
 

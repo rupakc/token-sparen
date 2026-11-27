@@ -35,3 +35,17 @@ def _deterministic_engine(request: pytest.FixtureRequest, monkeypatch: pytest.Mo
         return real(env) or ("suite" if env.get("TOKEN_SPAREN_HOME") else None)
 
     monkeypatch.setattr(hookpolicy, "test_seed", seeded)
+
+
+@pytest.fixture(autouse=True)
+def _private_user_home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected ``TOKEN_SPAREN_HOME`` (review M5) falls back to ``~/.token-sparen``: tests must
+    never reach the real one, so the user's home is a temporary directory for every test."""
+    from token_sparen import config
+
+    home = tmp_path_factory.mktemp("userhome")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    config.reset_env_path_checks()

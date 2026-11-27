@@ -215,7 +215,7 @@ def test_breaker_notice_at_session_start_hook(tmp_path: Path) -> None:
 
     home = _home(tmp_path)
     _write(_bpath(home), {"points": {"read_dedupe": {"remaining": 3, "ring": []}}})
-    env = {"TOKEN_SPAREN_HOME": str(home), "CLAUDE_PROJECT_DIR": str(tmp_path)}
+    env = {"TOKEN_SPAREN_HOME": str(home), "CLAUDE_PROJECT_DIR": str(tmp_path / "proj")}
     ev = dataclasses.replace(
         entry.ADAPTER.parse("SessionStart", {"session_id": SID}, env), project_key=KEY
     )

@@ -428,7 +428,7 @@ def test_ope_cli_reports_parts_and_constraint(
 ) -> None:
     home = tmp_path / "home"
     monkeypatch.setenv("TOKEN_SPAREN_HOME", str(home))
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(_beside_home(tmp_path))
     log = _write_log(home / "projects" / KEY / "decisions.jsonl")
     out = tmp_path / "priv" / "e3.json"
     assert cli.main(["ope", "--log", str(log), "--target", "static", "--out", str(out)]) == 0
@@ -444,7 +444,7 @@ def test_ope_cli_uses_the_configured_tau(tmp_path: Path, monkeypatch: pytest.Mon
     home.mkdir()
     (home / "config.toml").write_text("[learn.tau]\nmedium = 0.001\n", encoding="utf-8")
     monkeypatch.setenv("TOKEN_SPAREN_HOME", str(home))
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(_beside_home(tmp_path))
     log = _write_log(home / "projects" / KEY / "decisions.jsonl")
     out = tmp_path / "priv" / "e3.json"
     assert cli.main(["ope", "--log", str(log), "--target", "static", "--out", str(out)]) == 0
@@ -573,7 +573,7 @@ def test_ope_cli_reads_the_thresholds(tmp_path: Path, monkeypatch: pytest.Monkey
     home.mkdir()
     (home / "config.toml").write_text("[ope]\nmin_outcome_coverage = 1.01\n", "utf-8")
     monkeypatch.setenv("TOKEN_SPAREN_HOME", str(home))
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(_beside_home(tmp_path))
     log = _write_log(home / "projects" / KEY / "decisions.jsonl")
     out = tmp_path / "priv" / "e3.json"
     assert cli.main(["ope", "--log", str(log), "--target", "static", "--out", str(out)]) == 0
@@ -587,7 +587,7 @@ def test_ope_cli_engine_snapshot_joins_outcomes_across_rotation(
     """Decisions in the rotated generation, their outcomes in the current one: 12/12 joined."""
     home = tmp_path / "home"
     monkeypatch.setenv("TOKEN_SPAREN_HOME", str(home))
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(_beside_home(tmp_path))
     pdir = home / "projects" / KEY
     pdir.mkdir(parents=True)
     old = [json.dumps(asdict(_rec(f"r{i}", "light", 0.5, CTX[0]))) for i in range(12)]
@@ -659,7 +659,7 @@ def test_ope_cli_reads_min_trims(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     home.mkdir()
     (home / "config.toml").write_text("[ope]\nmin_trims = 100000\n", "utf-8")
     monkeypatch.setenv("TOKEN_SPAREN_HOME", str(home))
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(_beside_home(tmp_path))
     log, regrets = _mixed_log(400, 0.0, 1.0)
     path = home / "projects" / KEY / "decisions.jsonl"
     path.parent.mkdir(parents=True)
@@ -669,3 +669,10 @@ def test_ope_cli_reads_min_trims(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert cli.main(["ope", "--log", str(path), "--target", "static", "--out", str(out)]) == 0
     point = json.loads(out.read_text(encoding="utf-8"))["points"]["compression"]
     assert point["constraint_status"] == "insufficient"
+
+
+def _beside_home(tmp_path: Path) -> Path:
+    """A working directory beside (not containing) the state root (review M5)."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir(exist_ok=True)
+    return cwd

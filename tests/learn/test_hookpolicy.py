@@ -131,6 +131,6 @@ def test_test_seed_needs_a_temp_home(tmp_path: Path) -> None:
     assert hookpolicy.test_seed({"TOKEN_SPAREN_TEST_SEED": "1", "TOKEN_SPAREN_HOME": str(tmp_path)})
     inside = Path(tempfile.gettempdir()) / "ts-home"
     assert hookpolicy.test_seed({"TOKEN_SPAREN_TEST_SEED": "1", "TOKEN_SPAREN_HOME": str(inside)})
-    for home in ("/srv/ts-home", str(Path.home() / "ts-elsewhere")):
+    for home in ("/srv/ts-home", "/nonexistent-user-home/ts-elsewhere"):
         env = {"TOKEN_SPAREN_TEST_SEED": "1", "TOKEN_SPAREN_HOME": home}
         assert hookpolicy.test_seed(env) is None

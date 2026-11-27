@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import time
 import tomllib
 from collections.abc import Iterator, Mapping
@@ -37,9 +38,111 @@ class Config:
         return node
 
 
+# Path-valued variables: a committed Claude Code settings ``env`` can set them, so a value is
+# only honoured outside the current project (review M5). ``TOKEN_SPAREN_ROOT`` is read by the
+# statusline launcher (``assets/statusline.sh``), which applies the same rule in its own code.
+PATH_VARS = ("TOKEN_SPAREN_HOME", "TOKEN_SPAREN_ROOT")
+_PATH_CHECKS: dict[tuple[str, str, str, str], bool] = {}
+_PATH_LOGGED: set[tuple[str, str]] = set()
+
+
+def reset_env_path_checks() -> None:
+    """Forget cached verdicts and logged rejections (tests)."""
+    _PATH_CHECKS.clear()
+    _PATH_LOGGED.clear()
+
+
+def _real(path: str | Path) -> str:
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _inside(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _work_tree(start: str) -> str | None:
+    """The nearest ancestor of ``start`` (itself included) holding ``.git`` (a stat per level,
+    no git subprocess)."""
+    cur = start
+    while True:
+        if os.path.exists(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def _owned(path: str) -> bool:
+    """POSIX: ``path`` or its nearest existing ancestor is owned by the current user."""
+    getuid = getattr(os, "getuid", None)
+    if os.name != "posix" or getuid is None:
+        return True
+    cur = path
+    while not os.path.lexists(cur):
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return False
+        cur = parent
+    try:
+        return bool(os.stat(cur).st_uid == getuid())
+    except OSError:
+        return False
+
+
+def _project_roots(env: Mapping[str, str], cwd: str) -> list[str]:
+    """The hook's project directory and cwd and their git work-tree roots, except a directory
+    that contains the user's home (a session started in or above home is no repository)."""
+    user_home = _real(Path.home())
+    out: list[str] = []
+    for raw in (env.get("CLAUDE_PROJECT_DIR") or "", cwd):
+        if not raw:
+            continue
+        base = _real(raw)
+        for root in (base, _work_tree(base)):
+            if root and not _inside(user_home, root) and root not in out:
+                out.append(root)
+    return out
+
+
+def env_path(env: Mapping[str, str], name: str) -> Path | None:
+    """A path-valued ``TOKEN_SPAREN_*`` variable, or None if unset or not safe to honour: it
+    resolves inside the current project (the hook's project dir or cwd, or their git work tree)
+    or, on POSIX, it (or its nearest existing parent) is not owned by the current user. A
+    rejected value is logged once per process to the default state root's errors.jsonl."""
+    value = env.get(name)
+    if not value:
+        return None
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = ""
+    key = (name, value, env.get("CLAUDE_PROJECT_DIR") or "", cwd)
+    ok = _PATH_CHECKS.get(key)
+    if ok is None:
+        try:
+            target = _real(os.path.join(cwd, value) if cwd else value)
+            ok = _owned(target) and not any(_inside(target, r) for r in _project_roots(env, cwd))
+        except (OSError, ValueError):
+            ok = False
+        if len(_PATH_CHECKS) > 64:
+            _PATH_CHECKS.clear()
+        _PATH_CHECKS[key] = ok
+        if not ok and (name, value) not in _PATH_LOGGED:
+            _PATH_LOGGED.add((name, value))
+            log_error(
+                {},
+                "config",
+                f"{name} ignored (inside the current project or not owned by this user); "
+                "using the default. Set it outside any repository, e.g. in your shell profile.",
+            )
+    return Path(value) if ok else None
+
+
 def state_home(env: Mapping[str, str]) -> Path:
-    override = env.get("TOKEN_SPAREN_HOME")
-    return Path(override) if override else Path.home() / ".token-sparen"
+    """``TOKEN_SPAREN_HOME`` if safe to honour (``env_path``), else ``~/.token-sparen``."""
+    override = env_path(env, "TOKEN_SPAREN_HOME")
+    return override if override is not None else Path.home() / ".token-sparen"
 
 
 _REDACT: ContextVar[bool] = ContextVar("token_sparen_redact_logs", default=False)
