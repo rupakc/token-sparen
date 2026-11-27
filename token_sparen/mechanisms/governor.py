@@ -32,6 +32,7 @@ from typing import Any, BinaryIO, Literal
 
 from token_sparen.config import Config, flag, log_error, state_home
 from token_sparen.events import Action, Event, SessionCtx
+from token_sparen.learn import features
 from token_sparen.mechanisms import tracking
 from token_sparen.store import jsonstore, session
 
@@ -284,12 +285,19 @@ def _windows_json(env: Mapping[str, str], session_id: str) -> int | None:
 
 def resolve_window(cfg: Config, env: Mapping[str, str], session_id: str, model: str | None) -> int:
     """Statusline-recorded window -> CLAUDE_CODE_MAX_CONTEXT_TOKENS -> model table -> 200 000."""
+    return _resolve_window(cfg, env, session_id, model)[0]
+
+
+def _resolve_window(
+    cfg: Config, env: Mapping[str, str], session_id: str, model: str | None
+) -> tuple[int, bool]:
+    """``(window, authoritative)``: authoritative unless it is the table default or 200 000."""
     recorded = _windows_json(env, session_id)
     if recorded is not None:
-        return recorded
+        return recorded, True
     from_env = _pos_int(env.get("CLAUDE_CODE_MAX_CONTEXT_TOKENS"))
     if from_env is not None:
-        return from_env
+        return from_env, True
     table = cfg.get("governor.windows")
     if isinstance(table, dict):
         if model:
@@ -297,11 +305,25 @@ def resolve_window(cfg: Config, env: Mapping[str, str], session_id: str, model: 
                 if pattern != "default" and fnmatch.fnmatchcase(model, pattern):
                     got = _pos_int(value)
                     if got is not None:
-                        return got
+                        return got, True
         got = _pos_int(table.get("default"))
         if got is not None:
-            return got
-    return DEFAULT_WINDOW
+            return got, False
+    return DEFAULT_WINDOW, False
+
+
+def band_window(
+    cfg: Config,
+    env: Mapping[str, str],
+    session_id: str,
+    models: tuple[str | None, ...],
+    last_ctx: int,
+) -> int:
+    """The window of the ``band`` feature: the resolved one when authoritative, else the
+    reported model window (``features.band_window``; 200k vs 1M)."""
+    first = next((m for m in models if isinstance(m, str)), None)
+    window, authoritative = _resolve_window(cfg, env, session_id, first)
+    return features.band_window(window, authoritative, models, last_ctx)
 
 
 def _level(value: float, notice: float, advise: float) -> Level:
@@ -368,23 +390,33 @@ def cached(
 
 
 def ctx_pct(
-    overlay: Mapping[str, Any], cfg: Config, env: Mapping[str, str], session_id: str
+    overlay: Mapping[str, Any],
+    cfg: Config,
+    env: Mapping[str, str],
+    session_id: str,
+    *,
+    model: str | None = None,
 ) -> float | None:
-    """Context fill (last call's context / window) from the overlay's incremental cache (no
-    transcript I/O); None when unknown: no cache or last call yet, or the resolved window is
-    wrong for this model (the last call exceeded it)."""
+    """Context fill (last call's context / window) for the ``band`` feature from the overlay's
+    incremental cache (no transcript I/O). The window is ``band_window``: the reported model
+    window (``model``, the hook-reported id, then the transcript's) when no authoritative one
+    is known, so a 1M-context session is no longer mis-banded. None when unknown: no cache or
+    last call yet, or the last call exceeds even that window."""
     cache = overlay.get(CACHE)
-    if not isinstance(cache, dict) or not (_int(cache.get("last_ctx")) or 0) > 0:
+    last_ctx = (_int(cache.get("last_ctx")) or 0) if isinstance(cache, dict) else 0
+    if not isinstance(cache, dict) or not last_ctx > 0:
         return None
-    st = _build(cache, cfg, env, session_id)
-    return None if st.window_unknown else st.ctx_pct
+    seen = cache.get("model")
+    models = (model, seen if isinstance(seen, str) else None)
+    window = band_window(cfg, env, session_id, models, last_ctx)
+    return None if last_ctx > window else last_ctx / window
 
 
 def decision_ctx(
     event: Event, overlay: Mapping[str, Any], path: Path, cfg: Config, env: Mapping[str, str]
 ) -> SessionCtx:
     """``tracking.session_ctx`` with the context fill a decision point's ``band`` feature needs."""
-    pct = ctx_pct(overlay, cfg, env, event.session_id)
+    pct = ctx_pct(overlay, cfg, env, event.session_id, model=event.model)
     return tracking.session_ctx(event, overlay, path, ctx_pct=pct)
 
 

@@ -1009,3 +1009,20 @@ def test_global_natural_rate_ages(tmp_path: Path) -> None:
         got = Evidence.from_list(glob["natural"]["loopguard"][bucket])
         assert _close(got, old.scaled(0.5)), bucket
         assert glob["natural_t"][f"loopguard|{bucket}"] == 100 * 86400.0
+
+
+# --------------------------------------------------------------------------- M4 Task 6
+def test_fold_engine_only_skips_facts_and_prune(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(overlay, "_mine_facts", lambda *a, **k: calls.append("facts") or 0)
+    monkeypatch.setattr(overlay, "_prune", lambda *a, **k: calls.append("prune") or [])
+    home = _home(tmp_path)
+    _session(home, evidence=ONE)
+    rep = _fold(home, mine_facts=False, prune=False)
+    assert rep.staged and rep.cells == 2 and calls == []
+    assert _close(_proj_ev(home), SAV)  # engine evidence still folded
+    _session(home, "s-2", evidence=ONE)
+    assert _fold(home, "s-2").staged
+    assert calls == ["facts", "prune"]  # defaults unchanged

@@ -673,3 +673,166 @@ def test_loopguard_real_effect_category_unlocks(tmp_path: Path) -> None:
     fresh = _engine(home, seed=9)
     assert "standard" in fresh.eligible(LOOPGUARD, {"cat": "test"})
     assert fresh.eligible(LOOPGUARD, {"cat": "shell"}) == []
+
+
+# --- M4 Task 6: engine options (default off) ------------------------------------------------
+
+
+class _Recorder:
+    """A learning policy stub: a fixed arm, records every reward."""
+
+    def __init__(self, arm: str) -> None:
+        self.arm = arm
+        self.rewards: list[tuple[str, float | None, float | None]] = []
+        self.n = 0
+
+    def decide(self, point: DecisionPoint, features: Any, session: SessionCtx) -> Any:
+        from token_sparen.learn.policy import Decision
+
+        self.n += 1
+        arm = self.arm if self.arm in point.arms else point.safe_arm
+        return Decision(f"d-{self.n}", point.name, arm, 0.5, "b")
+
+    def reward(self, decision_id: str, savings: float | None, regret: float | None) -> None:
+        self.rewards.append((decision_id, savings, regret))
+
+
+def _compress_reward(tmp_path: Path, arm: str, mode: str | None, **env_over: str) -> float:
+    from sampleoutputs import big_pytest
+
+    from token_sparen.adapters.claude.translate import tool_category
+    from token_sparen.events import Event, ToolCall
+    from token_sparen.mechanisms import compression
+
+    proj = tmp_path / "proj"
+    proj.mkdir(parents=True, exist_ok=True)
+    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
+    if mode is not None:
+        env["TOKEN_SPAREN_LEARN__SAVINGS_REWARD"] = mode
+    env.update({f"TOKEN_SPAREN_{k}": v for k, v in env_over.items()})
+    cfg = load_config(proj, env)
+    text = big_pytest()
+    ev = Event(
+        host="claude",
+        kind="post_tool",
+        session_id=SID,
+        project_dir=proj,
+        project_key=KEY,
+        transcript_path=None,
+        tool=ToolCall("Bash", tool_category("Bash"), {"command": "pytest -v"}, "tu-1"),
+        output_text=text,
+        raw_response={"stdout": text, "stderr": "", "interrupted": False, "isImage": False},
+    )
+    pol = _Recorder(arm)
+    act = compression.handle_post_tool(ev, pol, cfg, env=env)
+    assert act.replace_output is not None
+    ((_, savings, regret),) = pol.rewards
+    assert regret is None and savings is not None
+    return savings
+
+
+@pytest.mark.parametrize("mode", [None, "scaled", "fraction", "counterfactual", "cost", "bogus"])
+@pytest.mark.parametrize("arm", ["light", "standard", "aggressive"])
+def test_each_savings_reward_in_unit_interval(tmp_path: Path, mode: str | None, arm: str) -> None:
+    v = _compress_reward(tmp_path, arm, mode)
+    assert 0.0 <= v <= 1.0
+    if mode in (None, "scaled", "bogus", "cost"):
+        assert v == 0.5  # a bucket's first observation (p95-scaled modes)
+    if mode == "fraction":  # removed / before, as the decision log books it
+        log = tmp_path / "home" / "projects" / KEY / "decisions.jsonl"
+        rec = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+        before, after = rec["tokens_before"], rec["tokens_after"]
+        assert v == pytest.approx((before - after) / before) and v != 0.5
+
+
+def test_savings_reward_modes_unit() -> None:
+    from token_sparen.learn import regret
+
+    assert regret.savings_mode(Config()) == "scaled"
+    assert regret.savings_mode(Config({"learn": {"savings_reward": "fraction"}})) == "fraction"
+    assert regret.savings_mode(Config({"learn": {"savings_reward": "nope"}})) == "scaled"
+    assert regret.fraction_value(30, 100) == pytest.approx(0.3)
+    assert regret.fraction_value(30, 0) == 0.0
+    assert regret.fraction_value(300, 100) == 1.0
+    # removed / max removed, times min(1, resends / R)
+    assert regret.counterfactual_value(50, 100, 40, 20) == pytest.approx(0.5)
+    assert regret.counterfactual_value(50, 100, 10, 20) == pytest.approx(0.25)
+    assert regret.counterfactual_value(100, 50, 40, 20) == 1.0  # the chosen arm is the best
+    assert regret.counterfactual_value(0, 0, 40, 20) == 0.0
+    assert regret.counterfactual_value(10, 20, 10, 0) == pytest.approx(0.5)  # R <= 0: no horizon
+    from token_sparen.estimate import Prices
+
+    p = Prices()
+    assert regret.cost_weight(100, 3, p) == pytest.approx(100 * (1.25 + 0.1 * 3))
+
+
+def test_counterfactual_reward_uses_best_arm(tmp_path: Path) -> None:
+    # aggressive removes the most on this output: it is the best arm, so it earns
+    # min(1, resends / R) = 1 (10 default resends, horizon 10); a lighter arm earns its share
+    best = _compress_reward(
+        tmp_path / "a", "aggressive", "counterfactual", LEARN__RESEND_HORIZON="10"
+    )
+    assert best == pytest.approx(1.0)
+    light = _compress_reward(tmp_path / "l", "light", "counterfactual", LEARN__RESEND_HORIZON="10")
+    assert 0.0 < light < 1.0
+    # the default horizon 20 halves it at the default 10 resends
+    half = _compress_reward(tmp_path / "h", "aggressive", "counterfactual")
+    assert half == pytest.approx(0.5)
+
+
+def test_counterfactual_extra_work_only_when_selected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from token_sparen.mechanisms import compression
+
+    calls: list[int] = []
+    real = compression.pick_candidate
+
+    def spy(*a: Any, **k: Any) -> Any:
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(compression, "pick_candidate", spy)
+    _compress_reward(tmp_path / "s", "standard", None)
+    assert len(calls) == 1
+    calls.clear()
+    _compress_reward(tmp_path / "c", "standard", "counterfactual")
+    assert len(calls) == 3  # the chosen arm plus the two other trimming arms
+
+
+def test_ladder_retry_off_by_default_and_reopens_when_set(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    ctx = _ctx(home)
+    # off (default): a cold bucket only ever offers the first arm, and nothing extra is stored
+    eng = _engine(home)
+    arms = Counter(eng.decide(COMPRESSION, FULL, ctx).arm for _ in range(200))
+    assert set(arms) <= {"off", "light"}
+    assert eng.eligible(COMPRESSION, FULL) == ["light"]
+    assert set(_pending_doc(home)) == {"pending"}
+    # on: after 3 decisions with standard locked, the 4th re-opens it for probing (one decision)
+    home2 = tmp_path / "h2"
+    eng = _engine(home2, extra={"learn": {"ladder_retry_decisions": 3}})
+    ctx2 = _ctx(home2)
+    seen: list[list[str]] = []
+    for _ in range(8):
+        seen.append(eng.eligible(COMPRESSION, FULL))
+        d = eng.decide(COMPRESSION, FULL, ctx2)
+        # the logged propensity is the exact one of the ladder state the draw used
+        assert 1e-3 <= d.propensity <= 1.0
+    assert seen == [["light"]] * 3 + [["light", "standard"]] + [["light"]] * 3 + [
+        ["light", "standard"]
+    ]
+    # exact propensities while re-opened: standard can win and the arms sum to 1
+    for _ in range(3):
+        eng.decide(COMPRESSION, FULL, ctx2)
+    assert eng.eligible(COMPRESSION, FULL) == ["light", "standard"]
+    probs = eng.action_probs(COMPRESSION, FULL)
+    assert probs["standard"] > 0.0 and probs["aggressive"] == 0.0
+    assert sum(probs.values()) == pytest.approx(1.0, abs=1e-6)
+    # a known-risky next-safer arm is never re-opened (only a not-yet-established one)
+    home3 = tmp_path / "h3"
+    _project(home3, {"compression": {FULL_KEY: {"light": _reg_only(0.3, 50)}}})
+    eng = _engine(home3, extra={"learn": {"ladder_retry_decisions": 1}})
+    for _ in range(5):
+        eng.decide(COMPRESSION, FULL, _ctx(home3))
+        assert eng.eligible(COMPRESSION, FULL) == ["light"]

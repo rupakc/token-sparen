@@ -387,6 +387,25 @@ exploration and the pruning breaker equivalent; §7.7 the fingerprint definition
 normalised error line, or the failing-test-set hash) replaces "token shingles". §6.9 is
 brought in line too (fixed per-kind templates instead of a verb set, Task 25).
 
+**2026-11-27 (M4, Task 6: engine options, default off).** The §7.2–§7.6 M4 items are built as
+options that leave current behaviour unchanged until an evidence-based tuning run selects them
+(all user-only): `[learn] savings_reward` = `scaled` (current) | `fraction` (`removed / before`)
+| `counterfactual` (`removed / max_removed` over the point's trimming arms on the same output, x
+`min(1, resends / R)`, `R = learn.resend_horizon` = 20; the other arms are compressed only when
+selected; admissible only while `tests/perf/test_counterfactual_reward.py` keeps the PostToolUse
+p95 < 50 ms, which it does) | `cost` (`removed x (cache_write + cache_read x resends)` with
+`estimate.Prices`, normalised by its own per-bucket p95). `[learn] ladder_retry_decisions` (0 =
+off): after N decisions of a bucket whose next harsher arm is locked only because the safer arm
+is unestablished (never when it is known risky), the ladder re-opens it for one decision; the
+count lives in the session's pending sidecar and the draw and its exact propensity use the same
+ladder state. `[guards] pretrim_bounded_keep_ratio` (0.35 = the standard arm's keep ratio, the
+previous behaviour; project may only raise it, floored at the trusted value).
+`overlay.fold(mine_facts=, prune=)` lets a simulation fold engine evidence only. Correctness fix,
+on: the `band` feature's window is the statusline/env/model-table window when one applies, else
+the reported model window (`[1m]` marker in the hook-input or transcript model id → 1M) or, when a
+call exceeds 200k but not 1M, 1M (it read `unk` before); otherwise unchanged. The governor's
+advisories keep their window.
+
 ---
 
 ## 1. Intent and why

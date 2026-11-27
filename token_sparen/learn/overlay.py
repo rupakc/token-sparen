@@ -382,11 +382,16 @@ def fold(
     now: float | None = None,
     lock_timeout: float | None = None,
     prune_apply: bool = False,
+    mine_facts: bool = True,
+    prune: bool = True,
 ) -> FoldReport:
     """Fold one session (see the module docstring). Raises only ``jsonstore.StoreBusy`` (a lock
     could not be taken; nothing is lost, retry later); every other failure is logged.
     ``prune_apply``: the detached SessionEnd fold of this session, the only fold that writes new
-    deny rules (tool pruning); any other fold leaves them ``pending``."""
+    deny rules (tool pruning); any other fold leaves them ``pending``. ``mine_facts`` /
+    ``prune`` false skip the fact miners (and the session's fact lifecycle log) and tool
+    pruning, so an offline simulation folds engine evidence only (posteriors, breaker,
+    pre-trim candidates, outcome backfill)."""
     env = {"TOKEN_SPAREN_HOME": str(home)}
     rep = FoldReport(session_id)
     try:
@@ -398,6 +403,8 @@ def fold(
             time.time() if now is None else now,
             lock_timeout,
             prune_apply,
+            mine_facts,
+            prune,
         )
     except jsonstore.StoreBusy:
         raise
@@ -488,6 +495,8 @@ def _fold(
     now: float,
     timeout: float | None,
     prune_apply: bool = False,
+    mine_facts: bool = True,
+    prune: bool = True,
 ) -> None:
     env = {"TOKEN_SPAREN_HOME": str(home)}
     ov = session.session_path(home, key, rep.session_id)
@@ -518,11 +527,16 @@ def _fold(
         )
         _global(rep, fid, cells, home, key, params, now, cap, env, timeout, natural)
         _pretrim(rep, fid, outcomes, pdir, params, now, env, timeout)
-        mined = _mine_facts(rep.session_id, fid, staged, pdir, now, env, timeout, params)
-        rep.facts = max(0, mined)
-        rep.pruned = _prune(
-            fid, staged, home, key, params, env, timeout, apply=prune_apply, sid=rep.session_id
+        mined = (
+            _mine_facts(rep.session_id, fid, staged, pdir, now, env, timeout, params)
+            if mine_facts
+            else 0
         )
+        rep.facts = max(0, mined)
+        if prune:
+            rep.pruned = _prune(
+                fid, staged, home, key, params, env, timeout, apply=prune_apply, sid=rep.session_id
+            )
         rep.backfilled = _backfill(staged.get("outcomes"), pdir, params, env)
 
         # Clear and un-index under one overlay lock: a hook that adds evidence either ran

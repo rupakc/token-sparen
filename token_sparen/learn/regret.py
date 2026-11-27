@@ -35,9 +35,14 @@ and rewrites the overlay several times, so a large table there made each hook's 
 session (CI perf: p95 160 ms). Only this module reads the sidecar; a change takes the sidecar lock,
 then (separately, never nested) the overlay lock for outcomes, ledger counters and read de-dupe.
 
-Savings at decision time: ``min(1, removed * expected_resends / p95)`` with the p95 of the last
-64 values of ``removed * expected_resends`` per (point, bucket) in the project store
-(``savings_scale.json``); the first observation of a bucket is worth 0.5.
+Savings at decision time (``[learn] savings_reward``, ``savings_mode``): ``"scaled"`` (default)
+``min(1, removed * expected_resends / p95)`` with the p95 of the last 64 values of
+``removed * expected_resends`` per (point, bucket) in the project store (``savings_scale.json``);
+the first observation of a bucket is worth 0.5. M4 options, default off: ``"fraction"``
+``removed / before``; ``"counterfactual"`` ``removed / max removed`` over the point's trimming arms
+on the same output, times ``min(1, resends / learn.resend_horizon)`` (the caller computes the
+other arms lazily, only in this mode); ``"cost"`` the cache-weighted cost removed
+(``removed * (cache_write + cache_read * resends)``, ``estimate.Prices``) scaled by its own p95.
 """
 
 from __future__ import annotations
@@ -57,7 +62,7 @@ from typing import Any
 
 from token_sparen import recovery
 from token_sparen.config import Config, log_error, state_home
-from token_sparen.estimate import estimate_tokens
+from token_sparen.estimate import Prices, estimate_tokens
 from token_sparen.events import Action, Event, SessionCtx
 from token_sparen.learn import decisions, pending
 from token_sparen.store import jsonstore, paths, session
@@ -1140,6 +1145,49 @@ def _scale_values(raw: Any) -> list[float]:
     ]
 
 
+SAVINGS_MODES = ("scaled", "fraction", "counterfactual", "cost")
+RESEND_HORIZON = 20.0
+COST_SUFFIX = "@cost"  # the cost mode's p95 window is kept apart from the scaled one
+
+
+def savings_mode(cfg: Config | None) -> str:
+    """``[learn] savings_reward``; ``"scaled"`` when unset or not a known mode."""
+    raw = None if cfg is None else cfg.get("learn.savings_reward")
+    return raw if isinstance(raw, str) and raw in SAVINGS_MODES else "scaled"
+
+
+def fraction_value(removed: float, before: float) -> float:
+    """``removed / before`` clamped to [0, 1]; 0 without a positive ``before``."""
+    if before <= 0.0 or not math.isfinite(before) or not math.isfinite(removed):
+        return 0.0
+    return min(1.0, max(0.0, removed / before))
+
+
+def counterfactual_value(
+    removed: float, max_removed: float, resends: float, horizon: float
+) -> float:
+    """``removed / max(removed, max_removed)`` times ``min(1, resends / horizon)`` (no horizon
+    factor when ``horizon <= 0``); 0 when nothing was removed."""
+    best = max(float(removed), float(max_removed))
+    if removed <= 0.0 or not math.isfinite(best):
+        return 0.0
+    factor = 1.0 if horizon <= 0.0 else min(1.0, max(0.0, resends) / horizon)
+    return min(1.0, max(0.0, removed / best * factor))
+
+
+def cost_weight(removed: float, resends: float, prices: Prices) -> float:
+    """Cache-weighted cost of ``removed`` tokens: written to the prompt cache once, then read
+    from it on each of ``resends`` later calls."""
+    return max(0.0, float(removed)) * (prices.cache_write + prices.cache_read * max(1.0, resends))
+
+
+def _num_param(cfg: Config | None, key: str, default: float) -> float:
+    raw = None if cfg is None else cfg.get(key)
+    if isinstance(raw, bool) or not isinstance(raw, int | float) or not math.isfinite(raw):
+        return default
+    return float(raw)
+
+
 def savings_value(
     home: Path,
     project_key: str,
@@ -1148,10 +1196,13 @@ def savings_value(
     removed: float,
     resends: float,
     env: Mapping[str, str] | None = None,
+    *,
+    weight: float | None = None,
 ) -> float:
     """``min(1, removed * resends / p95)`` over the bucket's last 64 values (this one
-    included); 0.5 for a bucket's first observation, 0 when nothing was removed."""
-    x = max(0.0, float(removed)) * max(1.0, float(resends))
+    included); 0.5 for a bucket's first observation, 0 when nothing was removed. ``weight``
+    replaces ``removed * resends`` (the cost mode)."""
+    x = max(0.0, float(removed)) * max(1.0, float(resends)) if weight is None else weight
     if x <= 0.0:
         return 0.0
     out = {"v": SCALE_FIRST}
@@ -1186,13 +1237,32 @@ def reward_savings(
     home: Path,
     project_key: str,
     env: Mapping[str, str],
+    cfg: Config | None = None,
+    before: float | None = None,
+    max_removed: Callable[[], float] | None = None,
 ) -> None:
-    """Savings reward at decision time, only for a learning policy. Never raises."""
+    """Savings reward at decision time, only for a learning policy (``savings_mode`` of
+    ``cfg``). ``before``: the output's tokens (fraction mode); ``max_removed``: the largest
+    removal over the point's trimming arms on the same output, called only in the
+    counterfactual mode (missing: this decision's own removal is the best). Never raises."""
     fn = reward_fn(policy)
     if fn is None:
         return
     try:
-        value = savings_value(home, project_key, point, bucket, removed, resends, env)
+        mode = savings_mode(cfg)
+        if mode == "fraction":
+            value = fraction_value(removed, float(before) if before is not None else 0.0)
+        elif mode == "counterfactual":
+            best = max_removed() if max_removed is not None and removed > 0 else removed
+            horizon = _num_param(cfg, "learn.resend_horizon", RESEND_HORIZON)
+            value = counterfactual_value(removed, best, resends, horizon)
+        elif mode == "cost":
+            weight = cost_weight(removed, resends, Prices.load(cfg))
+            value = savings_value(
+                home, project_key, point + COST_SUFFIX, bucket, removed, resends, env, weight=weight
+            )
+        else:
+            value = savings_value(home, project_key, point, bucket, removed, resends, env)
         fn(decision_id, value, None)
     except Exception as exc:  # noqa: BLE001 - fail open
         log_error(env, "regret", f"savings: {type(exc).__name__}: {exc}")

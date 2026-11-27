@@ -444,6 +444,31 @@ def handle_post_tool(
     _count_trim(overlay_file, before - after, env)
     _log_decision(event, cfg, env, decision, ctype, before, after, ref.id, tokens_full)
     _learn(event, policy, cfg, env, decision, point, sctx, ref.id, chosen_source, body, ctype)
+
+    def max_removed() -> float:
+        """Counterfactual mode only: the largest removal over the point's trimming arms on this
+        output (the chosen arm's actual removal included)."""
+        best = float(before - after)
+        if point is not COMPRESSION:
+            return best  # the pre-trim point has one trimming arm
+        for arm in COMPRESSION.arms:
+            if arm in (COMPRESSION.safe_arm, decision.arm):
+                continue
+            other = pick_candidate(
+                full,
+                preview,
+                load_level(cfg, arm),
+                compressor,
+                ctx,
+                cfg,
+                est,
+                before,
+                event.project_dir,
+            )
+            if other is not None:
+                best = max(best, float(before - other.tokens_after))
+        return best
+
     regret.reward_savings(
         policy,
         decision.decision_id,
@@ -454,6 +479,9 @@ def handle_post_tool(
         home=home,
         project_key=event.project_key,
         env=env,
+        cfg=cfg,
+        before=before,
+        max_removed=max_removed,
     )
     return Action(replace_output=body)
 

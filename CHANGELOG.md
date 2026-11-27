@@ -10,6 +10,25 @@ Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones 
 and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`
 for M3); the package version stays `0.1.0.dev0` until v1.0.
 
+### M4 engine options (default off)
+
+- `[learn] savings_reward`: `"scaled"` (default, unchanged), `"fraction"` (removed / output
+  tokens), `"counterfactual"` (removed / the largest removal over the point's trimming arms on
+  the same output, times `min(1, resends / learn.resend_horizon)`, default horizon 20; the other
+  arms are compressed only in this mode, hook p95 gated by `tests/perf/test_counterfactual_reward.py`)
+  and `"cost"` (cache-weighted cost removed with the `[pricing]` ratios, scaled by its own p95).
+- `[learn] ladder_retry_decisions` (default 0 = off): after N decisions of a bucket whose next
+  harsher arm is locked only because the safer arm is not yet established, that arm competes
+  for one decision; the logged propensity stays exact.
+- `[guards] pretrim_bounded_keep_ratio` (default 0.35 = follow the standard arm's keep ratio, as
+  before); a project may only raise it, and never below the user's own ratio.
+- `overlay.fold(..., mine_facts=True, prune=True)`: false folds engine evidence only (offline
+  simulation).
+- Fix (on by default): the `band` feature divides by the reported context window. Without the
+  statusline sensor, a model id with the `[1m]` marker (hook input or transcript) or a call
+  larger than 200k tokens now means a 1M window, so a 1M-context session is no longer banded
+  `unk` (or too full); replay uses the same window.
+
 ### M4 E1 at real-data scale
 
 - `token-sparen replay` runs in parallel and resumes: `--jobs N` (one project group per worker

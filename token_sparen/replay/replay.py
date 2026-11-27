@@ -733,7 +733,9 @@ class _Session:
     def _ctx_pct(self) -> float | None:
         if self.ctx_tokens is None:
             return None
-        window = governor.resolve_window(self.cfg, os.environ, "replay", self.model)
+        window = governor.band_window(
+            self.cfg, os.environ, "replay", (self.model,), self.ctx_tokens
+        )  # the hook's band window (a 1M-context session is not mis-banded)
         return self.ctx_tokens / window if window > 0 else None
 
     def _replay(

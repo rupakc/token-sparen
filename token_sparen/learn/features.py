@@ -35,6 +35,41 @@ FEATURE_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Claude context windows: 200k standard, 1M for a model id with the "[1m]" marker (as Claude
+# Code reports the model in hook input and settings).
+WINDOW_200K = 200_000
+WINDOW_1M = 1_000_000
+_ONE_M_MARK = "[1m]"
+
+
+def reported_window(model: str | None) -> int | None:
+    """The window a model id reports: 1M with the ``[1m]`` marker (any case), else None."""
+    if isinstance(model, str) and _ONE_M_MARK in model.lower():
+        return WINDOW_1M
+    return None
+
+
+def band_window(
+    resolved: int, authoritative: bool, models: Sequence[str | None], last_ctx: int
+) -> int:
+    """The window the ``band`` feature divides by (spec 7.2; M4 correctness fix).
+
+    ``resolved`` is the governor's window; ``authoritative`` when it came from the statusline
+    sensor, ``CLAUDE_CODE_MAX_CONTEXT_TOKENS`` or a model-table match (then it is used as is).
+    Otherwise the reported model ids (hook input, transcript) decide 1M vs 200k, and a call
+    larger than ``resolved`` but within 1M proves a 1M window (it used to read ``unk``). Unknown
+    otherwise: ``resolved``, as before."""
+    if authoritative:
+        return resolved
+    for model in models:
+        got = reported_window(model)
+        if got is not None:
+            return got
+    if resolved < last_ctx <= WINDOW_1M:
+        return WINDOW_1M
+    return resolved
+
+
 def band(ctx_pct: float | None) -> str:
     """Context fill band; ``ctx_pct`` is a fraction of the window (0.5 == 50 %)."""
     if ctx_pct is None:

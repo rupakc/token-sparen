@@ -626,5 +626,11 @@ def test_ctx_pct_from_cache_for_the_band_feature(tmp_path: Path) -> None:
 
 def test_ctx_pct_unknown_when_the_window_is_wrong(tmp_path: Path) -> None:
     cfg, env = _cfg(tmp_path), _env(tmp_path)
-    overlay = {"governor": {"last_ctx": 900_000}}  # larger than the resolved 200k window
+    # larger than the resolved 200k window: a 1M window (M4 fix; it used to read unknown)
+    overlay = {"governor": {"last_ctx": 900_000}}
+    assert governor.ctx_pct(overlay, cfg, env, "s-1") == pytest.approx(0.9)
+    overlay = {"governor": {"last_ctx": 1_200_000}}  # larger than any known window
+    assert governor.ctx_pct(overlay, cfg, env, "s-1") is None
+    cfg.data["governor"]["windows"] = {"default": 200_000, "m*": 100_000}  # a table match binds
+    overlay = {"governor": {"last_ctx": 150_000, "model": "m1"}}
     assert governor.ctx_pct(overlay, cfg, env, "s-1") is None

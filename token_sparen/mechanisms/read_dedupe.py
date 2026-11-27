@@ -226,6 +226,8 @@ def handle_post_tool(
         home=state_home(env),
         project_key=event.project_key,
         env=env,
+        cfg=cfg,
+        before=before,
     )
     return Action(replace_output=pointer)
 

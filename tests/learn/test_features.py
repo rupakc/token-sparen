@@ -244,3 +244,40 @@ def test_feature_values_are_sanitised(tmp_path: Path) -> None:
     key = features.bucket_key(f, list(features.FEATURE_KEYS["compression"]))
     assert "ctype=ext_type_x" in key
     assert features.for_point(PRETRIM, _event(tmp_path), _ctx(tmp_path), "a=b")["ctype"] == "a_b"
+
+
+# --- M4 Task 6: the band uses the reported context window ---------------------------------
+
+
+def test_window_band_uses_reported_window(tmp_path: Path) -> None:
+    from token_sparen.config import load_config
+    from token_sparen.mechanisms import governor
+
+    assert features.reported_window("claude-sonnet-4-5[1m]") == features.WINDOW_1M
+    assert features.reported_window("CLAUDE-OPUS-4-6[1M]") == features.WINDOW_1M
+    assert features.reported_window("claude-sonnet-4-5") is None
+    assert features.reported_window(None) is None
+    # pure: an authoritative window (statusline, env, table match) always wins
+    assert features.band_window(500_000, True, ["x[1m]"], 900_000) == 500_000
+    # defaulted: the reported model id, else a call larger than 200k proves a 1M window
+    assert features.band_window(200_000, False, [None, "m[1m]"], 10_000) == features.WINDOW_1M
+    assert features.band_window(200_000, False, ["m"], 300_000) == features.WINDOW_1M
+    assert features.band_window(200_000, False, ["m"], 150_000) == 200_000  # unknown: as before
+    assert features.band_window(200_000, False, ["m"], 2_000_000) == 200_000  # beyond any window
+
+    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
+    cfg = load_config(tmp_path / "proj", env)
+    # a 1M-context session without the statusline sensor, previously mis-banded ``unk``
+    overlay = {"governor": {"last_ctx": 300_000, "model": "claude-sonnet-4-5"}}
+    pct = governor.ctx_pct(overlay, cfg, env, "s-1")
+    assert pct == pytest.approx(0.3)
+    assert features.band(pct) == "lt50"
+    # ... and one whose hook-reported model id carries the 1M marker (previously 75 % full)
+    overlay = {"governor": {"last_ctx": 150_000, "model": "claude-sonnet-4-5"}}
+    assert governor.ctx_pct(overlay, cfg, env, "s-1") == pytest.approx(0.75)  # unknown: as before
+    pct = governor.ctx_pct(overlay, cfg, env, "s-1", model="claude-sonnet-4-5[1m]")
+    assert pct == pytest.approx(0.15)
+    # the statusline-recorded window stays authoritative
+    (tmp_path / "home").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "home" / "windows.json").write_text('{"s-1": {"window": 200000}}', "utf-8")
+    assert governor.ctx_pct(overlay, cfg, env, "s-1", model="x[1m]") == pytest.approx(0.75)

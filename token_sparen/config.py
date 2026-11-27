@@ -405,6 +405,7 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     (("guards", "max_read_bytes"), "max", POSITIVE),
     (("guards", "pretrim_lines"), "user_only", None),  # same displacement as head/tail
     (("guards", "pretrim_head"), "user_only", None),
+    (("guards", "pretrim_bounded_keep_ratio"), "max", RATIO),  # bounded pre-trim keeps more
     # read de-dupe: fewer pointers
     (("read_dedupe", "enabled"), "false_only", None),
     (("read_dedupe", "min_tokens"), "max", COUNT),

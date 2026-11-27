@@ -79,6 +79,10 @@ max_read_bytes = 5000000  # cat/Read of a larger text file without a range is bl
 # tail-biased level (head = pretrim_head, tail = K, standard keep_ratio); never a shell rewrite.
 pretrim_lines = 120  # K when a candidate names none
 pretrim_head = 10
+# Keep ratio of the bounded pre-trim arm (M4 tuning knob). 0.35, the packaged default, means
+# "the standard arm's keep_ratio", which is the pre-M4 behaviour; any other value in [0, 1] is used
+# as is. A project may only raise it (keep more).
+pretrim_bounded_keep_ratio = 0.35
 
 [read_dedupe]
 enabled = true
@@ -154,6 +158,17 @@ pretrim_min_decisions = 5  # a command becomes a pre-trim candidate after >= N t
 pretrim_max_ratio = 0.4  # ... with mean tokens_after / tokens_before <= this and no regret ever
 pretrim_lines = 120  # tail lines kept for a new candidate
 pretrim_max = 200  # candidates kept per project (least recently seen dropped)
+# M4 options, all off by default (current behaviour) until an evidence-based tuning run selects
+# them; user-only (never from a project's token-sparen.toml).
+savings_reward = "scaled"  # savings reward at decision time: "scaled" = min(1, removed x resends /
+# p95 of the bucket); "fraction" = removed / output tokens; "counterfactual" = removed / max removed
+# over the point's trimming arms on the same output x min(1, resends / resend_horizon) (compresses
+# the output once per arm: hook p95 gated by tests/perf/test_counterfactual_reward.py); "cost" =
+# cache-weighted cost removed (pricing.cache_write + pricing.cache_read x resends) / its p95
+resend_horizon = 20  # R of the counterfactual reward: resends at which a removal counts in full
+ladder_retry_decisions = 0  # 0 = off. N > 0: after N decisions of a bucket with the next harsher
+# arm locked only because the safer arm is not yet established (too few observations, regret
+# mean <= tau), that arm competes for one decision (probe), then the count restarts
 
 # Regret target per tier: a trimming arm is feasible only if its sampled regret is <= tau
 # (high tier additionally needs its regret 95 % upper bound <= tau).

@@ -16,6 +16,10 @@ propensity is exact (``learn.propensity``: numerical integral of the win probabi
 the floor, so off-policy estimates stay unbiased. Decision ids are uuid4. Rewards update only
 the session overlay (``evidence``); ``learn.overlay.fold`` merges them into the project store.
 Decisions awaiting a reward live in a sidecar (``pending_path``), not in the overlay.
+M4 option ``[learn] ladder_retry_decisions`` (0 = off, today's behaviour): after that many
+decisions of a bucket whose next harsher arm is locked only because the safer arm is not yet
+established, the ladder re-opens that arm for one decision (a probe; counts in the pending
+sidecar, per session); the draw and its exact propensity use the same ladder state.
 A point paused by the project's circuit breaker (``learn.breaker``) gets the safe arm with
 propensity 1. The engine never raises into a hook: on any error it logs and returns the safe
 arm, propensity 1.0, bucket ``error``.
@@ -57,6 +61,7 @@ from token_sparen.store import jsonstore, session
 
 ERROR_BUCKET = "error"
 PENDING_KEY = "pending"
+LADDER_WAIT_KEY = "ladder_wait"  # pending sidecar: {point: {bucket: decisions since locked}}
 HIGH_UCB_Q = 0.95
 GATE_Q = 0.9  # natural-rate gate: lcb_0.9(arm savings) > ucb_0.9(natural rate)
 MIN_PROPENSITY = 1e-3
@@ -124,6 +129,10 @@ class Engine:
         self._static = static_policy(cfg.data)
         self._points: dict[str, DecisionPoint] = {}
         self.last_explored = False  # the last ``choose`` took a gated point's exploration branch
+        # ladder retry (``[learn] ladder_retry_decisions``, off by default): the counts read once
+        # from the pending sidecar, and the ladder state of the last ``_ladder`` call
+        self._waits: dict[str, Any] | None = None
+        self._last_lock: tuple[str, str, str] | None = None  # (point, bucket, locked|reopened)
         self._overlay: Path | None = (
             None
             if stores.session_id is None
@@ -202,14 +211,40 @@ class Engine:
         need = self._param(("ladder_obs",), 20.0)
         out: list[str] = []
         prev: str | None = None
+        locked: str | None = None
         for arm in posts:
             if prev is not None and not (
                 posts[prev][1].mean <= tau and self._established_n(point, features, prev) >= need
             ):
+                # retry only while the safer arm is merely unestablished, never known risky
+                locked = arm if posts[prev][1].mean <= tau else None
                 break
             out.append(arm)
             prev = arm
+        self._last_lock = None
+        retry = self._param(("ladder_retry_decisions",), 0.0)
+        if retry > 0 and locked is not None:
+            bucket = self.bucket(point, features)
+            if self._wait(point.name, bucket) >= retry:
+                out.append(locked)  # probe the next harsher arm for this one decision
+                self._last_lock = (point.name, bucket, "reopened")
+            else:
+                self._last_lock = (point.name, bucket, "locked")
         return out
+
+    def _wait(self, point: str, bucket: str) -> int:
+        """Decisions of ``(point, bucket)`` since its next harsher arm was locked (or last
+        re-opened), from the pending sidecar (read once per engine)."""
+        if self._waits is None:
+            self._waits = {}
+            if self._overlay is not None:
+                doc = jsonstore.read(pending_path(self._overlay), {}, self._env)
+                table = doc.get(LADDER_WAIT_KEY) if isinstance(doc, dict) else None
+                if isinstance(table, dict):
+                    self._waits = table
+        row = self._waits.get(point)
+        n = row.get(bucket) if isinstance(row, dict) else None
+        return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 0
 
     def eligible(self, point: DecisionPoint, features: Mapping[str, str]) -> list[str]:
         """Trimming arms allowed to compete (ladder, then the high-tier opt-in and ucb gate)."""
@@ -330,6 +365,7 @@ class Engine:
         """One draw ``(arm, logged propensity)`` with no side effects (no pending entry, no
         store write): ``decide`` uses it, and offline replay uses it as a frozen snapshot."""
         self.last_explored = False
+        self._last_lock = None
         if self.stores.tripped(point.name):
             return point.safe_arm, 1.0  # circuit breaker: paused for this project
         cands, explore = self._arms(point, features)
@@ -366,16 +402,26 @@ class Engine:
         bucket = self.bucket(point, features)
         decision_id = uuid.uuid4().hex
         arm, p = self.choose(point, features)
+        lock = self._last_lock
         self._points[point.name] = point
         if self._overlay is None:
             self._overlay = ctx.overlay_path
         try:
-            self._remember(decision_id, point.name, bucket, arm)
+            self._remember(decision_id, point.name, bucket, arm, lock)
         except Exception as exc:  # noqa: BLE001 - the decision stands; it just cannot be rewarded
             log_error(self._env, "engine", f"pending: {type(exc).__name__}: {exc}")
         return Decision(decision_id, point.name, arm, p, bucket)
 
-    def _remember(self, decision_id: str, point: str, bucket: str, arm: str) -> None:
+    def _remember(
+        self,
+        decision_id: str,
+        point: str,
+        bucket: str,
+        arm: str,
+        lock: tuple[str, str, str] | None = None,
+    ) -> None:
+        """Add the pending entry; with the ladder retry on (``lock`` set) also count the
+        decision toward re-opening the locked arm, or restart the count after a probe."""
         assert self._overlay is not None
         keep = max(1, int(self._param(("pending_max",), 500.0)))
         entry = [point, bucket, arm, time.time()]
@@ -389,6 +435,17 @@ class Engine:
             for old in list(pending)[: max(0, len(pending) - keep)]:
                 del pending[old]
             state[PENDING_KEY] = pending
+            if lock is not None:
+                waits = state.get(LADDER_WAIT_KEY)
+                waits = waits if isinstance(waits, dict) else {}
+                row = waits.get(lock[0])
+                row = row if isinstance(row, dict) else {}
+                n = row.get(lock[1])
+                n = n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 0
+                row[lock[1]] = 0 if lock[2] == "reopened" else n + 1
+                waits[lock[0]] = row
+                state[LADDER_WAIT_KEY] = waits
+                self._waits = waits  # this engine's later decisions see the new count
             return state
 
         jsonstore.update(pending_path(self._overlay), fn, {}, self._env)
