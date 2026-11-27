@@ -108,7 +108,7 @@ generically. `python scripts/check_denylist.py` runs in CI and must pass locally
 4. `drift-checker` compares code to spec and reports divergences with file:line.
 5. Self-review the diff and run `code-review` before pushing.
 
-Other skills: `add-compressor`, `run-evals`, `hill-climb`, `release`.
+Other skills: `add-compressor`, `run-evals`, `hill-climb`, `release` (see `docs/release/runbook.md`; `docs/user` is the single docs source, `release/claude` the install branch).
 Agents: `goldfish-reviewer`, `drift-checker`, `compressor-author`, `eval-hillclimber`,
 `bench-runner`, `host-adapter-author`.
 
