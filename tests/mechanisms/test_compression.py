@@ -309,6 +309,27 @@ def test_persisted_falls_back_to_compressing_preview(tmp_path: Path) -> None:
     assert _overlay(tmp_path)["tokens_removed"] == rec["tokens_before"] - rec["tokens_after"]
 
 
+def test_preview_fallback_marker_counts_the_full_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    preview = big_pytest(30_000)
+    full = preview + "\n" + _generic(400_000)
+    saved = tmp_path / "persisted.txt"
+    saved.write_text(full, encoding="utf-8")
+    real = compression.pick_candidate
+
+    def preview_only(full_text: str | None, *args: Any) -> Any:
+        return real(None, *args)  # as when the full output's candidate is too long
+
+    monkeypatch.setattr(compression, "pick_candidate", preview_only)
+    act = _handle(tmp_path, _bash(tmp_path, preview, persistedOutputPath=str(saved)))
+    assert act.replace_output is not None
+    m = re.search(r"kept (\d+) of (\d+) lines", act.replace_output.splitlines()[-1])
+    assert m is not None
+    assert int(m.group(2)) == len(full.split("\n"))  # not the preview's line count
+    assert len(act.replace_output) <= len(preview)
+
+
 def test_persisted_log_compresses_with_preview_accounting(tmp_path: Path) -> None:
     full = big_pytest(80_000)
     saved = tmp_path / "persisted.txt"

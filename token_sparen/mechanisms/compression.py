@@ -430,7 +430,12 @@ def handle_post_tool(
         log_error(env, "compression", "save deadline exceeded; output left untouched")
         return no_op()
     ref = recovery.save_full(event.project_dir, full if full is not None else preview)
-    body = f"{chosen.text}\n{recovery.marker(chosen.kept_lines, chosen.total_lines, ref)}"
+    total = chosen.total_lines
+    if full is not None and chosen_source is not full:
+        # the preview was trimmed but the recovery file holds the full output: count its lines,
+        # so the marker does not understate what was left out
+        total = max(total, full.count("\n") + (0 if full.endswith("\n") else 1))
+    body = f"{chosen.text}\n{recovery.marker(chosen.kept_lines, total, ref)}"
     if len(body) > len(preview):  # hard invariant: never more than the model would have seen
         log_error(env, "compression", "replacement longer than preview; output left untouched")
         return no_op()
