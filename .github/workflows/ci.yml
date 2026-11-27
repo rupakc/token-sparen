@@ -114,6 +114,8 @@ jobs:
       # Build only (into a temporary directory); deployment is docs.yml, from release tags.
       - run: python scripts/build_site.py --out "$RUNNER_TEMP/_site"
       - run: pytest --no-cov tests/test_build_site.py
+        env:
+          TOKEN_SPAREN_REQUIRE_DOCS: "1"  # a missing Markdown install must fail
 
   supply-chain:
     runs-on: ubuntu-latest
