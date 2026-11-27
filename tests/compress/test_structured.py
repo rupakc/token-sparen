@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from perfutil import best_within, perf_factor
 
 from token_sparen.compress import (
     CompressContext,
@@ -122,6 +123,41 @@ def test_json_duplicate_keys_fall_back_to_text() -> None:
     doc = '{"a": 1, "a": 2, ' + ", ".join(f'"k{i}": {i}' for i in range(80)) + "}"
     want = TextCompressor().compress(doc, STANDARD, NO_CTX)
     assert JsonCompressor().compress(doc, STANDARD, NO_CTX) == want
+
+
+@pytest.mark.parametrize(
+    "dup",
+    [
+        '{"a": "x:y", "a": "z"}',  # ':' inside a string: the colon count alone cannot tell
+        '{"a:b": 1, "a:b": 2}',  # ':' inside the repeated key
+        '{"a": "\\u003a", "a": 2}',  # escaped ':' hides from the count: a strict parse decides
+        '{"a": "\\u003A", "a": 2, "t": "1:2"}',
+        '[{"n": {"a" : 1, "a":2}}, "x:"]',  # nested, spaced
+    ],
+)
+def test_json_duplicate_keys_found_on_every_path(dup: str) -> None:
+    doc = "[" + dup + ", " + ", ".join(f'{{"k": "t{i}:00"}}' for i in range(80)) + "]"
+    want = TextCompressor().compress(doc, STANDARD, NO_CTX)
+    assert JsonCompressor().compress(doc, STANDARD, NO_CTX) == want
+
+
+@pytest.mark.parametrize(
+    "ok",
+    ['{"a": "x:y", "b": "\\u003a"}', '{"a:b": "c:d", "e": ["f:", {"g": ":"}]}', '{"a": "::"}'],
+)
+def test_json_colons_in_strings_are_not_duplicates(ok: str) -> None:
+    doc = "[" + ok + ", " + ", ".join(f'{{"k": "t{i}:00"}}' for i in range(80)) + "]"
+    res = JsonCompressor().compress(doc, STANDARD, NO_CTX)
+    assert res != TextCompressor().compress(doc, STANDARD, NO_CTX)
+    assert "more items" in res.text
+
+
+def test_json_error_key_found_in_repeated_record_shapes() -> None:
+    """Key verdicts are cached per key tuple; a record whose keys differ is still checked."""
+    items = [{"id": i, "v": "x"} for i in range(60)]
+    items.append({"id": 60, "error": "x"})
+    res = JsonCompressor().compress(json.dumps(items), STANDARD, NO_CTX)
+    assert '"error": "x"' in res.text
 
 
 def test_json_deep_nesting_does_not_raise() -> None:
@@ -383,18 +419,12 @@ def test_json_size_cap_delegates_to_text() -> None:
 
 @pytest.mark.perf
 def test_json_2mb_budget() -> None:
-    import os
-    import time
-
-    factor = float(os.environ.get("TOKEN_SPAREN_PERF_FACTOR", "1.0"))
+    budget = 0.25 * perf_factor()
     doc = json.dumps([{"id": i, "v": "x" * 20} for i in range(45000)])
     assert 1_500_000 < len(doc) <= 2_000_000
-    best = float("inf")
-    for _ in range(3):
-        t0 = time.perf_counter()
-        JsonCompressor().compress(doc, STANDARD, NO_CTX)
-        best = min(best, time.perf_counter() - t0)
-    assert best < 0.25 * factor, f"{best * 1000:.0f} ms"
+    best, res = best_within(lambda: JsonCompressor().compress(doc, STANDARD, NO_CTX), budget, 3)
+    assert "more items" in res.text  # the JSON path ran, not the text fallback
+    assert best < budget, f"{best * 1000:.0f} ms"
 
 
 def test_diff_error_context_lines_kept() -> None:

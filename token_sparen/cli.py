@@ -588,8 +588,11 @@ def _round_trip(root: Path) -> tuple[bool, str]:
         # widening settings come from the (temporary) user file: TOKEN_SPAREN_* may only narrow
         private_mkdir(Path(tmp) / "home")
         (Path(tmp) / "home" / "config.toml").write_text(
+            # a pipeline check, not a latency check: on a slow host (a cold Windows start, an
+            # on-access virus scan) the hot-path deadlines must not turn the answer into a no-op
             "[adapter]\nlatency_budget_ms = 5000\n"
-            # a pipeline check: the static arm always compresses, a cold learner may not
+            "[compression]\nsave_deadline_ms = 5000\n"
+            # the static arm always compresses, a cold learner may not
             "[learn]\nenabled = false\n",
             encoding="utf-8",
         )
@@ -606,9 +609,21 @@ def _round_trip(root: Path) -> tuple[bool, str]:
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return False, f"could not run the hook ({type(exc).__name__}: {exc})"
-    if "updatedToolOutput" in proc.stdout and "[token-sparen: kept " in proc.stdout:
-        return True, "synthetic PostToolUse compressed and carried the marker"
-    return False, f"hook output had no updatedToolOutput/marker: {proc.stdout[:120]!r}"
+        if "updatedToolOutput" in proc.stdout and "[token-sparen: kept " in proc.stdout:
+            return True, "synthetic PostToolUse compressed and carried the marker"
+        reason = _last_logged_error(Path(tmp) / "home")
+    detail = f"hook output had no updatedToolOutput/marker: {proc.stdout[:120]!r}"
+    return False, f"{detail} ({reason})" if reason else detail
+
+
+def _last_logged_error(home: Path) -> str:
+    """``where: error`` of the last line in ``home``'s errors log, or "" when there is none."""
+    try:
+        lines = (home / "logs" / "errors.jsonl").read_text(encoding="utf-8").splitlines()
+        rec = json.loads(lines[-1])
+        return f"{rec['where']}: {rec['error']}"[:200]
+    except (OSError, ValueError, IndexError, KeyError, TypeError):
+        return ""
 
 
 def _load_pyfind(root: Path) -> ModuleType | None:
