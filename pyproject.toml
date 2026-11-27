@@ -48,6 +48,7 @@ addopts = '-m "not perf"'
 markers = [
     "perf: strict wall-clock budgets; run with `pytest -m perf --no-cov` (CI job perf)",
     "real_seed: no suite-wide engine seed (tests of hookpolicy.test_seed itself)",
+    # registered here, never in a tests/bench/conftest.py (it would shadow `import conftest`)
     "docker: needs local Docker and the grader venv (bench grading); skipped unless its env vars are set",
 ]
 

@@ -15,8 +15,11 @@ was chosen by the arm64 spike of ruling M5-N3 before any agent run and is record
   (grading only; the dataset keeps its x86_64 ``image`` values).
 
 Grading holds ``<workspace>/bench.lock`` like every container run (one container at a time).
-An instance the harness could not evaluate (image missing, container error, no report) is
-``None``, never ``False``: it is regraded later, not counted as the agent's failure.
+The agent's patch failing to apply or its tests exceeding the timeout is the agent's failure
+(``False``). An instance the environment broke (image missing, container or Docker error,
+out of memory, network, no report) is ``None``, never ``False``: it is regraded, at most
+`MAX_GRADE_ATTEMPTS` times per patch, then left ungradable (dropped and disclosed). The harness
+runs with its HOME and caches in the workspace, and its containers are memory-capped.
 
 `grade_task` runs right after a task's block, while its image is still present (the scheduler
 removes it afterwards); `grade_stage` catches up and regrades harness errors. Both append to
@@ -25,9 +28,10 @@ definite verdict is never graded again. Each batch holds one arm and seed (swebe
 predictions by instance id) and gets a fresh ``run_id``
 (``<campaign>-<stage>-<arm>-s<seed>-b<n>``), so a harness log directory is never reused.
 
-`preflight` grades every task's gold patch twice; a task is ``ok`` only when both passes resolve
-it, else it is excluded with a reason (``build``, ``gold_fail``, ``flaky_gold``,
-``harness_error``), decided before any agent run and disclosed in the report.
+`preflight` grades every task's gold patch twice and a harmless no-op patch once; a task is
+``ok`` only when gold resolves both times and the no-op does not, else it is excluded with a
+reason (``build``, ``gold_fail``, ``flaky_gold``, ``noop_pass``, ``harness_error``), decided
+before any agent run and disclosed in the report.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,13 +59,43 @@ LOCK_TIMEOUT_S = 6 * 3600.0  # a run in progress holds it for at most its wall t
 V4_MODULE = "swebench.harness.run_evaluation"
 LOG_DIR = Path("logs") / "run_evaluation"  # relative to the harness's working directory
 GOLD_MODEL = "gold"
+NOOP_MODEL = "noop"
+# A harmless patch that applies to every repository and changes no code: one new text file.
+# swebench short-circuits an empty patch, so the no-op check needs a real one.
+NOOP_PATCH = (
+    "diff --git a/.tsb_preflight_noop.txt b/.tsb_preflight_noop.txt\n"
+    "new file mode 100644\n"
+    "--- /dev/null\n"
+    "+++ b/.tsb_preflight_noop.txt\n"
+    "@@ -0,0 +1 @@\n"
+    "+# token-sparen bench preflight: a no-op patch must not resolve the task\n"
+)
 
 GradeMode = Literal["swebench5-arm64", "swebench-pinned-arm64", "amd64-emulation"]
 GRADE_MODES: tuple[str, ...] = get_args(GradeMode)
 PreflightStatus = Literal["ok", "excluded"]
-ExclusionReason = Literal["build", "gold_fail", "flaky_gold", "harness_error"]
+ExclusionReason = Literal["build", "gold_fail", "flaky_gold", "noop_pass", "harness_error"]
+MAX_GRADE_ATTEMPTS = 3  # harness errors per (key, patch) before the run is left ungradable
+GRADER_HOME = "grading-home"  # HOME, XDG and caches of the harness, inside the workspace
+GRADE_MEMORY = "4g"  # like an agent container (Global Constraints)
+CAP_POLL_S = 2.0
 
+# swebench 5.0.2 outcome markers (`harness/constants`, `harness/infra_failure`; checked against
+# a real non-applying patch in fix round 1). The agent's patch not applying, or its tests
+# exceeding the timeout, is the agent's failure (False); anything the environment caused is a
+# harness error (None, regraded up to MAX_GRADE_ATTEMPTS).
+APPLY_FAIL_MARKER = ">>>>> Patch Apply Failed"
+TIMEOUT_REASON = "tests_timed_out"
+TIMEOUT_MARKERS = ("Timeout error:", "Test timed out after")
 _BUILD_MARKERS = ("not found for", "Error creating container", "Error building image")
+# swebench's environment-tier `failure_reasons` → our reason
+_INFRA_REASONS = {
+    "out_of_memory": "oom",
+    "container_unavailable": "docker",
+    "network_unreachable": "network",
+    "browser_launch_failed": "environment",
+    "display_unavailable": "environment",
+}
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
@@ -191,12 +226,14 @@ class LocalSwebench:
         run: Runner = subprocess.run,
         workspace: Path | None = None,
         environ: Mapping[str, str] | None = None,
+        capper: Capper | None = None,
     ) -> None:
         self.venv, self.dataset, self.report_dir = venv, dataset, report_dir
         self.mode, self.workers, self.timeout_s = mode, workers, timeout_s
         self.workspace = workspace if workspace is not None else report_dir.parent
         self._run = run
         self._environ = environ
+        self.capper: Capper = capper if capper is not None else DockerMemoryCapper()
         self.last_reasons: dict[str, str] = {}
 
     def argv(self, preds: Path, run_id: str, instance_ids: Sequence[str]) -> list[str]:
@@ -230,9 +267,21 @@ class LocalSwebench:
         return [*argv, "--report-dir", str(self.report_dir)]
 
     def env(self) -> dict[str, str]:
+        """The owner's environment without the token, with HOME, XDG dirs and the HF and pip
+        caches inside ``<workspace>/grading-home`` (nothing is written under the real home).
+        Docker is reached through ``DOCKER_HOST`` or the default socket, not the home."""
         env = dict(os.environ if self._environ is None else self._environ)
         env.pop(TOKEN_ENV, None)  # the grader never sees the agent's credential
         env.pop("DOCKER_DEFAULT_PLATFORM", None)
+        home = self.workspace / GRADER_HOME
+        env |= {
+            "HOME": str(home),
+            "XDG_CACHE_HOME": str(home / ".cache"),
+            "XDG_CONFIG_HOME": str(home / ".config"),
+            "XDG_DATA_HOME": str(home / ".local" / "share"),
+            "HF_HOME": str(home / ".cache" / "huggingface"),
+            "PIP_CACHE_DIR": str(home / ".cache" / "pip"),
+        }
         if self.mode == "amd64-emulation":
             env["DOCKER_DEFAULT_PLATFORM"] = "linux/amd64"
         return env
@@ -241,9 +290,15 @@ class LocalSwebench:
         self, preds: Path, run_id: str, instance_ids: Sequence[str]
     ) -> dict[str, bool | None]:
         self.report_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (self.workspace / GRADER_HOME).mkdir(parents=True, exist_ok=True, mode=0o700)
         argv = self.argv(preds, run_id, instance_ids)
         budget = self.timeout_s * max(1, len(instance_ids)) + 900  # pulls and setup
+        models = _models(preds)
+        model = models[0] if models else ""
+        report = self.report_dir / f"{model.replace('/', '__')}.{run_id}.json"
+        report.unlink(missing_ok=True)  # never read a stale report for this run id
         with locked(self.workspace / LOCK_NAME, timeout=LOCK_TIMEOUT_S):
+            self.capper.start(run_id)
             try:
                 self._run(
                     argv,
@@ -256,11 +311,9 @@ class LocalSwebench:
                 )
             except (OSError, subprocess.SubprocessError):
                 pass  # no report: every instance is a harness error below
-        models = _models(preds)
-        report = (
-            self.report_dir / f"{models[0].replace('/', '__')}.{run_id}.json" if models else None
-        )
-        return self._parse(report, run_id, models[0] if models else "", instance_ids)
+            finally:
+                self.capper.stop()
+        return self._parse(report if models else None, run_id, model, instance_ids)
 
     def _parse(
         self, report: Path | None, run_id: str, model: str, instance_ids: Sequence[str]
@@ -269,34 +322,123 @@ class LocalSwebench:
             doc = json.loads(report.read_text(encoding="utf-8")) if report else {}
         except (OSError, json.JSONDecodeError):
             doc = {}
-        resolved = set(doc.get("resolved_ids", []))
-        unresolved = set(doc.get("unresolved_ids", []))
-        broken = set(doc.get("error_ids", [])) | set(doc.get("infra_failure_ids", []))
         out: dict[str, bool | None] = {}
         self.last_reasons = {}
         for iid in instance_ids:
-            if iid in resolved and iid not in broken:
-                out[iid] = True
-            elif iid in unresolved and iid not in broken:
-                out[iid] = False
-            else:
-                out[iid] = None
-                self.last_reasons[iid] = self._reason(run_id, model, iid)
+            verdict, reason = self._classify(doc, run_id, model, iid)
+            out[iid] = verdict
+            if reason:
+                self.last_reasons[iid] = reason
         return out
 
-    def _reason(self, run_id: str, model: str, iid: str) -> str:
+    def _classify(
+        self, doc: Mapping[str, Any], run_id: str, model: str, iid: str
+    ) -> tuple[bool | None, str | None]:
+        """(verdict, reason) of one instance from the run report and its logs."""
+        if not doc:
+            return None, "harness_error"
+        reasons = doc.get("failure_reasons") or {}
+        if iid in set(doc.get("infra_failure_ids", [])):
+            return None, _INFRA_REASONS.get(str(reasons.get(iid)), "environment")
+        if iid in set(doc.get("empty_patch_ids", [])):
+            return False, "empty_patch"
+        if iid in set(doc.get("resolved_ids", [])):
+            return True, None
+        if iid in set(doc.get("unresolved_ids", [])):
+            return False, None
+        if iid in set(doc.get("error_ids", [])):
+            inst, tests = self._logs(run_id, model, iid)
+            if APPLY_FAIL_MARKER in inst:
+                return False, "apply_fail"
+            if reasons.get(iid) == TIMEOUT_REASON or any(
+                m in tests or m in inst for m in TIMEOUT_MARKERS
+            ):
+                return False, "timeout"
+            if any(m in inst for m in _BUILD_MARKERS):
+                return None, "build"
+        return None, "harness_error"
+
+    def _logs(self, run_id: str, model: str, iid: str) -> tuple[str, str]:
         log = self.report_dir / LOG_DIR / run_id / model.replace("/", "__") / iid
+        texts = []
+        for name in ("run_instance.log", "test_output.txt"):
+            try:
+                texts.append((log / name).read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                texts.append("")
+        return texts[0], texts[1]
+
+
+class Capper(Protocol):
+    def start(self, run_id: str) -> None: ...
+
+    def stop(self) -> None: ...
+
+
+class DockerMemoryCapper:
+    """Caps the memory of the harness's containers while a grading run is in progress.
+
+    swebench 5 creates its containers without a memory limit (no flag for one), so while the
+    run holds the lock a thread applies ``docker update --memory <cap> --memory-swap <cap>`` to
+    every container whose name ends in the run id (``sweb.eval.<instance>.<run_id>``). A test
+    process killed for memory then shows ``Killed`` in the test output, which swebench
+    classifies ``out_of_memory`` (environment tier): a harness error, never ``False``."""
+
+    def __init__(
+        self,
+        memory: str = GRADE_MEMORY,
+        *,
+        run: Runner = subprocess.run,
+        poll_s: float = CAP_POLL_S,
+    ) -> None:
+        self.memory, self._run, self.poll_s = memory, run, poll_s
+        self._done: set[str] = set()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _docker(self, *args: str) -> subprocess.CompletedProcess[str] | None:
         try:
-            text = (log / "run_instance.log").read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return "harness_error"
-        return "build" if any(m in text for m in _BUILD_MARKERS) else "harness_error"
+            return self._run(
+                ["docker", *args], capture_output=True, text=True, timeout=30, check=False
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    def cap_once(self, run_id: str) -> None:
+        listed = self._docker("ps", "--filter", f"name={run_id}", "--format", "{{.Names}}")
+        if listed is None:
+            return
+        for name in listed.stdout.split():
+            if name in self._done or not name.endswith("." + run_id):
+                continue
+            mem = ("--memory", self.memory, "--memory-swap", self.memory)
+            done = self._docker("update", *mem, name)
+            if done is not None and done.returncode == 0:
+                self._done.add(name)
+
+    def start(self, run_id: str) -> None:
+        self._stop.clear()
+
+        def loop() -> None:
+            while not self._stop.is_set():
+                self.cap_once(run_id)
+                self._stop.wait(self.poll_s)
+
+        self._thread = threading.Thread(target=loop, name="grade-memory-cap", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=60)
+            self._thread = None
 
 
 @dataclass
 class FakeGrader:
-    """Grades without Docker (dry run and tests): ``results`` per instance id, else resolved
-    when the patch's sha256 starts with an even hex digit (deterministic)."""
+    """Grades without Docker (dry run and tests): `NOOP_PATCH` is never resolved; otherwise
+    ``results`` per instance id, else resolved when the patch's sha256 starts with an even hex
+    digit (deterministic)."""
 
     results: Mapping[str, bool | None] = field(default_factory=dict)
     calls: list[tuple[Path, str, list[str]]] = field(default_factory=list)
@@ -309,7 +451,9 @@ class FakeGrader:
         patches = {str(r["instance_id"]): str(r["model_patch"]) for r in rows}
         out: dict[str, bool | None] = {}
         for iid in instance_ids:
-            if iid in self.results:
+            if patches.get(iid) == NOOP_PATCH:
+                out[iid] = False
+            elif iid in self.results:
                 out[iid] = self.results[iid]
             else:
                 digest = hashlib.sha256(patches.get(iid, "").encode()).hexdigest()
@@ -356,14 +500,46 @@ def _sha(patch: str) -> str:
     return hashlib.sha256(patch.encode("utf-8")).hexdigest()
 
 
+def _attempts(path: Path) -> tuple[set[tuple[str, str]], dict[tuple[str, str], int]]:
+    """(key, patch sha) with a definite verdict, and harness errors per (key, patch sha)."""
+    done: set[tuple[str, str]] = set()
+    errors: dict[tuple[str, str], int] = {}
+    for r in _records(path):
+        if r.get("kind") != "grade":
+            continue
+        pair = (str(r["key"]), str(r["patch_sha256"]))
+        if r.get("resolved") is None:
+            errors[pair] = errors.get(pair, 0) + 1
+        else:
+            done.add(pair)
+    return done, errors
+
+
 def _pending(path: Path, runs: Sequence[FinalRun]) -> list[FinalRun]:
-    """Runs whose current patch has no definite verdict yet."""
-    done = {
-        (r["key"], r["patch_sha256"])
-        for r in _records(path)
-        if r.get("kind") == "grade" and r.get("resolved") is not None
+    """Runs whose current patch has no definite verdict yet and fewer than
+    `MAX_GRADE_ATTEMPTS` harness errors."""
+    done, errors = _attempts(path)
+    out = []
+    for r in runs:
+        pair = (r.key, _sha(r.patch))
+        if pair not in done and errors.get(pair, 0) < MAX_GRADE_ATTEMPTS:
+            out.append(r)
+    return out
+
+
+def ungradable(path: Path, *, stage: str) -> set[str]:
+    """Keys of the stage whose latest grading is a harness error after `MAX_GRADE_ATTEMPTS`
+    attempts on the same patch: not graded, dropped from the pairing and disclosed."""
+    done, errors = _attempts(path)
+    latest: dict[str, str] = {}
+    for r in _records(path):
+        if r.get("kind") == "grade" and r.get("stage") == stage:
+            latest[str(r["key"])] = str(r["patch_sha256"])
+    return {
+        k
+        for k, sha in latest.items()
+        if (k, sha) not in done and errors.get((k, sha), 0) >= MAX_GRADE_ATTEMPTS
     }
-    return [r for r in runs if (r.key, _sha(r.patch)) not in done]
 
 
 def _grade_runs(ledger: GradeLedger, grader: Grader, stage: str, runs: Sequence[FinalRun]) -> None:
@@ -378,14 +554,16 @@ def _grade_runs(ledger: GradeLedger, grader: Grader, stage: str, runs: Sequence[
     work = path.parent / "grading"
     for (arm, seed), group in batches.items():
         prefix = f"{ledger.campaign}-{stage}-{arm}-s{seed}"
-        n = 1 + sum(
-            1
-            for rec in _records(path)
-            if rec.get("kind") == "batch" and str(rec["run_id"]).rsplit("-b", 1)[0] == prefix
-        )
-        run_id = f"{prefix}-b{n}"
         ids = [r.instance_id for r in group]
-        _append(path, [{"kind": "batch", "stage": stage, "run_id": run_id, "instance_ids": ids}])
+        with locked(path, timeout=LOCK_TIMEOUT_S):  # `grades.jsonl.lock`: one allocator
+            n = 1 + sum(
+                1
+                for rec in _records(path)
+                if rec.get("kind") == "batch" and str(rec["run_id"]).rsplit("-b", 1)[0] == prefix
+            )
+            run_id = f"{prefix}-b{n}"
+            batch = {"kind": "batch", "stage": stage, "run_id": run_id, "instance_ids": ids}
+            _append(path, [batch])
         preds = work / f"{run_id}.preds.jsonl"
         write_predictions(((r.instance_id, arm, r.patch) for r in group), preds)
         verdicts = grader.grade(preds, run_id, ids)
@@ -438,47 +616,64 @@ PREFLIGHT_FILE = "preflight.json"
 def preflight(
     tasks: Sequence[Mapping[str, Any]], grader: Grader, *, work: Path
 ) -> dict[str, PreflightStatus]:
-    """Grade each task's gold patch (dataset row ``patch``) twice in separate harness runs;
-    ``ok`` only when both resolve it. Reasons go to ``<work>/preflight.json``."""
+    """The oracle check, decided before any agent run: each task's gold patch (dataset row
+    ``patch``) is graded twice in separate harness runs and `NOOP_PATCH` (applies cleanly,
+    changes no code) once; ``ok`` only when gold resolves both times and the no-op does not.
+    Reasons go to ``<work>/preflight.json``. The attempt number is reserved before any
+    grading, so a crashed preflight never shares a run id with the next one."""
     work.mkdir(parents=True, exist_ok=True, mode=0o700)
     record = work / PREFLIGHT_FILE
-    try:
-        prior = json.loads(record.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        prior = {}
-    attempt = int(prior.get("attempts", 0)) + 1
+    with locked(record, timeout=LOCK_TIMEOUT_S):
+        try:
+            prior = json.loads(record.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            prior = {}
+        attempt = int(prior.get("attempts", 0)) + 1
+        _write_private(record, _json({**prior, "attempts": attempt}))
     ids = [str(t["instance_id"]) for t in tasks]
     passes: list[dict[str, bool | None]] = []
     reasons: list[dict[str, str]] = []
-    for k in (1, 2):
-        run_id = f"preflight-{attempt}-g{k}"
+    runs = [("g1", GOLD_MODEL, None), ("g2", GOLD_MODEL, None), ("noop", NOOP_MODEL, NOOP_PATCH)]
+    for tag, model, patch in runs:
+        run_id = f"preflight-{attempt}-{tag}"
         preds = work / f"{run_id}.preds.jsonl"
         write_predictions(
-            ((str(t["instance_id"]), GOLD_MODEL, str(t["patch"])) for t in tasks), preds
+            ((str(t["instance_id"]), model, patch or str(t["patch"])) for t in tasks), preds
         )
         passes.append(grader.grade(preds, run_id, ids))
         reasons.append(dict(getattr(grader, "last_reasons", {}) or {}))
     status: dict[str, PreflightStatus] = {}
-    why: dict[str, str] = {}
+    why: dict[str, ExclusionReason] = {}
     for iid in ids:
-        a, b = passes[0].get(iid), passes[1].get(iid)
-        if a is True and b is True:
-            status[iid] = "ok"
-            continue
-        status[iid] = "excluded"
-        if a is None or b is None:
-            found = [r[iid] for r, v in zip(reasons, (a, b), strict=True) if v is None and iid in r]
-            why[iid] = "build" if "build" in found else "harness_error"
-        elif a is False and b is False:
-            why[iid] = "gold_fail"
-        else:
-            why[iid] = "flaky_gold"
+        verdicts = [p.get(iid) for p in passes]
+        reason = _exclusion(verdicts, [r.get(iid) for r in reasons])
+        status[iid] = "ok" if reason is None else "excluded"
+        if reason is not None:
+            why[iid] = reason
     doc = {
         "attempts": attempt,
         "results": {i: {"status": status[i], "reason": why.get(i)} for i in ids},
     }
-    _write_private(record, (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode())
+    _write_private(record, _json(doc))
     return status
+
+
+def _exclusion(
+    verdicts: Sequence[bool | None], reasons: Sequence[str | None]
+) -> ExclusionReason | None:
+    """Gold twice, then the no-op: why a task is excluded (None when it is ok)."""
+    gold1, gold2, noop = verdicts
+    if gold1 is None or gold2 is None:
+        return "build" if "build" in reasons[:2] else "harness_error"
+    if gold1 and gold2:
+        if noop is None:
+            return "build" if reasons[2] == "build" else "harness_error"
+        return "noop_pass" if noop else None
+    return "flaky_gold" if gold1 or gold2 else "gold_fail"
+
+
+def _json(doc: Mapping[str, Any]) -> bytes:
+    return (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
 def preflight_reasons(work: Path) -> dict[str, str]:

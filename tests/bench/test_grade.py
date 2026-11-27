@@ -3,10 +3,14 @@
 No test here needs Docker, the network or the grader venv: the swebench subprocess is replaced
 by a recorder. `test_live_gold_grading` (marker ``docker``) is the optional real check and is
 skipped unless ``TOKEN_SPAREN_BENCH_GRADE_VENV`` names a venv with swebench installed.
+
+The ``docker`` marker is registered in pyproject.toml. Do not add a ``tests/bench/conftest.py``:
+it would shadow ``import conftest`` (tests/conftest.py) in tests/test_private_state.py.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -34,11 +38,42 @@ def _row(iid: str) -> dict[str, Any]:
 # --- recorded subprocess ------------------------------------------------------------------
 
 
+# What swebench 5.0.2 writes per outcome (checked against the wheel source and a real
+# non-applying patch on django__django-12774, fix round 1): the run report's id lists, the
+# `failure_reasons` of `infra_failure.classify_logs`, and the instance's log lines.
+_OUTCOMES: dict[str, tuple[str, str | None, str, str]] = {
+    # kind: (report list, failure_reasons value, run_instance.log, test_output.txt)
+    "resolved": ("resolved_ids", None, "", "ok"),
+    "unresolved": ("unresolved_ids", None, "", "FAILED"),
+    "apply_fail": (
+        "error_ids",
+        None,
+        ">>>>> Patch Apply Failed:\nerror: patch failed: django/__init__.py:1\n",
+        "",
+    ),
+    "timeout": (
+        "error_ids",
+        "tests_timed_out",
+        "Test timed out after 1800 seconds.\n",
+        "...\n\nTimeout error: 1800 seconds exceeded.",
+    ),
+    "oom": ("error_ids", "out_of_memory", "", "Killed\n"),
+    "docker": ("error_ids", "container_unavailable", "Error response from daemon: x\n", ""),
+    "build": ("error_ids", None, "Error creating container for i: Image x not found for i\n", ""),
+    "crash": ("error_ids", None, "Error in evaluating model for i: KeyError\n", ""),
+    "empty": ("empty_patch_ids", None, "", ""),
+}
+_ENVIRONMENT = {"out_of_memory", "container_unavailable"}
+_KIND = {True: "resolved", False: "unresolved", None: "build"}
+
+
 @dataclass
 class Recorder:
-    """Stands in for `subprocess.run`: writes the report swebench would write."""
+    """Stands in for `subprocess.run`: writes the report and logs swebench 5 would write.
+    ``resolved`` maps an instance id to a verdict (True/False/None = build error) or to an
+    outcome kind of `_OUTCOMES`."""
 
-    resolved: Mapping[str, bool | None] = field(default_factory=dict)
+    resolved: Mapping[str, bool | str | None] = field(default_factory=dict)
     calls: list[dict[str, Any]] = field(default_factory=list)
 
     def __call__(self, argv: Sequence[str], **kw: Any) -> subprocess.CompletedProcess[str]:
@@ -48,25 +83,37 @@ class Recorder:
         preds = Path(_flag(argv, "-p") or _flag(argv, "--predictions_path") or "")
         rows = [json.loads(x) for x in preds.read_text("utf-8").splitlines() if x]
         model = rows[0]["model_name_or_path"]
-        ids = [r["instance_id"] for r in rows]
-        report = {
-            "resolved_ids": [i for i in ids if self.resolved.get(i) is True],
-            "unresolved_ids": [i for i in ids if self.resolved.get(i) is False],
-            "error_ids": [i for i in ids if self.resolved.get(i) is None],
-            "infra_failure_ids": [],
-            "empty_patch_ids": [],
-            "failure_reasons": {},
-            "schema_version": 2,
-        }
-        report_dir = Path(_flag(argv, "--report-dir") or cwd)
-        (report_dir / f"{model}.{run_id}.json").write_text(json.dumps(report), "utf-8")
-        for iid in report["error_ids"]:
+        report: dict[str, Any] = {k: [] for k in {v[0] for v in _OUTCOMES.values()}}
+        report |= {"infra_failure_ids": [], "failure_reasons": {}, "schema_version": 2}
+        for row in rows:
+            iid = row["instance_id"]
+            verdict = self.resolved.get(iid)
+            kind = verdict if isinstance(verdict, str) else _KIND[verdict]
+            listed, reason, inst_log, test_out = _OUTCOMES[kind]
+            report[listed].append(iid)
+            if reason:
+                report["failure_reasons"][iid] = reason
+                if reason in _ENVIRONMENT:
+                    report["infra_failure_ids"].append(iid)
             log = cwd / "logs" / "run_evaluation" / str(run_id) / model / iid
             log.mkdir(parents=True)
-            (log / "run_instance.log").write_text(
-                f"Error creating container for {iid}: Image x not found for {iid}\n", "utf-8"
-            )
+            (log / "run_instance.log").write_text(inst_log, "utf-8")
+            if test_out:
+                (log / "test_output.txt").write_text(test_out, "utf-8")
+        report_dir = Path(_flag(argv, "--report-dir") or cwd)
+        (report_dir / f"{model}.{run_id}.json").write_text(json.dumps(report), "utf-8")
         return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+
+@dataclass
+class FakeCapper:
+    events: list[tuple[str, str]] = field(default_factory=list)
+
+    def start(self, run_id: str) -> None:
+        self.events.append(("start", run_id))
+
+    def stop(self) -> None:
+        self.events.append(("stop", ""))
 
 
 def _flag(argv: Sequence[str], name: str) -> str | None:
@@ -82,7 +129,9 @@ def _local(tmp_path: Path, mode: gr.GradeMode, rec: Recorder) -> gr.LocalSwebenc
     (venv / "bin").mkdir(parents=True, exist_ok=True)
     dataset = tmp_path / "dataset.arm64.jsonl"
     dataset.write_text("", "utf-8")
-    return gr.LocalSwebench(venv, dataset, tmp_path / "reports", mode, run=rec, workspace=tmp_path)
+    return gr.LocalSwebench(
+        venv, dataset, tmp_path / "reports", mode, run=rec, workspace=tmp_path, capper=FakeCapper()
+    )
 
 
 def _preds(tmp_path: Path, ids: Sequence[str], model: str = "baseline") -> Path:
@@ -128,6 +177,18 @@ def test_committed_grade_mode_is_valid() -> None:
     assert mode in gr.GRADE_MODES
     pinned = gr.REQUIREMENTS_FILE.read_text("utf-8").split()
     assert f"swebench=={version}" in pinned
+
+
+def test_requirements_are_hash_locked() -> None:
+    """Every requirement is pinned with ``==`` and carries hashes (pip --require-hashes); the
+    lock's sha256 is recorded in grade_mode.json for disclosure."""
+    text = gr.REQUIREMENTS_FILE.read_text("utf-8")
+    reqs = [ln for ln in text.splitlines() if ln and not ln.startswith((" ", "#"))]
+    assert len(reqs) > 10
+    assert all("==" in r and r.endswith("\\") for r in reqs)
+    assert text.count("--hash=sha256:") >= len(reqs)
+    doc = json.loads(gr.GRADE_MODE_FILE.read_text("utf-8"))
+    assert doc["requirements_sha256"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def test_grade_mode_refuses_unknown(tmp_path: Path) -> None:
@@ -209,9 +270,125 @@ def test_missing_report_or_failed_process_is_none(tmp_path: Path) -> None:
         "swebench5-arm64",
         run=broken,
         workspace=tmp_path,
+        capper=FakeCapper(),
     )
     assert local.grade(_preds(tmp_path, [DJANGO]), "r", [DJANGO]) == {DJANGO: None}
     assert local.last_reasons == {DJANGO: "harness_error"}
+
+
+@pytest.mark.parametrize(
+    ("kind", "verdict", "reason"),
+    [
+        ("apply_fail", False, "apply_fail"),
+        ("timeout", False, "timeout"),
+        ("unresolved", False, None),
+        ("empty", False, "empty_patch"),
+    ],
+)
+def test_apply_fail_is_unresolved(
+    tmp_path: Path, kind: str, verdict: bool, reason: str | None
+) -> None:
+    """The agent's patch failing to apply, or its tests running out of time, is the agent's
+    failure: unresolved, never a harness error that would be regraded and dropped."""
+    local = _local(tmp_path, "swebench5-arm64", Recorder({DJANGO: kind}))
+    assert local.grade(_preds(tmp_path, [DJANGO]), "r", [DJANGO]) == {DJANGO: verdict}
+    assert local.last_reasons == ({DJANGO: reason} if reason else {})
+
+
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [("oom", "oom"), ("docker", "docker"), ("build", "build"), ("crash", "harness_error")],
+)
+def test_infra_failure_is_none(tmp_path: Path, kind: str, reason: str) -> None:
+    local = _local(tmp_path, "swebench5-arm64", Recorder({DJANGO: kind, SPHINX: True}))
+    got = local.grade(_preds(tmp_path, [DJANGO, SPHINX]), "r", [DJANGO, SPHINX])
+    assert got == {DJANGO: None, SPHINX: True}
+    assert local.last_reasons == {DJANGO: reason}
+
+
+def test_infra_beats_unresolved_in_the_report(tmp_path: Path) -> None:
+    """An environment failure classified by swebench on an unresolved id is still infra."""
+
+    def rec(argv: Sequence[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        out = Recorder({DJANGO: False})(argv, **kw)
+        report = next((tmp_path / "reports").glob("*.json"))
+        doc = json.loads(report.read_text("utf-8"))
+        doc["infra_failure_ids"] = [DJANGO]
+        doc["failure_reasons"] = {DJANGO: "network_unreachable"}
+        report.write_text(json.dumps(doc), "utf-8")
+        return out
+
+    local = _local(tmp_path, "swebench5-arm64", Recorder())
+    local._run = rec
+    assert local.grade(_preds(tmp_path, [DJANGO]), "r", [DJANGO]) == {DJANGO: None}
+    assert local.last_reasons == {DJANGO: "network"}
+
+
+def test_stale_report_never_read(tmp_path: Path) -> None:
+    def dies(argv: Sequence[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(list(argv), 1)
+
+    local = _local(tmp_path, "swebench5-arm64", Recorder())
+    (tmp_path / "reports").mkdir()
+    stale = tmp_path / "reports" / "baseline.r.json"
+    stale.write_text(json.dumps({"resolved_ids": [DJANGO]}), "utf-8")
+    local._run = dies
+    assert local.grade(_preds(tmp_path, [DJANGO]), "r", [DJANGO]) == {DJANGO: None}
+    assert not stale.exists()
+
+
+def test_memory_cap_and_private_home_during_grading(tmp_path: Path) -> None:
+    capper = FakeCapper()
+    seen: list[list[tuple[str, str]]] = []
+
+    def rec(argv: Sequence[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(list(capper.events))
+        return Recorder({DJANGO: True})(argv, **kw)
+
+    local = gr.LocalSwebench(
+        tmp_path / "v",
+        tmp_path / "d.jsonl",
+        tmp_path / "rep",
+        "swebench5-arm64",
+        run=rec,
+        workspace=tmp_path,
+        capper=capper,
+        environ={"HOME": "/home/owner", "PATH": "/usr/bin", "CLAUDE_CODE_OAUTH_TOKEN": TOKEN},
+    )
+    local.grade(_preds(tmp_path, [DJANGO]), "camp-x-b1", [DJANGO])
+    assert seen == [[("start", "camp-x-b1")]]
+    assert capper.events[-1] == ("stop", "")
+    env = local.env()
+    home = tmp_path / gr.GRADER_HOME
+    for key in ("HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "HF_HOME", "PIP_CACHE_DIR"):
+        assert Path(env[key]).is_relative_to(home), key
+    assert env["PATH"] == "/usr/bin"
+    assert TOKEN not in json.dumps(env)
+
+
+def test_memory_capper_updates_this_runs_containers() -> None:
+    calls: list[list[str]] = []
+
+    def docker(argv: Sequence[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(list(argv))
+        out = "sweb.eval.django__django-12774.camp-x-b1\nsweb.eval.other.camp-y-b1\n"
+        return subprocess.CompletedProcess(list(argv), 0, out if "ps" in argv else "", "")
+
+    capper = gr.DockerMemoryCapper(memory="4g", run=docker)
+    capper.cap_once("camp-x-b1")
+    capper.cap_once("camp-x-b1")  # a container is updated once
+    updates = [c for c in calls if c[:2] == ["docker", "update"]]
+    assert updates == [
+        [
+            "docker",
+            "update",
+            "--memory",
+            "4g",
+            "--memory-swap",
+            "4g",
+            "sweb.eval.django__django-12774.camp-x-b1",
+        ]
+    ]
 
 
 def test_grading_holds_bench_lock(tmp_path: Path) -> None:
@@ -238,6 +415,7 @@ def test_grading_holds_bench_lock(tmp_path: Path) -> None:
         "swebench5-arm64",
         run=probe,
         workspace=tmp_path,
+        capper=FakeCapper(),
     )
     local.grade(_preds(tmp_path, [DJANGO]), "r", [DJANGO])
     assert seen == [True]
@@ -368,6 +546,18 @@ def test_changed_patch_is_regraded(tmp_path: Path) -> None:
     assert len(grader.calls) == 2
 
 
+def test_harness_errors_regraded_up_to_cap(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path, [(DJANGO, "baseline", 1, "p1")])
+    grader = gr.FakeGrader(results={DJANGO: None})
+    for _ in range(gr.MAX_GRADE_ATTEMPTS + 2):
+        gr.grade_stage(ledger, grader, stage="screening")
+    assert len(grader.calls) == gr.MAX_GRADE_ATTEMPTS
+    assert gr.load_grades(gr.grades_path(ledger), stage="screening") == {
+        f"{DJANGO}/baseline/s1": None
+    }
+    assert gr.ungradable(gr.grades_path(ledger), stage="screening") == {f"{DJANGO}/baseline/s1"}
+
+
 def test_grade_task_before_image_removal(tmp_path: Path) -> None:
     """The scheduler calls grade_task after a task's block and only then removes its image:
     grade_task returns only once every final run of the task is graded, and it never removes
@@ -421,7 +611,8 @@ def test_preflight_requires_two_gold_passes(tmp_path: Path) -> None:
     ids = [r["instance_id"] for r in rows]
     first = {ids[0]: True, ids[1]: True, ids[2]: False, ids[3]: None, ids[4]: True}
     second = {ids[0]: True, ids[1]: False, ids[2]: False, ids[3]: None, ids[4]: None}
-    grader = Scripted([first, second], {ids[3]: "build", ids[4]: "harness_error"})
+    noop = dict.fromkeys(ids, False)
+    grader = Scripted([first, second, noop], {ids[3]: "build", ids[4]: "harness_error"})
     out = gr.preflight(rows, grader, work=tmp_path / "pf")
     assert out == {
         ids[0]: "ok",
@@ -436,11 +627,32 @@ def test_preflight_requires_two_gold_passes(tmp_path: Path) -> None:
         ids[3]: "build",
         ids[4]: "harness_error",
     }
-    assert len(grader.calls) == 2
-    first_ids, second_ids = grader.calls[0][1], grader.calls[1][1]
-    assert first_ids != second_ids
+    assert len(grader.calls) == 3
+    assert len({c[1] for c in grader.calls}) == 3
     gold = [json.loads(x) for x in grader.calls[0][0].read_text().splitlines()]
     assert [g["model_patch"] for g in gold] == [r["patch"] for r in rows]
+
+
+def test_preflight_excludes_noop_pass(tmp_path: Path) -> None:
+    """Gold must resolve and a harmless applying no-op patch must not: a task whose tests pass
+    without a fix would be resolved by every arm for free."""
+    rows = [_row(DJANGO), _row(SPHINX), _row("r__r-3")]
+    ids = [r["instance_id"] for r in rows]
+    gold = dict.fromkeys(ids, True)
+    noop = {ids[0]: False, ids[1]: True, ids[2]: None}
+    grader = Scripted([gold, gold, noop], {ids[2]: "harness_error"})
+    out = gr.preflight(rows, grader, work=tmp_path / "pf")
+    assert out == {ids[0]: "ok", ids[1]: "excluded", ids[2]: "excluded"}
+    assert gr.preflight_reasons(tmp_path / "pf") == {
+        ids[1]: "noop_pass",
+        ids[2]: "harness_error",
+    }
+    sent = [json.loads(x) for x in grader.calls[2][0].read_text().splitlines()]
+    assert {s["model_patch"] for s in sent} == {gr.NOOP_PATCH}
+    assert {s["model_name_or_path"] for s in sent} == {gr.NOOP_MODEL}
+    # the no-op patch adds one new file and touches nothing in the repository
+    assert gr.NOOP_PATCH.count("new file mode") == 1
+    assert "--- /dev/null" in gr.NOOP_PATCH and gr.NOOP_PATCH.strip()
 
 
 def test_preflight_run_ids_fresh_on_rerun(tmp_path: Path) -> None:
@@ -449,7 +661,24 @@ def test_preflight_run_ids_fresh_on_rerun(tmp_path: Path) -> None:
     assert gr.preflight(rows, grader, work=tmp_path / "pf") == {DJANGO: "ok"}
     gr.preflight(rows, grader, work=tmp_path / "pf")
     run_ids = [c[1] for c in grader.calls]
-    assert len(run_ids) == 4 and len(set(run_ids)) == 4
+    assert len(run_ids) == 6 and len(set(run_ids)) == 6
+
+
+def test_preflight_attempt_reserved_before_grading(tmp_path: Path) -> None:
+    """A crash mid-preflight never lets the next attempt reuse a run id (swebench would skip
+    instances that already have a report under it)."""
+
+    class Crashes(gr.FakeGrader):
+        def grade(self, preds: Path, run_id: str, ids: Sequence[str]) -> dict[str, bool | None]:
+            super().grade(preds, run_id, ids)
+            raise RuntimeError("grader died")
+
+    crashing = Crashes(results={DJANGO: True})
+    with pytest.raises(RuntimeError):
+        gr.preflight([_row(DJANGO)], crashing, work=tmp_path / "pf")
+    ok = gr.FakeGrader(results={DJANGO: True})
+    assert gr.preflight([_row(DJANGO)], ok, work=tmp_path / "pf") == {DJANGO: "ok"}
+    assert not {c[1] for c in crashing.calls} & {c[1] for c in ok.calls}
 
 
 # --- the optional live check ------------------------------------------------------------

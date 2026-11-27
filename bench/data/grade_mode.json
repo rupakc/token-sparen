@@ -14,5 +14,10 @@
     "preflight_two_gold_passes": {"django__django-12774": "ok"},
     "fallbacks_needed": false
   },
+  "outcome_check": {
+    "non_applying_patch": {"django__django-12774": "error_ids, no failure_reasons, run_instance.log '>>>>> Patch Apply Failed' -> graded False (apply_fail)"}
+  },
+  "requirements_sha256": "685ec7eca3e7802a50e95611abcb4e680752cee0a49ccd9edb29218d05a2b361",
+  "memory": "grading containers capped with docker update --memory 4g --memory-swap 4g while a run holds bench.lock; Docker VM 8 GB",
   "notes": "swebench 5.0.2 on the arm64 images resolved both gold patches with no failing FAIL_TO_PASS or PASS_TO_PASS test, and a no-op patch stayed unresolved; neither a pinned 4.x release nor amd64 emulation is needed. The sphinx eval script installs the package with pip, so grading needs network access."
 }
