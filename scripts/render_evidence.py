@@ -13,6 +13,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import hashlib
 import json
 import sys
 import tomllib
@@ -70,7 +72,7 @@ def _num(x: float) -> str:
     return repr(float(x))
 
 
-def render_evidence(path: Path | None) -> str:
+def render_evidence(path: Path | None, tree: Path | None = None) -> str:
     if path is None or not path.is_file():
         return PLACEHOLDER
     doc = _load(path)
@@ -94,6 +96,11 @@ def render_evidence(path: Path | None) -> str:
         f"harness commit `{doc['harness_commit']}`. Stage: {doc['stage']}. "
         f"Full report: [{REPORT_LINK}]({REPORT_LINK})."
     )
+    if tree is not None and plugin_hash(tree) != doc["plugin_hash"]:
+        claims += (
+            f" Note: this evidence measured plugin version {doc['plugin_version']}, "
+            "not the current tree; it is not evidence for this build."
+        )
     return "\n".join(lines) + "\n\n" + claims
 
 
@@ -109,8 +116,13 @@ def _plugin_version(tree: Path) -> str:
     return str(manifest.get("version", ""))
 
 
-def _decision_ok(tree: Path, decision: Path | None) -> str | None:
-    """None if a valid decision file for this version exists, else the reason it does not."""
+def e4_id(evidence: Path) -> str:
+    """First 12 hex of the sha256 of the evidence file: ties a decision to one E4 run."""
+    return hashlib.sha256(evidence.read_bytes()).hexdigest()[:12]
+
+
+def _decision_ok(tree: Path, decision: Path | None, evidence: Path) -> str | None:
+    """None if a valid 'ship' decision for this version and this E4 run exists, else why not."""
     if decision is None or not decision.is_file():
         return "underpowered and no gate-decision file"
     try:
@@ -119,10 +131,29 @@ def _decision_ok(tree: Path, decision: Path | None) -> str | None:
         return "gate-decision file is unreadable or not valid TOML"
     if data.get("version") != _plugin_version(tree):
         return "gate-decision file is not for this plugin version"
+    if data.get("decision") not in ("ship", "hold"):
+        return "gate-decision 'decision' must be 'ship' or 'hold'"
     rationale = data.get("rationale")
     if not isinstance(rationale, str) or not rationale.strip():
         return "gate-decision file has no rationale"
+    date = data.get("date")
+    if isinstance(date, dt.date) and not isinstance(date, dt.datetime):
+        pass
+    elif not (isinstance(date, str) and _valid_date(date)):
+        return "gate-decision 'date' must be an ISO date (YYYY-MM-DD)"
+    if data.get("e4_id") != e4_id(evidence):
+        return "gate-decision e4_id does not match the published evidence"
+    if data["decision"] == "hold":
+        return "gate-decision is 'hold': release held"
     return None
+
+
+def _valid_date(value: str) -> bool:
+    try:
+        dt.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return len(value) == 10
 
 
 def check_release_gate(evidence: Path | None, tree: Path, decision: Path | None) -> GateResult:
@@ -140,7 +171,7 @@ def check_release_gate(evidence: Path | None, tree: Path, decision: Path | None)
     if verdict == "passed":
         return GateResult(True, "gate passed")
     if verdict == "underpowered":
-        problem = _decision_ok(tree, decision)
+        problem = _decision_ok(tree, decision, evidence)
         if problem:
             return GateResult(False, problem)
         return GateResult(True, "underpowered, accepted by gate-decision file")

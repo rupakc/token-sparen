@@ -106,7 +106,7 @@ def test_evidence_renderer_rejects_non_e4(tmp_path: Path, tree: Path) -> None:
 
 
 def test_evidence_requires_claims_fields(tmp_path: Path, tree: Path) -> None:
-    for field in ("n_tasks", "seeds", "model", "claude_code_version", "date", "plugin_hash"):
+    for field in ev.CLAIMS_FIELDS:
         data = copy.deepcopy(doc(ph.plugin_hash(tree)))
         del data[field]
         with pytest.raises(E4Error, match=field):
@@ -149,12 +149,24 @@ def test_gate_missing_evidence_fails(tmp_path: Path, tree: Path) -> None:
     assert not ev.check_release_gate(tmp_path / "nope.json", tree, None).ok
 
 
+def decision_text(evidence: Path, **over: str) -> str:
+    fields = {
+        "version": "1.0.0",
+        "decision": "ship",
+        "rationale": "owner accepts",
+        "date": "2026-12-10",
+        "e4_id": ev.e4_id(evidence),
+    }
+    fields.update(over)
+    return "".join(f'{k} = "{v}"\n' for k, v in fields.items())
+
+
 def test_gate_failed_never_overridable(tmp_path: Path, tree: Path) -> None:
     data = doc(ph.plugin_hash(tree), "failed")
     data["results"][0].update(non_inferior=False, ci95=[-8.0, -2.0])
     path = write(tmp_path / "e4.json", data)
     decision = tmp_path / "d.toml"
-    decision.write_text('version = "1.0.0"\nrationale = "ship anyway"\n')
+    decision.write_text(decision_text(path))
     res = ev.check_release_gate(path, tree, decision)
     assert not res.ok and "failed" in res.reason
 
@@ -163,15 +175,43 @@ def test_gate_underpowered_needs_decision_file(tmp_path: Path, tree: Path) -> No
     path = good(tmp_path, tree, "underpowered")
     assert not ev.check_release_gate(path, tree, None).ok
     decision = tmp_path / "d.toml"
-    decision.write_text('version = "1.0.0"\nrationale = "owner accepts"\n')
+    decision.write_text(decision_text(path))
     assert ev.check_release_gate(path, tree, decision).ok
-    decision.write_text('version = "0.9.0"\nrationale = "old"\n')
-    assert not ev.check_release_gate(path, tree, decision).ok
-    decision.write_text('version = "1.0.0"\n')
-    assert not ev.check_release_gate(path, tree, decision).ok
-    decision.write_text("not = [toml")
-    assert not ev.check_release_gate(path, tree, decision).ok
+    decision.write_text(
+        "date = 2026-12-10\n" + decision_text(path, date="x").replace('date = "x"\n', "")
+    )
+    assert ev.check_release_gate(path, tree, decision).ok  # TOML native date accepted
+    bad = {
+        "version": decision_text(path, version="0.9.0"),
+        "hold": decision_text(path, decision="hold"),
+        "bad decision": decision_text(path, decision="maybe"),
+        "bad date": decision_text(path, date="2026-13-40"),
+        "bad date format": decision_text(path, date="10/12/2026"),
+        "wrong e4_id": decision_text(path, e4_id="0" * 12),
+        "no rationale": decision_text(path, rationale=" "),
+        "not toml": "not = [toml",
+    }
+    for name, text in bad.items():
+        decision.write_text(text)
+        assert not ev.check_release_gate(path, tree, decision).ok, name
     assert not ev.check_release_gate(path, tree, tmp_path / "absent.toml").ok
+
+
+def test_gate_decision_ignored_when_passed_or_for_other_run(tmp_path: Path, tree: Path) -> None:
+    path = good(tmp_path, tree)
+    assert ev.check_release_gate(path, tree, None).ok
+    other = good(tmp_path, tree, "underpowered")
+    decision = tmp_path / "d.toml"
+    decision.write_text(decision_text(other))
+    other.write_text(other.read_text() + " ")  # evidence changed after the decision
+    assert not ev.check_release_gate(other, tree, decision).ok
+
+
+def test_render_notes_version_mismatch(tmp_path: Path, tree: Path) -> None:
+    path = good(tmp_path, tree)
+    assert "not the current tree" not in ev.render_evidence(path, tree)
+    (tree / "token_sparen" / "a.py").write_bytes(b"x = 9\n")
+    assert "not the current tree" in ev.render_evidence(path, tree)
 
 
 def test_gate_hash_mismatch_fails(tmp_path: Path, tree: Path) -> None:
