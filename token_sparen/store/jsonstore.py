@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import os
 import random
@@ -87,12 +88,12 @@ def locked(path: Path, timeout: float | None = None) -> Iterator[None]:
 def _load(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     """Return (data, None), (None, None) when missing, or (None, reason) when corrupt."""
     try:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except FileNotFoundError:
         return None, None
     try:
-        data = json.loads(text)
-    except ValueError as exc:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError as exc:  # UnicodeDecodeError included: a non-UTF-8 file is corrupt
         return None, str(exc)
     if not isinstance(data, dict):
         return None, "top-level JSON value is not an object"
@@ -106,7 +107,7 @@ def read(
     data, bad = _load(path)
     if bad is not None:
         log_error(os.environ if env is None else env, "jsonstore", f"{path}: corrupt ({bad})")
-    return dict(default) if data is None else data
+    return copy.deepcopy(default) if data is None else data
 
 
 def _quarantine(path: Path, reason: str, env: Mapping[str, str] | None) -> None:
@@ -167,7 +168,7 @@ def read_locked(
     data, bad = _load(path)
     if bad is not None:
         _quarantine(path, bad, env)
-    return dict(default) if data is None else data
+    return copy.deepcopy(default) if data is None else data
 
 
 def write_locked(path: Path, data: dict[str, Any]) -> None:
