@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import subprocess
 from collections.abc import Iterator, Mapping
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 GIT_TIMEOUT_S = 10.0
 # per-run locations, relative to the run HOME ("" = HOME itself); HOME first
@@ -45,7 +45,17 @@ _LAYOUT = {
     "ZDOTDIR": "",
     "TMPDIR": ".tmp",
 }
-ISOLATED_DIR_KEYS = tuple(_LAYOUT)
+# Windows: `~` expands from USERPROFILE (else HOMEDRIVE + HOMEPATH), not HOME, and tools keep
+# state in APPDATA / LOCALAPPDATA; HOMEDRIVE + HOMEPATH are set to the run home as well
+_WINDOWS_LAYOUT = {"USERPROFILE": "", "APPDATA": "AppData/Roaming", "LOCALAPPDATA": "AppData/Local"}
+WINDOWS = os.name == "nt"
+
+
+def _dir_keys(windows: bool) -> tuple[str, ...]:
+    return (*_LAYOUT, *(_WINDOWS_LAYOUT if windows else ()))
+
+
+ISOLATED_DIR_KEYS = _dir_keys(WINDOWS)  # on this platform
 ISOLATED_PATH_KEYS = (*ISOLATED_DIR_KEYS, "GIT_CONFIG_GLOBAL")
 # the real home's state an isolated location may never equal, contain or lie inside
 REAL_DOT_STATE = (
@@ -69,6 +79,7 @@ REAL_DOT_STATE = (
     ".bashrc",
     ".bash_profile",
     ".profile",
+    "AppData",
 )
 
 
@@ -95,8 +106,7 @@ def _same_file(a: Path, b: Path) -> bool:
 def real_config_paths(real_home: Path, environ: Mapping[str, str]) -> list[Path]:
     """Every location the caller's real Claude Code config may live at (resolved)."""
     homes = [real_home]
-    if environ.get("HOME"):
-        homes.append(Path(environ["HOME"]))
+    homes += [Path(environ[k]) for k in ("HOME", "USERPROFILE") if environ.get(k)]
     paths: list[Path] = []
     for home in homes:
         paths += [_resolve(home / ".claude"), _resolve(home / ".claude.json")]
@@ -182,11 +192,16 @@ def check_workspace(out: Path) -> Path:
     return ws
 
 
-def isolated_env(run_home: Path) -> dict[str, str]:
+def isolated_env(run_home: Path, *, windows: bool = WINDOWS) -> dict[str, str]:
     """The isolation variables of one install or run rooted at ``run_home`` (pure: nothing is
-    created; `make_isolated_dirs` does that after `assert_isolated_env`)."""
+    created; `make_isolated_dirs` does that after `assert_isolated_env`). ``windows`` adds
+    USERPROFILE, APPDATA, LOCALAPPDATA and HOMEDRIVE/HOMEPATH."""
     home = Path(run_home)
-    env = {key: str(home / rel) if rel else str(home) for key, rel in _LAYOUT.items()}
+    layout = {**_LAYOUT, **(_WINDOWS_LAYOUT if windows else {})}
+    env = {key: str(home / rel) if rel else str(home) for key, rel in layout.items()}
+    if windows:
+        drive = PureWindowsPath(str(home)).drive
+        env["HOMEDRIVE"], env["HOMEPATH"] = drive, str(home)[len(drive) :]
     env["GIT_CONFIG_GLOBAL"] = str(home / ".gitconfig")
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     return env
@@ -194,7 +209,7 @@ def isolated_env(run_home: Path) -> dict[str, str]:
 
 def make_isolated_dirs(env: Mapping[str, str]) -> None:
     """Create the directories of an isolated environment; new ones 0700."""
-    for key in ISOLATED_DIR_KEYS:
+    for key in [k for k in _dir_keys(True) if k in env]:
         missing: list[Path] = []
         node = Path(env[key])
         while not node.exists():
@@ -208,8 +223,7 @@ def make_isolated_dirs(env: Mapping[str, str]) -> None:
 
 def _real_state(real_home: Path, environ: Mapping[str, str]) -> tuple[list[Path], list[Path]]:
     homes = [_resolve(real_home)]
-    if environ.get("HOME"):
-        homes.append(_resolve(Path(environ["HOME"])))
+    homes += [_resolve(Path(environ[k])) for k in ("HOME", "USERPROFILE") if environ.get(k)]
     state = [home / name for home in homes for name in REAL_DOT_STATE]
     if environ.get("CLAUDE_CONFIG_DIR"):
         state.append(_resolve(Path(environ["CLAUDE_CONFIG_DIR"])))
@@ -217,14 +231,20 @@ def _real_state(real_home: Path, environ: Mapping[str, str]) -> tuple[list[Path]
 
 
 def assert_isolated_env(
-    env: Mapping[str, str], *, workspace: Path, real_home: Path, environ: Mapping[str, str]
+    env: Mapping[str, str],
+    *,
+    workspace: Path,
+    real_home: Path,
+    environ: Mapping[str, str],
+    windows: bool = WINDOWS,
 ) -> None:
     """Raise `IsolationError` unless every isolation variable of ``env`` is set, absolute,
     inside ``workspace``, never the real home (nor an ancestor of it) and never equal to,
-    inside or holding the real home's dot-state; ``GIT_CONFIG_NOSYSTEM`` must be ``1``."""
+    inside or holding the real home's dot-state; ``GIT_CONFIG_NOSYSTEM`` must be ``1``; with
+    ``windows``, HOMEDRIVE + HOMEPATH must spell HOME."""
     ws = _resolve(workspace)
     homes, state = _real_state(real_home, environ)
-    for key in ISOLATED_PATH_KEYS:
+    for key in (*_dir_keys(windows), "GIT_CONFIG_GLOBAL"):
         value = env.get(key)
         if not value:
             raise IsolationError(f"{key} is not set for the isolated run")
@@ -239,4 +259,6 @@ def assert_isolated_env(
             raise IsolationError(f"{key} overlaps the real home's tool state")
     if env.get("GIT_CONFIG_NOSYSTEM") != "1":
         raise IsolationError("GIT_CONFIG_NOSYSTEM must be 1")
+    if windows and env.get("HOMEDRIVE", "") + env.get("HOMEPATH", "") != env["HOME"]:
+        raise IsolationError("HOMEDRIVE + HOMEPATH must spell the run HOME")
     assert_isolated(Path(env["CLAUDE_CONFIG_DIR"]), real_home=real_home, environ=environ)
