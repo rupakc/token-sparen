@@ -29,6 +29,17 @@ N_BOOT = 200
 class FakeGate:
     verdict: str
     reasons: list[str] = field(default_factory=list)
+    plugin_hash: str = HASH
+    model: str = "claude-sonnet-x"
+    claude_code_version: str = "2.1.121"
+
+
+@pytest.fixture(autouse=True)
+def _publish_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Publishing fails closed without a deny-list and below the full bootstrap size; tests
+    run a small bootstrap and a harmless deny word."""
+    monkeypatch.setenv("TOKEN_SPAREN_DENYLIST", "zzq-not-a-word")
+    monkeypatch.setattr(report, "MIN_PUBLISH_N_BOOT", N_BOOT)
 
 
 POWERED = {"required_tasks": 76, "seeds": 1, "achieved_power": 0.83, "verdict": "powered"}
@@ -61,6 +72,7 @@ def make_campaign(
     arms: tuple[str, ...] = ("baseline", "token-sparen", "rtk"),
     pending: bool = False,
     header: dict[str, Any] | None = None,
+    run_over: dict[str, Any] | None = None,
 ) -> tuple[Path, Path]:
     """80 tasks; every arm resolves the even tasks (no discordance); token-sparen costs 80 %
     of baseline; rtk has one task excluded after three `api` infra failures."""
@@ -102,6 +114,7 @@ def make_campaign(
                     "plugin_hash": HASH,
                     "live": True,
                     "at": t0 + 86400 * (i // 20) + i,
+                    **((run_over or {}) if arm == "token-sparen" and i == 7 else {}),
                 }
             )
             grades.append(
@@ -277,12 +290,14 @@ def test_every_number_has_ci_and_n(tmp_path: Path) -> None:
     assert "django/django" in text and "sphinx-doc/sphinx" in text  # per-repo tables
     assert "| astropy/astropy | preflight 1 |" in text
     assert "`astropy__astropy-7`: grading preflight: flaky_gold (swebench5-arm64)" in text
-    # passes the docs figure lint only through the hashed generated section, and only where
-    # the lint allows generated sections (never README, docs pages or release notes)
-    assert figure_violations(text, allow_generated=True) == []
+    # passes the docs figure lint only as the exact re-render of its e4.json (README, docs
+    # pages and release notes pass no re-render and never get the generated allowance)
+    assert report.lint_report(out) == []
+    rendered = report.render_report(doc)
+    assert figure_violations(text, rendered=rendered) == []
     assert figure_violations(text) != []
     tampered = text.replace("95 % CI [", "95 % CI  [", 1)
-    assert figure_violations(tampered, allow_generated=True) != []
+    assert figure_violations(tampered, rendered=rendered) != []
 
 
 # --------------------------------------------------------------------------- e4.json
@@ -323,7 +338,13 @@ def test_e4_json_validates_and_has_confirmatory_diff(tmp_path: Path) -> None:
     ]
     assert cost and cost[0]["estimate"] == pytest.approx(0.8)
     assert doc["exclusions"] and any("rtk" in x["reason"] for x in doc["exclusions"])
-    assert doc["gate"] == {"verdict": "passed", "reasons": []}
+    assert doc["gate"] == {
+        "verdict": "passed",
+        "reasons": [],
+        "plugin_hash": HASH,
+        "model": "claude-sonnet-x",
+        "claude_code_version": "2.1.121",
+    }
     # the M6 README renderer consumes it unchanged
     assert "resolved_diff_pp (confirmatory)" in render_evidence.render_evidence(out / "e4.json")
 
@@ -425,3 +446,129 @@ def test_svg_well_formed(tmp_path: Path) -> None:
     out = build(tmp_path)
     for name in ("cost_ratio", "resolved_diff", "pareto"):
         ET.fromstring((out / "figures" / f"{name}.svg").read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------- fix round 1
+
+
+SMUGGLED = "token-sparen saves 42% of tokens on E1 replay"
+
+
+def _smuggle(out: Path) -> None:
+    """The reviewer's probe: a hand-typed figure inside a re-wrapped generated section."""
+    text = _report_text(out)
+    head, rest = text.split("\n", 1)
+    body = re.sub(r"<!-- /?generated:e4-report[^>]*-->\n?", "", rest).strip("\n")
+    body = body.replace("## Claims", f"## Claims\n\n{SMUGGLED}", 1)
+    (out / "report.md").write_text(
+        f"{head}\n\n{report.generated_block(body + chr(10))}\n", encoding="utf-8"
+    )
+
+
+def test_smuggled_figure_fails_rerender_check_and_publish(tmp_path: Path) -> None:
+    out = build(tmp_path, stage="screening")
+    assert report.lint_report(out) == []
+    _smuggle(out)
+    problems = report.lint_report(out)
+    assert any("re-render" in p for p in problems), problems
+    assert any("42%" in p for p in problems), problems  # linted without the generated allowance
+    with pytest.raises(report.ReportError, match="re-render"):
+        report.publish(out, tmp_path / "repo")
+    assert not (tmp_path / "repo").exists()
+    # a figure differing from e4.json is caught the same way
+    out2 = build(tmp_path / "f", stage="screening")
+    svg_path = out2 / "figures" / "pareto.svg"
+    svg_path.write_text(svg_path.read_text(encoding="utf-8").replace("rtk", "rtk 2x"), "utf-8")
+    assert any("pareto.svg" in p for p in report.lint_report(out2))
+
+
+def test_screening_is_labelled_descriptive_without_noninferiority(tmp_path: Path) -> None:
+    text = _report_text(build(tmp_path, stage="screening"))
+    lines = text.splitlines()
+    assert lines[3].startswith("**Screening (descriptive, not a claim)")
+    assert "## Screening (descriptive, not a claim)" in text
+    assert "non-inferior" not in text.lower()
+    assert "confirmatory metric" not in text
+
+
+def test_gate_and_power_verdict_open_the_report(tmp_path: Path) -> None:
+    failed = _report_text(build(tmp_path / "f", gate=FakeGate("failed", ["lower bound low"])))
+    first = failed.splitlines()[3]
+    assert first.startswith("**Release gate: failed.**") and "Power: powered" in first
+    assert "95 % CI [" in first and "n = 80" in first
+    assert "non-inferior" not in failed.lower()
+    under = {**POWERED, "verdict": "underpowered"}
+    ud = build(tmp_path / "u", gate=FakeGate("underpowered"), power=under)
+    first = _report_text(ud).splitlines()[3]
+    assert first.startswith("**Release gate: underpowered.**") and "Power: underpowered" in first
+    passed = _report_text(build(tmp_path / "p"))
+    assert passed.splitlines()[3].startswith("**Release gate: passed.**")
+    assert "non-inferior at −5 pp" in passed
+
+
+_PLAN_FIELDS = [
+    {"plugin_hash": "cd" * 32},
+    {"model": "claude-other"},
+    {"claude_code_version": "2.1.999"},
+]
+
+
+@pytest.mark.parametrize("over", _PLAN_FIELDS)
+def test_run_differing_from_plan_is_refused(tmp_path: Path, over: dict[str, Any]) -> None:
+    ledger, grades = make_campaign(tmp_path, run_over=over)
+    with pytest.raises(report.ReportError, match="differ"):
+        report.build_report(
+            ledger,
+            grades,
+            stage="confirmation",
+            out_dir=tmp_path / "out",
+            gate=FakeGate("passed"),
+            power=POWERED,
+            n_boot=N_BOOT,
+        )
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("over", _PLAN_FIELDS)
+def test_gate_for_another_plan_is_refused(tmp_path: Path, over: dict[str, Any]) -> None:
+    ledger, grades = make_campaign(tmp_path)
+    with pytest.raises(report.ReportError, match="gate"):
+        report.build_report(
+            ledger,
+            grades,
+            stage="confirmation",
+            out_dir=tmp_path / "out",
+            gate=FakeGate("passed", **over),
+            power=POWERED,
+            n_boot=N_BOOT,
+        )
+
+
+def test_publish_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    out = build(tmp_path)
+    doc = json.loads((out / "e4.json").read_text(encoding="utf-8"))
+    assert doc["report"]["n_boot"] == N_BOOT
+    assert doc["report"]["price_table"]["version"] == "claude-api-2026-11-03"
+    assert "Price table `claude-api-2026-11-03`" in _report_text(out)
+    repo = tmp_path / "repo"
+    monkeypatch.delenv("TOKEN_SPAREN_DENYLIST")
+    with pytest.raises(report.ReportError, match="TOKEN_SPAREN_DENYLIST"):
+        report.publish(out, repo)
+    monkeypatch.setenv("TOKEN_SPAREN_DENYLIST", "zzq-not-a-word")
+    monkeypatch.setattr(report, "MIN_PUBLISH_N_BOOT", 10000)
+    with pytest.raises(report.ReportError, match="n_boot"):
+        report.publish(out, repo)
+    assert not repo.exists()
+    # a hand-edited, consistently re-rendered document whose runs disagree with the plan
+    monkeypatch.setattr(report, "MIN_PUBLISH_N_BOOT", N_BOOT)
+    doc["report"]["run_plugin_hashes"] = ["cd" * 32]
+    (out / "e4.json").write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    (out / "report.md").write_text(report.render_report(doc), encoding="utf-8")
+    with pytest.raises(report.ReportError, match="differ"):
+        report.publish(out, repo)
+    assert not repo.exists()
+    # plugin_version comes from the ledger header only
+    hdr = _header("confirmation")
+    del hdr["plugin_version"]
+    with pytest.raises(report.ReportError, match="plugin_version"):
+        build(tmp_path / "v", header=hdr)

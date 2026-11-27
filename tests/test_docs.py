@@ -56,3 +56,20 @@ def test_method_doc_has_no_figures() -> None:
 
 def test_spec_m4_revision_has_no_figures() -> None:
     assert _violations(_m4_log_entry()) == []
+
+
+def _published_reports() -> list[Path]:
+    """Every published E4 report directory (`bench.report.publish`)."""
+    dirs = [ROOT / "docs" / "evidence"] + sorted((ROOT / "docs" / "benchmarks").glob("*/"))
+    return [d for d in dirs if (d / "report.md").is_file() or (d / "e4.json").is_file()]
+
+
+def test_published_e4_reports_equal_their_rerender() -> None:
+    """report.md and the figures are a pure function of e4.json (M5 Task 11 ruling I1): any hand
+    edit, and any figure the data does not produce, fails here."""
+    from bench.report import lint_report
+
+    for d in _published_reports():
+        if not (d / "report.md").is_file():
+            continue  # docs/evidence may hold e4.json alone (render_evidence fixtures)
+        assert lint_report(d) == [], d.relative_to(ROOT)

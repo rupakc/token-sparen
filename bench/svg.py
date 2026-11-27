@@ -20,9 +20,10 @@ NEUTRALS = (INK, MUTED, PAPER)
 DARK = {"ink": "#EDEDED", "muted": "#A6A6A6", "paper": "#141414"}
 
 WIDTH = 640
-LABEL_W = 200
+LABEL_W = 240
+LABEL_CHARS = 34  # longer labels are cut (full text in the row's <title>)
 PAD = 24
-ROW_H = 28
+ROW_H = 36
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,10 @@ def _style() -> str:
         f".paper{{fill:{DARK['paper']}}} .axis{{stroke:{DARK['muted']}}}"
         "}</style>"
     )
+
+
+def _short(label: str) -> str:
+    return label if len(label) <= LABEL_CHARS else label[: LABEL_CHARS - 1] + "\u2026"
 
 
 def _num(x: float) -> str:
@@ -97,12 +102,13 @@ def forest(rows: Sequence[Row], *, ref: float, title: str) -> str:
     for i, r in enumerate(rows):
         y = top + ROW_H * i + ROW_H / 2
         body += [
-            f'<text class="ink" x="{PAD}" y="{y + 4:.1f}">{escape(r.label)}</text>',
+            f"<g><title>{escape(r.label)}</title>",
+            f'<text class="ink" x="{PAD}" y="{y - 2:.1f}">{escape(_short(r.label))}</text>',
+            f'<text class="muted" x="{PAD}" y="{y + 11:.1f}" font-size="10">'
+            f"{_num(r.point)} [{_num(r.lo)}, {_num(r.hi)}] n={r.n}</text>",
             f'<line class="est" x1="{x(r.lo):.1f}" y1="{y:.1f}" x2="{x(r.hi):.1f}" '
             f'y2="{y:.1f}" stroke-width="2"/>',
-            f'<circle class="est" cx="{x(r.point):.1f}" cy="{y:.1f}" r="4"/>',
-            f'<text class="muted" x="{x(r.hi) + 6:.1f}" y="{y - 6:.1f}" font-size="10">'
-            f"{_num(r.point)} [{_num(r.lo)}, {_num(r.hi)}] n={r.n}</text>",
+            f'<circle class="est" cx="{x(r.point):.1f}" cy="{y:.1f}" r="4"/></g>',
         ]
     return _doc(height, title, body)
 

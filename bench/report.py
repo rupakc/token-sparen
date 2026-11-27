@@ -5,16 +5,18 @@
 SVG figures. Every figure in ``report.md`` is rendered from the same ``e4.json`` document (no
 hand-typed number): the published fields plus one additive ``report`` object (exclusions per arm
 and repository, per-repository rates, ``grade_oom_repeat`` counts, price-table confirmation,
-completeness and the disclosures). The rendered body sits in a hashed generated section
-(`scripts.docs_lint.generated_block`), the only way it passes the docs figure lint.
+completeness and the disclosures). ``report.md`` and the SVGs are a pure function of
+``e4.json`` (`render_report`, `render_figures`): `lint_report` and `publish` re-render them and
+require byte equality, and only then is the generated section exempt from the docs figure lint.
+Every run and the gate must match the plan in the ledger header (`PLAN_FIELDS`).
 
 E4 only: `assert_e4_source` refuses anything but an E4 ledger (E1 replay output never becomes a
 public figure), and `scan_private` refuses to write when any artefact holds a home path, a
 deny-listed word (``TOKEN_SPAREN_DENYLIST``), an e-mail address or an OAuth token.
 
 `publish` copies a finished report into the repository: ``docs/benchmarks/<campaign>-<stage>/``
-always, ``docs/evidence/e4.json`` (what M6 reads) only for a confirmation; refused unless the
-document validates and the stage is completely graded.
+always, ``docs/evidence/`` (M6 reads its ``e4.json``) only for a confirmation; refused unless
+the document validates, re-renders identically and the stage is completely graded.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from bench.e4 import (
     CONFIRMATORY_METRIC,
     MARGIN_PP,
     TREATMENT_ARM,
+    E4Error,
     load_e4,
     validate_e4,
 )
@@ -43,12 +46,18 @@ from bench.grade import grade_oom_repeat_counts, load_grade_mode, load_grades
 from bench.leak import TOKEN_ENV
 from bench.ledger import LEDGER_KIND, SCHEMA, Ledger, RunKey
 from bench.stats import Estimate, Summary, bca, repo_of, summarise, wilson
+from bench.tasks import read_pool_header
 from scripts.docs_lint import figure_violations, generated_block
 
 SUITE = "swe-bench-verified-arm64-pool"
 STYLE_ARM = "ts-style"
 DENYLIST_ENV = "TOKEN_SPAREN_DENYLIST"
 FIGURES = ("cost_ratio", "resolved_diff", "pareto")
+SCREENING_TITLE = "Screening (descriptive, not a claim)"
+MIN_PUBLISH_N_BOOT = 10000
+# the confirmation plan in the ledger header every run and the gate must match
+PLAN_FIELDS = ("plugin_hash", "model", "claude_code_version")
+_PRICE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
 _OAT = re.compile(r"sk-ant-oat[0-9A-Za-z_-]{8,}")
 _USERS_POSIX = "/" + "Users/"
@@ -68,13 +77,22 @@ class PrivateDataError(ReportError):
 
 
 class GateLike(Protocol):
-    """Task 10's `GateResult` (read-only view)."""
+    """Task 10's `GateResult` (read-only view), carrying the plan it was evaluated for."""
 
     @property
     def verdict(self) -> str: ...
 
     @property
     def reasons(self) -> Sequence[str]: ...
+
+    @property
+    def plugin_hash(self) -> str: ...
+
+    @property
+    def model(self) -> str: ...
+
+    @property
+    def claude_code_version(self) -> str: ...
 
 
 # --------------------------------------------------------------------------- guards
@@ -288,9 +306,15 @@ def _disclosures(arms: Sequence[str], stage: str) -> list[str]:
     def ran(name: str) -> str:
         return "ran in this stage" if name in arms else "not run in this stage"
 
-    out = [
+    labels = (
         "Labels: only the token-sparen vs baseline resolved difference on seed 0 (the release "
-        "gate's test) is confirmatory; every other number is descriptive.",
+        "gate's test) is confirmatory; every other number is descriptive."
+        if stage == "confirmation"
+        else "Labels: a screening is descriptive only; it describes the screening freeze (plugin "
+        "hash above), not a release, and none of its numbers is a claim."
+    )
+    return [
+        labels,
         "Network access: agents and the grader had network access; egress was not restricted "
         "(the tools need it, and some evaluation scripts install packages with pip).",
         "Competitors ran in their documented default configuration at the pins listed above.",
@@ -298,21 +322,39 @@ def _disclosures(arms: Sequence[str], stage: str) -> list[str]:
         "`claude -p` sessions, so this comparison understates what it does interactively.",
         f"caveman ({ran('caveman')}): its documentation starts scripted `claude -p` runs with "
         "caveman off unless `CAVEMAN_DEFAULT_MODE` is set; a run whose liveness probe found an "
-        "arm inert is `infra_fail/load` and never graded.",
+        "arm inert is `infra_fail/load` and never graded (counts per arm above).",
         f"headroom ({ran('headroom')}): `headroom wrap` puts a local proxy on the request path, "
         "so the proxy process handles the OAuth token and all API traffic; its egress was not "
         "restricted either.",
         "Platform: the pool holds only SWE-bench Verified tasks with an arm64 image (the agent "
-        "runs in the image it is graded in); tasks without one are not in the pool, and tasks "
-        "excluded by the grading preflight are listed below.",
+        "runs in the image it is graded in); the counts of tasks without one are listed above, "
+        "and tasks excluded by the grading preflight are listed below.",
     ]
-    if stage == "screening":
-        out.insert(
-            0,
-            "Screening: every number describes the screening freeze (plugin hash above), not a "
-            "release; the confirmatory row is labelled so only for its method.",
-        )
+
+
+def _inert_runs(led: Ledger, stage: str, arms: Sequence[str]) -> dict[str, int]:
+    out = dict.fromkeys(arms, 0)
+    for rec in led.records():
+        if rec.get("kind") != "end" or not str(rec.get("status", "")).startswith("infra_fail"):
+            continue
+        sub = str(rec.get("sub") or str(rec.get("status")).partition("/")[2])
+        try:
+            key = RunKey.from_id(str(rec.get("key")))
+        except ValueError:
+            continue
+        if key.stage == stage and sub == "load":
+            out[key.arm] = out.get(key.arm, 0) + 1
     return out
+
+
+def _platform() -> dict[str, int]:
+    head = read_pool_header()
+    mini = head.get("mini_without_arm64")
+    verified = head.get("verified_without_arm64")
+    return {
+        "mini_without_arm64": len(mini) if isinstance(mini, list) else 0,
+        "verified_without_arm64": int(verified) if isinstance(verified, int) else 0,
+    }
 
 
 def _report_extra(
@@ -323,6 +365,7 @@ def _report_extra(
     mode: str,
     preflight: Mapping[str, str],
     gate_check: Any,
+    n_boot: int,
 ) -> dict[str, Any]:
     header = led.header
     by_repo: dict[str, dict[str, int]] = {}
@@ -358,16 +401,17 @@ def _report_extra(
             dt.date.fromisoformat(str(confirmed))
         except ValueError as exc:
             raise ReportError("ledger header price_confirmed_on is not an ISO date") from exc
+    price_id = str(header.get("price_table_id") or "")
+    if not _PRICE_ID.match(price_id):
+        raise ReportError("ledger header lacks a machine-readable price_table_id")
     return {
-        "model_ids": sorted({r.model for r in summ.runs if r.model} or {str(header["model"])}),
-        "claude_code_versions": sorted(
-            {r.claude_code_version for r in summ.runs if r.claude_code_version}
-            or {str(header["claude_code_version"])}
-        ),
+        "n_boot": n_boot,
+        "model_ids": sorted({str(r.model) for r in summ.runs}),
+        "claude_code_versions": sorted({str(r.claude_code_version) for r in summ.runs}),
         "run_plugin_hashes": sorted({r.plugin_hash for r in summ.runs if r.plugin_hash}),
         "grade_mode": mode,
         "price_table": {
-            "version": str(header.get("price_table_version") or ""),
+            "version": price_id,
             "confirmed_live_on": None if confirmed is None else str(confirmed),
         },
         "completeness": {
@@ -376,6 +420,8 @@ def _report_extra(
             "not_yet_graded": not_graded,
         },
         "counts": dict(summ.counts),
+        "inert_runs_by_arm": _inert_runs(led, stage, summ.arms),
+        "platform": _platform(),
         "exclusions_by_arm": {a: summ.excluded_by_arm.get(a, 0) for a in summ.arms},
         "exclusions_by_repo": {r: dict(sorted(a.items())) for r, a in sorted(by_repo.items())},
         "preflight_excluded": len(preflight),
@@ -394,6 +440,53 @@ def _report_extra(
     }
 
 
+REPORT_KEYS = frozenset(
+    {
+        "n_boot",
+        "model_ids",
+        "claude_code_versions",
+        "run_plugin_hashes",
+        "grade_mode",
+        "price_table",
+        "completeness",
+        "counts",
+        "inert_runs_by_arm",
+        "platform",
+        "exclusions_by_arm",
+        "exclusions_by_repo",
+        "preflight_excluded",
+        "grade_oom_repeat",
+        "gate_check",
+        "per_repo",
+        "disclosures",
+    }
+)
+
+
+def _plan_problems(summ: Summary, header: Mapping[str, Any], frozen: set[str]) -> list[str]:
+    """Runs that differ from the plan in the ledger header (plugin hash, model, version)."""
+    plan = {k: header.get(k) for k in PLAN_FIELDS}
+    problems: list[str] = []
+    for field in PLAN_FIELDS:
+        bad = 0
+        for r in summ.runs:
+            value = getattr(r, field)
+            if field == "plugin_hash" and value is None and r.arm not in frozen:
+                continue  # a competitor run without the frozen plugin
+            bad += value != plan[field]
+        if bad:
+            problems.append(f"{bad} run(s) whose {field} differ from the ledger header")
+    return problems
+
+
+def _gate_problems(gate: GateLike, header: Mapping[str, Any]) -> list[str]:
+    return [
+        f"the gate's {field} differs from the ledger header"
+        for field in PLAN_FIELDS
+        if getattr(gate, field, None) != header.get(field)
+    ]
+
+
 def _document(
     led: Ledger,
     grades: Path,
@@ -408,6 +501,9 @@ def _document(
     header = led.header
     if header.get("stage") != stage:
         raise ReportError(f"the ledger is of stage {header.get('stage')!r}, not {stage!r}")
+    plugin_version = header.get("plugin_version")
+    if not isinstance(plugin_version, str) or not plugin_version:
+        raise ReportError("the ledger header lacks plugin_version (taken from the header only)")
     summ = summarise(
         led.records(),
         load_grades(grades, stage=stage),
@@ -417,12 +513,16 @@ def _document(
     for core in (BASELINE_ARM, TREATMENT_ARM):
         if core not in summ.arms:
             raise ReportError(f"stage {stage!r} has no {core!r} runs")
+    registry = load_arms()
+    frozen = {n for n, a in registry.items() if a.uses_frozen_plugin}
+    problems = _plan_problems(summ, header, frozen)
+    if gate is not None:
+        problems += _gate_problems(gate, header)
+    if problems:
+        raise ReportError("refusing to report: " + "; ".join(problems))
     mode, version = load_grade_mode()
     pre = _preflight(preflight)
     campaign = str(header["campaign"])
-    plugin_version = str(header.get("plugin_version") or "")
-    if not plugin_version:
-        plugin_version = str(header.get("plugin_ref") or "unknown").removeprefix("v")
     exclusions = [
         {
             "instance_id": e.instance_id,
@@ -435,6 +535,10 @@ def _document(
     ]
     if style_rule is None:
         style_rule = "not_run" if STYLE_ARM not in summ.arms else "keep_off"
+    gate_doc: dict[str, Any] | None = None
+    if gate is not None:
+        gate_doc = {"verdict": gate.verdict, "reasons": list(gate.reasons)}
+        gate_doc |= {f: getattr(gate, f) for f in PLAN_FIELDS}
     return {
         "schema_version": E4_SCHEMA_VERSION,
         "source": "E4",
@@ -461,10 +565,10 @@ def _document(
         "exclusions": exclusions,
         "power": None if power is None else dict(power),
         "results": _results(summ, n_boot),
-        "gate": None if gate is None else {"verdict": gate.verdict, "reasons": list(gate.reasons)},
+        "gate": gate_doc,
         "style_rule": style_rule,
         "report": _report_extra(
-            summ, led, grades, stage, mode, pre, summ.gate(TREATMENT_ARM, n_boot=n_boot)
+            summ, led, grades, stage, mode, pre, summ.gate(TREATMENT_ARM, n_boot=n_boot), n_boot
         ),
     }
 
@@ -477,9 +581,16 @@ def _label(row: Mapping[str, Any]) -> str:
 
 
 def _kind(row: Mapping[str, Any], stage: str) -> str:
-    if not row["confirmatory"]:
-        return "descriptive"
-    return "confirmatory" if stage == "confirmation" else "confirmatory metric (screening)"
+    if stage != "confirmation":
+        return "screening (descriptive)"
+    return "confirmatory" if row["confirmatory"] else "descriptive"
+
+
+def _method(row: Mapping[str, Any]) -> str:
+    degenerate = row["ci95"] == [0, 0] and row["estimate"] == 0
+    if row["metric"] == CONFIRMATORY_METRIC and not row["confirmatory"] and degenerate:
+        return f"{row['method']} (no discordant pairs)"
+    return str(row["method"])
 
 
 def _confirmatory(doc: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -487,11 +598,41 @@ def _confirmatory(doc: Mapping[str, Any]) -> Mapping[str, Any]:
     return rows[0]
 
 
+def _headline(doc: Mapping[str, Any]) -> list[str]:
+    """The opening sentence: gate verdict, power verdict and the confirmatory estimate."""
+    conf = _confirmatory(doc)
+    est = f"{_label(conf)} resolved difference in pp {format_result(conf)}"
+    if doc["stage"] != "confirmation":
+        return [
+            f"**{SCREENING_TITLE}.** Release gate: not evaluated. Power: not run. Screening "
+            f"estimate (seed 0, gate method): {est}.",
+            "",
+        ]
+    gate, power = doc["gate"], doc["power"]
+    verdict = gate["verdict"] if gate else "not evaluated"
+    power_v = power["verdict"] if power else "not run"
+    return [
+        f"**Release gate: {verdict}.** Power: {power_v}. Confirmatory estimate (seed 0): {est}.",
+        "",
+    ]
+
+
+def _conclusion(doc: Mapping[str, Any]) -> str:
+    conf = _confirmatory(doc)
+    head = f"{_label(conf)}, {format_result(conf)}"
+    if doc["stage"] != "confirmation":
+        return f"- Screening estimate (paired, seed 0, gate method): {head}; not a claim"
+    gate = doc["gate"]
+    verdict = gate["verdict"] if gate else "not evaluated"
+    gc = doc["report"]["gate_check"]
+    if verdict == "passed" and gc["pending"] == 0 and gc["paired_tasks"] >= gc["min_tasks"]:
+        return f"- Confirmatory result (paired, margin −5 pp): {head}: non-inferior at −5 pp"
+    return f"- Confirmatory result (paired, margin −5 pp): {head}: not established ({verdict})"
+
+
 def _claims(doc: Mapping[str, Any]) -> list[str]:
     rep = doc["report"]
     d, g, price = doc["date"], doc["grader"], rep["price_table"]
-    conf = _confirmatory(doc)
-    verdict = "non-inferior" if conf["non_inferior"] else "not shown non-inferior"
     confirmed = (
         f"confirmed against live pricing on {price['confirmed_live_on']}"
         if price["confirmed_live_on"]
@@ -515,14 +656,14 @@ def _claims(doc: Mapping[str, Any]) -> list[str]:
         for a in doc["arms"]
     )
     gc = rep["gate_check"]
-    comp = rep["completeness"]
+    comp, plat = rep["completeness"], rep["platform"]
     return [
         "## Claims",
         "",
         f"- Source: E4, suite `{doc['suite']}`, stage {doc['stage']}, campaign `{doc['campaign']}`",
         f"- Tasks: {doc['n_tasks']}; Seeds: {doc['seeds']}",
         f"- Model ids: {', '.join(f'`{m}`' for m in rep['model_ids'])} "
-        f"(campaign model `{doc['model']}`)",
+        f"(plan model `{doc['model']}`)",
         "- Claude Code: " + ", ".join(f"`{v}`" for v in rep["claude_code_versions"]),
         f"- Dates: {d['from']} to {d['to']} (UTC)",
         f"- Plugin version: `{doc['plugin_version']}`",
@@ -531,11 +672,10 @@ def _claims(doc: Mapping[str, Any]) -> list[str]:
         + ")",
         f"- Harness commit: `{doc['harness_commit']}`; script: `{doc['script']}`",
         f"- Grader: {g['name']} `{g['version']}`, mode `{rep['grade_mode']}`, arch {g['arch']}, "
-        "graded locally",
-        f"- Price table: {price['version']}; {confirmed}",
+        f"graded locally; bootstrap resamples `{rep['n_boot']}`",
+        f"- Price table `{price['version']}`; {confirmed}",
         f"- Arms (documented defaults): {arms}",
-        f"- Non-inferiority (paired, margin −5 pp): {_label(conf)}, {format_result(conf)}: "
-        f"{verdict}",
+        _conclusion(doc),
         f"- Power: {power_line}",
         f"- Release gate: {gate_line}; paired tasks {gc['paired_tasks']} (minimum "
         f"{gc['min_tasks']}), one-sided exclusions {gc['excluded_arm_only']} arm / "
@@ -545,6 +685,10 @@ def _claims(doc: Mapping[str, Any]) -> list[str]:
         "- Exclusions per arm: "
         + ", ".join(f"{a} {n}" for a, n in rep["exclusions_by_arm"].items())
         + f"; grading preflight {rep['preflight_excluded']}",
+        "- Inert runs per arm (`infra_fail/load`, never graded): "
+        + ", ".join(f"{a} {n}" for a, n in rep["inert_runs_by_arm"].items()),
+        f"- Platform: Verified tasks without an arm64 image {plat['verified_without_arm64']}, "
+        f"of them in Verified Mini {plat['mini_without_arm64']} (not in the pool)",
         "- grade_oom_repeat (graded unresolved: the patch ran grading out of memory every "
         "time): " + ", ".join(f"{a} {n}" for a, n in rep["grade_oom_repeat"].items()),
         f"- Completeness: pending keys {comp['pending_keys']}, final runs not yet graded "
@@ -567,11 +711,11 @@ def _claims(doc: Mapping[str, Any]) -> list[str]:
 
 
 def render_report(doc: Mapping[str, Any]) -> str:
-    """``report.md`` from an ``e4.json`` document (every figure comes from ``doc``)."""
+    """``report.md`` from an ``e4.json`` document: a pure function of ``doc``."""
     stage = doc["stage"]
-    body = _claims(doc)
+    body = _headline(doc) + _claims(doc)
     body += [
-        "## Results",
+        "## Results" if stage == "confirmation" else f"## {SCREENING_TITLE}",
         "",
         "Paired by task; each estimate with its 95 % CI and n (tasks, or task pairs).",
         "",
@@ -579,7 +723,7 @@ def render_report(doc: Mapping[str, Any]) -> str:
         "| --- | --- | --- | --- | --- |",
         *(
             f"| {r['metric']} | {_label(r)} | {_kind(r, stage)} | {format_result(r)} | "
-            f"{r['method']} |"
+            f"{_method(r)} |"
             for r in doc["results"]
         ),
         "",
@@ -610,12 +754,14 @@ def render_report(doc: Mapping[str, Any]) -> str:
 
 
 def render_figures(doc: Mapping[str, Any]) -> dict[str, str]:
+    """The three SVG figures from an ``e4.json`` document: a pure function of ``doc``."""
     rows = doc["results"]
+    stage = doc["stage"]
 
     def forest_rows(metric: str) -> list[svg.Row]:
         return [
             svg.Row(
-                f"{_label(r)} ({_kind(r, doc['stage'])})",
+                _label(r) + (" *" if r["confirmatory"] and stage == "confirmation" else ""),
                 r["estimate"],
                 r["ci95"][0],
                 r["ci95"][1],
@@ -642,21 +788,85 @@ def render_figures(doc: Mapping[str, Any]) -> dict[str, str]:
         svg.Point(a, cost[a]["estimate"], diff[a]["estimate"])
         for a in sorted(cost.keys() & diff.keys())
     ]
+    note = "" if stage == "confirmation" else "screening, descriptive; "
+    star = "* confirmatory; " if stage == "confirmation" else note
     return {
         "cost_ratio": svg.forest(
             forest_rows("cost_ratio_median"),
             ref=1.0,
-            title="Median cost ratio vs baseline (95 % CI)",
+            title=f"Median cost ratio vs baseline ({note}95 % CI)",
         ),
         "resolved_diff": svg.forest(
             forest_rows(CONFIRMATORY_METRIC),
             ref=float(MARGIN_PP),
-            title="Resolved difference vs baseline, pp (95 % CI; reference = margin)",
+            title=f"Resolved difference vs baseline, pp ({star}95 % CI; reference = margin)",
         ),
         "pareto": svg.scatter(
             points, title="Cost ratio (x) against resolved difference in pp (y), descriptive"
         ),
     }
+
+
+def _rendered(doc: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "report.md": render_report(doc),
+        **{f"figures/{k}.svg": v for k, v in render_figures(doc).items()},
+    }
+
+
+def lint_report(report_dir: Path) -> list[str]:
+    """Problems of a report directory: ``report.md`` and every figure must equal their fresh
+    re-render from the directory's ``e4.json`` byte for byte; ``report.md`` is then linted with
+    the generated-section allowance only if it does (else every figure in it is flagged)."""
+    try:
+        doc = load_e4(report_dir / "e4.json")
+    except (OSError, E4Error) as exc:
+        return [f"e4.json: {exc}"]
+    problems: list[str] = []
+    expected = _rendered(doc)
+    for rel, text in expected.items():
+        try:
+            actual = (report_dir / rel).read_text(encoding="utf-8")
+        except OSError:
+            problems.append(f"{rel}: missing")
+            continue
+        if actual != text:
+            problems.append(f"{rel}: differs from its re-render from e4.json")
+        if rel == "report.md":
+            problems += [
+                f"report.md: figure {v!r}" for v in figure_violations(actual, rendered=text)
+            ]
+    return problems
+
+
+def _published_problems(doc: Mapping[str, Any]) -> list[str]:
+    """Publish-time checks on the document itself (the runs and the gate match the plan)."""
+    rep = doc.get("report")
+    if not isinstance(rep, Mapping) or set(rep) != REPORT_KEYS:
+        return ["the report object does not have exactly the generated keys"]
+    problems: list[str] = []
+    comp = rep["completeness"]
+    if not isinstance(comp, Mapping) or comp.get("complete") is not True:
+        problems.append(f"stage {doc['stage']!r} is not completely graded: {comp!r}")
+    if not isinstance(rep["n_boot"], int) or rep["n_boot"] < MIN_PUBLISH_N_BOOT:
+        problems.append(f"n_boot {rep['n_boot']!r} < {MIN_PUBLISH_N_BOOT}")
+    if doc["stage"] == "confirmation" and not rep["price_table"].get("confirmed_live_on"):
+        problems.append("a confirmation needs its price table confirmed against live pricing")
+    for key, field in (
+        ("run_plugin_hashes", "plugin_hash"),
+        ("model_ids", "model"),
+        ("claude_code_versions", "claude_code_version"),
+    ):
+        if rep[key] != [doc[field]]:
+            problems.append(f"runs whose {field} differ from the plan ({key})")
+    gate = doc["gate"]
+    if gate is not None:
+        problems += [
+            f"the gate's {field} differs from the plan"
+            for field in PLAN_FIELDS
+            if gate.get(field) != doc[field]
+        ]
+    return problems
 
 
 # --------------------------------------------------------------------------- entry points
@@ -675,11 +885,13 @@ def build_report(
     preflight: Path | None = None,
 ) -> Path:
     """Write ``e4.json``, ``report.md`` and ``figures/*.svg`` into ``out_dir``; return
-    ``out_dir``. ``gate`` = Task 10's `GateResult` (None in screening), ``power`` = the
-    power plan's ``as_e4()`` (None in screening); ``style_rule`` defaults to ``not_run`` (no
-    ``ts-style`` runs) or ``keep_off``; ``preflight`` = the grading preflight's
+    ``out_dir``. ``gate`` = Task 10's `GateResult` (None in screening; it must carry the
+    ``plugin_hash``, ``model`` and ``claude_code_version`` it was evaluated for), ``power`` =
+    the power plan's ``as_e4()`` (None in screening); ``style_rule`` defaults to ``not_run``
+    (no ``ts-style`` runs) or ``keep_off``; ``preflight`` = the grading preflight's
     ``preflight.json`` (its exclusions are disclosed). Nothing is written when the document is
-    invalid or any artefact holds private data."""
+    invalid, a run or the gate differs from the plan in the ledger header, or any artefact
+    holds private data."""
     assert_e4_source(ledger)
     doc = _document(
         Ledger(ledger),
@@ -694,11 +906,7 @@ def build_report(
     problems = validate_e4(doc)
     if problems:
         raise ReportError("invalid e4.json: " + "; ".join(problems))
-    files = {
-        "e4.json": json.dumps(doc, indent=2) + "\n",
-        "report.md": render_report(doc),
-        **{f"figures/{k}.svg": v for k, v in render_figures(doc).items()},
-    }
+    files = {"e4.json": json.dumps(doc, indent=2) + "\n", **_rendered(doc)}
     hits = sorted({h for text in files.values() for h in _env_scan(text)})
     if hits:
         raise PrivateDataError("refusing to write the report: " + ", ".join(hits))
@@ -711,31 +919,27 @@ def build_report(
 
 def publish(report_dir: Path, repo: Path) -> list[Path]:
     """Copy a built report into ``repo``: ``docs/benchmarks/<campaign>-<stage>/`` (report,
-    figures, ``e4.json``) and, for a confirmation only, ``docs/evidence/e4.json``. Refused
-    (nothing written) unless ``e4.json`` validates, the stage is completely graded, a
-    confirmation's price table was confirmed against live pricing, the report passes the figure
-    lint and no file holds private data."""
+    figures, ``e4.json``) and, for a confirmation only, ``docs/evidence/`` (the same files; M6
+    reads ``docs/evidence/e4.json``). Refused (nothing written) unless ``TOKEN_SPAREN_DENYLIST``
+    is set, ``e4.json`` validates, the report and figures equal their re-render from it, the
+    stage is completely graded with the full bootstrap, every run and the gate match the plan,
+    a confirmation's price table was confirmed against live pricing, and no file holds private
+    data."""
+    if not [w for w in os.environ.get(DENYLIST_ENV, "").split(",") if w.strip()]:
+        raise ReportError(f"{DENYLIST_ENV} is empty: refusing to publish (fail closed)")
     doc = load_e4(report_dir / "e4.json")
-    rep = doc.get("report")
-    comp = rep.get("completeness") if isinstance(rep, Mapping) else None
-    if not isinstance(comp, Mapping) or comp.get("complete") is not True:
-        raise ReportError(f"stage {doc['stage']!r} is not completely graded: {comp!r}")
-    price = rep.get("price_table") if isinstance(rep, Mapping) else None
-    if doc["stage"] == "confirmation" and not (
-        isinstance(price, Mapping) and price.get("confirmed_live_on")
-    ):
-        raise ReportError("a confirmation needs its price table confirmed against live pricing")
+    problems = lint_report(report_dir) + _published_problems(doc)
+    if problems:
+        raise ReportError("refusing to publish: " + "; ".join(problems))
     names = ["report.md", "e4.json", *(f"figures/{f}.svg" for f in FIGURES)]
     texts = {n: (report_dir / n).read_text(encoding="utf-8") for n in names}
-    if figure_violations(texts["report.md"], allow_generated=True):
-        raise ReportError("report.md has figures outside its generated section")
     hits = sorted({h for text in texts.values() for h in _env_scan(text)})
     if hits:
         raise PrivateDataError("refusing to publish: " + ", ".join(hits))
-    dest = repo / "docs" / "benchmarks" / f"{doc['campaign']}-{doc['stage']}"
-    targets = {dest / n: texts[n] for n in names}
+    dests = [repo / "docs" / "benchmarks" / f"{doc['campaign']}-{doc['stage']}"]
     if doc["stage"] == "confirmation":
-        targets[repo / "docs" / "evidence" / "e4.json"] = texts["e4.json"]
+        dests.append(repo / "docs" / "evidence")
+    targets = {dest / n: texts[n] for dest in dests for n in names}
     for path, text in targets.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -750,6 +954,8 @@ __all__: Sequence[str] = (
     "assert_e4_source",
     "build_report",
     "format_result",
+    "generated_block",
+    "lint_report",
     "publish",
     "render_figures",
     "render_report",

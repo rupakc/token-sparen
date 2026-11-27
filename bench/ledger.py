@@ -3,7 +3,8 @@
 One JSON object per line, private (0600). The first line is the header::
 
     {"kind": "e4-ledger", "schema": 1, "campaign", "stage", "harness_commit", "plugin_hash",
-     "plugin_ref", "pins", "model", "claude_code_version", "price_table_version"}
+     "plugin_ref", "pins", "model", "claude_code_version", "price_table_version",
+     "price_table_id"}
 
 Every later record has ``kind`` (one of `RECORD_KINDS`) and ``at`` (epoch seconds):
 
@@ -52,7 +53,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from bench.streamjson import PRICE_TABLE_VERSION
+from bench.streamjson import PRICE_TABLE_ID, PRICE_TABLE_VERSION
 from token_sparen.store.jsonstore import locked
 
 LEDGER_KIND = "e4-ledger"
@@ -205,6 +206,7 @@ class Ledger:
                 raise LedgerError(f"ledger header lacks {', '.join(missing)}")
             doc = {"kind": LEDGER_KIND, "schema": SCHEMA, **dict(header)}
             doc.setdefault("price_table_version", PRICE_TABLE_VERSION)
+            doc.setdefault("price_table_id", PRICE_TABLE_ID)
             path.parent.mkdir(parents=True, exist_ok=True)
             with locked(path, timeout=LOCK_TIMEOUT_S):
                 lines = read_jsonl(path)  # re-checked under the lock: one header only
@@ -217,7 +219,7 @@ class Ledger:
         if first.get("kind") != LEDGER_KIND or first.get("schema") != SCHEMA:
             raise LedgerError(f"not an E4 ledger (schema {SCHEMA}): {path}")
         if header is not None:
-            for k in (*HEADER_KEYS, "price_table_version"):
+            for k in (*HEADER_KEYS, "price_table_version", "price_table_id"):
                 if k in header and header[k] != first.get(k):
                     raise LedgerError(f"ledger header {k} differs: {first.get(k)!r}")
         self.header = first

@@ -5,15 +5,14 @@ near result words) outside the Evidence block: results appear only in the render
 table, with their confidence intervals (M6 Task 5). Used by `tests/test_user_docs.py` (docs
 pages, README) and `scripts/release_notes.py` (release notes). Stdlib only.
 
-The generated E4 report (`bench/report.py`, M5 Task 11) is linted with ``allow_generated=True``:
-only then is a section wrapped by `generated_block` exempt, and only while its body still hashes
-to the sha256 in its opening marker (a hand edit or a hand-typed number loses the exemption).
-README, docs pages and release notes keep the default and never get this exemption.
+The generated E4 report (`bench/report.py`, M5 Task 11) is linted with ``rendered=`` its fresh
+re-render from `e4.json`: a section wrapped by `generated_block` is exempt only when the file is
+byte-identical to that re-render, so a hand edit or a hand-typed number loses the exemption.
+README, docs pages and release notes pass no re-render and never get this exemption.
 """
 
 from __future__ import annotations
 
-import hashlib
 import re
 
 # Both marker spellings: docs pages (evidence, /evidence) and the README renderer (evidence:start,
@@ -21,13 +20,9 @@ import re
 _EVIDENCE = re.compile(
     r"<!--\s*evidence(?::start)?\s*-->.*?<!--\s*(?:/evidence|evidence:end)\s*-->", re.S
 )
-# A generated report section (bench/report.py): exempt only while its body still hashes to the
-# sha256 in its opening marker, so a hand edit (or a hand-typed number) loses the exemption.
-_GENERATED = re.compile(
-    r"<!-- generated:e4-report sha256=(?P<sha>[0-9a-f]{64}) -->\n(?P<body>.*?)"
-    r"<!-- /generated:e4-report -->",
-    re.S,
-)
+# A generated E4 report section (bench/report.py): exempt only when the caller passes a fresh
+# re-render of the whole file from its e4.json and the file is byte-identical to it.
+_GENERATED = re.compile(r"<!-- generated:e4-report -->\n.*?<!-- /generated:e4-report -->", re.S)
 _FENCE = re.compile(r"^(?P<intro>(?:[^\n]+\n)+)\n```[^\n]*\n.*?\n```", re.M | re.S)
 _KEYWORDS = re.compile(
     r"\b(?:saved|savings|reduction|reduces|cheaper|faster|resolved|pass rate|fewer tokens)\b", re.I
@@ -58,28 +53,22 @@ _ALLOWED = [
 ]
 
 
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+GENERATED_START = "<!-- generated:e4-report -->"
+GENERATED_END = "<!-- /generated:e4-report -->"
 
 
 def generated_block(body: str) -> str:
-    """Wrap machine-generated report text (figures from `e4.json`) in the hashed marker pair."""
+    """Wrap machine-generated report text (figures rendered from `e4.json`) in the markers."""
     body = body if body.endswith("\n") else body + "\n"
-    return (
-        f"<!-- generated:e4-report sha256={_sha256(body)} -->\n{body}<!-- /generated:e4-report -->"
-    )
+    return f"{GENERATED_START}\n{body}{GENERATED_END}"
 
 
-def _drop_generated(m: re.Match[str]) -> str:
-    return " " if _sha256(m.group("body")) == m.group("sha") else m.group("body")
-
-
-def _strip_exempt(text: str, allow_generated: bool) -> str:
-    """Drop the Evidence block, (if allowed) untouched generated report sections and fenced
-    examples that announce themselves as made up."""
+def _strip_exempt(text: str, rendered: str | None) -> str:
+    """Drop the Evidence block, generated report sections (only when the whole text equals its
+    fresh re-render ``rendered``) and fenced examples that announce themselves as made up."""
     text = _EVIDENCE.sub(" ", text)
-    if allow_generated:
-        text = _GENERATED.sub(_drop_generated, text)
+    if rendered is not None and text == _EVIDENCE.sub(" ", rendered):
+        text = _GENERATED.sub(" ", text)
 
     def keep_fence(m: re.Match[str]) -> str:
         return " " if re.search(r"made up|illustrative", m.group("intro"), re.I) else m.group(0)
@@ -87,10 +76,11 @@ def _strip_exempt(text: str, allow_generated: bool) -> str:
     return _FENCE.sub(keep_fence, text)
 
 
-def figure_violations(text: str, *, allow_generated: bool = False) -> list[str]:
+def figure_violations(text: str, *, rendered: str | None = None) -> list[str]:
     """Savings/quality/cost results (percentages, multipliers, money, numbers near result words).
-    ``allow_generated``: exempt intact `generated_block` sections (the E4 report only)."""
-    text = _strip_exempt(text, allow_generated)
+    ``rendered``: the caller's fresh re-render of this file from its data (the E4 report:
+    `bench.report.lint_report`); generated sections are exempt only when ``text`` equals it."""
+    text = _strip_exempt(text, rendered)
     text = re.sub(r"^\s*\d+\.\s", " ", text, flags=re.M)  # list numbers
     text = re.sub(r"\s+", " ", text)
     for phrase in _ALLOWED:
