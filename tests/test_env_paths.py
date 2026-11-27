@@ -230,3 +230,51 @@ def test_launcher_root_alias_spelling_is_still_inside(tmp_path: Path, user_home:
     base = {k: v for k, v in os.environ.items() if k not in {"CLAUDE_CONFIG_DIR"}}
     env = {**base, "HOME": str(user_home), "TOKEN_SPAREN_ROOT": alias}
     assert "PLANTED" not in _launch({**env, "CLAUDE_PROJECT_DIR": str(repo)}, repo)
+
+
+def _fake_stat(monkeypatch: pytest.MonkeyPatch, at: Path, *, uid: int, mode: int) -> None:
+    real = os.stat
+    fake = os.stat_result((mode, 1, 1, 1, uid, 0, 0, 0, 0, 0))
+
+    def stat(path: object, *a: object, **k: object) -> os.stat_result:
+        if os.fspath(path) == str(at):  # type: ignore[call-overload]
+            return fake
+        return real(path, *a, **k)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(config.os, "stat", stat)
+
+
+_DIR = 0o040000
+_STICKY = 0o1000
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="ownership is checked on POSIX only")
+@pytest.mark.parametrize(
+    ("uid_off", "mode", "exists", "expected"),
+    [
+        (0, _DIR | 0o755, False, True),  # new path, user-owned parent
+        (None, _DIR | 0o777 | _STICKY, False, True),  # new path, root-owned sticky parent
+        (None, _DIR | 0o755, False, False),  # new path, root-owned non-sticky parent
+        (1, _DIR | 0o777 | _STICKY, False, False),  # new path, other user's parent
+        (None, _DIR | 0o777 | _STICKY, True, False),  # existing path, root-owned (sticky)
+        (1, _DIR | 0o755, True, False),  # existing path, other uid
+        (0, _DIR | 0o755, True, True),  # existing path, ours
+    ],
+)
+def test_ownership_rule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    uid_off: int | None,
+    mode: int,
+    exists: bool,
+    expected: bool,
+) -> None:
+    me = os.getuid()
+    uid = 0 if uid_off is None else me + uid_off
+    if uid_off is None and me == 0:
+        pytest.skip("running as root")
+    target = tmp_path / "state"
+    if exists:
+        target.mkdir()
+    _fake_stat(monkeypatch, target if exists else tmp_path, uid=uid, mode=mode)
+    assert config._owned(str(target if exists else target / "new")) is expected

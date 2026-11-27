@@ -77,6 +77,8 @@ everything else. No savings figures are claimed for them yet.
   `watch_calls`. Bounded per-turn state (hashes only) in the session overlay.
 
 #### Fixed
+- A not-yet-created `TOKEN_SPAREN_HOME` under a root-owned sticky directory such as `/tmp` is
+  accepted (the nearest existing parent may be ours or root-owned with the sticky bit).
 - With `TOKEN_SPAREN_DISABLE=1` a hook no longer writes its sampled line to
   `logs/latency.jsonl`: the kill switch now writes nothing at all.
 - Settings writes now detect a concurrent same-size edit (within mtime resolution) by a content

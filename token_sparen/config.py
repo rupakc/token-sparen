@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 import time
 import tomllib
 from collections.abc import Iterator, Mapping
@@ -94,7 +95,9 @@ def _work_tree(start: str) -> str | None:
 
 
 def _owned(path: str) -> bool:
-    """POSIX: ``path`` or its nearest existing ancestor is owned by the current user."""
+    """POSIX: an existing ``path`` is owned by the current user; a missing one has a nearest
+    existing ancestor that is owned by the current user or is a root-owned sticky directory
+    (``/tmp``, ``/var/tmp``), where only its creator can later replace the new entry."""
     getuid = getattr(os, "getuid", None)
     if os.name != "posix" or getuid is None:
         return True
@@ -105,9 +108,12 @@ def _owned(path: str) -> bool:
             return False
         cur = parent
     try:
-        return bool(os.stat(cur).st_uid == getuid())
+        st = os.stat(cur)
     except OSError:
         return False
+    if st.st_uid == getuid():
+        return True
+    return cur != path and st.st_uid == 0 and bool(st.st_mode & stat.S_ISVTX)
 
 
 def _project_roots(env: Mapping[str, str], cwd: str) -> set[tuple[int, int]]:
@@ -130,7 +136,8 @@ def _project_roots(env: Mapping[str, str], cwd: str) -> set[tuple[int, int]]:
 def env_path(env: Mapping[str, str], name: str) -> Path | None:
     """A path-valued ``TOKEN_SPAREN_*`` variable, or None if unset or not safe to honour: it
     resolves inside the current project (the hook's project dir or cwd, or their git work tree)
-    or, on POSIX, it (or its nearest existing parent) is not owned by the current user. A
+    or, on POSIX, it is not owned by the current user (a missing path: its nearest existing
+    parent is neither ours nor a root-owned sticky directory). A
     rejected value is logged once per process to the default state root's errors.jsonl."""
     value = env.get(name)
     if not value:
