@@ -4,18 +4,21 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from bench import power, stages
+from bench.ledger import Ledger
 from bench.stats import Exclusion, RunRow, Summary
 from bench.tasks import Task, arm64_image, load_pool
+from tests.bench.test_gate import HASH, make_ledger
 
 # small simulation budgets keep the suite fast (the controller-run power step uses the defaults)
 FAST: dict[str, Any] = {"n_sim": 60, "n_boot": 120}
 ROOMY_QUOTA = stages.QuotaProjection(pct_per_run_weekly=0.01, runs_per_week=1e6)
-ROOMY_DISK = stages.DiskProjection(gb_per_image=5.0, gb_kept=100.0, free_gb=1000.0)
+ROOMY_DISK = stages.DiskProjection(gb_per_image=5.0, gb_kept=100.0, free_gb=1000.0, gb_per_run=0.0)
 
 
 def _pool(n: int, mini: int = 44) -> list[Task]:
@@ -39,8 +42,11 @@ def _summary(
     for arm, res in outcomes.items():
         for i, ok in enumerate(res):
             rows.append(
-                RunRow(arm, 0, f"r__r-{i}", "r/r", "ok", costs[arm][i], ok, model="m", live=True)
-            )
+                RunRow(
+                    arm, 0, f"r__r-{i}", "r/r", "ok", costs[arm][i], ok, model="m", live=True,
+                    plugin_hash=HASH if arm in stages.FROZEN_ARMS else None,
+                )
+            )  # fmt: skip
     tasks = tuple(sorted({r.instance_id for r in rows}))
     return Summary(
         stage, "baseline", tuple(sorted(outcomes)), (0,), tasks, tuple(rows), tuple(exclusions)
@@ -182,7 +188,7 @@ def test_disk_projection_in_sizing() -> None:
     spec = replace(stages.SCREENING, arms=("baseline", "token-sparen"), tasks=("a", "b"))
     assert spec.runs == 4
     # free − kept − one live image − growth ≥ 30 GB
-    ok = stages.DiskProjection(gb_per_image=10, gb_kept=60, free_gb=100)
+    ok = stages.DiskProjection(gb_per_image=10, gb_kept=60, free_gb=100, gb_per_run=0)
     assert stages.fits(spec, ROOMY_QUOTA, ok)
     assert not stages.fits(spec, ROOMY_QUOTA, replace(ok, free_gb=99.9))
     assert not stages.fits(spec, ROOMY_QUOTA, replace(ok, gb_per_run=0.1))
@@ -201,7 +207,7 @@ def test_disk_projection_in_sizing() -> None:
     core, verdict = stages.confirmation_spec(SCREEN, disk=per_run, **kw)
     assert core.arms == ("baseline", "token-sparen") and verdict == "powered"
     # not even the core fits above the 30 GB floor → underpowered
-    full_disk = stages.DiskProjection(gb_per_image=5, gb_kept=100, free_gb=130)
+    full_disk = stages.DiskProjection(gb_per_image=5, gb_kept=100, free_gb=130, gb_per_run=0)
     assert stages.confirmation_spec(SCREEN, disk=full_disk, **kw)[1] == "underpowered"
 
 
@@ -211,7 +217,7 @@ def test_projection_validation() -> None:
     with pytest.raises(ValueError):
         stages.QuotaProjection(pct_per_run_weekly=1, runs_per_week=-1)
     with pytest.raises(ValueError):
-        stages.DiskProjection(gb_per_image=-1, gb_kept=0, free_gb=10)
+        stages.DiskProjection(gb_per_image=-1, gb_kept=0, free_gb=10, gb_per_run=0)
     q = stages.QuotaProjection(pct_per_run_weekly=2.5, runs_per_week=100)
     assert q.weekly_runs() == 24  # 60 % stop / 2.5 % per run
     assert q.weeks_needed(48) == 2
@@ -221,18 +227,123 @@ def _confirm(n: int = 100, **arms: tuple[float, int]) -> Summary:
     return replace(_screen(n, **arms), stage="confirmation")
 
 
-def test_style_needs_confirmation_evidence() -> None:
+def _tasks(n: int) -> list[str]:
+    return [f"r__r-{i}" for i in range(n)]
+
+
+FLIP = power.FlipModel(0.1, 0.05, 44, 0.08, 0.16)
+
+
+def _power(n: int) -> power.PowerPlan:
+    return power.PowerPlan(n, 1, 0.85, "powered")
+
+
+def test_style_needs_confirmation_evidence(tmp_path: Path) -> None:
     kw: dict[str, Any] = {"n_boot": 200}
+    led = make_ledger(tmp_path, _tasks(100), arms=(*stages.CORE_ARMS, "ts-style"))
+    screen_led = make_ledger(tmp_path / "s", _tasks(44), stage="screening", write_plan=False)
     # screening only: never recommended, even with excellent descriptive numbers
-    assert stages.style_rule(SCREEN, confirmatory=False, **kw) == "keep_off"
+    assert stages.style_rule(SCREEN, ledger=screen_led, **kw) == "keep_off"
     good = _confirm(ts_style=(0.6, 0))
-    assert stages.style_rule(good, confirmatory=False, **kw) == "keep_off"
-    assert stages.style_rule(good, confirmatory=True, **kw) == "recommend_opt_in"
+    assert stages.style_rule(good, ledger=led, **kw) == "recommend_opt_in"
+    # review I2: confirmatory status comes from the ledger's stage record, never the caller
+    assert stages.style_rule(good, ledger=screen_led, **kw) == "keep_off"
+    assert stages.style_rule(replace(good, stage="screening"), ledger=led, **kw) == "keep_off"
+    with pytest.raises(TypeError):
+        stages.style_rule(good, confirmatory=True)  # type: ignore[call-arg]
     # not cheaper than token-sparen (upper bound ≥ 1) → keep off
-    assert stages.style_rule(_confirm(ts_style=(0.8, 0)), confirmatory=True, **kw) == "keep_off"
+    assert stages.style_rule(_confirm(ts_style=(0.8, 0)), ledger=led, **kw) == "keep_off"
     # inferior vs baseline and token-sparen → keep off
-    bad = _confirm(ts_style=(0.6, 12))
-    assert stages.style_rule(bad, confirmatory=True, **kw) == "keep_off"
+    assert stages.style_rule(_confirm(ts_style=(0.6, 12)), ledger=led, **kw) == "keep_off"
     # not run in this stage
-    assert stages.style_rule(_confirm(), confirmatory=True, **kw) == "not_run"
-    assert stages.style_rule(_confirm(), confirmatory=False, **kw) == "not_run"
+    assert stages.style_rule(_confirm(), ledger=led, **kw) == "not_run"
+    assert stages.style_rule(_confirm(), ledger=screen_led, **kw) == "not_run"
+
+
+def test_style_counts_only_live_hash_verified_runs(tmp_path: Path) -> None:
+    """Review I2: a non-live or unhashed ts-style run is excluded (imputed by the gate rule),
+    never counted as evidence; planned tasks without a ts-style outcome keep it off."""
+    kw: dict[str, Any] = {"n_boot": 200}
+    led = make_ledger(tmp_path, _tasks(100), arms=(*stages.CORE_ARMS, "ts-style"))
+    good = _confirm(ts_style=(0.6, 0))
+
+    def spoil(s: Summary, **changes: Any) -> Summary:
+        return replace(
+            s, runs=tuple(replace(r, **changes) if r.arm == "ts-style" else r for r in s.runs)
+        )
+
+    assert stages.style_rule(spoil(good, live=False), ledger=led, **kw) == "keep_off"
+    assert stages.style_rule(spoil(good, plugin_hash=None), ledger=led, **kw) == "keep_off"
+    assert stages.style_rule(spoil(good, plugin_hash="b" * 64), ledger=led, **kw) == "keep_off"
+    # a few spoiled runs on resolved tasks are imputed as ts-style failures
+    runs = list(good.runs)
+    spoiled = 0
+    for i, r in enumerate(runs):
+        if r.arm == "ts-style" and r.resolved and spoiled < 6:
+            runs[i], spoiled = replace(r, live=False), spoiled + 1
+    assert stages.style_rule(replace(good, runs=tuple(runs)), ledger=led, **kw) == "keep_off"
+    # incomplete ts-style evidence (a planned task without a run) → keep off
+    short = replace(
+        good,
+        runs=tuple(r for r in good.runs if not (r.arm == "ts-style" and r.instance_id == "r__r-3")),
+    )
+    assert stages.style_rule(short, ledger=led, **kw) == "keep_off"
+
+
+def test_plan_persisted_with_content_hash(tmp_path: Path) -> None:
+    """Review I3: the confirmation plan is written to the ledger at confirmation start."""
+    led = make_ledger(tmp_path, _tasks(90))
+    plan = stages.read_plan(led)
+    assert plan.tasks == tuple(_tasks(90)) and plan.seed == 0 and plan.verdict == "powered"
+    assert plan.model == "claude-x" and plan.claude_code_version == "2.1.0"
+    assert plan.plugin_hash == HASH and len(plan.sha256) == 64
+    assert plan.arms == stages.CORE_ARMS and plan.power["required_tasks"] == 90
+    # idempotent for the same plan, refused for a different one
+    spec = stages.StageSpec(
+        "confirmation", stages.CORE_ARMS, (), (0,), "claude-x", tuple(_tasks(90))
+    )
+    same = stages.ConfirmationPlan(spec, "powered", _power(90), FLIP, ())
+    assert stages.write_plan(led, same) == plan
+    with pytest.raises(stages.PlanError, match="different"):
+        stages.write_plan(led, replace(same, spec=replace(spec, tasks=tuple(_tasks(91)))))
+    # tampering is detected
+    lines = led.path.read_text(encoding="utf-8").splitlines()
+    lines[1] = lines[1].replace('"r__r-5"', '"r__r-500"')
+    led.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(stages.PlanError, match="hash"):
+        stages.read_plan(Ledger(led.path))
+
+
+def test_plan_refused_after_runs_or_on_mismatch(tmp_path: Path) -> None:
+    led = make_ledger(tmp_path, _tasks(90), write_plan=False)
+    spec = stages.StageSpec(
+        "confirmation", stages.CORE_ARMS, (), (0,), "other-model", tuple(_tasks(90))
+    )
+    plan = stages.ConfirmationPlan(spec, "powered", _power(90), FLIP, ())
+    with pytest.raises(stages.PlanError, match="model"):
+        stages.write_plan(led, plan)
+    led.append({"kind": "start", "key": "c/confirmation/baseline/0/r__r-0", "attempt": 1})
+    with pytest.raises(stages.PlanError, match="start"):
+        stages.write_plan(led, replace(plan, spec=replace(spec, model="claude-x")))
+    with pytest.raises(stages.PlanError, match="no confirmation plan"):
+        stages.read_plan(led)
+    screen = make_ledger(tmp_path / "s", _tasks(44), stage="screening", write_plan=False)
+    with pytest.raises(stages.PlanError, match="confirmation"):
+        stages.write_plan(screen, replace(plan, spec=replace(spec, model="claude-x")))
+
+
+def test_quota_retry_inflation_and_bound_reason() -> None:
+    """Minors M2/M3: retries inflate the projection; the reason names the binding limit."""
+    q = stages.QuotaProjection(pct_per_run_weekly=2.5, runs_per_week=100, retry_rate=0.5)
+    assert q.weeks_needed(48) == 3  # 72 attempts at 24 a week
+    pool = _pool(300)
+    tight = stages.QuotaProjection(pct_per_run_weekly=0.01, runs_per_week=10)
+    plan = stages.plan_confirmation(
+        SCREEN, pool=pool, quota=tight, disk=ROOMY_DISK, model="m", **FAST
+    )
+    assert any("quota" in r for r in plan.reasons) and not any("disk" in r for r in plan.reasons)
+    small_disk = stages.DiskProjection(gb_per_image=5, gb_kept=100, free_gb=130, gb_per_run=0)
+    plan = stages.plan_confirmation(
+        SCREEN, pool=pool, quota=ROOMY_QUOTA, disk=small_disk, model="m", **FAST
+    )
+    assert any("disk" in r for r in plan.reasons) and not any("quota" in r for r in plan.reasons)

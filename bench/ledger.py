@@ -33,6 +33,9 @@ Every later record has ``kind`` (one of `RECORD_KINDS`) and ``at`` (epoch second
   bounded rounds).
 * ``excluded``: the fields of `Ledger.excluded_after_retries` for a key that stays unrunnable
   after its rounds (an audit record; the method computes the live list).
+* ``plan`` (confirmation only, before the first ``start``; `bench.stages.write_plan`):
+  ``plan`` (planned tasks, arms, seed, model, Claude Code version, plugin_hash, power verdict)
+  and ``plan_sha256`` over its canonical JSON. The release gate reads it back.
 
 A key's final outcome is its last non-invalidated ``end`` with status ``ok`` or ``agent_fail``;
 ``infra_fail`` is never final. These shapes are what `bench.stats.summarise` (Task 9) reads.
@@ -68,7 +71,18 @@ HEADER_KEYS = (
     "claude_code_version",
 )
 RECORD_KINDS = frozenset(
-    {"start", "end", "quota", "pause", "invalidate", "promote", "graded", "retry", "excluded"}
+    {
+        "start",
+        "end",
+        "quota",
+        "pause",
+        "invalidate",
+        "promote",
+        "graded",
+        "retry",
+        "excluded",
+        "plan",
+    }
 )
 GRADED = frozenset({"ok", "agent_fail"})
 MAX_INFRA_ATTEMPTS = 3
