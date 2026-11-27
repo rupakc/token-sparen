@@ -681,6 +681,67 @@ def test_preflight_attempt_reserved_before_grading(tmp_path: Path) -> None:
     assert not {c[1] for c in crashing.calls} & {c[1] for c in ok.calls}
 
 
+# --- ruling N1: repeated grading OOM of an agent patch ------------------------------------
+
+
+class Ooms(gr.FakeGrader):
+    """Every graded instance OOMs (harness error, reason ``oom``)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_reasons: dict[str, str] = {}
+
+    def grade(self, preds: Path, run_id: str, ids: Sequence[str]) -> dict[str, bool | None]:
+        self.calls.append((preds, run_id, list(ids)))
+        self.last_reasons = dict.fromkeys(ids, "oom")
+        return dict.fromkeys(ids, None)
+
+
+def test_repeated_grade_oom_is_unresolved_when_gold_passed(tmp_path: Path) -> None:
+    """Gold passed preflight under the same memory cap, so an agent patch that OOMs the grading
+    container on every attempt caused it: unresolved (`grade_oom_repeat`), not dropped."""
+    ledger = _ledger(tmp_path, [(DJANGO, "ts", 1, "p1"), (SPHINX, "ts", 1, "p2")])
+    grader = Ooms()
+    for _ in range(gr.MAX_GRADE_ATTEMPTS + 1):
+        gr.grade_stage(ledger, grader, stage="screening", gold_ok={DJANGO})
+    assert len([c for c in grader.calls if DJANGO in c[2]]) == gr.MAX_GRADE_ATTEMPTS
+    path = gr.grades_path(ledger)
+    assert gr.load_grades(path, stage="screening") == {
+        f"{DJANGO}/ts/s1": False,
+        f"{SPHINX}/ts/s1": None,  # gold not ok for this task: stays infra
+    }
+    assert gr.ungradable(path, stage="screening") == {f"{SPHINX}/ts/s1"}
+    last = [g for g in _grades(ledger) if g["kind"] == "grade" and g["instance_id"] == DJANGO]
+    assert last[-1]["reason"] == "grade_oom_repeat"
+    assert gr.grade_oom_repeat_counts(path, stage="screening") == {"ts": 1}
+
+
+def test_mixed_harness_errors_never_become_unresolved(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path, [(DJANGO, "ts", 1, "p1")])
+
+    class Mixed(Ooms):
+        def grade(self, preds: Path, run_id: str, ids: Sequence[str]) -> dict[str, bool | None]:
+            out = super().grade(preds, run_id, ids)
+            if len(grader.calls) == 0:
+                self.last_reasons = dict.fromkeys(ids, "docker")
+            grader.calls.append((preds, run_id, list(ids)))
+            return out
+
+    grader = gr.FakeGrader()
+    for _ in range(gr.MAX_GRADE_ATTEMPTS):
+        gr.grade_stage(ledger, Mixed(), stage="screening", gold_ok={DJANGO})
+    path = gr.grades_path(ledger)
+    assert len(grader.calls) == gr.MAX_GRADE_ATTEMPTS
+    assert gr.load_grades(path, stage="screening") == {f"{DJANGO}/ts/s1": None}
+    assert gr.grade_oom_repeat_counts(path, stage="screening") == {}
+
+
+def test_preflight_ok_ids(tmp_path: Path) -> None:
+    rows = [_row(DJANGO), _row(SPHINX)]
+    gr.preflight(rows, gr.FakeGrader(results={DJANGO: True, SPHINX: False}), work=tmp_path / "pf")
+    assert gr.preflight_ok(tmp_path / "pf") == {DJANGO}
+
+
 # --- the optional live check ------------------------------------------------------------
 
 

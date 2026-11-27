@@ -41,7 +41,7 @@ import json
 import os
 import subprocess
 import threading
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol, get_args
@@ -77,6 +77,7 @@ GRADE_MODES: tuple[str, ...] = get_args(GradeMode)
 PreflightStatus = Literal["ok", "excluded"]
 ExclusionReason = Literal["build", "gold_fail", "flaky_gold", "noop_pass", "harness_error"]
 MAX_GRADE_ATTEMPTS = 3  # harness errors per (key, patch) before the run is left ungradable
+GRADE_OOM_REPEAT = "grade_oom_repeat"  # ruling N1: the agent's patch OOMs grading every time
 GRADER_HOME = "grading-home"  # HOME, XDG and caches of the harness, inside the workspace
 GRADE_MEMORY = "4g"  # like an agent container (Global Constraints)
 CAP_POLL_S = 2.0
@@ -531,11 +532,19 @@ def ungradable(path: Path, *, stage: str) -> set[str]:
     }
 
 
-def _grade_runs(ledger: GradeLedger, grader: Grader, stage: str, runs: Sequence[FinalRun]) -> None:
+def _grade_runs(
+    ledger: GradeLedger,
+    grader: Grader,
+    stage: str,
+    runs: Sequence[FinalRun],
+    gold_ok: Collection[str],
+) -> None:
     path = grades_path(ledger)
     todo = _pending(path, runs)
     empty = [r for r in todo if not r.patch.strip()]
-    _append(path, [_grade_record(stage, r, False, "empty_patch", None) for r in empty])
+    _append(
+        path, [_grade_record(stage, r, False, "empty_patch", None, "empty_patch") for r in empty]
+    )
     batches: dict[tuple[str, int], list[FinalRun]] = {}
     for r in todo:
         if r.patch.strip():
@@ -556,19 +565,58 @@ def _grade_runs(ledger: GradeLedger, grader: Grader, stage: str, runs: Sequence[
         preds = work / f"{run_id}.preds.jsonl"
         write_predictions(((r.instance_id, arm, r.patch) for r in group), preds)
         verdicts = grader.grade(preds, run_id, ids)
-        _append(
-            path,
-            [
-                _grade_record(stage, r, verdicts.get(r.instance_id), "swebench", run_id)
-                for r in group
-            ],
-        )
+        reasons: Mapping[str, str] = getattr(grader, "last_reasons", {}) or {}
+        records = []
+        for r in group:
+            verdict, reason = verdicts.get(r.instance_id), reasons.get(r.instance_id)
+            if _oom_repeat(path, r, verdict, reason, gold_ok):
+                verdict, reason = False, GRADE_OOM_REPEAT
+            records.append(_grade_record(stage, r, verdict, "swebench", run_id, reason))
+        _append(path, records)
+
+
+def _oom_repeat(
+    path: Path, run: FinalRun, verdict: bool | None, reason: str | None, gold_ok: Collection[str]
+) -> bool:
+    """Ruling N1: the last allowed attempt OOMs again, every earlier attempt on this patch was
+    an OOM too, and the task's gold patch passed preflight under the same memory cap: the
+    agent's patch caused it, so the run is unresolved rather than dropped as infra."""
+    if verdict is not None or reason != "oom" or run.instance_id not in gold_ok:
+        return False
+    pair = (run.key, _sha(run.patch))
+    prior = [
+        r.get("reason")
+        for r in _records(path)
+        if r.get("kind") == "grade"
+        and r.get("resolved") is None
+        and (str(r["key"]), str(r["patch_sha256"])) == pair
+    ]
+    return len(prior) == MAX_GRADE_ATTEMPTS - 1 and all(p == "oom" for p in prior)
+
+
+def grade_oom_repeat_counts(path: Path, *, stage: str) -> dict[str, int]:
+    """arm → runs of the stage graded unresolved for `GRADE_OOM_REPEAT` (reported per arm)."""
+    out: dict[str, int] = {}
+    for rec in _records(path):
+        if (
+            rec.get("kind") == "grade"
+            and rec.get("stage") == stage
+            and rec.get("reason") == GRADE_OOM_REPEAT
+        ):
+            out[str(rec["arm"])] = out.get(str(rec["arm"]), 0) + 1
+    return out
 
 
 def _grade_record(
-    stage: str, run: FinalRun, resolved: bool | None, by: str, run_id: str | None
+    stage: str,
+    run: FinalRun,
+    resolved: bool | None,
+    by: str,
+    run_id: str | None,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     return {
+        "reason": reason,
         "kind": "grade",
         "stage": stage,
         "key": run.key,
@@ -582,15 +630,25 @@ def _grade_record(
     }
 
 
-def grade_task(ledger: GradeLedger, grader: Grader, *, stage: str, instance_id: str) -> None:
-    """Grade every final run of one task (after its block, before its image is removed)."""
+def grade_task(
+    ledger: GradeLedger,
+    grader: Grader,
+    *,
+    stage: str,
+    instance_id: str,
+    gold_ok: Collection[str] = frozenset(),
+) -> None:
+    """Grade every final run of one task (after its block, before its image is removed).
+    ``gold_ok``: tasks whose gold patch passed preflight (`preflight_ok`; ruling N1)."""
     runs = [r for r in ledger.final_runs(stage) if r.instance_id == instance_id]
-    _grade_runs(ledger, grader, stage, runs)
+    _grade_runs(ledger, grader, stage, runs, gold_ok)
 
 
-def grade_stage(ledger: GradeLedger, grader: Grader, *, stage: str) -> Path:
+def grade_stage(
+    ledger: GradeLedger, grader: Grader, *, stage: str, gold_ok: Collection[str] = frozenset()
+) -> Path:
     """Grade every final run of the stage not yet definitely graded; return ``grades.jsonl``."""
-    _grade_runs(ledger, grader, stage, ledger.final_runs(stage))
+    _grade_runs(ledger, grader, stage, ledger.final_runs(stage), gold_ok)
     path = grades_path(ledger)
     if not path.exists():
         _write_private(path, b"")
@@ -669,3 +727,9 @@ def preflight_reasons(work: Path) -> dict[str, str]:
     """instance id → exclusion reason of the last preflight in ``work``."""
     doc = json.loads((work / PREFLIGHT_FILE).read_text(encoding="utf-8"))
     return {i: r["reason"] for i, r in doc["results"].items() if r["status"] == "excluded"}
+
+
+def preflight_ok(work: Path) -> set[str]:
+    """Instance ids that passed the last preflight in ``work`` (``gold_ok`` for grading)."""
+    doc = json.loads((work / PREFLIGHT_FILE).read_text(encoding="utf-8"))
+    return {i for i, r in doc["results"].items() if r["status"] == "ok"}
