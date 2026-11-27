@@ -34,11 +34,21 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
 ### M4 campaign outcome (defaults unchanged)
 
 - The dev-split search produced an empty joint proposal (insufficient evidence for learning
-  coordinates; no compression value passed the admissibility rules), so the one-shot test-split
-  confirmation was not used and remains available for a future campaign. Shipped defaults are
-  unchanged for `v0.4.0-m4`; M3 lanes were below their evidence minimums (no M3 default changed)
+  coordinates; no compression value passed the admissibility rules), so the test-split
+  confirmation was not used (no test window recorded). **Tuned parameters are unchanged** for
+  `v0.4.0-m4`; M3 lanes were below their evidence minimums (no M3 default changed)
   and off-policy evaluation had no evaluable decision points (insufficient). Package version stays
   `0.1.0.dev0` until v1.0. See `docs/reports/m4-method.md`.
+- Correction: live behaviour did change in M4. These default-on correctness changes are backed
+  by tests, not by E1 evidence (they were not replayed before and after): the 1M context-window
+  latch (governor and the `band` learning feature, so 1M sessions land in other context bands);
+  stack-frame lines are no longer error lines because of words in their file path; the loop-guard
+  test-report fingerprint includes the summary's total failing count; the loop-guard prompt
+  handler runs first in the always-run prompt chain; an unset `guards.pretrim_bounded_keep_ratio`
+  is `max(packaged standard keep ratio, configured standard keep ratio)`.
+- A future campaign cannot rerun this one: it needs a new count-based cutoff whose test window
+  no confirmation has read, and either sessions run with token-sparen disabled or a
+  contamination-aware replay (deferred).
 
 ### M4 hill-climbing harness
 
@@ -54,9 +64,9 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   E2 100 % with `inline_rate` per level not below the defaults', sim breaker trips not above the
   reference engine's).
 - `--confirm proposal.toml`: evaluates the joint proposal against the defaults once on the test
-  split (one paired `sim` run), all or nothing; one-shot per plan (a ledger under the state root,
-  `hillclimb/confirm-m4.json`, created exclusively before any test data is read, refuses every
-  later or concurrent confirmation, whatever `--out`); only grid values are accepted.
+  split (one paired `sim` run), all or nothing; only grid values are accepted. (The one-shot
+  ledger first built here was replaced by the test-window ledger and per-arm check under
+  "M4 final-review fixes" above.)
 - Minimum evidence on dev and test: 8 paired project groups with a trim and 30 trims per point,
   else `insufficient` (nothing changes). A `compression.levels.<arm>` key is measured on its
   own arm, every other static key under the production policy (the learner frozen on its
@@ -79,8 +89,9 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   project group, in a temporary state root deleted afterwards (its own `HOME` and
   `TOKEN_SPAREN_HOME`, passed explicitly; no fact miner, settings writer or git call): decide on
   every output the compression point is offered, savings reward from the tokens the chosen arm
-  removes on that output (the hook's `[learn] savings_reward` mode, re-sends = the trim's actual
-  later API calls before the next compaction, delivered once known), the replay's proxy regret
+  removes on that output (the hook's `[learn] savings_reward` mode; since the final-review fixes
+  paid at trim time with the live hook's re-send estimate, the actual later API calls only price
+  the reported net savings), the replay's proxy regret
   delivered once when it settles (also as a circuit-breaker outcome), and an engine-only session
   fold (`mine_facts=False, prune=False`). Both roles use the packaged defaults only (the
   run's user, project and env config is ignored): the candidate adds the lane's `overlay`, the
@@ -110,9 +121,9 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
 - `[learn] ladder_retry_decisions` (default 0 = off): after N decisions of a bucket whose next
   harsher arm is locked only because the safer arm is not yet established, that arm competes
   for one decision; the logged propensity stays exact.
-- `[guards] pretrim_bounded_keep_ratio` (no default: unset follows the standard arm's keep
-  ratio, as before; any number, 0.35 included, is used as is); a project may only raise it
-  (compared with the standard ratio while unset), and never below the user's own ratio.
+- `[guards] pretrim_bounded_keep_ratio` (no default; any number, 0.35 included, is used as is;
+  unset: see "M4 final-review fixes", the larger of the packaged and the configured standard
+  keep ratio); a project may only raise it, and never below the user's own ratio.
 - `overlay.fold(..., mine_facts=True, prune=True)`: false folds engine evidence only (offline
   simulation).
 - Fix (on by default): the governor and the `band` feature use a per-session 1M-window latch.

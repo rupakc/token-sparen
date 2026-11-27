@@ -1,17 +1,17 @@
 # token-sparen
 
-MIT open-source token optimizer plugin for coding agents (Claude Code first). Shipped (M0/M1):
-recoverable output compression, read de-dupe, guards, budget governor, boundary advice, live
-statusline, extensions. M2: one learning engine (contextual Thompson-sampling bandit
-with a quality constraint) steers every hook decision (`learn/hookpolicy.py`, built lazily per
-hook; `[learn] enabled = false` -> `StaticPolicy`), with regret detection, session fold and
-circuit breaker; `replay` (E1) and `ope` (E3) evaluate offline into private reports. M3: repo-fact
-learning (miners, lifecycle bandit, SessionStart injection) and opt-in tool pruning
-(`mechanisms/prune.py`, deny rules via `adapters/claude/settings.py`) and the learned
-failure-loop guard (`mechanisms/loopguard.py`) are in. North star:
-maximise tokens saved subject to no measurable quality loss.
-Spec: `docs/specs/2026-11-25-token-sparen-design.md`. Plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`.
-Decisions: `MEMORY.md`.
+MIT open-source token optimizer plugin for coding agents (Claude Code first). M0/M1: recoverable
+output compression, read de-dupe, guards, budget governor, boundary advice, live statusline,
+extensions. M2: one learning engine (contextual Thompson-sampling bandit with a quality
+constraint) steers every hook decision (`learn/hookpolicy.py`, built lazily per hook; `[learn]
+enabled = false` -> `StaticPolicy`), with regret detection, session fold and circuit breaker;
+`replay` (E1) and `ope` (E3) evaluate offline into private reports. M3: repo-fact learning
+(miners, lifecycle bandit, SessionStart injection), opt-in tool pruning (`mechanisms/prune.py`,
+deny rules via `adapters/claude/settings.py`), the learned failure-loop guard
+(`mechanisms/loopguard.py`). M4: replay lanes and `evals/hillclimb/` (method
+`docs/reports/m4-method.md`); tuned parameters unchanged. North star: maximise tokens saved
+subject to no measurable quality loss. Spec: `docs/specs/2026-11-25-token-sparen-design.md`.
+Plans: `docs/plans/` (M0-M3, M4). Decisions: `MEMORY.md`.
 
 ## Layout
 - `token_sparen/` core (stdlib only): `cli.py events.py config.py estimate.py transcript.py emit.py recovery.py extensions.py`

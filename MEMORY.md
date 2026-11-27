@@ -1635,7 +1635,46 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   coordinates lacked evidence; no compression value passed the dev admissibility rules). M3 lanes
   were below their evidence minimums; off-policy evaluation had no evaluable decision points
   (insufficient).
-- **One-shot test look unused**: not spent because the proposal was empty; kept for a future campaign.
-- **Defaults unchanged**: shipped defaults frozen as-is for v0.4.0-m4.
+- **Test look unused**: not spent because the proposal was empty; no test window was recorded.
+- **Tuned parameters unchanged** for v0.4.0-m4 (corrected by ruling M4-G5 below: "defaults
+  unchanged" was too broad; default-on correctness changes did ship).
 - **Reason**: local transcripts are kept about thirty days, so history is short; the method says
-  "not enough evidence" rather than tuning on noise. Rerun the same harness as history accumulates.
+  "not enough evidence" rather than tuning on noise. Superseded (ruling M4-G4): the same harness
+  cannot simply be rerun as history accumulates; see the next entry.
+
+## 2026-11-27 M4 final review fix wave (controller rulings M4-G1..G5, New-1, New-2)
+Cold review: 0 blocker / 5 major / 12 minor; all majors fixed (code `794099b`, `adc4d6c`,
+`8c88fdb`, `e7106e9`; docs in the M4 final docs commit). Re-review rounds 1 and 2 closed M1-M4
+and the two new issues they found.
+- **M4-G1**: `--confirm` also runs the `compression` lane, paired on test, on the arm of every
+  `compression.levels.<arm>` key in the proposal (same single test read); per arm: regret
+  non-inferiority (0.2 tau), absolute tau and minimum evidence; any failure rejects all.
+- **M4-G2**: the `sim` lane pays the learner's savings at trim time with the live hook's re-send
+  estimate (`regret.expected_resends(governor.remaining_turns(...))`); actual later re-sends
+  only price the reported net savings (supersedes the Task 7 ruling I3 "oracle" re-sends).
+  `SIM_SEEDS` = three seeds per evaluation in one pass, averaged per group. Accepted limitation
+  (method doc): the learner is rewarded and judged on the same proxy; common random numbers
+  diverge after the first differing draw.
+- **M4-G3 then New-1**: unset `guards.pretrim_bounded_keep_ratio` = `max(packaged standard keep
+  ratio, configured standard keep ratio)`. G3 alone (packaged only) regressed users who keep
+  more; the max keeps their setting and a tuned-down standard never lowers pre-trim. A project
+  value is compared with that max.
+- **M4-G4 then New-2**: `--cutoff`, `--dogfood-start`, `--campaign` (label only);
+  `replay.DEFAULT_CUTOFF` = 2026-11-08. One ledger of used test windows
+  (`<state root>/hillclimb/test-windows.json`, locked, atomic, never reset): a window
+  overlapping any recorded one is refused whatever the campaign. `--confirm` needs the dev
+  report beside the proposal and takes its dates (mismatch refused). Future campaigns: new
+  count-based cutoff, and either sessions run with token-sparen disabled or a
+  contamination-aware replay (deferred).
+- **M4-G5** (docs): outcome text = tuned parameters unchanged; default-on correctness changes
+  shipped in M4, test-backed and not E1-backed: the 1M context-window latch (governor and
+  `band` feature); stack-frame lines no longer error lines because of path words; loop-guard
+  test-report fingerprint includes the total failing count; loop-guard prompt handler order
+  (runs first, always-run); the max pre-trim rule above. Recorded in the method doc, CHANGELOG
+  and the spec revision log.
+- Deferred minors (review list): post-emit work still under the armed watchdog and counted in
+  host latency; stale `loopguard.on_prompt` ordering docstring; payouts before decision rows;
+  frame-head E2 needle; nested-stage optimism and multiplicity (documented); counterfactual perf
+  gate size; cost vs counterfactual re-send floors; 1M latch never cleared on a model switch;
+  marker-exclusion bias (documented); "production policy" is the cold-start engine
+  (documented); ledger path follows `TOKEN_SPAREN_HOME`.

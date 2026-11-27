@@ -385,7 +385,7 @@ session); anything else is ignored and logged once.
 | `learn.hold.read_dedupe` | false | `true` stops read pointers |
 | `learn.savings_reward` | `"scaled"` | savings reward of a trim: `scaled` (removed x resends / recent p95), `fraction`, `counterfactual` (vs the best arm on the same output; `learn.resend_horizon`, 20) or `cost` (cache-weighted); a tuning option (user config, env or `config set` only) |
 | `learn.ladder_retry_decisions` | 0 | `N > 0`: re-open a locked, harsher trimming level for one probing decision after N decisions of that bucket within one session (counted per session; user only) |
-| `guards.pretrim_bounded_keep_ratio` | unset | share of lines a learned pre-trim keeps; unset follows `compression.levels.standard.keep_ratio`, any number is used as is (a project may only raise it) |
+| `guards.pretrim_bounded_keep_ratio` | unset | share of lines a learned pre-trim keeps; unset is the larger of the packaged and your configured `compression.levels.standard.keep_ratio` (raising the standard arm raises the pre-trim, lowering it never lowers the pre-trim), any number is used as is (a project may only raise it) |
 | `statusline.segments` | all six | which segments to show |
 | `statusline.ascii`, `statusline.color` | false, true | plain glyphs; colours |
 | `recovery.ttl_days`, `max_files`, `max_bytes` | 14, 200, 100 MB | recovery file retention |
@@ -636,16 +636,30 @@ targets (an upper bound in tokens) and what its injected line would cost. `loopg
 measures, per tool category and agent chain, how many error loops reach 2, 3 and 5 repeats, how
 often a loop ends on its own (natural break rate), an upper bound of the tokens a perfect
 redirect could save, and how often a trigger would fire on a loop that was already converging;
-it may only move loop-guard defaults toward less intervention. Failures are recorded by error type only. `--quiet` prints only
+it may only move loop-guard defaults toward less intervention. `prune` simulates opt-in tool
+pruning per project in memory only (no settings file, git or store is touched): the servers
+seen, the prunes it would make, how often a pruned server was needed while pruned (tool call,
+mention or tool search), lease restores and the tool-listing tokens saved; it may only move
+pruning defaults toward less intervention. `sim` runs the learning engine itself over your past
+sessions, oldest first per project, in a temporary state root deleted afterwards: it decides
+every output the compression point is offered, is rewarded with the savings the live hook would
+compute and with the replay's proxy regret, and reports its decisions, arm shares, proxy regret
+per trim, net savings and circuit-breaker trips next to a reference engine on the packaged
+defaults (same outputs, same random draws). Failures are recorded by error type only. `--quiet` prints only
 `report: <path> id: <12 hex>` (the id is the first 12 hex digits of the report's sha256) and
 then `status: complete` or `status: incomplete`, so a run can be cited without printing any
 figure; `ope --quiet` prints the report line only.
 
 The defaults themselves are tuned offline with the hill-climbing harness
 (`evals/hillclimb/`; method in [`docs/reports/m4-method.md`](docs/reports/m4-method.md)): grids
-declared in advance, one look at a held-out split, accept all or nothing. It reads transcripts
-locally, writes only private files outside any git work tree, and prints no figures with
-`--quiet`; its results are cited by report id only and never committed.
+declared in advance, one look at a held-out split, accept all or nothing. `--cutoff` and
+`--dogfood-start` set the dev/test split (defaults 2026-11-08 and 2026-11-26), `--campaign ID`
+labels the reports, and `--confirm proposal.toml` takes its dates from the dev report next to the
+proposal. Every confirmed test window is recorded in one ledger under the state root
+(`hillclimb/test-windows.json`), and a confirmation whose window overlaps a recorded one is
+refused, whatever its campaign label. It reads transcripts locally, writes only private files
+outside any git work tree, and prints no figures with `--quiet`; its results are cited by report
+id only and never committed.
 
 `token-sparen ope --log <decisions.jsonl...> --target static|engine-snapshot --out <file>`
 estimates how another policy would have done on your logged decisions (IPS, self-normalised IPS,

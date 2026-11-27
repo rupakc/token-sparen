@@ -7,9 +7,30 @@ Status: APPROVED 2026-11-25 (with §6.12 live statusline added at approval) · D
 
 ## Revision log
 
+**2026-11-27 (M4 final review).** Corrects the "M4 outcome" entry below: **tuned parameters are
+unchanged**, but default-on correctness changes shipped in M4 and are test-backed, not E1-backed:
+the long-context window latch (governor and `band` feature, see the Task 6 entry); stack-frame
+lines are no longer error lines because of words in their file path (§6.1); the loop-guard
+test-report fingerprint includes the summary's total failing count (§7.7); the loop-guard prompt
+handler runs first in the always-run prompt chain (§6.11); an unset
+`guards.pretrim_bounded_keep_ratio` is `max(packaged standard keep ratio, configured standard
+keep ratio)` (supersedes "unset = the standard arm's keep ratio" in the Task 6 entry; a project
+value is compared with that maximum). §10.6 as built after the cold review: the confirmation
+also runs the `compression` lane on every arm whose `compression.levels.<arm>` key the proposal
+moves and requires the per-arm regret bounds and minimum evidence; the `sim` lane rewards the
+learner with the live hook's re-send estimate (actual re-sends only price the reported net
+savings) and averages at least three seeds per project group; one ledger of used test windows
+`[cutoff, dogfood_start)` refuses any overlapping window whatever the `--campaign` label, and
+`--confirm` takes its dates from the dev report. A future campaign needs a new count-based
+cutoff and either sessions run with token-sparen disabled or a contamination-aware replay
+(deferred). §7.2 prior sharing → v1.1; §7.5 cost weighting exists as the default-off `cost`
+reward; §7.9 priors remain hand-set (no refit confirmed). Method: `docs/reports/m4-method.md`;
+drift: `docs/reports/drift-m4.md`.
+
 **2026-11-27 (M4 outcome).** The M4 campaign ended with an empty joint proposal on the dev split
 (insufficient evidence; no admissible compression value), so the one-shot test look (§10.6) was not
-used and all defaults stay unchanged. M3 lanes were below minimum evidence and E3 had no evaluable
+used and all tuned parameters stay unchanged (default-on correctness changes did ship in M4:
+see the M4 final review entry above). M3 lanes were below minimum evidence and E3 had no evaluable
 decision points. Short local transcript retention is the main limitation. See
 `docs/reports/m4-method.md`.
 
@@ -818,7 +839,7 @@ live in the store.
 ### 7.2 Context features
 Per decision point, a small discrete feature tuple, e.g. for compression:
 `context_band × tool_category × size_band × content_type × task_phase`. (Host and model tier as
-*prior-sharing* keys, not bucket explosion, are deferred to M4.) Bucket count is kept small by design; sparse buckets
+*prior-sharing* keys, not bucket explosion, are deferred to v1.1; M4 deferred them again.) Bucket count is kept small by design; sparse buckets
 back off hierarchically (§7.4).
 
 ### 7.3 Algorithm
@@ -853,8 +874,9 @@ A single blended scalar is what let Reference A's trim arms beat `off` by constr
 exactly when every trimming arm's plausible regret exceeds the target — no hand-set reward for `off`,
 no weights to rig. In M2 the units of "savings" are **token counts** (estimated tokens removed,
 times the expected re-sends). Cost-weighting (cache-read/cache-write/input/output priced at list
-ratios, so a change that breaks the prompt cache is charged) is deferred to M4; the E1 report and
-E4 (§10.4) already use it.
+ratios, so a change that breaks the prompt cache is charged) exists since M4 as the optional
+`[learn] savings_reward = "cost"`, off by default (the default stays `scaled` token counts); the
+E1 report and E4 (§10.4) already use cost weighting.
 
 **Loop guard (§6.11): the safe arm still intervenes.** `patient` (k = 5) redirects too, so "the
 loop ended after the redirect" is not a saving by itself, and S of the safe arm stays 0 by
@@ -924,9 +946,10 @@ evaluated this way; promotion only on held-out improvement (§10.6).
   67 % re-reads. Fixed by §7.5–7.6.
 - Reference A's command signature collapsed `cd x && …` to `cd` → fixed by normalised argv.
 - Reference A's "empirically calibrated" priors were hand-set → our designed defaults are
-  **hand-set until M4**, then refit by offline replay (snapped to a coarse pre-declared grid) and
-  documented with their provenance only as "selected on maintainer E1 dev split, private report
-  <id>", never with figures (§10.1).
+  **hand-set**; a refit by offline replay (snapped to a coarse pre-declared grid) would be
+  documented with its provenance only as "selected on maintainer E1 dev split, private report
+  <id>", never with figures (§10.1). M4 confirmed no refit (empty dev proposal), so the priors
+  remain hand-set; only prior means are searchable, a prior-strength grid is deferred.
 - Reference B's fixed gates delayed facts to ~session 5 and pruning had no in-session recovery →
   §6.8, §6.10.
 
@@ -1043,6 +1066,10 @@ and the absolute value within τ at every point, E2 is 100 % (inline rate not be
 and the minimum evidence holds; otherwise defaults stay → (periodically) E4 confirmation. Search:
 coordinate ascent + successive halving; every accepted change is a commit citing the private report
 id (first twelve hex digits), without figures. Never tune on the test split (Reference B's flaw).
+The confirmation also checks every proposed `compression.levels.<arm>` key on its own arm's
+`compression` replay (same regret bounds and evidence minimum), and each test window
+`[cutoff, dogfood_start)` is recorded in one ledger and never read twice, whatever the campaign
+label (M4 final review, revision log).
 
 ## 11. Repository, CI, release, docs
 
@@ -1086,7 +1113,7 @@ milestone → self-review and `code-review` before every push. `MEMORY.md` recor
 4. M3 Cross-session: micro-skills, tool pruning, loop guard; `fold`.
    → **Dogfooding** (~2 weeks, owner's daily Claude Code use; decision logs local only) runs in
      parallel with M3/M4.
-5. M4 Hill-climbing pass on E1/E3; parameter freeze.
+5. M4 Hill-climbing pass on E1 (E3 informational only); parameter freeze.
 6. M5 Live benchmark E4 (screening → confirmation).
 7. M6 Docs: README, wiki, gh-pages; release **v1.0 (Claude Code)** and distribution.
 8. M7 (v1.1) Adapters: Codex, Gemini, Qwen, OpenCode; `install`/`doctor`; host-matrix CI. The core

@@ -19,7 +19,7 @@ _PHRASES = [
     "100 %",
     "evals/e2/run.py",
     "docs/reports/m4-method.md",
-    "<state root>/hillclimb/confirm-m4.json",
+    "≥ 3 seeds",
 ]
 _STRUCTURAL = [r"\b\d{4}-\d{2}-\d{2}\b", r"§\d+(?:\.\d+)*(?:[/–-]§?\d+(?:\.\d+)*)*", r"\b[EM]\d\b"]
 _NUMBER_WORDS = (

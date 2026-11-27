@@ -11,12 +11,17 @@ python evals/hillclimb/run.py --confirm DIR/proposal.toml --jobs N --out DIR --q
 
 `DIR` must be outside any git work tree (`replay.report.write_private`: files 0600, new
 directories 0700). `--transcripts PATH...` defaults to Claude Code's projects directory.
+`--cutoff YYYY-MM-DD` (default 2026-11-08, `replay.DEFAULT_CUTOFF`) and `--dogfood-start
+YYYY-MM-DD` (default 2026-11-26) set the dev search's split; `--confirm` takes both from the dev
+report and refuses given values that differ. `--campaign ID` (default `m4`,
+`[a-z0-9][a-z0-9_-]{0,31}`) is a label recorded in the reports and the ledger, nothing more.
 
 ## Splits
 
-By a session's first non-copied record: **dev** before 2026-11-08 ≤ **test** before
-2026-11-26. Sessions on or after 2026-11-26 or with any `[token-sparen:` marker are excluded
-whole. The dev search never reads a test session; the test split is evaluated once.
+By a session's first non-copied record: **dev** before the cutoff ≤ **test** before the
+dogfood start (M4: 2026-11-08 and 2026-11-26). Sessions on or after the dogfood start or with
+any `[token-sparen:` marker are excluded whole. The dev search never reads a test session; each
+test window `[cutoff, dogfood start)` is evaluated once (see Confirmation).
 
 ## Space
 
@@ -45,7 +50,10 @@ reads the replay charges), from one lane, never summed across lanes:
   policy (the learner frozen on its packaged priors, in an empty temporary state root);
 - learning keys (`learn.savings_reward`, `learn.ladder_retry_decisions`, `learn.defaults.*`):
   the `sim` lane (the shipped learner with the candidate versus with the packaged defaults, in
-  the same pass), where breaker trips may not exceed the reference engine's.
+  the same pass; rewarded with the re-sends the live hook projects, never the actual ones; one
+  run per seed of `SIM_SEEDS`, three seeds in one pass, averaged per project group), where
+  breaker trips may not exceed the reference engine's. The learner is rewarded and judged on
+  the same replay proxy, so a learning key can look better offline than live (method doc).
 
 No lane replays read de-dupe, so the objective has no read de-dupe term. Writes `trail.jsonl` (every screening and verdict), `proposal.toml` (the joint
 proposal: only keys that moved) and `dev.json` (the summary with the proposal's sha256; the
@@ -65,15 +73,28 @@ the confirmation (the plan's acceptance rule does not list them).
 
 ## Confirmation (once)
 
-`--confirm` checks that the proposal holds grid values of measured keys only, then creates
-the ledger `<state root>/hillclimb/confirm-m4.json` (`~/.token-sparen` or `TOKEN_SPAREN_HOME`;
-whatever `--out` is) exclusively (`O_CREAT | O_EXCL`, 0600) with the proposal's sha256 and the
-time, **before** any test-split data is read; any later or concurrent `--confirm` (any proposal,
-any `--out`) is refused. A deleted ledger cannot be detected: any second look at test
-invalidates the result; cite the `confirm.json` id (it records the ledger and, as `dev_report`,
-the id of the `dev.json` that wrote the proposal). One paired `sim` run on the test split (proposal versus defaults),
-all or nothing; `confirm.json` holds both sides and the verdict. Rejected: the defaults stay
-unchanged.
+`--confirm` checks that the proposal holds grid values of measured keys only and that its dev
+report (`dev.json` beside it, carrying the proposal's sha256) exists (`NoDevReport`, exit 2);
+the split dates are the dev report's (`SplitMismatch`, exit 2, if given flags differ). Then,
+under a lock and **before** any test outcome is computed, it appends its test window
+`[cutoff, dogfood_start)` with the campaign label, the proposal's sha256 and the time to the one
+ledger `<state root>/hillclimb/test-windows.json` (`~/.token-sparen` or `TOKEN_SPAREN_HOME`;
+whatever `--out` or `--campaign` is; atomic write, 0600). A window that overlaps any recorded
+window is refused (`ConfirmRefused`), whatever the campaign label; an unreadable ledger refuses
+too and is never reset. A deleted ledger cannot be detected: any second look at a test window
+invalidates the result; cite the `confirm.json` id (it records the ledger entry and, as
+`dev_report`, the id of the `dev.json` whose dates it used).
+
+It reads the test split once, in one pass: the paired `sim` run (proposal versus defaults,
+every seed of `SIM_SEEDS`, averaged per group) and, for every `compression.levels.<arm>` key in
+the proposal, the `compression` lane on that arm (proposal versus defaults, paired by group;
+the same two regret bounds and the minimum evidence, reasons `arm:<arm>:...`, figures under
+`arms` in `confirm.json`). All or nothing: any failed rule rejects the whole proposal and the
+defaults stay unchanged.
+
+A later campaign needs a new count-based cutoff and a window no confirmation has read, and
+either sessions run with token-sparen disabled or a contamination-aware replay (deferred): once
+the plugin is installed, new sessions are excluded as dogfooded.
 
 ## Output
 
