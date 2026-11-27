@@ -86,6 +86,9 @@ _FRAME_HEAD = re.compile(
     re.ASCII,  # ASCII whitespace, as the byte-level pre-check ``_FRAME_START``
 )
 _FRAME_START = re.compile(rb'^\s*(?:File "|at\s)')
+# Possible first bytes of a frame-head line (ASCII whitespace, ``F``, ``a``): a cheap filter
+# so the common error line ("ERROR: ...") skips the frame check entirely.
+_FRAME_FIRST = frozenset(b" \t\r\x0b\x0cFa")
 
 
 def _matches(line: str) -> bool:
@@ -104,9 +107,9 @@ def is_error_line(line: str) -> bool:
     return _matches(line[: m.start(loc)] + line[m.end(loc) :])
 
 
-def _frame_only(data: bytes, pos: int) -> bool:
-    """Is the line of ``data`` around ``pos`` a frame head that matches only in its location?"""
-    start = data.rfind(b"\n", 0, pos) + 1
+def _frame_only(data: bytes, start: int, pos: int) -> bool:
+    """Is the line of ``data`` starting at ``start`` (holding ``pos``) a frame head that
+    matches only in its location?"""
     end = data.find(b"\n", pos)
     line = data[start : len(data) if end == -1 else end]
     if _FRAME_START.match(line) is None:
@@ -143,7 +146,8 @@ def error_line_indices(
                 idx += hay.count(b"\n", last, pos)
                 last = pos
                 if idx not in found and idx not in frames:
-                    if _frame_only(data, pos):
+                    start = data.rfind(b"\n", 0, pos) + 1  # start <= pos < len(data)
+                    if data[start] in _FRAME_FIRST and _frame_only(data, start, pos):
                         frames.add(idx)
                     else:
                         found.add(idx)

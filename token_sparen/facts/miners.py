@@ -305,12 +305,29 @@ def _set_vars(cmd: str) -> set[str]:
     return names
 
 
-def _relative(path: str, project_dir: str | None) -> str | None:
+_DRIVE = re.compile(r"[A-Za-z]:")
+
+
+def _absolute(path: str) -> bool:
+    """Is ``path`` absolute as a transcript spells it, POSIX (``/x``) or Windows (``C:\\x``,
+    ``\\\\host\\share``), on any OS? (``os.path.isabs`` follows the running OS, and from
+    Python 3.13 on Windows rejects ``/x``.)"""
+    return path.replace("\\", "/").startswith("/") or _DRIVE.match(path) is not None
+
+
+def _slashed(path: str) -> str:
+    """``path`` with forward slashes and an upper-case drive letter (Windows drives are
+    case-insensitive and transcripts spell them either way)."""
     path = path.replace("\\", "/")
-    if path.startswith("/") or re.match(r"^[A-Za-z]:", path):
+    return path[0].upper() + path[1:] if _DRIVE.match(path) else path
+
+
+def _relative(path: str, project_dir: str | None) -> str | None:
+    path = _slashed(path)
+    if _absolute(path):
         if project_dir is None:
             return None
-        root = posixpath.normpath(project_dir.replace("\\", "/")).rstrip("/") + "/"
+        root = posixpath.normpath(_slashed(project_dir)).rstrip("/") + "/"
         if not path.startswith(root):
             return None
         path = path[len(root) :]
@@ -651,14 +668,18 @@ def generated_evidence(
     ``evidence="transcript"``: no git, no file access; the files' markers are the ``heads`` a
     session showed (``read_head``; the directory's shown files when ``files`` is empty): True
     when at least one is known and all known ones are marked, else None."""
-    if root is None or not os.path.isabs(root):
+    if root is None:
         return None
     if check_evidence(evidence) == "transcript":
+        if not _absolute(root):  # a transcript's path string, never touched on disk
+            return None
         seen = heads or {}
         prefix = rel_dir.rstrip("/") + "/"
         names = list(files)[:GEN_MAX_FILES] or [n for n in seen if n.startswith(prefix)]
         known = [seen[n] for n in names[:GEN_MAX_FILES] if n in seen]
         return True if known and all(known) else None
+    if not os.path.isabs(root):
+        return None
     ignored = git_ignored(root, rel_dir)
     if ignored:
         return True

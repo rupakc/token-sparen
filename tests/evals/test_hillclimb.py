@@ -573,6 +573,28 @@ def test_write_private_raw_text(tmp_path: Path) -> None:
         report.write_private(tmp_path / "p" / "y.toml", {"a": 1}, raw=True)
 
 
+def test_write_private_bytes_are_the_text_on_every_os(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A text-mode file translates "\\n" to "\\r\\n" on Windows unless told otherwise; the
+    proposal's sha256 (of the text) must match a sha256 of the file's bytes on every OS."""
+    import os
+
+    from token_sparen.replay import report
+
+    real = os.fdopen
+
+    def windows_fdopen(fd: int, mode: str, *a: Any, newline: str | None = "\r\n", **k: Any) -> Any:
+        return real(fd, mode, *a, newline=newline, **k)  # Windows' default translation
+
+    monkeypatch.setattr(report.os, "fdopen", windows_fdopen)
+    text = "[a]\nb = 1\n"
+    path = report.write_private(tmp_path / "p" / "proposal.toml", text, raw=True)
+    assert path.read_bytes() == text.encode("utf-8")
+    js = report.write_private(tmp_path / "p" / "dev.json", {"a": 1})
+    assert b"\r" not in js.read_bytes()
+
+
 # ------------------------------------------------------------------ fix round 1
 
 

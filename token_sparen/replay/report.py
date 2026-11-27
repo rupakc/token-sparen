@@ -113,7 +113,9 @@ def write_private(path: Path, data: Any, *, raw: bool = False) -> Path:
     try:
         # The file object owns the descriptor from here, so a failure below closes the handle
         # before the unlink (Windows refuses to delete an open file: WinError 32).
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # newline="\n": the bytes on disk are the text as given on every OS (no CRLF on
+        # Windows), so a sha256 of the text matches a sha256 of the file.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             if POSIX:
                 os.fchmod(fh.fileno(), 0o600)  # mkstemp already does; explicit for clarity
             if raw:
