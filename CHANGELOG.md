@@ -42,11 +42,12 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   the manifest are skipped and counted; generated-directory evidence comes from file heads the
   session showed).
 - `replay --lanes loopguard`: per split, tool category and agent chain (subagent transcripts
-  apart), the error loops reaching 2, 3 and 5 repeats with the production fingerprint, the
-  natural break rate (a loop at its third repeat not recurring within 5 calls), an upper bound
-  of the tokens after each trigger until the loop stopped, and the triggers followed within 5
-  calls by a success of the same command head or file (converging loops), plus edit
-  oscillations. `loopguard.reversals`, `recurs_within` and `tool_target` are now public pure
+  apart), the redirects each arm (k = 2, 3, 5) would send (one per agent and turn, error loop
+  or edit oscillation, with the production fingerprint), the natural break rate sampled as the
+  live gate's p0 (the first loop at its third repeat per agent and turn, not recurring within 5
+  calls), an upper bound of the tokens after each trigger until the loop stopped, and the
+  triggers followed within 5 calls by a success of the same command head or file (converging
+  loops); every-loop counts are kept as diagnostics. `loopguard.reversals`, `recurs_within` and `tool_target` are now public pure
   helpers that the live guard calls (behaviour unchanged).
 
 ### M4 triage (quality-relevant fixes before tuning)

@@ -97,6 +97,44 @@ def test_natural_break_rate(tmp_path: Path) -> None:
     assert res.by_split["dev"]["loopguard"]["sessions"] == 3
 
 
+def test_natural_rate_is_the_live_gate_sample(tmp_path: Path) -> None:
+    """Review I1: A x3 breaks, then B x3 recurs in the same turn: production observes A only."""
+    s = Log("a", DEV_TS).prompt().fail().fail().fail()
+    for _ in range(5):
+        s.grep()
+    b = "Exit code 1\nKeyError: 'other'\n"
+    s.fail(out=b).fail(out=b).fail(out=b).fail(out=b)
+    s.write(tmp_path / "t" / "p" / "a.jsonl")
+    row = cat(run(tmp_path / "t"), "dev")
+    assert (row["natural_observed"], row["natural_broken"]) == (1, 1)
+    assert row["natural_break_rate"] == pytest.approx(1.0)
+    assert (row["natural_observed_all"], row["natural_broken_all"]) == (2, 1)
+    assert row["natural_break_rate_all"] == pytest.approx(0.5)
+    assert row["loops_reaching"] == {"2": 1, "3": 1, "5": 0}  # one redirect per turn
+    assert row["loops_reaching_all"] == {"2": 2, "3": 2, "5": 0}
+
+
+def test_natural_sample_discarded_by_a_redirect_in_its_window(tmp_path: Path) -> None:
+    """The patient redirect (an edit oscillation at 4 reversals) comes while the natural window
+    is still open: production drops the observation."""
+    s = Log("a", DEV_TS).prompt()
+
+    def edit(old: str, new: str) -> None:
+        s.tool("Edit", {"file_path": "src/x.py", "old_string": old, "new_string": new})
+
+    edit("a", "b")
+    edit("b", "a")  # one reversal
+    s.fail().fail().fail()  # the natural window opens
+    edit("a", "b")
+    edit("b", "a")
+    edit("a", "b")  # four reversals, third call of the window: the patient redirect
+    s.write(tmp_path / "t" / "p" / "a.jsonl")
+    res = run(tmp_path / "t")
+    assert cat(res, "dev")["natural_observed"] == 0
+    assert cat(res, "dev")["natural_observed_all"] == 1
+    assert cat(res, "dev", "edit")["oscillations_reaching"]["5"] == 1
+
+
 def test_exposure_after_kth_repeat(tmp_path: Path) -> None:
     src = tmp_path / "t" / "p"
     s = Log("a", DEV_TS).prompt()
@@ -130,10 +168,15 @@ def test_converging_trigger_counted(tmp_path: Path) -> None:
         late.grep()
     late.ok("pytest -x")  # the same head (pytest), but six calls after the trigger
     late.write(src / "c.jsonl")
+    grep = Log("d", DEV_TS).prompt()  # a tool without a target is never converging
+    grep.tool("Grep", {"pattern": "a"}, ERR, err=True).tool("Grep", {"pattern": "a"}, ERR, True)
+    grep.tool("Grep", {"pattern": "b"}, "hit").write(src / "d.jsonl")
     res = run(tmp_path / "t")
     row = cat(res, "dev")
     assert row["loops_reaching"] == {"2": 3, "3": 1, "5": 0}
     assert row["converging_triggers"] == {"2": 1, "3": 1, "5": 0}
+    assert cat(res, "dev", "search")["loops_reaching"]["2"] == 1
+    assert cat(res, "dev", "search")["converging_triggers"]["2"] == 0
 
 
 def test_subagent_chains_separate(tmp_path: Path) -> None:
@@ -158,9 +201,15 @@ def test_oscillation_counted_per_file(tmp_path: Path) -> None:
     for old, new in [("a", "b"), ("b", "a"), ("a", "b")]:
         s.tool("Edit", {"file_path": "src/x.py", "old_string": old, "new_string": new})
     s.tool("Edit", {"file_path": "src/y.py", "old_string": "b", "new_string": "a"})
+    s.fail().fail()  # after the oscillation redirect: the eager trigger stays the oscillation
+    s.prompt("next")
+    for old, new in [("a", "b"), ("b", "a"), ("a", "b"), ("b", "a"), ("a", "b")]:
+        s.tool("Edit", {"file_path": "src/z.py", "old_string": old, "new_string": new})
     s.write(tmp_path / "t" / "p" / "a.jsonl")
-    row = cat(run(tmp_path / "t"), "dev", "edit")
-    assert row["oscillations_reaching"] == {"2": 1, "3": 1, "5": 0}
+    res = run(tmp_path / "t")
+    assert cat(res, "dev", "edit")["oscillations_reaching"] == {"2": 2, "3": 2, "5": 1}
+    assert cat(res, "dev")["loops_reaching"] == {"2": 0, "3": 0, "5": 0}
+    assert cat(res, "dev")["loops_reaching_all"]["2"] == 1
 
 
 def test_split_rows_independent(tmp_path: Path) -> None:
@@ -204,6 +253,7 @@ def test_interrupts_writes_and_multiedits(tmp_path: Path) -> None:
     for _ in range(5):  # interrupts are not calls of the window (production skips them)
         s.tool("Bash", {"command": "sleep 9"}, "[Request interrupted by user for tool use]", True)
     s.fail()  # still the loop's fourth repeat within the window
+    s.prompt("next")  # the edits get a turn of their own (one redirect per turn)
     for content in ("v1", "v2", "v1", "v2"):
         s.tool("Write", {"file_path": "src/w.py", "content": content})
     pairs = [{"old_string": "a", "new_string": "b"}, {"old_string": 1, "new_string": "c"}]

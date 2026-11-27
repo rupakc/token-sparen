@@ -1268,3 +1268,42 @@ def test_tool_target_matches_production() -> None:
     assert loopguard.tool_target("NotebookEdit", {"notebook_path": "n.ipynb"}) == "n.ipynb"
     assert loopguard.tool_target("Grep", {"pattern": "x"}) == ""
     assert loopguard.tool_target("Bash", {"command": 3}) == ""
+
+
+@pytest.mark.parametrize(
+    "run",
+    ["AAAoooooBBBB", "AAABBBoA", "AABBBAAA", "AAAA", "AAAoooooo", "AAo", "BBBoAAAAA"],
+)
+def test_lane_natural_sample_matches_production(tmp_path: Path, run: str) -> None:
+    """Review I1: the E1 lane's natural break sample is the live gate's p0 sample (patient arm,
+    first fingerprint at 3 per agent and turn, discarded by a redirect in its window), also
+    with two loops in one turn."""
+    from datetime import date
+
+    from token_sparen.replay import loopguard_lane, replay
+    from token_sparen.replay.runner import SessionInfo
+    from token_sparen.transcript import Prompt, ToolResultRecord
+
+    texts = {"A": TRACE.format(d="a", n=12, q="x1"), "B": "Exit code 1\nKeyError: 'other'\n"}
+    pol = Rec("patient")
+    _prompt(tmp_path, pol)
+    lane = loopguard_lane.LoopguardLane(_cfg(tmp_path), {})
+    info = SessionInfo("g", 0, "dev", date(2026, 10, 1), None, replay.RunIds())
+    lane.feed(Prompt("go", 1), info)
+    for i, ch in enumerate(run):
+        if ch == "o":
+            _tool(tmp_path, pol, _ok(tmp_path))
+            rec = ToolResultRecord(f"t{i}", "Grep", {"pattern": "x"}, "hit")
+        else:
+            ev = _event(tmp_path, "post_tool_failure", text=texts[ch])
+            _tool(tmp_path, pol, ev)
+            rec = ToolResultRecord(f"t{i}", "Bash", {"command": "pytest -q"}, texts[ch], 0, True)
+        lane.feed(rec, info)
+    _prompt(tmp_path, pol, "next")
+    lane.end_session(info)
+    row = lane.report()["dev"]["categories"].get("*", {})
+    nat = _natural(tmp_path)
+    observed = 0 if nat is None else round(nat[2])
+    assert row.get("natural_observed", 0) == observed
+    if observed:
+        assert nat is not None and row["natural_broken"] == pytest.approx(nat[0])

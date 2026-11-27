@@ -312,7 +312,8 @@ def _target(event: Event) -> str:
 def recurs_within(seq: Sequence[str | None], i: int, n: int = DEFAULT_WATCH) -> bool:
     """Does ``seq[i]`` (a fingerprint; ``None`` never recurs) appear again among the next ``n``
     entries of ``seq`` (one per tool call of the agent's turn; the turn ending first counts as
-    not recurring)? The savings and natural-rate windows of ``on_tool`` decide by it."""
+    not recurring)? ``on_tool`` applies it incrementally, one call at a time (the window's
+    ``left`` countdown is kept in the per-turn state); the E1 lane applies it whole."""
     fp = seq[i]
     return fp is not None and fp in seq[i + 1 : i + 1 + n]
 
