@@ -317,6 +317,14 @@ def test_file_reading_tool_names_round3(name: str) -> None:
         "numactl -N 0 -m 0 cat a.py",
         "firejail --quiet cat a.py",
         "unshare -r cat a.py",
+        "ssh host python3 - <<'EOF'\nprint(open('/etc/app.conf').read())\nEOF",
+        "ssh -T host python3 <<'EOF'\nimport sys\nsys.stdout.write(open('a.py').read())\nEOF",
+        "numactl --cpunodebind 0 cat a.py",
+        "numactl --membind 0 -- cat a.py",
+        "unshare --map-user 0 cat a.py",
+        "cat <<EOF | sudo python3\nprint(open('a.py').read())\nEOF",
+        "cat <<EOF | env python3\nprint(open('a.py').read())\nEOF",
+        "cat <<EOF | sed 's/x/y/' | python3\nprint(open('a.py').read())\nEOF",
     ],
 )
 def test_file_dump_minors(cmd: str) -> None:
@@ -333,6 +341,8 @@ def test_file_dump_minors(cmd: str) -> None:
         "chrt 10 pytest -q",
         "numactl -N 0 make",
         "unshare -r true",
+        "ssh host python3 - <<'EOF'\nprint(1)\nEOF",
+        "cat <<EOF | sudo python3\nprint(1)\nEOF",
     ],
 )
 def test_not_a_file_dump_minors(cmd: str) -> None:

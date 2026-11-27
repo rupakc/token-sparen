@@ -156,7 +156,7 @@ _HEREDOC_LINE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _INTERPS = r"(python[\d.]*|node|deno|ruby|perl|php|lua|bash|sh|zsh|dash|ksh)\b"
 _HEREDOC_INTERP = re.compile(rf"\b{_INTERPS}")
 _HEREDOC_SSH = re.compile(r"(?:^|[\s;&|(])ssh\s")  # `ssh host <<EOF`: the body runs as a shell
-_PIPED_INTERP = re.compile(rf"\s*(?:\S*/)?{_INTERPS}")  # `<<EOF | python`
+_PIPED_INTERP = re.compile(rf"{_INTERPS}")  # `<<EOF | python` (a program's base name)
 _PS_DUMP = frozenset({"get-content", "gc", "type"})
 _PS_READ = re.compile(r"\[(?:system\.)?io\.file\]::read", re.IGNORECASE)
 _CODE_READS = re.compile(
@@ -216,6 +216,16 @@ _DOCKER_ARGS = frozenset(
         "--project-name",
         "--index",
     }
+)
+# value options (short and long; getopt_long also accepts `--opt VALUE`)
+_NUMACTL_ARGS = frozenset(
+    {"-N", "-m", "-C", "-p", "-i", "-P", "-w"}
+    | {"--cpunodebind", "--membind", "--physcpubind", "--interleave", "--preferred"}
+    | {"--preferred-many", "--weighted-interleave"}
+)
+_UNSHARE_ARGS = frozenset(
+    {"-S", "-G", "-R", "-w", "--setuid", "--setgid", "--root", "--wd", "--map-user"}
+    | {"--map-group", "--map-users", "--map-groups", "--propagation", "--setgroups"}
 )
 _CONTAINERS = frozenset({"docker", "podman", "nerdctl"})
 _KUBE_ARGS = frozenset({"-c", "--container", "-n", "--namespace", "-f", "--filename", "--context"})
@@ -447,11 +457,9 @@ def _unwrap(words: list[str], depth: int) -> tuple[list[str], bool] | str | None
         elif prog == "chrt":
             words = _skip_opts(words[1:], frozenset({"-T", "-P", "-D"}))[1:]  # drop the priority
         elif prog == "numactl":
-            takes = frozenset({"-N", "-m", "-C", "-p", "-i", "-P", "-w"})
-            words = _skip_opts(words[1:], takes)
+            words = _skip_opts(words[1:], _NUMACTL_ARGS)
         elif prog in ("firejail", "unshare"):
-            takes = frozenset({"-S", "-G", "-R", "-w", "--setuid", "--setgid", "--root", "--wd"})
-            words = _skip_opts(words[1:], takes if prog == "unshare" else frozenset())
+            words = _skip_opts(words[1:], _UNSHARE_ARGS if prog == "unshare" else frozenset())
         elif prog == "taskset":
             words = _skip_opts(words[1:], frozenset())[1:]  # drop the mask / cpu list
         elif prog == "sshpass":
@@ -558,6 +566,16 @@ def _awk_reads(words: list[str]) -> bool:
     return bool(rest) and bool(_CODE_READS.search(rest[0]))
 
 
+def _piped_interp(tail: str) -> re.Match[str] | None:
+    """An interpreter in any later pipe stage of a here-document's line (``<<EOF | sudo
+    python3``, ``| sed ... | python3``), wrappers and assignments peeled."""
+    for stage in tail.split("|")[1:]:
+        words = fam._strip(stage.split())
+        if words and (m := _PIPED_INTERP.match(os.path.basename(words[0]))) is not None:
+            return m
+    return None
+
+
 def _heredocs(cmd: str) -> tuple[str, bool]:
     """(the command without here-document bodies, whether an interpreter's body reads a file).
     A shell's body is classified as commands; another interpreter's is searched for file
@@ -581,12 +599,11 @@ def _heredocs(cmd: str) -> tuple[str, bool]:
         i += 1  # the delimiter line
         text = "\n".join(body)
         head, tail = line[: m.start()], line[m.end() :]
-        piped = _PIPED_INTERP.match(tail.split("|", 1)[1]) if "|" in tail else None
-        interp = _HEREDOC_INTERP.search(head) or piped
-        ssh = _HEREDOC_SSH.search(head) is not None
+        interp = _HEREDOC_INTERP.search(head) or _piped_interp(tail)
+        ssh = _HEREDOC_SSH.search(head) is not None  # ssh only decides that the body is read
         if interp is None and not ssh:
             continue
-        name = "sh" if ssh or interp is None else interp.group(1)
+        name = interp.group(1) if interp is not None else "sh"
         if name in fam._SHELLS:
             reads = reads or _any(text, MAX_DEPTH - 1)
         else:
