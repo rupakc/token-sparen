@@ -10,6 +10,24 @@ Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones 
 and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`
 for M3); the package version stays `0.1.0.dev0` until v1.0.
 
+### M4 final-review fixes (offline evaluation validity)
+
+- Hill-climbing `--confirm` also runs the `compression` lane on each arm whose
+  `compression.levels.<arm>` key the proposal moves (proposal versus defaults, paired by
+  project group, in the same single test-split read): per-arm proxy regret per trim must be
+  non-inferior (upper bound of the difference <= 0.2 tau) and at most tau, with the minimum
+  evidence; any failure rejects the whole proposal.
+- `sim` lane: the learner's savings reward uses the re-sends the live hook projects
+  (`regret.expected_resends(governor.remaining_turns(...))` over a governor-style burn meter),
+  paid at trim time; actual later re-sends only price the reported net savings. The harness
+  runs three seeds per evaluation (`SIM_SEEDS`, one pass) and averages them per project group.
+- Unset `guards.pretrim_bounded_keep_ratio` follows the packaged standard keep ratio, no longer
+  a configured one, so tuning `compression.levels.standard.keep_ratio` never moves the pre-trim
+  arm (a project value is compared with that packaged ratio).
+- Harness flags `--campaign ID` (ledger `confirm-<id>.json`, default `m4`), `--cutoff`
+  (default 2026-11-08) and `--dogfood-start` (default 2026-11-26); `replay`'s default
+  `--cutoff` is now 2026-11-08, the tuning split's.
+
 ### M4 campaign outcome (defaults unchanged)
 
 - The dev-split search produced an empty joint proposal (insufficient evidence for learning

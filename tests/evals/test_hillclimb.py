@@ -668,3 +668,190 @@ def test_dev_search_samples_only_groups_with_dev_sessions(
     sha = hashlib.sha256((out / "proposal.toml").read_bytes()).hexdigest()
     assert doc["proposal_sha256"] == sha
     assert doc["keys"]["read_dedupe.max_turn_gap"] == "unmeasured"
+
+
+# ------------------------------------------------------------------ M4 final-review fixes
+
+
+def test_sim_rows_are_averaged_over_at_least_three_seeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M4-G2: every sim evaluation runs >= 3 seeds per group (one pass) and averages them."""
+    assert len(hc.SIM_SEEDS) >= 3
+    src = corpus(tmp_path / "t", groups=2, dev=2, test=0)
+    spy = Spy(monkeypatch)
+    ev = hc.Evaluator([src], jobs=1, seed=5, split="dev")
+    assert ev.sim_seeds == tuple(5 + s for s in hc.SIM_SEEDS)
+    key = "learn.savings_reward"
+    got = ev("sim", {"base": {}, "f": {key: "fraction"}}, hc._groups([src]), key)
+    assert len(spy.calls) == 1  # every seed in the same pass
+    specs = [p for _, p in spy.calls[0]["specs"]]
+    for label in ("base", "f"):
+        seeds = sorted(p["seed"] for p in specs if p["label"].startswith(f"hc_{label}@"))
+        assert seeds == [5 + s for s in hc.SIM_SEEDS]
+    cand, ref = got["base"]
+    assert cand == ref and sorted(cand) == hc._groups([src])
+    # the mean per group, over the groups every seed reports
+    a = {"g": hc.Row(1.0, {"compression": 10.0}, {"compression": 1.0}, 1), "h": hc.Row(5.0)}
+    b = {"g": hc.Row(3.0, {"compression": 20.0}, {"compression": 0.0}, 0)}
+    mean = hc.mean_rows([a, b])
+    assert mean == {"g": hc.Row(2.0, {"compression": 15.0}, {"compression": 0.5}, 0.5)}
+
+
+def test_split_dates_and_campaign_are_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """M4-G4: ``--cutoff``, ``--dogfood-start`` and ``--campaign`` (one ledger per campaign);
+    the plain replay default cutoff is the harness's."""
+    from token_sparen.replay import replay
+
+    assert replay.DEFAULT_CUTOFF == hc.DEV_CUTOFF == date(2026, 11, 8)
+    assert runner.DEFAULT_CUTOFF == hc.DEV_CUTOFF
+    assert hc.ledger_path().name == "confirm-m4.json"  # the default campaign
+    assert hc.ledger_path("m5").name == "confirm-m5.json"
+    assert hc.ledger_path("m5").parent == hc.ledger_path().parent
+    src = corpus(tmp_path / "t")
+    space = write(tmp_path / "space.toml", SMALL_SPACE)
+    out = tmp_path / "private"
+    spy = Spy(monkeypatch)
+    dates = ["--cutoff", "2026-10-04", "--dogfood-start", "2026-12-01"]
+    args = ["--space", str(space), "--transcripts", str(src), "--out", str(out), "--quiet"]
+    assert hc.main([*args, *dates, "--campaign", "m5"]) == 0
+    capsys.readouterr()
+    assert spy.calls
+    for call in spy.calls:
+        assert call["cutoff"] == date(2026, 10, 4)
+        assert call["dogfood_start"] == date(2026, 12, 1)
+    doc = json.loads((out / "dev.json").read_text(encoding="utf-8"))
+    assert (doc["campaign"], doc["cutoff"], doc["dogfood_start"]) == (
+        "m5",
+        "2026-10-04",
+        "2026-12-01",
+    )
+    proposal = write(tmp_path / "p.toml", '[learn]\nsavings_reward = "fraction"\n')
+    spy.calls.clear()
+    assert hc.main([*args, *dates, "--campaign", "m5", "--confirm", str(proposal)]) == 0
+    capsys.readouterr()
+    assert [c["cutoff"] for c in spy.calls] == [date(2026, 10, 4)]
+    assert hc.ledger_path("m5").exists() and not hc.ledger_path().exists()
+    doc = json.loads((out / "confirm.json").read_text(encoding="utf-8"))
+    assert doc["campaign"] == "m5" and doc["cutoff"] == "2026-10-04"
+    # the m5 look is spent; the default campaign's is not (a new campaign, a new ledger)
+    assert hc.main([*args, *dates, "--campaign", "m5", "--confirm", str(proposal)]) == 2
+    capsys.readouterr()
+    # malformed ids or dates are refused before anything runs
+    _forbid_runs(monkeypatch)
+    for bad in (
+        ["--campaign", "../x"],
+        ["--campaign", ""],
+        ["--campaign", "M4/"],
+        ["--cutoff", "2026-13-01"],
+        ["--cutoff", "2026-12-01", "--dogfood-start", "2026-11-26"],
+    ):
+        with pytest.raises(SystemExit) as exc:
+            hc.main([*args, *bad, "--confirm", str(proposal)])
+        assert exc.value.code == 2
+    capsys.readouterr()
+
+
+LEVEL_SPACE = (
+    entry("compression.levels.aggressive.keep_ratio", [0.1, 0.15])
+    + entry("compression.levels.light.keep_ratio", [0.6, 0.7])
+    + entry("learn.savings_reward", ["scaled", "fraction"])
+)
+
+
+def _confirm_fake(
+    monkeypatch: pytest.MonkeyPatch, rows: Mapping[str, hc.Rows]
+) -> list[list[runner.LaneSpec]]:
+    """Fake test run: ``rows`` per lane label (sim labels: ``(cand, ref)`` via the same table
+    under ``<label>:cand`` / ``<label>:ref``); every call's specs are recorded."""
+    calls: list[list[runner.LaneSpec]] = []
+
+    def fake(paths: Any, specs: Any, **kw: Any) -> runner.RunResult:
+        calls.append(list(specs))
+        assert kw["split"] == "test"
+        return runner.RunResult(
+            by_split={"test": {p["label"]: {"_": p["label"]} for _, p in specs}}
+        )
+
+    def sim(raw: Mapping[str, Any]) -> tuple[hc.Rows, hc.Rows]:
+        return rows["sim:cand"], rows["sim:ref"]
+
+    def comp(raw: Mapping[str, Any]) -> hc.Rows:
+        return rows[raw["_"]]
+
+    monkeypatch.setattr(runner, "run_parallel", fake)
+    monkeypatch.setattr(hc, "sim_rows", sim)
+    monkeypatch.setattr(hc, "compression_rows", comp)
+    monkeypatch.setattr(hc, "e2_gate", _ok_e2)
+    return calls
+
+
+def test_confirm_checks_each_proposed_level_on_its_own_arm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """M4-G1: a level key in the proposal is also confirmed on its own arm (compression lane,
+    paired by group, in the same single test pass): per-arm proxy regret per trim non-inferior
+    (upper bound of the difference <= 0.2 tau) and <= tau; any failure rejects everything."""
+    tau = ope.tau_for("compression")
+    groups = [f"g{i}" for i in range(12)]
+    good = {g: _row(12.0 + i % 4, trims=10, regret=0.2) for i, g in enumerate(groups)}
+    ref = {g: _row(10.0 + i % 4, trims=10, regret=0.2) for i, g in enumerate(groups)}
+    worse = {g: _row(10.0, trims=10, regret=0.2 + 10 * 0.3 * tau) for g in groups}
+    space = write(tmp_path / "space.toml", LEVEL_SPACE)
+    coords = hc.load_space(space)
+    proposal = write(
+        tmp_path / "p.toml",
+        '[compression.levels.aggressive]\nkeep_ratio = 0.1\n[learn]\nsavings_reward = "fraction"\n',
+    )
+    table = {
+        "sim:cand": good,
+        "sim:ref": ref,
+        "cmp_aggressive_cand": worse,
+        "cmp_aggressive_ref": ref,
+    }
+    calls = _confirm_fake(monkeypatch, table)
+    out = tmp_path / "private"
+    path, complete, lines = hc.confirm(coords, proposal, [tmp_path], out, jobs=1, seed=0)
+    assert complete and len(calls) == 1  # ONE test read for sim and every arm
+    arms = {(p.get("arm"), p["label"]) for name, p in calls[0] if name == "hc_compression"}
+    assert arms == {("aggressive", "cmp_aggressive_cand"), ("aggressive", "cmp_aggressive_ref")}
+    by_label = {p["label"]: p for _, p in calls[0]}
+    assert by_label["cmp_aggressive_ref"]["overlay"] == {}
+    assert by_label["cmp_aggressive_cand"]["overlay"] == hc.nest(hc.load_proposal(proposal, coords))
+    assert sum(1 for name, _ in calls[0] if name == "sim") == len(hc.SIM_SEEDS)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["accepted"] is False
+    assert "arm:aggressive:regret_noninferiority:compression" in doc["verdict"]["reasons"]
+    assert "net_savings" not in doc["verdict"]["reasons"]  # the sim verdict itself passed
+    assert "aggressive" in doc["arms"]
+    assert lines == [
+        "compression.levels.aggressive.keep_ratio: rejected",
+        "compression.levels.light.keep_ratio: unchanged",
+        "learn.savings_reward: rejected",
+    ]
+    # absolute tau per arm, too
+    high = {g: _row(10.0, trims=10, regret=10 * 1.5 * tau) for g in groups}
+    hc._E2_CACHE.clear()
+    monkeypatch.setattr(hc, "claim_ledger", lambda sha, campaign="m4": {"proposal_sha256": sha})
+    table.update({"cmp_aggressive_cand": high, "cmp_aggressive_ref": high})
+    path, _, _ = hc.confirm(coords, proposal, [tmp_path], tmp_path / "o2", jobs=1, seed=0)
+    reasons = json.loads(path.read_text(encoding="utf-8"))["verdict"]["reasons"]
+    assert reasons == ["arm:aggressive:regret_tau:compression"]
+    # the arm holds: accepted; a sim-lane-only proposal runs no compression lane at all
+    table.update({"cmp_aggressive_cand": good, "cmp_aggressive_ref": ref})
+    path, _, lines = hc.confirm(coords, proposal, [tmp_path], tmp_path / "o3", jobs=1, seed=0)
+    assert json.loads(path.read_text(encoding="utf-8"))["accepted"] is True
+    assert lines[0] == "compression.levels.aggressive.keep_ratio: accepted"
+    only_sim = write(tmp_path / "q.toml", '[learn]\nsavings_reward = "fraction"\n')
+    calls.clear()
+    hc.confirm(coords, only_sim, [tmp_path], tmp_path / "o4", jobs=1, seed=0)
+    assert [name for name, _ in calls[0]] == ["sim"] * len(hc.SIM_SEEDS)
+    # too little evidence on an arm rejects as well
+    few = {g: _row(12.0, trims=1, regret=0.0) for g in groups[:3]}
+    table.update({"cmp_aggressive_cand": few, "cmp_aggressive_ref": few})
+    path, _, _ = hc.confirm(coords, proposal, [tmp_path], tmp_path / "o5", jobs=1, seed=0)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["accepted"] is False
+    assert any(r.startswith("arm:aggressive:insufficient") for r in doc["verdict"]["reasons"])

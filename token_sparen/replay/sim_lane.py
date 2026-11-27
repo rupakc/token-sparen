@@ -11,19 +11,20 @@ them back through the compression lane's machinery (``replay._Session``: the pro
 - **savings**: from the tokens the chosen arm removed on that output (``before -
   tokens_after``, as the compression lane measures them), through ``regret.reward_savings`` (the
   hook's ``[learn] savings_reward`` mode; ``counterfactual`` measures the other arms on the same
-  output at trim time). The re-sends are the **actual** later API calls of the session before
-  the next compaction (the calls the compression lane prices the removal on; at least 1, as
-  ``regret.expected_resends``), so the reward is delivered when they are known: at the next
-  compaction or the session end. A trimming arm that found nothing to trim gets savings 0 and
-  regret 0 at once, as in the hook;
+  output), paid at trim time with the re-sends the **live hook would project**:
+  ``regret.expected_resends(governor.remaining_turns(...))`` over a burn meter kept as the
+  governor keeps it (context tokens summed over calls, per-turn EWMA closed at each user prompt,
+  the role's ``governor`` settings). The learner never sees the actual later re-sends; those
+  only price the reported net savings (the compression lane's accounting: later API calls before
+  the next compaction). A trimming arm that found nothing to trim gets savings 0 and regret 0 at
+  once, as in the hook;
 - **regret**: the replay's proxy regret of that trim (``replay`` module docstring; every trim is
   watched for a re-run of its signature, token signals need >= 2 distinctive tokens), delivered
   once, when the proxy settles: a full regret at once, a partial one or 0 at the expiry of its
   window, an eviction or the session end. Every payout is also a ``regret_outcomes`` row of the
   session overlay, so the circuit breaker judges the learner as it would live. A session that
   fails mid-way (counted in ``sessions_failed``, per group too) is still settled as SessionEnd
-  would (every open trim paid its best value so far, every pending savings reward delivered,
-  each role on its own) and folded;
+  would (every open trim paid its best value so far, each role on its own) and folded;
 - **fold**: at each session end, ``overlay.fold(..., mine_facts=False, prune=False)``: engine
   evidence only (posteriors, back-off aggregates, global, breaker, pre-trim candidates), dated
   by the session's day.
@@ -86,6 +87,7 @@ from token_sparen.learn import overlay, regret
 from token_sparen.learn.engine import Engine
 from token_sparen.learn.hierarchy import StoreChain
 from token_sparen.learn.policy import COMPRESSION, Decision, DecisionPoint
+from token_sparen.mechanisms import governor
 from token_sparen.replay import runner
 from token_sparen.replay.replay import SPLITS, _Acc, _Session, _Span, _window, acc_view
 from token_sparen.replay.runner import Event, SessionInfo
@@ -287,17 +289,6 @@ class _Shim:
         self._fn(savings, regret)
 
 
-@dataclass
-class _Pending:
-    """A trim whose savings reward waits for its re-send count."""
-
-    decision: Decision
-    removed: float
-    before: float
-    best: float  # counterfactual mode: the largest removal over the trimming arms
-    calls: int = 0  # later API calls so far (before the next compaction)
-
-
 class _SimSession(_Session):
     """One role's replay of one session, feeding its chooser."""
 
@@ -308,7 +299,26 @@ class _SimSession(_Session):
         super().__init__((role.accs[split],), self.tap, cfg, prices, role.window, None, cwd, True)
         self.role, self.split = role, split
         self._spans: dict[int, tuple[Decision, list[Any]]] = {}
-        self._savings: list[_Pending] = []  # trims whose re-sends are still being counted
+        # the governor's burn meter as the live hook keeps it (``governor.CACHE``): context
+        # tokens summed over calls, the per-turn EWMA closed at each user prompt
+        self._gov: dict[str, Any] = {"burn": 0}
+
+    def on_call(self, rec: AssistantRecord) -> None:
+        super().on_call(rec)
+        if rec.usage is not None:
+            u = rec.usage
+            self._gov["burn"] += u.input + u.cache_read + u.cache_write
+
+    def on_prompt(self, ev: Prompt) -> None:
+        super().on_prompt(ev)
+        governor.turn_boundary(self._gov, self.role.cfg)
+
+    def live_resends(self) -> float:
+        """The re-sends the PostToolUse hook would project now:
+        ``regret.expected_resends(governor.remaining_turns(...))`` over this session's burn."""
+        return regret.expected_resends(
+            governor.remaining_turns({governor.CACHE: self._gov}, self.role.cfg)
+        )
 
     def _trimmed(
         self,
@@ -323,55 +333,34 @@ class _SimSession(_Session):
         row = self.role.point(self.split, decision.point)
         row["trims"] += 1
         row["savings_tokens"] += int(removed)
-        best = removed
-        if regret.savings_mode(self.role.cfg) == "counterfactual":  # measured now, text at hand
-            for arm in COMPRESSION.arms:
-                if arm not in (COMPRESSION.safe_arm, decision.arm):
-                    other = redo(arm)
-                    if other is not None:
-                        best = max(best, other)
-        self._savings.append(_Pending(decision, removed, before, best))
         self._spans[id(span)] = (decision, rec)
-
-    def on_call(self, rec: AssistantRecord) -> None:
-        super().on_call(rec)
-        for pend in self._savings:
-            pend.calls += 1
-
-    def on_compaction(self) -> None:
-        super().on_compaction()
-        self._deliver()
-
-    def _deliver(self) -> None:
-        """Savings rewards of the trims so far: their re-sends are known now."""
-        pending, self._savings = self._savings, []
-        for pend in pending:
-            self._reward_savings(pend)
-
-    def _reward_savings(self, pend: _Pending) -> None:
-        decision = pend.decision
-        row = self.role.point(self.split, decision.point)
 
         def give(savings: float | None, regret_value: float | None) -> None:
             if savings is not None:
                 row["savings_reward"] += float(savings)
             self.role.chooser.reward(decision, savings, regret_value)
 
-        def max_removed() -> float:
-            return pend.best
+        def max_removed() -> float:  # counterfactual mode only, as the hook: the text at hand
+            best = removed
+            for arm in COMPRESSION.arms:
+                if arm not in (COMPRESSION.safe_arm, decision.arm):
+                    other = redo(arm)
+                    if other is not None:
+                        best = max(best, other)
+            return best
 
-        regret.reward_savings(
+        regret.reward_savings(  # at trim time, with the hook's projection (M4-G2)
             _Shim(give),
             decision.decision_id,
             decision.point,
             decision.bucket,
-            pend.removed,
-            regret.expected_resends(float(pend.calls)),
+            removed,
+            self.live_resends(),
             home=self.role.home,
             project_key=self.project_key,
             env=self.role.env,
             cfg=self.role.cfg,
-            before=pend.before,
+            before=before,
             max_removed=max_removed,
         )
 
@@ -389,14 +378,6 @@ class _SimSession(_Session):
         if entry is not None:
             value = span.best if span.best > 0 else 0.0
             self._pay(entry[0], entry[1], value, span.signal if value > 0 else "")
-
-    def finish(self) -> None:
-        """Session end (also after a failure): settle every watched trim, deliver every pending
-        savings reward."""
-        try:
-            super().finish()
-        finally:
-            self._deliver()
 
 
 # --------------------------------------------------------------------------- lane

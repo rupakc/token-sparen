@@ -4,7 +4,9 @@ E1 **dev** split only, write one joint proposal, and confirm it **once** on the 
     python evals/hillclimb/run.py --space evals/hillclimb/space.toml --jobs N --out DIR --quiet
     python evals/hillclimb/run.py --confirm DIR/proposal.toml --jobs N --out DIR --quiet
 
-(``DIR``: a private directory outside any git work tree.)
+(``DIR``: a private directory outside any git work tree.) ``--campaign ID`` (default ``m4``),
+``--cutoff`` (default 2026-11-08, ``replay.DEFAULT_CUTOFF``) and ``--dogfood-start`` (default
+2026-11-26) set the campaign and its split; a new campaign needs a new id (and its own ledger).
 
 **Space.** ``[[entry]]`` tables ``{key, values, point[, measured_by]}``: explicit grids only
 (at most ``MAX_VALUES`` values, the current default among them), every value a config key the
@@ -28,8 +30,10 @@ lanes: the ``compression`` replay per group (``hc_compression``, gated as in pro
 static keys -- a ``compression.levels.<arm>`` key on the arm it governs, every other key under
 the production policy (the learner frozen on its packaged priors in an empty temporary state
 root); the ``sim`` lane (the shipped learner, candidate versus the packaged-defaults reference,
-paired per group) for the learning keys (``LEARNING``), where breaker trips may not exceed the
-reference engine's. No lane replays read de-dupe, so the objective has no read de-dupe term.
+paired per group, rewarded with the re-sends the live hook projects; one run per seed of
+``SIM_SEEDS`` in the same pass, averaged per group) for the learning keys (``LEARNING``), where
+breaker trips may not exceed the reference engine's. No lane replays read de-dupe, so the
+objective has no read de-dupe term.
 Written privately: ``trail.jsonl`` (every screening and verdict), ``proposal.toml`` (the joint
 proposal: keys that moved) and ``dev.json`` (the run's summary with the proposal's sha256, the
 ``--quiet`` report).
@@ -38,20 +42,25 @@ proposal: keys that moved) and ``dev.json`` (the run's summary with the proposal
 or fewer than ``MIN_TRIMS`` trims per evaluated point on either side: the verdict is
 ``insufficient`` (the coordinate stays; a confirmation rejects).
 
-**Confirmation** (``--confirm``). One-shot per plan: the proposal is checked (grid values of
-measured keys only), then the ledger ``<state root>/hillclimb/confirm-m4.json`` (whatever
-``--out`` is) is created exclusively (``O_CREAT | O_EXCL``, 0600) with the proposal's sha256 and
-the time **before** any test-split data is read; if it exists, the confirmation is refused, so of
-any number of confirmations exactly one runs. A deleted ledger cannot be detected: any second
-look at test invalidates the result (cite the ``confirm.json`` id, which records the ledger).
-It runs the ``sim`` lane once on the test split (proposal and defaults in the same paired run)
-and accepts all or nothing: bootstrap (by project group, ``RESAMPLES`` seeded resamples, 95 %
-percentile interval) lower bound of the net-savings difference > 0; for every point the upper
-bound of the proxy-regret-per-trim difference <= 0.2 tau(point) and the proxy regret per trim
-<= tau(point) (``ope.tau_for``); E2 100 % and ``inline_rate`` not below the defaults'. Breaker
-trips are reported, not gated (the plan's acceptance rule does not list them). Writes
-``confirm.json`` privately (``dev_report``: the id of the ``dev.json`` beside the proposal that
-wrote it, else null).
+**Confirmation** (``--confirm``). One-shot per campaign: the proposal is checked (grid values of
+measured keys only), then the ledger ``<state root>/hillclimb/confirm-<campaign>.json``
+(whatever ``--out`` is) is created exclusively (``O_CREAT | O_EXCL``, 0600) with the campaign,
+the proposal's sha256 and the time **before** any test outcome is computed (the runner's
+date/marker pre-scan of the files is not an outcome); if it exists, the confirmation is refused,
+so of any number of confirmations of a campaign exactly one runs. A deleted ledger cannot be
+detected: any second look at test invalidates the result (cite the ``confirm.json`` id, which
+records the ledger). It reads the test split once: the ``sim`` lane (proposal and defaults in
+the same paired run, every seed of ``SIM_SEEDS``, averaged per group) and, for every
+``compression.levels.<arm>`` key in the proposal, the ``compression`` lane on that arm
+(proposal versus defaults, paired by group). It accepts all or nothing: on the sim lane the
+bootstrap (by project group, ``RESAMPLES`` seeded resamples, 95 % percentile interval) lower
+bound of the net-savings difference > 0, and for every point the upper bound of the
+proxy-regret-per-trim difference <= 0.2 tau(point) and the proxy regret per trim <= tau(point)
+(``ope.tau_for``); per proposed arm the same two regret bounds and the minimum evidence (reasons
+``arm:<arm>:...``); E2 100 % and ``inline_rate`` not below the defaults'. Breaker trips are
+reported, not gated (the plan's acceptance rule does not list them). Writes ``confirm.json``
+privately (``dev_report``: the id of the ``dev.json`` beside the proposal that wrote it, else
+null; ``arms``: the per-arm figures).
 
 **Privacy.** Files go through ``replay.report.write_private`` (0600, never inside a git work
 tree). ``--quiet`` stdout is only ``report: <path> id: <12 hex>``, ``status: complete|incomplete``
@@ -105,15 +114,18 @@ from token_sparen.replay.runner import Event, SessionInfo
 HERE = Path(__file__).resolve().parent
 SPACE = HERE / "space.toml"
 MODULE = "evals.hillclimb.run"
-DEV_CUTOFF = date(2026, 11, 8)  # dev < cutoff <= test (M4 plan)
-DOGFOOD_START = date(2026, 11, 26)  # sessions from here on are excluded whole
+DEV_CUTOFF = date(2026, 11, 8)  # dev < cutoff <= test (M4 plan; = replay's default); --cutoff
+DOGFOOD_START = date(2026, 11, 26)  # sessions from here on are excluded whole; --dogfood-start
+CAMPAIGN = "m4"  # ``--campaign``: one confirmation (one ledger) per campaign
+CAMPAIGN_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+SIM_SEEDS = (0, 1, 2)  # sim lane: seed offsets per evaluation (mean per group), M4-G2
 MAX_VALUES = 5
 STAGES = (0.25, 0.5, 1.0)  # successive halving: share of project groups per stage
 RESAMPLES = 2000
 ALPHA = 0.05  # 95 % percentile interval
 NONINFERIORITY = 0.2  # regret-per-trim margin, times tau(point)
 MAX_PASSES = 2
-LEDGER = ("hillclimb", "confirm-m4.json")  # under the state root: one confirmation per plan
+LEDGER_DIR = "hillclimb"  # under the state root: ``confirm-<campaign>.json``
 MIN_GROUPS = 8  # project groups with >= 1 trim needed before anything is decided
 MIN_TRIMS = 30  # trims per evaluated point (each side) needed before anything is decided
 EXCLUDED = ("learn.tau", "ope")  # never searched (prefixes of dotted keys)
@@ -146,7 +158,7 @@ class ProposalError(ValueError):
 
 
 class ConfirmRefused(RuntimeError):
-    """The one confirmation of this plan already ran."""
+    """The one confirmation of this campaign already ran."""
 
 
 # --------------------------------------------------------------------------- space
@@ -382,7 +394,7 @@ class Row:
     net: float  # cost-weighted net savings (saved minus recovery reads)
     trims: dict[str, float] = field(default_factory=dict)  # per point
     regret: dict[str, float] = field(default_factory=dict)  # proxy regret sum per point
-    trips: int = 0  # circuit-breaker trips (sim lane)
+    trips: float = 0  # circuit-breaker trips (sim lane; a mean over seeds)
 
 
 Rows = dict[str, Row]  # group key -> row
@@ -411,13 +423,22 @@ def _per_trim(rows: Iterable[Row], point: str) -> float:
     return regrets / trims if trims > 0 else 0.0
 
 
-def judge(cand: Rows, base: Rows, ref: Rows, *, seed: str, breaker: bool = False) -> Verdict:
+def judge(
+    cand: Rows,
+    base: Rows,
+    ref: Rows,
+    *,
+    seed: str,
+    breaker: bool = False,
+    net: bool = True,
+) -> Verdict:
     """The acceptance rule, paired by project group (groups every side reports): with at least
     ``MIN_GROUPS`` groups that trimmed and ``MIN_TRIMS`` trims per evaluated point on each side
     (else ``insufficient``: nothing decided), bootstrap 95 % lower bound of the net savings
-    difference (``cand - base``) > 0; per point, upper bound of the proxy-regret-per-trim
-    difference (``cand - ref``, ref = the current defaults) <= 0.2 tau and ``cand``'s proxy
-    regret per trim <= tau; with ``breaker``, ``cand``'s breaker trips <= ``ref``'s."""
+    difference (``cand - base``) > 0 (only with ``net``; without it, the quality half alone);
+    per point, upper bound of the proxy-regret-per-trim difference (``cand - ref``, ref = the
+    current defaults) <= 0.2 tau and ``cand``'s proxy regret per trim <= tau; with ``breaker``,
+    ``cand``'s breaker trips <= ``ref``'s."""
     every = set(cand) | set(base) | set(ref)
     groups = sorted(set(cand) & set(base) & set(ref))
     c = [cand[g] for g in groups]
@@ -465,7 +486,7 @@ def judge(cand: Rows, base: Rows, ref: Rows, *, seed: str, breaker: bool = False
         "net_diff_lb": lb,
         "points": {},
     }
-    if not lb > 0:
+    if net and not lb > 0:
         reasons.append("net_savings")
     for p in points:
         tau = ope.tau_for(p)
@@ -747,9 +768,29 @@ def sim_rows(raw: Mapping[str, Any]) -> tuple[Rows, Rows]:
                 float(view["net_cost_weighted_saved"]),
                 {p: float(v.get("trims", 0)) for p, v in points.items()},
                 {p: float(v.get("proxy_regret", 0.0)) for p, v in points.items()},
-                int(row.get("breaker_trips", 0)),
+                float(row.get("breaker_trips", 0)),
             )
     return cand, ref
+
+
+def mean_rows(runs: Sequence[Rows]) -> Rows:
+    """Per project group, the mean row over ``runs`` (one per seed), for the groups every run
+    reports: net savings, trims, proxy regret and breaker trips averaged."""
+    if not runs:
+        return {}
+    n = float(len(runs))
+    common = set(runs[0]).intersection(*runs[1:])
+    out: Rows = {}
+    for group in sorted(common):
+        rows = [r[group] for r in runs]
+        points = sorted({p for row in rows for p in (*row.trims, *row.regret)})
+        out[group] = Row(
+            sum(row.net for row in rows) / n,
+            {p: sum(row.trims.get(p, 0.0) for row in rows) / n for p in points},
+            {p: sum(row.regret.get(p, 0.0) for row in rows) / n for p in points},
+            sum(row.trips for row in rows) / n,
+        )
+    return out
 
 
 @dataclass
@@ -776,19 +817,45 @@ class RunLog:
 
 class Evaluator:
     """``Evaluate`` over real runs: one ``runner.run_parallel`` pass per call, every label a lane
-    of that pass, on ``split`` only."""
+    of that pass, on ``split`` only (``cutoff``/``dogfood_start``: the campaign's split dates).
+    The ``sim`` lane runs once per seed of ``sim_seeds`` (default ``seed + SIM_SEEDS``) in that
+    same pass and its rows are averaged per group (``mean_rows``)."""
 
-    def __init__(self, paths: Sequence[Path], *, jobs: int, seed: int, split: str) -> None:
+    def __init__(
+        self,
+        paths: Sequence[Path],
+        *,
+        jobs: int,
+        seed: int,
+        split: str,
+        cutoff: date = DEV_CUTOFF,
+        dogfood_start: date = DOGFOOD_START,
+        sim_seeds: Sequence[int] | None = None,
+    ) -> None:
         self.paths, self.jobs, self.seed, self.split = list(paths), jobs, seed, split
+        self.cutoff, self.dogfood_start = cutoff, dogfood_start
+        self.sim_seeds = tuple(sim_seeds) if sim_seeds else tuple(seed + s for s in SIM_SEEDS)
         self.log = RunLog()
+
+    def sim_specs(self, label: str, overlay: Mapping[str, Any]) -> list[runner.LaneSpec]:
+        """One ``sim`` lane per seed (labels ``<label>@<seed>``)."""
+        return [
+            ("sim", {"overlay": nest(overlay), "seed": s, "label": f"{label}@{s}"})
+            for s in self.sim_seeds
+        ]
+
+    def sim_result(self, got: Mapping[str, Any], label: str) -> tuple[Rows, Rows]:
+        """(candidate, reference) rows of ``label``, averaged over the seeds."""
+        runs = [sim_rows(got.get(f"{label}@{s}", {})) for s in self.sim_seeds]
+        return mean_rows([c for c, _ in runs]), mean_rows([r for _, r in runs])
 
     def run(self, specs: list[runner.LaneSpec], groups: Sequence[str] | None) -> dict[str, Any]:
         res = runner.run_parallel(
             self.paths,
             specs,
             jobs=self.jobs,
-            cutoff=DEV_CUTOFF,
-            dogfood_start=DOGFOOD_START,
+            cutoff=self.cutoff,
+            dogfood_start=self.dogfood_start,
             groups=set(groups) if groups is not None else None,
             split=self.split,
             cfg=Config(data=packaged_defaults()),  # never the user's, project's or env config
@@ -806,11 +873,10 @@ class Evaluator:
     ) -> dict[str, tuple[Rows, Rows]]:
         if lane == "sim":
             specs: list[runner.LaneSpec] = [
-                ("sim", {"overlay": nest(o), "seed": self.seed, "label": f"hc_{label}"})
-                for label, o in overlays.items()
+                spec for label, o in overlays.items() for spec in self.sim_specs(f"hc_{label}", o)
             ]
             got = self.run(specs, groups)
-            return {label: sim_rows(got.get(f"hc_{label}", {})) for label in overlays}
+            return {label: self.sim_result(got, f"hc_{label}") for label in overlays}
         key_arm = _arm_of(key)  # the arm this coordinate governs, else the production policy
         labels = {**{f"hc_{k}": dict(v) for k, v in overlays.items()}, "hc__defaults": {}}
         specs = [
@@ -891,21 +957,34 @@ def dev_groups(evaluator: Evaluator) -> list[str]:
     return sorted(got.get("hc_scan", {}).get("groups", {}))
 
 
-def ledger_path() -> Path:
-    """The one-shot confirmation ledger: under the state root, whatever ``--out`` is."""
-    return state_home(os.environ).joinpath(*LEDGER)
+def campaign_id(text: str) -> str:
+    """A campaign id: 1-32 of ``[a-z0-9_-]``, starting with a letter or digit (a file name)."""
+    if not isinstance(text, str) or CAMPAIGN_ID.fullmatch(text) is None:
+        raise ValueError("campaign id: 1-32 of a-z 0-9 _ -")
+    return text
 
 
-def claim_ledger(sha: str) -> dict[str, str]:
-    """Create the ledger exclusively (``O_CREAT | O_EXCL``, 0600) or raise ``ConfirmRefused``:
-    of any number of confirmations, concurrent or not, exactly one gets past this."""
-    path = ledger_path()
+def ledger_path(campaign: str = CAMPAIGN) -> Path:
+    """The campaign's one-shot confirmation ledger: under the state root, whatever ``--out``
+    is (``hillclimb/confirm-<campaign>.json``)."""
+    return state_home(os.environ) / LEDGER_DIR / f"confirm-{campaign_id(campaign)}.json"
+
+
+def claim_ledger(sha: str, campaign: str = CAMPAIGN) -> dict[str, str]:
+    """Create the campaign's ledger exclusively (``O_CREAT | O_EXCL``, 0600) or raise
+    ``ConfirmRefused``: of any number of confirmations of one campaign, concurrent or not,
+    exactly one gets past this."""
+    path = ledger_path(campaign)
     report._mkdirs_private(path.parent)
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
-        raise ConfirmRefused("the confirmation of this plan already ran") from None
-    entry = {"proposal_sha256": sha, "recorded": datetime.now(UTC).isoformat()}
+        raise ConfirmRefused("the confirmation of this campaign already ran") from None
+    entry = {
+        "campaign": campaign,
+        "proposal_sha256": sha,
+        "recorded": datetime.now(UTC).isoformat(),
+    }
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(entry, fh, sort_keys=True)
         fh.write("\n")
@@ -934,8 +1013,13 @@ def dev(
     jobs: int,
     seed: int,
     space_sha: str,
+    campaign: str = CAMPAIGN,
+    cutoff: date = DEV_CUTOFF,
+    dogfood_start: date = DOGFOOD_START,
 ) -> tuple[Path, bool, list[str]]:
-    evaluator = Evaluator(paths, jobs=jobs, seed=seed, split="dev")
+    evaluator = Evaluator(
+        paths, jobs=jobs, seed=seed, split="dev", cutoff=cutoff, dogfood_start=dogfood_start
+    )
     trail: list[dict[str, Any]] = []
 
     def save_trail() -> None:
@@ -960,11 +1044,13 @@ def dev(
         "version": 1,
         "kind": "hillclimb-dev",
         "split": "dev",
-        "cutoff": DEV_CUTOFF.isoformat(),
-        "dogfood_start": DOGFOOD_START.isoformat(),
+        "campaign": campaign,
+        "cutoff": cutoff.isoformat(),
+        "dogfood_start": dogfood_start.isoformat(),
         "generated": datetime.now(UTC).date().isoformat(),
         "space_sha256": space_sha,
         "seed": seed,
+        "sim_seeds": list(evaluator.sim_seeds),
         "proposal": proposal,
         "proposal_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "keys": keys,
@@ -975,6 +1061,11 @@ def dev(
     return path, evaluator.log.complete, [f"{k}: {v}" for k, v in keys.items()]
 
 
+def level_arms(proposal: Mapping[str, Any]) -> list[str]:
+    """The arms whose ``compression.levels.<arm>`` keys the proposal moves."""
+    return sorted({arm for key in proposal if (arm := _arm_of(key)) is not None})
+
+
 def confirm(
     coords: Sequence[Coordinate],
     proposal_path: Path,
@@ -983,36 +1074,66 @@ def confirm(
     *,
     jobs: int,
     seed: int,
+    campaign: str = CAMPAIGN,
+    cutoff: date = DEV_CUTOFF,
+    dogfood_start: date = DOGFOOD_START,
 ) -> tuple[Path, bool, list[str]]:
     proposal = load_proposal(proposal_path, coords)  # before the one shot is used
     sha = hashlib.sha256(Path(proposal_path).read_bytes()).hexdigest()
     report.check_out_path(out / "confirm.json")
-    ledger = claim_ledger(sha)  # before any test-split data is read
+    ledger = claim_ledger(sha, campaign)  # before any test outcome is computed
     e2_ok, e2_reasons = e2_gate(proposal)
-    evaluator = Evaluator(paths, jobs=jobs, seed=seed, split="test")
-    got = evaluator.run([("sim", {"overlay": nest(proposal), "seed": seed, "label": "sim"})], None)
-    cand, ref = sim_rows(got.get("sim", {}))
+    evaluator = Evaluator(
+        paths, jobs=jobs, seed=seed, split="test", cutoff=cutoff, dogfood_start=dogfood_start
+    )
+    arms = level_arms(proposal)
+    specs = evaluator.sim_specs("sim", proposal)
+    for arm in arms:  # each proposed level also on its own arm, paired, in the same pass (M4-G1)
+        for role, overlay in (("cand", proposal), ("ref", {})):
+            params = {"module": MODULE, "overlay": nest(overlay), "seed": seed, "arm": arm}
+            specs.append(("hc_compression", {**params, "label": f"cmp_{arm}_{role}"}))
+    got = evaluator.run(specs, None)  # the one read of the test split
+    cand, ref = evaluator.sim_result(got, "sim")
     verdict = judge(cand, ref, ref, seed=f"{seed}|confirm|{sha}")
+    reasons = list(verdict.reasons)
+    insufficient = verdict.insufficient
+    arm_docs: dict[str, Any] = {}
+    for arm in arms:
+        a_cand = compression_rows(got.get(f"cmp_{arm}_cand", {}))
+        a_ref = compression_rows(got.get(f"cmp_{arm}_ref", {}))
+        v = judge(a_cand, a_ref, a_ref, seed=f"{seed}|confirm|{sha}|{arm}", net=False)
+        arm_docs[arm] = {
+            "baseline": _summary(a_ref),
+            "proposal": _summary(a_cand),
+            "reasons": v.reasons,
+            "stats": v.stats,
+            "insufficient": v.insufficient,
+        }
+        reasons += [f"arm:{arm}:{r}" for r in v.reasons]
+        insufficient = insufficient or v.insufficient
     complete = evaluator.log.complete
-    accepted = bool(proposal) and verdict.admissible and e2_ok and complete
-    reasons = [*verdict.reasons, *e2_reasons, *([] if complete else ["incomplete"])]
+    accepted = bool(proposal) and not reasons and e2_ok and complete
+    reasons += [*e2_reasons, *([] if complete else ["incomplete"])]
     doc = {
         "version": 1,
         "kind": "hillclimb-confirm",
         "split": "test",
-        "cutoff": DEV_CUTOFF.isoformat(),
-        "dogfood_start": DOGFOOD_START.isoformat(),
+        "campaign": campaign,
+        "cutoff": cutoff.isoformat(),
+        "dogfood_start": dogfood_start.isoformat(),
         "generated": datetime.now(UTC).date().isoformat(),
         "proposal_sha256": sha,
         "ledger": ledger,
         "dev_report": _dev_report(proposal_path, sha),  # None: not the dev run's proposal
         "proposal_overlay": proposal,
         "seed": seed,
+        "sim_seeds": list(evaluator.sim_seeds),
         "baseline": _summary(ref),
         "proposal": _summary(cand),
+        "arms": arm_docs,  # per proposed level: its own arm, compression lane (quality only)
         "verdict": {"reasons": reasons, "stats": verdict.stats},
         "accepted": accepted,
-        "insufficient": verdict.insufficient,
+        "insufficient": insufficient,
         "complete": complete,
         "run": asdict(evaluator.log),
     }
@@ -1042,8 +1163,29 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--jobs", type=int, default=1, help="worker processes (0 = one per CPU)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--confirm", type=Path, help="the proposal to confirm once on test")
+    ap.add_argument(
+        "--campaign",
+        type=campaign_id,
+        default=CAMPAIGN,
+        help=f"campaign id: one test confirmation (ledger) per campaign (default {CAMPAIGN})",
+    )
+    ap.add_argument(
+        "--cutoff",
+        type=date.fromisoformat,
+        default=DEV_CUTOFF,
+        help=f"dev < cutoff <= test, YYYY-MM-DD (default {DEV_CUTOFF.isoformat()})",
+    )
+    ap.add_argument(
+        "--dogfood-start",
+        type=date.fromisoformat,
+        default=DOGFOOD_START,
+        help=f"sessions from this day on are excluded (default {DOGFOOD_START.isoformat()})",
+    )
     ap.add_argument("--quiet", action="store_true", help="print only the fixed template")
     args = ap.parse_args(argv)
+    if not args.cutoff < args.dogfood_start:
+        ap.error("--cutoff must be before --dogfood-start")
+    split = {"campaign": args.campaign, "cutoff": args.cutoff, "dogfood_start": args.dogfood_start}
     try:
         coords = load_space(args.space)
     except SpaceError:
@@ -1056,12 +1198,12 @@ def main(argv: list[str] | None = None) -> int:
         paths = args.transcripts or [Path.home() / ".claude" / "projects"]
         if args.confirm is not None:
             path, complete, lines = confirm(
-                coords, args.confirm, paths, out, jobs=jobs, seed=args.seed
+                coords, args.confirm, paths, out, jobs=jobs, seed=args.seed, **split
             )
         else:
             space_sha = hashlib.sha256(Path(args.space).read_bytes()).hexdigest()
             path, complete, lines = dev(
-                coords, paths, out, jobs=jobs, seed=args.seed, space_sha=space_sha
+                coords, paths, out, jobs=jobs, seed=args.seed, space_sha=space_sha, **split
             )
     except ProposalError:
         print("hillclimb: invalid proposal (ProposalError)", file=sys.stderr)

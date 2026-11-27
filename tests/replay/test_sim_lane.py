@@ -430,24 +430,41 @@ def test_trims_without_distinctive_tokens_still_regret_on_rerun(tmp_path: Path) 
     assert comp(view)["proxy_regret"] == view["candidate"]["acc"]["proxy_regrets"]
 
 
-def test_savings_use_the_actual_resends(tmp_path: Path) -> None:
-    """The savings reward counts the trim's actual later calls before the next compaction:
-    counterfactual mode, the chosen arm removes the most, so savings = min(1, calls / R)."""
+def test_savings_reward_uses_the_live_resend_estimate(tmp_path: Path) -> None:
+    """M4-G2: the learner is rewarded with the savings the live hook would compute, i.e. with
+    the governor's projected re-sends (``regret.expected_resends(governor.remaining_turns)``),
+    paid at trim time; the actual later re-sends only price the reported net savings.
+
+    Every synthetic call burns 1110 context tokens; with a 11100-token budget and the per-turn
+    EWMA at 1110 after one closed turn, the second trim projects (11100 - 3330) / 1110 = 7
+    re-sends. The first trim comes before any closed turn: unknown, 10 (``DEFAULT_RESENDS``)."""
     CALLS.clear()
     s = Session("sres", "2026-10-02T09:00:00.000Z").prompt("go")
     s.call("m1", tool=("t1", "Bash", {"command": "make a"})).result("t1", output("r", 1)[0])
-    s.call("m2", text="one").call("m3", text="two").call("m4", text="three")
+    s.prompt("next")  # closes the first turn: EWMA = 1110 (one call)
+    s.call("m2", text="one").call("m3", tool=("t2", "Bash", {"command": "make b"}))
+    s.result("t2", output("r", 2)[0])
+    s.call("m4", text="three")
     s.compact().call("m5", text="after the compaction")
-    s.call("m6", tool=("t2", "Bash", {"command": "make b"})).result("t2", output("r", 2)[0])
     s.write(tmp_path / "t" / "p" / "a.jsonl")
     overlay = apply_overlay(
-        Config(data=LEARN), {"learn": {"savings_reward": "counterfactual", "resend_horizon": 20}}
+        Config(data=LEARN),
+        {
+            "learn": {"savings_reward": "counterfactual", "resend_horizon": 20},
+            "governor": {"session_budget_tokens": 11100},
+        },
     ).data
     res = run(tmp_path / "t", overlay=overlay, chooser_factory="test_sim_lane:AlwaysAggressive")
     assert res.worker_errors == {}
     savings = {c[0]: c[2] for c in CALLS if c[2] is not None}
-    assert savings["d1"] == pytest.approx(3 / 20)  # m2..m4; nothing after the compaction
-    assert savings["d2"] == pytest.approx(1 / 20)  # no later call: at least one re-send
+    assert savings["d1"] == pytest.approx(10 / 20)  # no closed turn yet: the hook's default
+    assert savings["d2"] == pytest.approx(7 / 20)  # the governor's projection, not the 1 actual
+    # the reported objective still prices the ACTUAL later calls before the compaction
+    acc = sim_lane.summary(raw(res))["candidate"]["acc"]
+    removed = comp(sim_lane.summary(raw(res)))["savings_tokens"]
+    assert removed > 0
+    # trim 1 is re-sent by m2, m3, m4 (3 calls), trim 2 by m4 only (1 call)
+    assert acc["tokens_resent_removed"] < 3 * removed
 
 
 def test_run_config_never_shapes_either_role(

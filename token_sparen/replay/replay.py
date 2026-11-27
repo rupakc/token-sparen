@@ -94,7 +94,7 @@ if TYPE_CHECKING:
     from token_sparen.replay.runner import RunResult, SessionInfo
 
 Split = Literal["dev", "test", "all"]
-DEFAULT_CUTOFF = date(2026, 11, 1)
+DEFAULT_CUTOFF = date(2026, 11, 8)  # the M4 tuning split (the hill-climbing harness's)
 DOGFOOD_START = date(2026, 11, 26)  # sessions from here on ran with the plugin: excluded
 MAX_WATCHED = 200
 PROMPT_CHARS = 2000

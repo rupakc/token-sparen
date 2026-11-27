@@ -474,6 +474,12 @@ def remaining_turns(overlay: Mapping[str, Any], cfg: Config | None = None) -> fl
     return max(0.0, (budget - burn) / float(ewma))
 
 
+def turn_boundary(cache: dict[str, Any], cfg: Config) -> None:
+    """Close a turn on a burn-meter cache (``{"burn": n, ...}``) exactly as UserPromptSubmit
+    does: offline replays (the ``sim`` lane) keep the live projection this way."""
+    _turn_boundary(cache, cfg)
+
+
 def _turn_boundary(cache: dict[str, Any], cfg: Config) -> None:
     """UserPromptSubmit: close the previous turn (its burn feeds the EWMA), open a new one."""
     burn = int(cache["burn"])
