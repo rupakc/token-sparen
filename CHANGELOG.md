@@ -11,7 +11,9 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code 
 ### Added
 - Failure-loop guard (spec 6.11, decision point `loopguard`, medium tier): within one turn and
   per agent (`agent_id`), the same failure fingerprint (tool + command head or file + most
-  specific error line; bare `Exit code N` failures have none and never count) `k` times (learned
+  specific error line; for pytest/jest/go test/cargo test reports the sorted failing-test ids
+  plus the first failure's error line; bare `Exit code N` failures and test-run summary lines
+  never count) `k` times (learned
   arm: patient 5, standard 3, eager 2; safe arm patient), or the same edit made and undone twice
   (A -> B -> A -> B), adds one redirect line as `additionalContext` (PostToolUse and
   PostToolUseFailure; the tool output is never touched), with its own wording for edits; at most

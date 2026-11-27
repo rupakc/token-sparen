@@ -31,9 +31,9 @@ redirect). An error-loop trigger also tells the regret detector (``on_loop``): t
 compression decisions on error-bearing outputs get 0.5 regret.
 
 State is a bounded per-turn dict in the session overlay (``loopguard``: at most ``MAX_AGENTS``
-agents, each with at most ``MAX_FINGERPRINTS`` fingerprints and files, ``MAX_PAIRS`` edit pairs
-per file; hashes only); each event costs at most one overlay read and one or two updates,
-independent of the session length.
+agents, at most ``MAX_FINGERPRINTS`` fingerprints and as many files in total across them,
+``MAX_PAIRS`` edit pairs per file; hashes only, about 15 KB at worst); each event costs at most
+one overlay read and one or two updates, independent of the session length.
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from token_sparen.compress.reports import failing_tests
 from token_sparen.config import Config, flag, flag_on, log_error, state_home
 from token_sparen.emit import LEDGER_FIELD
 from token_sparen.estimate import estimate_tokens
@@ -74,8 +75,9 @@ __all__ = [
 STATE_KEY = "loopguard"
 ARM_K: dict[str, int] = {"patient": 5, "standard": 3, "eager": 2}
 MAX_AGENTS = 16  # agents (main + subagents) tracked per turn; later ones are not counted
-MAX_FINGERPRINTS = 50  # fingerprints, and files watched for oscillation, per agent and turn
-MAX_PAIRS = 8  # edit pairs kept per file
+MAX_FINGERPRINTS = 50  # fingerprints, and files watched for oscillation, per turn (all agents)
+MAX_PAIRS = 4  # edit pairs kept per file
+MAX_AFTER = 10  # fingerprints counted after an agent's redirect (for the user notice)
 MIN_REVERSALS = 2  # A -> B -> A -> B: one add-then-remove is never oscillation
 SAVINGS_MIN_N = 3  # a redirect earns savings only if the loop had this many occurrences
 SCAN_HEAD = 8000  # characters of an error text scanned (head + tail; exception types end a trace)
@@ -107,6 +109,17 @@ _BOILER = re.compile(
     r"|command failed with exit code \d+)$",
     re.IGNORECASE,
 )
+# Test-run summaries ("3 failed, 2 passed", "FAILED (failures=2)", "Tests: 2 failed") stay the
+# same while a suite is fixed one test at a time: never an error line.
+_SUMMARY = re.compile(
+    r"^(?:=+\s*)?\d+ (?:failed|passed|errors?|skipped)\b"
+    r"|^FAILED \((?:failures|errors)=\d+"
+    r"|^(?:Tests|Test Suites|Snapshots):\s"
+    r"|^test result: "
+    r"|^(?:FAIL|ok|PASS)(?:\t.*)?$",
+    re.IGNORECASE,
+)
+MAX_TEST_IDS = 20
 _EXC = re.compile(r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)\b")
 _EXC_MSG = re.compile(r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)\s*:\s*\S")
 _DETAIL = re.compile(r"^E\s{2,}\S")  # pytest's assertion detail
@@ -163,30 +176,51 @@ def _error_line(lines: list[str]) -> str | None:
     return None
 
 
-def fingerprint(text: str, *, tool: str = "", target: str = "") -> str | None:
-    """Ten hex characters identifying a failure, or None when the text has no informative error
-    line (boilerplate such as ``Exit code 1`` and ``<tool_use_error>`` tags is skipped).
+def _informative(raw: list[str]) -> list[str]:
+    """Lines that can identify an error: boilerplate and test-run summaries removed."""
+    out = []
+    for line in raw:
+        ln = line.strip()
+        if ln and not _BOILER.match(ln) and not _SUMMARY.match(ln):
+            out.append(line.rstrip())
+    return out
 
-    The key is the tool name, its ``target`` (Bash: ``command_head``; file tools: the path), the
-    last exception type named and the most specific error line, normalised by ``_normalise``.
-    Only the first ``SCAN_HEAD`` and last ``SCAN_TAIL`` characters are read. Never raises."""
-    if len(text) > SCAN_HEAD + SCAN_TAIL:
-        text = f"{text[:SCAN_HEAD]}\n{text[-SCAN_TAIL:]}"
-    lines = []
-    for raw in _TAGS.sub("\n", text).splitlines():
-        ln = raw.strip()
-        if ln and not _BOILER.match(ln):
-            lines.append(raw.rstrip())
-    line = _error_line(lines)
-    if line is None:
-        return None
-    exc = ""
+
+def _last_exception(lines: list[str]) -> str:
     for ln in reversed(lines):
         found = _EXC.findall(ln)
         if found:
-            exc = found[-1].lower()
-            break
-    return _sha(f"{tool}|{target}|{exc}|{_normalise(line)}")
+            return str(found[-1]).lower()
+    return ""
+
+
+def fingerprint(text: str, *, tool: str = "", target: str = "") -> str | None:
+    """Ten hex characters identifying a failure, or None when the text has no informative error
+    line (boilerplate such as ``Exit code 1``, ``<tool_use_error>`` tags and test-run summary
+    lines is skipped).
+
+    A pytest / jest / go test / cargo test report (``compress.reports.failing_tests``) is keyed
+    by the sorted set of failing test ids (first ``MAX_TEST_IDS``) plus the first failure's error
+    line, so fixing a suite one test at a time changes the fingerprint. Anything else is keyed by
+    the last exception type named and the most specific error line. Both also mix in the tool
+    name and its ``target`` (Bash: ``command_head``; file tools: the path) and are normalised by
+    ``_normalise``. Only the first ``SCAN_HEAD`` and last ``SCAN_TAIL`` characters are read.
+    Never raises."""
+    if len(text) > SCAN_HEAD + SCAN_TAIL:
+        text = f"{text[:SCAN_HEAD]}\n{text[-SCAN_TAIL:]}"
+    raw = _TAGS.sub("\n", text).splitlines()
+    report = failing_tests(raw)
+    if report is not None and report[0]:
+        ids, block = report
+        body = _informative(block[1:]) or _informative(block[:1])
+        err = _error_line(body) or ""
+        key = ",".join(sorted(set(ids))[:MAX_TEST_IDS])
+        return _sha(f"{tool}|{target}|tests|{key}|{_last_exception(body)}|{_normalise(err)}")
+    lines = _informative(raw)
+    line = _error_line(lines)
+    if line is None:
+        return None
+    return _sha(f"{tool}|{target}|{_last_exception(lines)}|{_normalise(line)}")
 
 
 def command_head(command: str) -> str:
@@ -328,12 +362,17 @@ def _agent(lg: dict[str, Any], agent: str) -> dict[str, Any] | None:
     return ag
 
 
-def _bounded_add(table: dict[str, Any], key: str, value: Any) -> bool:
-    """Set ``table[key]`` unless that would exceed ``MAX_FINGERPRINTS`` keys."""
-    if key not in table and len(table) >= MAX_FINGERPRINTS:
+def _bounded_add(table: dict[str, Any], key: str, value: Any, room: bool) -> bool:
+    """Set ``table[key]`` if it is already there or there is ``room`` for a new key."""
+    if key not in table and not room:
         return False
     table[key] = value
     return True
+
+
+def _total(lg: dict[str, Any], name: str) -> int:
+    """Entries of ``name`` (``fps`` / ``files``) across all agents of the turn (<= 16)."""
+    return sum(len(_dict(ag.get(name))) for ag in _dict(lg.get("agents")).values())
 
 
 def _transitions(event: Event) -> tuple[str, list[tuple[str, str]], str | None]:
@@ -358,17 +397,25 @@ def _transitions(event: Event) -> tuple[str, list[tuple[str, str]], str | None]:
 
 
 def _oscillation(
-    ag: dict[str, Any], path: str, moves: list[tuple[str, str]], write: str | None
+    lg: dict[str, Any],
+    ag: dict[str, Any],
+    path: str,
+    moves: list[tuple[str, str]],
+    write: str | None,
 ) -> tuple[str, int] | None:
     """Record the edits of one file; ``(fingerprint, reversals)`` of its most oscillating pair
-    once it has been reversed ``MIN_REVERSALS`` times."""
+    once it has been reversed ``MIN_REVERSALS`` times. With ``MAX_FINGERPRINTS`` files tracked in
+    the turn, a new file evicts this agent's oldest one (or is not tracked if it has none)."""
     files = _dict(ag.get("files"))
     ag["files"] = files
     key = _sha(f"file|{path}")
     entry = files.pop(key, None)
-    entry = entry if isinstance(entry, dict) else {"last": "", "pairs": {}}
-    while len(files) >= MAX_FINGERPRINTS:
-        del files[next(iter(files))]  # most recent last: the oldest file is evicted first
+    if not isinstance(entry, dict):
+        if _total(lg, "files") >= MAX_FINGERPRINTS:
+            if not files:
+                return None
+            del files[next(iter(files))]  # most recent last: the oldest file is evicted first
+        entry = {"last": "", "pairs": {}}
     files[key] = entry
     if write is not None:
         last = entry.get("last") if isinstance(entry.get("last"), str) else ""
@@ -404,7 +451,7 @@ def _evaluate(ag: dict[str, Any], hit: _Hit, cfg: Config, step: _Step, lg: dict[
         after = _dict(ag.get("after"))
         ag["after"] = after
         repeat = _num(after.get(hit.fp)) + 1
-        _bounded_add(after, hit.fp, repeat)
+        _bounded_add(after, hit.fp, repeat, len(after) < MAX_AFTER)
         repeat += 1 if hit.fp == nudge.get("fp") else 0
         if repeat >= need and not lg.get("warned"):
             lg["warned"] = True
@@ -554,14 +601,15 @@ def on_tool(
             _record_outcomes(state, step.outcomes)
             return
         if editing:
-            osc = _oscillation(ag, edit_path, moves, write)
+            osc = _oscillation(lg, ag, edit_path, moves, write)
             if osc is not None:
                 hit.fp, hit.n, hit.osc = osc[0], osc[1], True
         elif fp is not None:
             fps = _dict(ag.get("fps"))
             ag["fps"] = fps
             n = _num(fps.get(fp)) + 1
-            hit.fp, hit.n = fp, (n if _bounded_add(fps, fp, n) else 1)
+            room = _total(lg, "fps") < MAX_FINGERPRINTS
+            hit.fp, hit.n = fp, (n if _bounded_add(fps, fp, n, room) else 1)
         _watch(ag, hit.fp, step)
         if ag.get("decision") is None:
             step.need_decision = hit.fp is not None and hit.n >= (MIN_REVERSALS if hit.osc else 2)

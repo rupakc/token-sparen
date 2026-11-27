@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,20 @@ def test_loopguard_hook_under_three_ms(tmp_path: Path) -> None:
         loopguard.on_tool(ev("post_tool", "Edit", edit, "ok"), pol, cfg, env=env)
     big = ev("post_tool_failure", "Bash", {"command": "x"}, trace + "ValueError: bad 1\n" * 20000)
     best, _ = best_of(lambda: loopguard.on_tool(big, pol, cfg, env=env), 15)
+    assert best < 0.003 * perf_factor()
+    # worst case: 16 agents filling the turn-wide caps (fingerprints, files x edit pairs)
+    for agent in range(loopguard.MAX_AGENTS):
+        who = {"agent_id": f"a{agent}"}
+        for i in range(4):
+            text = f"E{'Q' * i}Error: b {agent}\n"
+            fail = ev("post_tool_failure", "Bash", {"command": "x"}, text)
+            loopguard.on_tool(dataclasses.replace(fail, extra=who), pol, cfg, env=env)
+            for j in range(loopguard.MAX_PAIRS):
+                edit = {"file_path": f"f{agent}-{i}.py", "old_string": f"a{j}", "new_string": "b"}
+                e = dataclasses.replace(ev("post_tool", "Edit", edit, "ok"), extra=who)
+                loopguard.on_tool(e, pol, cfg, env=env)
+    full = dataclasses.replace(big, extra={"agent_id": "a3"})
+    best, _ = best_of(lambda: loopguard.on_tool(full, pol, cfg, env=env), 15)
     assert best < 0.003 * perf_factor()
     ok = ev("post_tool", "Grep", {"pattern": "x"}, "hit")
     best, _ = best_of(lambda: loopguard.on_tool(ok, pol, cfg, env=env), 15)

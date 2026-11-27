@@ -225,6 +225,114 @@ def test_uninformative_failure_has_no_fingerprint(text: str) -> None:
     assert _fp(text) is None
 
 
+# --- test-runner output (review R1): the failing set, never the summary line ------------------
+
+
+def _pytest(failing: list[int], total: int = 6) -> str:
+    out = ["Exit code 1", "=" * 20 + " test session starts " + "=" * 20, f"collected {total} items"]
+    out += ["", "=" * 20 + " FAILURES " + "=" * 20]
+    for i in failing:
+        out += [f"_____ test_{i} _____", "", f"    def test_{i}():", f">       assert f({i}) == 0"]
+        out += [
+            f"E       AssertionError: assert {i} == 0",
+            "",
+            f"tests/test_m.py:{i}: AssertionError",
+        ]
+    out += ["=" * 20 + " short test summary info " + "=" * 20]
+    out += [f"FAILED tests/test_m.py::test_{i} - AssertionError: assert {i} == 0" for i in failing]
+    out += [
+        f"===== {len(failing)} failed, {total - len(failing)} passed in 0.0{len(failing)}s ====="
+    ]
+    return "\n".join(out)
+
+
+def _jest(failing: list[int], total: int = 6) -> str:
+    out = ["FAIL src/m.test.ts"]
+    for i in failing:
+        out += [f"  ● m › case {i}", "", "    expect(received).toBe(expected)", ""]
+        out += ["    Expected: 0", f"    Received: {i}", ""]
+    out += [f"Tests:       {len(failing)} failed, {total - len(failing)} passed, {total} total"]
+    out += ["Time:        0.5 s"]
+    return "\n".join(out)
+
+
+def _go(failing: list[int]) -> str:
+    out = ["=== RUN   TestOk", "--- PASS: TestOk (0.00s)"]
+    for i in failing:
+        out += [f"--- FAIL: TestCase{i} (0.00s)", f"    m_test.go:{i}: got {i} want 0"]
+    out += ["FAIL", "FAIL\texample.com/m\t0.003s"]
+    return "\n".join(out)
+
+
+def _cargo(failing: list[int], total: int = 6) -> str:
+    out = [f"running {total} tests"]
+    out += [f"test tests::case_{i} ... FAILED" for i in failing]
+    out += ["", "failures:", ""]
+    for i in failing:
+        out += [f"---- tests::case_{i} stdout ----"]
+        out += [f"thread 'tests::case_{i}' panicked at src/lib.rs:{i}:9:", "assertion failed", ""]
+    out += ["failures:"] + [f"    tests::case_{i}" for i in failing] + [""]
+    n = len(failing)
+    out += [f"test result: FAILED. {total - n} passed; {n} failed; 0 ignored; finished in 0.00s"]
+    return "\n".join(out)
+
+
+RUNNERS = {"pytest": _pytest, "jest": _jest, "go": _go, "cargo": _cargo}
+
+
+@pytest.mark.parametrize("runner", sorted(RUNNERS))
+def test_fixing_a_suite_one_test_at_a_time_never_nudges(tmp_path: Path, runner: str) -> None:
+    make = RUNNERS[runner]
+    runs = [[1, 2, 3, 5], [2, 3, 5], [3, 5], [5]]
+    fps = [_fp(make(r)) for r in runs]
+    assert None not in fps and len(set(fps)) == len(runs)
+    pol = Rec("standard")
+    _prompt(tmp_path, pol)
+    for r in runs:
+        ev = _event(tmp_path, "post_tool_failure", text=make(r))
+        assert _tool(tmp_path, pol, ev).is_noop()
+    assert pol.decisions == []
+
+
+@pytest.mark.parametrize("runner", sorted(RUNNERS))
+def test_same_failing_set_repeated_nudges(tmp_path: Path, runner: str) -> None:
+    make = RUNNERS[runner]
+    pol = Rec("standard")
+    _prompt(tmp_path, pol)
+    acts = [_tool(tmp_path, pol, _event(tmp_path, "post_tool_failure", text=make([3, 5])))]
+    acts.append(_tool(tmp_path, pol, _event(tmp_path, "post_tool_failure", text=make([3, 5]))))
+    acts.append(_tool(tmp_path, pol, _event(tmp_path, "post_tool_failure", text=make([3, 5]))))
+    assert [a.inject_context is not None for a in acts] == [False, False, True]
+    assert "repeated 3×" in str(acts[-1].inject_context)
+
+
+def test_same_failing_set_with_a_different_first_error_differs() -> None:
+    a = _pytest([3, 5])
+    assert _fp(a) != _fp(a.replace("assert 3 == 0", "assert 4 == 0"))
+
+
+def test_failing_ids_are_capped() -> None:
+    many = list(range(100, 140))
+    assert _fp(_pytest(many, total=50)) == _fp(_pytest([*many, 140], total=50))  # first 20 only
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Exit code 1\n3 failed, 2 passed in 0.12s",
+        "Exit code 1\n===== 3 failed, 2 passed in 0.12s =====",
+        "FAILED (failures=2)",
+        "FAILED (failures=1, errors=1)",
+        "Tests:       2 failed, 3 passed, 5 total",
+        "Test Suites: 1 failed, 1 total",
+        "test result: FAILED. 1 passed; 2 failed; 0 ignored",
+        "FAIL\texample.com/m\t0.003s",
+    ],
+)
+def test_summary_lines_are_boilerplate(text: str) -> None:
+    assert _fp(text) is None
+
+
 def test_fingerprint_is_bounded() -> None:
     assert _fp("x" * 2_000_000) is None
     fp = _fp("x" * 2_000_000 + "\nValueError: boom\n")
@@ -641,9 +749,11 @@ def test_state_is_bounded(tmp_path: Path) -> None:
         loopguard.on_tool(_fail(tmp_path, agent=f"agent-{i}"), pol, cfg, env=env)
     state = _overlay(tmp_path)[loopguard.STATE_KEY]
     assert len(state["agents"]) <= loopguard.MAX_AGENTS
-    main = state["agents"][""]
-    assert len(main["fps"]) <= loopguard.MAX_FINGERPRINTS == 50
-    assert len(main["files"]) <= loopguard.MAX_FINGERPRINTS
+    agents = state["agents"].values()
+    assert sum(len(a["fps"]) for a in agents) <= loopguard.MAX_FINGERPRINTS == 50
+    assert sum(len(a["files"]) for a in agents) <= loopguard.MAX_FINGERPRINTS
+    assert len(state["agents"][""]["files"]) == loopguard.MAX_FINGERPRINTS  # oldest evicted
+    assert len(json.dumps(state)) < 20_000
 
 
 # --- hook delivery (Claude Code adapter) ----------------------------------------------------

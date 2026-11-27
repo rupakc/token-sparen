@@ -280,6 +280,47 @@ def _parse_cargo(lines: list[str]) -> _Parsed:
 _PARSERS = {"pytest": _parse_pytest, "jest": _parse_jest, "go": _parse_go, "cargo": _parse_cargo}
 
 
+_FAILED_ID = re.compile(r"^(?:FAILED|ERROR) (\S+)")
+_GO_FAIL_ID = re.compile(r"^\s*--- FAIL: (\S+)")
+
+
+def failing_tests(lines: list[str]) -> tuple[list[str], list[str]] | None:
+    """``(failing test ids, lines of the first failure block)`` of a pytest / jest / go test /
+    cargo test report (ids in report order, possibly repeated), or None when ``lines`` is not a
+    recognised test report. Reuses the compressor's sniffing and parsers; never raises."""
+    kind = _sniff(lines)
+    if kind is None:
+        return None
+    p = _PARSERS[kind](lines)
+    ids: list[str] = []
+    for i in p.keep:
+        line = lines[i]
+        if kind == "pytest":
+            m = _FAILED_ID.match(line)
+            ids += [m.group(1)] if m else []
+        elif kind == "jest":
+            ids.append(line[5:].strip())  # FAIL <file>
+        elif kind == "cargo":
+            t = _CARGO_TEST.match(line)
+            ids.append(t.group(1) if t else line.strip())
+    for h, _ in p.blocks:
+        head = lines[h].strip()
+        if kind == "pytest":
+            m = _PY_HEADER.match(head)
+            name = m.group(1) if m else head
+            if not any(x.endswith(f"::{name}") for x in ids):
+                ids.append(name)
+        elif kind == "jest":
+            ids.append(head.removeprefix("● "))
+        elif kind == "go":
+            g = _GO_FAIL_ID.match(head)
+            ids.append(g.group(1) if g else head)
+        elif kind == "cargo":
+            ids.append(head.strip("- ").removesuffix(" stdout").strip())
+    first = [lines[p.blocks[0][0]], *(lines[i] for i in p.blocks[0][1])] if p.blocks else []
+    return ids, first
+
+
 class TestReportCompressor:
     __test__ = False  # not a pytest class despite the name
 

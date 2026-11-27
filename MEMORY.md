@@ -1358,3 +1358,17 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   false` is the switch (README says so).
 - Known noise (review M2): `is_stop` also matches "add a stop button" or "git revert the bad
   commit"; such prompts record regret 1 for a redirected decision.
+
+## 2026-11-27 Loop guard fix round 2 (Task 28 re-review R1; controller ruling)
+- Test-runner output (pytest, jest, go test, cargo test, detected with the test-report
+  compressor's own sniffing and parsers via `compress.reports.failing_tests`) is fingerprinted by
+  the sorted set of failing test ids (first 20) plus the first failure block's error line, never
+  the summary line, so fixing a suite one test at a time changes the fingerprint while the same
+  failing set repeating still matches. jest ids include the `FAIL <file>` lines.
+- Summary-like lines (`N failed, M passed`, `FAILED (failures=N)`, `Tests:` / `Test Suites:`,
+  `test result:`, go `FAIL\t<pkg>`) are boilerplate for every failure; with no failing ids the
+  fallback rule runs without them.
+- Overlay bound tightened (re-review m1): `MAX_FINGERPRINTS` (50) now caps fingerprints and
+  watched files across all agents of the turn (a new file evicts the agent's own oldest, or is
+  not tracked), `MAX_PAIRS` 8 -> 4, post-redirect counts capped at 10 per agent: about 15 KB at
+  worst instead of ~400 KB. Perf test covers 16 agents.

@@ -233,6 +233,9 @@ burst trigger. Oscillation needs two reversals (A -> B -> A -> B) and has its ow
 the one-redirect limit are per agent (`agent_id`). The decision is logged at the first repeat
 for every arm; savings 1 only for a redirect at >= 3 occurrences that is followed by 5 calls
 without the error, else 0.
+Fix round 2: test-runner reports are fingerprinted by the sorted failing-test ids plus the first
+failure's error line; summary lines are never error lines. The 50-entry caps are turn-wide
+across agents.
 
 ---
 

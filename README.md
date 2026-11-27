@@ -150,8 +150,10 @@ All of this is on by default. Nothing is sent anywhere.
   `pytest`, `git diff`) or file, and the same error line once directories, line:column, hex
   ids, durations and long numbers are ignored; names, quoted values and literals still count, so
   `No module named 'foo'` and `'bar'`, or `assert 3 == 5` and `assert 4 == 5`, are different
-  errors. A failure with no error line (a bare `Exit code 1` from `grep`, `test` or `diff`) is
-  never counted. The same edit made and undone twice on one file (A -> B -> A -> B; adding and
+  errors. For test runs (pytest, jest, go test, cargo test) it is the set of failing tests plus
+  the first failure's error, so fixing a suite one test at a time never looks like a loop. A
+  failure with no error line (a bare `Exit code 1` from `grep`, `test` or `diff`, or only a
+  "3 failed, 2 passed" summary) is never counted. The same edit made and undone twice on one file (A -> B -> A -> B; adding and
   then removing a debug line is fine) gets `[token-sparen: the same edit has been made and
   undone 2× this turn (<id>). ...]`. The tool output itself is never changed. At most one such
   line per agent and turn; if it happens again you get a terminal notice instead (no model
@@ -241,7 +243,7 @@ Everything stays on your machine, but some of it is plain text you should know a
     records which facts were injected or withheld at session start (fact ids and
     probabilities). During a turn the session overlay keeps the loop guard's state per agent (up to 16
     agents, keyed by Claude Code's subagent id): up to 50 error fingerprints and up to 50 edited
-    files, each **only as short hashes** (of the tool, command head or file path and the
+    files per turn in total, each **only as short hashes** (of the tool, command head or file path and the
     normalised error, the file path and the edited text), with counts. The session overlay also keeps the settled regret values of its trims, each with the
     normalised command, until the session is folded, and the **path of the session's Claude Code
     transcript** and the project directory, which only the background fold reads (at most 50 MB
