@@ -54,6 +54,18 @@ def load_schema() -> dict[str, Any]:
     return schema
 
 
+def _codes(name: str) -> tuple[Any, ...]:
+    return tuple(load_schema()["$defs"][name]["enum"])
+
+
+# Closed vocabularies for every free-text slot (re-review ruling N1 of M5 Task 11): the report
+# renders their prose from fixed templates, so no figure can travel inside e4.json as text.
+EXCLUSION_REASONS: tuple[str, ...] = _codes("exclusion_reason")
+EXCLUSION_CAUSES: tuple[str | None, ...] = _codes("exclusion_cause")
+GATE_REASON_CODES: tuple[str, ...] = _codes("gate_reason")
+DISCLOSURE_CODES: tuple[str, ...] = _codes("disclosure")
+
+
 def check_schema(schema: Mapping[str, Any]) -> None:
     """Raise `E4Error` if ``schema`` uses a keyword outside the supported subset."""
 
@@ -321,6 +333,10 @@ def load_e4(path: Path) -> dict[str, Any]:
 
 
 __all__: Sequence[str] = (
+    "DISCLOSURE_CODES",
+    "EXCLUSION_CAUSES",
+    "EXCLUSION_REASONS",
+    "GATE_REASON_CODES",
     "SCHEMA_FILE",
     "SCHEMA_VERSION",
     "E4Error",

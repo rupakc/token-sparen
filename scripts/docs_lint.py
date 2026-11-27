@@ -4,6 +4,11 @@
 near result words) outside the Evidence block: results appear only in the rendered Evidence
 table, with their confidence intervals (M6 Task 5). Used by `tests/test_user_docs.py` (docs
 pages, README) and `scripts/release_notes.py` (release notes). Stdlib only.
+
+The generated E4 report (`bench/report.py`, M5 Task 11) is linted with ``rendered=`` its fresh
+re-render from `e4.json`: a section wrapped by `generated_block` is exempt only when the file is
+byte-identical to that re-render, so a hand edit or a hand-typed number loses the exemption.
+README, docs pages and release notes pass no re-render and never get this exemption.
 """
 
 from __future__ import annotations
@@ -15,6 +20,9 @@ import re
 _EVIDENCE = re.compile(
     r"<!--\s*evidence(?::start)?\s*-->.*?<!--\s*(?:/evidence|evidence:end)\s*-->", re.S
 )
+# A generated E4 report section (bench/report.py): exempt only when the caller passes a fresh
+# re-render of the whole file from its e4.json and the file is byte-identical to it.
+_GENERATED = re.compile(r"<!-- generated:e4-report -->\n.*?<!-- /generated:e4-report -->", re.S)
 _FENCE = re.compile(r"^(?P<intro>(?:[^\n]+\n)+)\n```[^\n]*\n.*?\n```", re.M | re.S)
 _KEYWORDS = re.compile(
     r"\b(?:saved|savings|reduction|reduces|cheaper|faster|resolved|pass rate|fewer tokens)\b", re.I
@@ -45,9 +53,22 @@ _ALLOWED = [
 ]
 
 
-def _strip_exempt(text: str) -> str:
-    """Drop the Evidence block and fenced examples that announce themselves as made up."""
+GENERATED_START = "<!-- generated:e4-report -->"
+GENERATED_END = "<!-- /generated:e4-report -->"
+
+
+def generated_block(body: str) -> str:
+    """Wrap machine-generated report text (figures rendered from `e4.json`) in the markers."""
+    body = body if body.endswith("\n") else body + "\n"
+    return f"{GENERATED_START}\n{body}{GENERATED_END}"
+
+
+def _strip_exempt(text: str, rendered: str | None) -> str:
+    """Drop the Evidence block, generated report sections (only when the whole text equals its
+    fresh re-render ``rendered``) and fenced examples that announce themselves as made up."""
     text = _EVIDENCE.sub(" ", text)
+    if rendered is not None and text == _EVIDENCE.sub(" ", rendered):
+        text = _GENERATED.sub(" ", text)
 
     def keep_fence(m: re.Match[str]) -> str:
         return " " if re.search(r"made up|illustrative", m.group("intro"), re.I) else m.group(0)
@@ -55,9 +76,11 @@ def _strip_exempt(text: str) -> str:
     return _FENCE.sub(keep_fence, text)
 
 
-def figure_violations(text: str) -> list[str]:
-    """Savings/quality/cost results (percentages, multipliers, money, numbers near result words)."""
-    text = _strip_exempt(text)
+def figure_violations(text: str, *, rendered: str | None = None) -> list[str]:
+    """Savings/quality/cost results (percentages, multipliers, money, numbers near result words).
+    ``rendered``: the caller's fresh re-render of this file from its data (the E4 report:
+    `bench.report.lint_report`); generated sections are exempt only when ``text`` equals it."""
+    text = _strip_exempt(text, rendered)
     text = re.sub(r"^\s*\d+\.\s", " ", text, flags=re.M)  # list numbers
     text = re.sub(r"\s+", " ", text)
     for phrase in _ALLOWED:
