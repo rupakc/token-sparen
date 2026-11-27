@@ -131,8 +131,14 @@ class StoreChain:
             doc = jsonstore.read(base / POSTERIORS_FILE, {}, self._env)
             if not doc:
                 return {}
-            if doc.get("version") != SCHEMA_VERSION:
-                self._warn(f"{scope} evidence: unsupported version {doc.get('version')!r}")
+            if doc.get("version") != SCHEMA_VERSION:  # once per store and session (T4-c2)
+                jsonstore.log_once(
+                    self._env,
+                    "hierarchy",
+                    base / POSTERIORS_FILE,
+                    f"{base / POSTERIORS_FILE}: {scope} evidence: unsupported version "
+                    f"{doc.get('version')!r}",
+                )
                 return {}
             self._natural[scope] = doc.get(NATURAL_KEY)
             inner = doc.get("points")

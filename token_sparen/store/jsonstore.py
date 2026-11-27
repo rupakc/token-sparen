@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import json
 import os
 import random
@@ -11,10 +12,13 @@ import secrets
 import sys
 import time
 from collections.abc import Callable, Iterator, Mapping
+from contextvars import ContextVar
 from pathlib import Path
 from typing import IO, Any
 
-from token_sparen.config import log_error, private_mkdir
+from token_sparen import __version__
+from token_sparen.config import log_error, private_mkdir, state_home
+from token_sparen.store import schema
 
 LOCK_TIMEOUT_S = 2.0
 _POLL_S = 0.001  # first lock retry; doubles per retry up to _POLL_MAX_S
@@ -31,6 +35,91 @@ _REPLACE_TRIES = 5
 
 class StoreBusy(RuntimeError):
     """The lock could not be taken within LOCK_TIMEOUT_S."""
+
+
+class NewerSchema(OSError):
+    """The document was written by a newer token-sparen (a newer schema version): this code
+    must not rewrite it. An OSError, so callers that skip unwritable state skip it too.
+    ``written_by``: the writer's version when the document records it (1.0 on), else None."""
+
+    def __init__(self, path: Path, version: int, written_by: str | None) -> None:
+        self.path = path
+        self.version = version
+        self.written_by = written_by
+        super().__init__(
+            f"{path}: version {version} is newer than this token-sparen knows "
+            f"({schema.KNOWN_VERSIONS.get(path.name)}); left untouched"
+        )
+
+    @property
+    def writer(self) -> str:
+        """``token-sparen <version>`` of the writer, or a generic phrase."""
+        return f"token-sparen {self.written_by}" if self.written_by else "a newer token-sparen"
+
+    def advice(self, command: str) -> str:
+        """What the user can do: the message an older CLI prints instead of a traceback."""
+        return (
+            f"{self.path.name} is state written by {self.writer} (schema version "
+            f"{self.version}); upgrade to it, or run `{command}` from that version"
+        )
+
+
+# --------------------------------------------------------------------------- log once
+# A newer-schema or corrupt document is reported once per store per session (ruling T4-c2):
+# once per process, and across a session's hook processes through a small marker
+# (``logs/once.json``: {sha256(path | session)[:16]: epoch}, newest ONCE_MAX kept; no raw path
+# or session id). Without a session (CLI commands) it is once per process.
+LOG_SESSION: ContextVar[str | None] = ContextVar("TOKEN_SPAREN_LOG_SESSION", default=None)
+ONCE_FILE = "once.json"
+ONCE_MAX = 500
+_SEEN: set[str] = set()
+
+
+@contextlib.contextmanager
+def log_session(session_id: str | None) -> Iterator[None]:
+    """Attribute ``log_once`` lines inside the block to ``session_id``."""
+    token = LOG_SESSION.set(session_id)
+    try:
+        yield
+    finally:
+        LOG_SESSION.reset(token)
+
+
+def _epoch(raw: Any) -> float:
+    return float(raw) if isinstance(raw, int | float) and not isinstance(raw, bool) else 0.0
+
+
+def _once_marked(env: Mapping[str, str], slot: str) -> bool:
+    """Record ``slot`` in the marker; True when it was already there. Never raises."""
+    try:
+        marker = state_home(env) / "logs" / ONCE_FILE
+        private_mkdir(marker.parent)
+        with locked(marker, 0.2):
+            doc, _ = _load(marker)
+            doc = doc or {}
+            if slot in doc:
+                return True
+            doc[slot] = time.time()
+            if len(doc) > ONCE_MAX:
+                doc = dict(sorted(doc.items(), key=lambda kv: -_epoch(kv[1]))[:ONCE_MAX])
+            _write_atomic(marker, doc)
+    except (OSError, StoreBusy):
+        return False
+    return False
+
+
+def log_once(env: Mapping[str, str] | None, component: str, path: Path, message: str) -> None:
+    """``log_error`` at most once per (store ``path``, session) (see above)."""
+    env = os.environ if env is None else env
+    sid = LOG_SESSION.get()
+    basis = f"{os.path.abspath(path)}\0{sid or ''}"
+    slot = hashlib.sha256(basis.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    if slot in _SEEN:
+        return
+    _SEEN.add(slot)
+    if sid is not None and _once_marked(env, slot):
+        return
+    log_error(env, component, message)
 
 
 def _try_lock(fh: IO[bytes]) -> bool:
@@ -103,10 +192,11 @@ def _load(path: Path) -> tuple[dict[str, Any] | None, str | None]:
 def read(
     path: Path, default: dict[str, Any], env: Mapping[str, str] | None = None
 ) -> dict[str, Any]:
-    """Lock-free read. Corrupt content yields ``default`` and a log line, never a rename."""
+    """Lock-free read. Corrupt content yields ``default`` and a log line (once per store and
+    session), never a rename."""
     data, bad = _load(path)
     if bad is not None:
-        log_error(os.environ if env is None else env, "jsonstore", f"{path}: corrupt ({bad})")
+        log_once(env, "jsonstore", path, f"{path}: corrupt ({bad})")
     return copy.deepcopy(default) if data is None else data
 
 
@@ -134,6 +224,8 @@ def replace_with_retry(src: Path, dst: Path) -> None:
 
 
 def _write_atomic(path: Path, data: dict[str, Any]) -> None:
+    if path.name in schema.KNOWN_VERSIONS and "version" in data:
+        data = {**data, schema.WRITTEN_BY: __version__}  # named by an older version's message
     tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}")
     try:
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -164,11 +256,24 @@ def read_locked(
     path: Path, default: dict[str, Any], env: Mapping[str, str] | None = None
 ) -> dict[str, Any]:
     """Read for a read-modify-write; call only while holding ``locked(path)``. Corrupt content
-    is quarantined (moved aside) and ``default`` returned."""
+    is quarantined (moved aside) and ``default`` returned. A document written by a newer
+    token-sparen (``schema.newer_version``) is refused with ``NewerSchema``: never rewritten."""
     data, bad = _load(path)
     if bad is not None:
         _quarantine(path, bad, env)
+    refuse_newer(path, data, env)
     return copy.deepcopy(default) if data is None else data
+
+
+def refuse_newer(path: Path, doc: Any, env: Mapping[str, str] | None = None) -> None:
+    """Raise ``NewerSchema`` (logged once per store and session) when ``doc``, read from
+    ``path``, has a newer version."""
+    version = schema.newer_version(path.name, doc)
+    if version is not None:
+        raw = doc.get(schema.WRITTEN_BY) if isinstance(doc, dict) else None
+        exc = NewerSchema(path, version, raw if isinstance(raw, str) and raw else None)
+        log_once(env, "jsonstore", path, str(exc))
+        raise exc
 
 
 def write_locked(path: Path, data: dict[str, Any]) -> None:

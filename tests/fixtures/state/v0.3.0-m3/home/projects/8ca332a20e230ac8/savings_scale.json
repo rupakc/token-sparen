@@ -1,0 +1,1 @@
+{"version": 1, "points": {"compression": {"band=lt50|cat=shell|size=sm|ctype=test_report|phase=mixed": [24890.0]}, "read_dedupe": {"cat=read|size=sm": [56900.0, 56900.0]}}}

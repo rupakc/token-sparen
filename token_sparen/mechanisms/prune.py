@@ -87,7 +87,7 @@ from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event
 from token_sparen.learn.beta import Beta
 from token_sparen.mechanisms import tracking
-from token_sparen.store import jsonstore, paths
+from token_sparen.store import jsonstore, paths, schema
 from token_sparen.transcript import ToolInventory, tool_inventory
 
 PRUNE_FILE = "prune.json"
@@ -630,15 +630,31 @@ def _read(home: Path, project_key: str, fkey: str | None, env: Mapping[str, str]
     path, reg_path = store_path(home, project_key), registry_path(home)
     doc = jsonstore.read(path, {}, env) if path.is_file() else {}
     reg = jsonstore.read(reg_path, {}, env) if reg_path.is_file() else {}
+    # a store written by a newer token-sparen is not this code's layout: read as empty (no-op)
+    if schema.newer_version(path.name, doc) is not None:
+        doc = {}
+    if schema.newer_version(reg_path.name, reg) is not None:
+        reg = {}
     attach(doc, reg, project_key, fkey)
     return doc
+
+
+def check_current(home: Path, project_key: str, env: Mapping[str, str]) -> None:
+    """Raise ``jsonstore.NewerSchema`` when the project store or the registry was written by a
+    newer token-sparen (lock-free: a command that only reads can then tell the user)."""
+    for path in (store_path(home, project_key), registry_path(home)):
+        if path.is_file():
+            jsonstore.refuse_newer(path, jsonstore.read(path, {}, env), env)
 
 
 def _registered(home: Path, fkey: str, env: Mapping[str, str]) -> bool:
     reg_path = registry_path(home)
     if not reg_path.is_file():
         return False
-    entry = _reg_files(jsonstore.read(reg_path, {}, env)).get(fkey)
+    reg = jsonstore.read(reg_path, {}, env)
+    if schema.newer_version(reg_path.name, reg) is not None:
+        return False
+    entry = _reg_files(reg).get(fkey)
     return isinstance(entry, dict) and bool(
         _strs(entry.get("owned")) or _strs(entry.get("pending_add")) or entry.get("notices")
     )

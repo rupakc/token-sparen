@@ -22,11 +22,13 @@ the model sees them, and keeps the full text on disk so nothing is lost. File co
 `cat`, ...) and plain text such as subagent replies are shown in full by default.
 
 ## Running the CLI
-Use `token-sparen <args>`. If that is not installed (command not found), run exactly
-`python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>` instead (same arguments). Run nothing else.
-Pre-approved: `stats`, `show`, `doctor`, `session disable`, `prune restore <tool>` (run it when you
-need a tool the session-start line lists as pruned). Every other subcommand (`statusline install`,
-`config set`, `prune enable`, ...) goes through the normal permission prompt: only when asked.
+Run the plugin's bundled CLI, exactly `python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>`:
+it is the plugin's own version, the one its hooks use. Only if that cannot run (no `python3`, or
+the file is missing), run `token-sparen <args>` (same arguments; it may be another version). If
+neither runs, reply that token-sparen works in Claude Code only and run nothing else. Below,
+`token-sparen <args>` means whichever ran. Pre-approved: `stats`, `show`, `doctor`, `session disable`,
+`prune restore <tool>` (when you need a tool the session-start line lists as pruned). Others
+(`statusline install`, `config set`, `prune enable`, ...) get the permission prompt: only when asked.
 
 ## /token-sparen
 Argument given: `$ARGUMENTS`. Follow these steps only when the user explicitly typed
@@ -55,7 +57,7 @@ A trimmed output ends with:
 ## Commands
 - `token-sparen stats [--session ID] [--json]`: net tokens saved (gross minus recovery reads minus
   injected tokens; as in the statusline, can be negative), its parts, decisions per arm.
-- `token-sparen doctor [--fix]`: verifies Python, state home, hooks and a synthetic round-trip;
+- `token-sparen doctor [--fix]`: checks Python, state home, hooks, CLI/plugin versions, a round-trip;
   `token-sparen run -- <command>`: run a command and print its compressed output.
 - `token-sparen statusline install|uninstall`: opt-in live statusline (backs up settings).
 - `token-sparen extensions list`: installed and drop-in extensions with their trust status.
@@ -65,16 +67,14 @@ A trimmed output ends with:
 
 ## Switching it off
 - This session only: `token-sparen session disable --session ${CLAUDE_SESSION_ID}` (`enable` undoes).
-- Everywhere: `TOKEN_SPAREN_DISABLE=1` in the environment Claude Code is launched from, or
-  `claude plugin disable token-sparen`.
+- Everywhere: `TOKEN_SPAREN_DISABLE=1` where Claude Code starts, or `claude plugin disable token-sparen`.
 - All trimming: `[learn.hold] compression = true` in `~/.token-sparen/config.toml` (one session:
   `token-sparen config set learn.hold.compression true --session ${CLAUDE_SESSION_ID}`) or
   `[compression] allow_ctypes = []`. Read pointers: `[learn.hold] read_dedupe = true`.
 - Change config only when the user asks. Needs Claude Code >= 2.1.121.
 
 ## Configuration
-Precedence, lowest first: packaged defaults, `~/.token-sparen/config.toml`,
-`<project>/token-sparen.toml`, `TOKEN_SPAREN_*` (those two only make it do less), this session:
-`token-sparen config set <section.key> <value> --session ${CLAUDE_SESSION_ID}` (e.g.
-`guards.enabled false`). State root `~/.token-sparen/` (`TOKEN_SPAREN_HOME`). Outputs under 2000
-estimated tokens are never modified.
+Precedence, lowest first: packaged defaults, `~/.token-sparen/config.toml`, `<project>/token-sparen.toml`,
+`TOKEN_SPAREN_*` (those two only make it do less), this session: `token-sparen config set <section.key>
+<value> --session ${CLAUDE_SESSION_ID}` (e.g. `guards.enabled false`). State root `~/.token-sparen/`
+(`TOKEN_SPAREN_HOME`). Outputs under 2000 estimated tokens are never modified.

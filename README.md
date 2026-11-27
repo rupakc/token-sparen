@@ -251,6 +251,25 @@ compression), which trims more than a cold learner does.
 Uninstalling leaves `~/.token-sparen/` and each project's `.token-sparen/` in place; both are safe
 to delete.
 
+**Full uninstall**, in this order (the settings edits live outside the state folder, so deleting
+`~/.token-sparen/` alone does not undo them):
+
+1. `token-sparen prune disable` in each project where you enabled tool pruning: it removes every
+   deny rule token-sparen wrote to `.claude/settings.local.json` (in every recorded checkout).
+2. `token-sparen statusline uninstall`: restores your original `statusLine`.
+3. `claude plugin uninstall token-sparen@token-sparen` (and `pipx uninstall token-sparen` or the
+   like if you installed the CLI for your terminal).
+4. Delete `~/.token-sparen/` and each project's `.token-sparen/` folder. Backups named
+   `*.token-sparen.bak` next to your settings files can go too once you have checked them.
+
+After a downgrade (an older token-sparen meeting state a newer one wrote), the older version
+never rewrites that state. `prune disable` / `prune restore` then change nothing (which deny
+rules are token-sparen's cannot be read): they list the rules in token-sparen's format that are
+not in the `.token-sparen.bak` backup, with the file to edit by hand (keep any you added
+yourself). `statusline uninstall` reverts the `statusLine` it recognises by its launcher; for
+the rest each command prints `state written by token-sparen <version>; upgrade to it, or run
+<command> from that version`.
+
 ## What it writes to disk
 
 Everything stays on your machine, but some of it is plain text you should know about.
@@ -286,7 +305,8 @@ Everything stays on your machine, but some of it is plain text you should know a
     modification time, or that none was found (re-checked after 10 minutes or when a candidate
     appears);
   - `logs/errors.jsonl` and sampled `logs/latency.jsonl`; `logs/launcher-warned-<date>` (empty
-    marker: the "no Python >= 3.11" warning was already given today);
+    marker: the "no Python >= 3.11" warning was already given today); `logs/once.json` (short hashes of
+    store path and session, so a broken or newer state file is reported once per session);
   - `recovery/<hash>/<id>`: one empty file per recovery file this install saved, per checkout (the
     folder name is a hash of the checkout path), so `show` never serves a file a repository
     planted;
@@ -306,7 +326,8 @@ Everything stays on your machine, but some of it is plain text you should know a
     session ids with their last activity, removed when a session ends), `savings_scale.json` (numbers only: recent savings
     sizes per bucket), `floor_warned.json`, `style_warned.json` (only a hash of an unknown `output_style.directive` already reported), `posteriors.json` and `breaker.json` (numbers only:
     learned evidence per bucket, the loop guard's natural break rate per bucket, and recent
-    regret values per decision point), `pending.json`
+    regret values per decision point; an older layout is first copied to
+    `posteriors.v<N>.bak.json`), `pending.json`
     (ids of sessions waiting to be folded) and `pretrim.json`
     (**normalised Bash commands** with per-command counts, and the learned pre-trim candidates),
     `facts.json` (repository facts mined when a session is folded: **normalised
