@@ -31,6 +31,13 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
 - Malformed transcripts never stop a run: lines over 8 MB are skipped in bounded chunks, lines
   that are not UTF-8, not JSON or not an object are skipped, and both are counted; an exception
   in a group is recorded as its type name only.
+- `replay --lanes facts`: per split and fact kind, the candidates the production miners would
+  mine, how many a later session contradicts (wrong-fact risk), the waste events and an upper
+  bound of the waste tokens each kind targets, and the tokens its injected line costs. Past
+  sessions had no injections, so no effect is simulated. The miners and the lifecycle observer
+  gain `evidence="transcript"`: no project file read and no git (downloader aliases that need
+  the manifest are skipped and counted; generated-directory evidence comes from file heads the
+  session showed).
 
 ### M4 triage (quality-relevant fixes before tuning)
 

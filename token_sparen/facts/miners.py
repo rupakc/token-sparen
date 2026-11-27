@@ -34,6 +34,16 @@ candidate facts, each passed through ``sanitize`` before it is kept:
   alone are never evidence (they suggest hand-written files); missing git or a git timeout
   counts as "not ignored".
 
+**Evidence modes.** Every mining entry point takes ``evidence``: ``"full"`` (the default, the
+fold) may read the project (``declared_packages``, ``git_ignored``, file sampling and marker
+checks in ``generated_evidence``); ``"transcript"`` (offline replay of past sessions, whose
+projects may have changed or be gone) reads nothing but the transcript and runs no process: a
+``command_alias`` through a downloading launcher, which needs the manifest, is skipped and
+counted (``SessionMiner.skipped_needs_fs``), and ``generated_dir`` evidence comes only from
+file heads the session itself showed (``read_head``: a ``Read`` result from the first line),
+so git never says "ignored" there and a hand-written directory is never proven (no
+contradiction).
+
 In-project absolute paths in a candidate are made project-relative (POSIX) before it is
 sanitised and stored; any other absolute path is rejected.
 
@@ -57,7 +67,7 @@ from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, get_args
 
 from token_sparen.compress.families import command_family
 from token_sparen.config import log_error
@@ -66,6 +76,8 @@ from token_sparen.learn.regret import normalize_command
 from token_sparen.store import jsonstore
 from token_sparen.transcript import ToolResultRecord, iter_tool_results
 
+Evidence = Literal["full", "transcript"]
+EVIDENCE_MODES: frozenset[str] = frozenset(get_args(Evidence))
 FACTS_FILE = "facts.json"
 VERSION = 1
 MIN_SESSIONS = 2
@@ -581,6 +593,36 @@ def _has_marker(path: Path) -> bool | None:
     return any(GEN_MARKER.search(line) for line in lines)
 
 
+_READ_LINE = re.compile(r"\s*(\d+)(?:\t|\u2192)(.*)")  # a Read result line: number, tab or arrow
+
+
+def check_evidence(evidence: str) -> Evidence:
+    """``evidence`` if it is a known mode (``EVIDENCE_MODES``), else ValueError."""
+    if evidence not in EVIDENCE_MODES:
+        raise ValueError(f"unknown evidence mode {evidence!r}")
+    return evidence  # type: ignore[return-value]
+
+
+def read_head(call: ToolResultRecord, project_dir: str | None) -> tuple[str, bool] | None:
+    """(project-relative path, generated marker in its first ``GEN_MARKER_LINES`` lines) for a
+    successful ``Read`` result that shows a file from its first line (numbered output lines);
+    None for anything else (another tool, an offset read, a file outside the project)."""
+    if call.tool_name != "Read" or call.is_error:
+        return None
+    target = call.input.get("file_path")
+    offset = call.input.get("offset")
+    if not isinstance(target, str) or offset not in (None, 0, 1):
+        return None
+    rel = _relative(target, project_dir)
+    if rel is None:
+        return None
+    lines = call.text[:GEN_MARKER_BYTES].splitlines()[:GEN_MARKER_LINES]
+    shown = [_READ_LINE.fullmatch(line) for line in lines]
+    if not shown or shown[0] is None or shown[0].group(1) != "1":
+        return None
+    return rel, any(m is not None and GEN_MARKER.search(m.group(2)) for m in shown)
+
+
 def _sample(root: str, rel_dir: str) -> list[str]:
     """Up to ``GEN_MAX_FILES`` project-relative files under the directory (no symlinks)."""
     out: list[str] = []
@@ -594,13 +636,29 @@ def _sample(root: str, rel_dir: str) -> list[str]:
     return [posixpath.normpath(p) for p in out]
 
 
-def generated_evidence(root: str | None, rel_dir: str, files: Iterable[str]) -> bool | None:
+def generated_evidence(
+    root: str | None,
+    rel_dir: str,
+    files: Iterable[str],
+    *,
+    evidence: Evidence = "full",
+    heads: Mapping[str, bool] | None = None,
+) -> bool | None:
     """Positive evidence that ``rel_dir`` holds generated files: True when git ignores it or
     every existing file of ``files`` (project-relative; the directory's own files when empty)
     carries a generated marker; False when git positively says it is not ignored and a file
-    lacks the marker (hand-written: a contradiction); None when nothing can be said."""
+    lacks the marker (hand-written: a contradiction); None when nothing can be said.
+    ``evidence="transcript"``: no git, no file access; the files' markers are the ``heads`` a
+    session showed (``read_head``; the directory's shown files when ``files`` is empty): True
+    when at least one is known and all known ones are marked, else None."""
     if root is None or not os.path.isabs(root):
         return None
+    if check_evidence(evidence) == "transcript":
+        seen = heads or {}
+        prefix = rel_dir.rstrip("/") + "/"
+        names = list(files)[:GEN_MAX_FILES] or [n for n in seen if n.startswith(prefix)]
+        known = [seen[n] for n in names[:GEN_MAX_FILES] if n in seen]
+        return True if known and all(known) else None
     ignored = git_ignored(root, rel_dir)
     if ignored:
         return True
@@ -639,6 +697,7 @@ class _Alias:
 @dataclass
 class _Miner:
     project_dir: str | None
+    evidence: Evidence = "full"
     found: list[tuple[FactKind, str, str]] = field(default_factory=list)
     turn: int = -1
     aliases: list[_Alias] = field(default_factory=list)
@@ -650,12 +709,16 @@ class _Miner:
     gen: Counter[str] = field(default_factory=Counter)
     gen_files: dict[str, list[str]] = field(default_factory=dict)  # dir -> edited files
     declared: set[str] | None = None  # declared_packages, read on first need
+    heads: dict[str, bool] = field(default_factory=dict)  # transcript mode: read_head results
+    skipped: set[tuple[str, str]] = field(default_factory=set)  # transcript mode: (head, alias)
 
     def _allowed_launch(self, head: list[str], program: str) -> bool:
         """A downloading launcher (``npx X``, ``uvx X``, ``pnpm dlx X``...) only for a package
         the project declares; any other spelling is fine."""
         if not any(w in _DOWNLOADERS for w in head[:-1]):
             return True
+        if self.evidence == "transcript":
+            return False  # needs the manifest: skipped (counted by the caller)
         if self.declared is None:
             self.declared = declared_packages(self.project_dir)
         return _pkg(program) in self.declared
@@ -676,6 +739,10 @@ class _Miner:
             if isinstance(cmd, str):
                 new = self._bash(cmd, not call.is_error, call.text)
         else:
+            if self.evidence == "transcript":
+                seen = read_head(call, self.project_dir)
+                if seen is not None and (seen[0] in self.heads or len(self.heads) < MAX_KEYS):
+                    self.heads[seen[0]] = seen[1]
             self.prev = None  # build_first: only a build immediately before the test counts
         if call.tool_name in _EDIT_TOOLS:
             self.failed_tests.clear()  # the edit may be the fix: a later pass proves no build
@@ -737,6 +804,8 @@ class _Miner:
                 if head != a.head and _launches(head, a.program):
                     if self._allowed_launch(head, a.program):
                         self.emit("command_alias", " ".join(a.head), " ".join(head))
+                    elif self.evidence == "transcript" and len(self.skipped) < MAX_KEYS:
+                        self.skipped.add((" ".join(a.head), " ".join(head)))
                     continue
             keep.append(a)
         self.aliases = keep
@@ -772,7 +841,10 @@ class _Miner:
             if n < GEN_MIN_PER_SESSION or checked >= GEN_MAX_DIRS:
                 continue
             checked += 1
-            if generated_evidence(self.project_dir, where, self.gen_files.get(where, ())):
+            files = self.gen_files.get(where, ())
+            if generated_evidence(
+                self.project_dir, where, files, evidence=self.evidence, heads=self.heads
+            ):
                 out.append(("generated_dir", "generated", where))
         return out
 
@@ -789,21 +861,46 @@ def relativise(text: str, project_dir: str | None) -> str:
     return pat.sub("", text)
 
 
+class SessionMiner:
+    """Streaming miner of one session: ``feed`` its tool calls in file order (sidechain calls
+    are ignored), then ``finish`` once for the sanitised candidate facts."""
+
+    def __init__(self, project_dir: str | None, *, evidence: Evidence = "full") -> None:
+        self.project_dir = project_dir
+        self._miner = _Miner(project_dir, check_evidence(evidence))
+
+    def feed(self, call: ToolResultRecord) -> None:
+        if not call.sidechain:
+            self._miner.feed(call)
+
+    @property
+    def skipped_needs_fs(self) -> int:
+        """Transcript mode: distinct command aliases not proposed because their launcher
+        downloads packages and the project's manifest may not be read."""
+        return len(self._miner.skipped)
+
+    def finish(self, session_id: str) -> list[Fact]:
+        ev = frozenset({session_digest(session_id)})
+        out: list[Fact] = []
+        for kind, subject, value in _relativised(self._miner.finish(), self.project_dir):
+            fact = sanitize(Fact(kind, subject, value, ev))
+            if fact is not None:
+                out.append(fact)
+        return out
+
+
 def mine_calls(
-    calls: Iterable[ToolResultRecord], session_id: str, *, project_dir: str | None
+    calls: Iterable[ToolResultRecord],
+    session_id: str,
+    *,
+    project_dir: str | None,
+    evidence: Evidence = "full",
 ) -> list[Fact]:
     """Sanitised candidate facts of one session's main-chain tool calls (in file order)."""
-    miner = _Miner(project_dir)
+    miner = SessionMiner(project_dir, evidence=evidence)
     for call in calls:
-        if not call.sidechain:
-            miner.feed(call)
-    ev = frozenset({session_digest(session_id)})
-    out: list[Fact] = []
-    for kind, subject, value in _relativised(miner.finish(), project_dir):
-        fact = sanitize(Fact(kind, subject, value, ev))
-        if fact is not None:
-            out.append(fact)
-    return out
+        miner.feed(call)
+    return miner.finish(session_id)
 
 
 def _relativised(
@@ -825,6 +922,7 @@ def mine_transcript(
     max_bytes: int = MAX_TRANSCRIPT_BYTES,
     env: Mapping[str, str] | None = None,
     tap: Callable[[ToolResultRecord], None] | None = None,
+    evidence: Evidence = "full",
 ) -> list[Fact]:
     """Mine one transcript, reading at most ``max_bytes`` (the cut is logged). ``tap`` sees
     every call too (the fact lifecycle observes the session in the same single read)."""
@@ -834,7 +932,7 @@ def mine_transcript(
         log_error(log_env, "facts", f"transcript over the {max_bytes} byte budget: mined a prefix")
 
     calls = iter_tool_results(path, max_bytes=max_bytes, on_limit=on_limit)
-    return mine_calls(_tapped(calls, tap), session_id, project_dir=project_dir)
+    return mine_calls(_tapped(calls, tap), session_id, project_dir=project_dir, evidence=evidence)
 
 
 def _tapped(

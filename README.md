@@ -622,8 +622,10 @@ exactly that snapshot: sessions added since are ignored and a transcript that gr
 up to its recorded size. A checkpoint of other options, another configuration or another
 token-sparen version is refused. If groups still fail, the report is written but marked
 incomplete, the checkpoint is kept for `--resume`, and the command exits 1. `--lanes
-compression[,...]` picks the measurements (the compression replay always runs; further lanes are
-added by later milestones). Failures are recorded by error type only. `--quiet` prints only
+compression[,...]` picks the measurements (the compression replay always runs). `facts`
+measures, from the transcripts alone (it never reads the projects or runs git), how often each
+repository-fact kind would be mined, how often a later session contradicts it, the waste it
+targets (an upper bound in tokens) and what its injected line would cost. Failures are recorded by error type only. `--quiet` prints only
 `report: <path> id: <12 hex>` (the id is the first 12 hex digits of the report's sha256) and
 then `status: complete` or `status: incomplete`, so a run can be cited without printing any
 figure; `ope --quiet` prints the report line only.

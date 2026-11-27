@@ -511,21 +511,34 @@ class _State:
 
 
 class Observer:
-    """Streams one session's main-chain tool calls and reports per fact (``results``)."""
+    """Streams one session's main-chain tool calls and reports per fact (``results``).
+    ``evidence`` as in ``miners``: ``"transcript"`` re-checks generated_dir facts only from the
+    file heads the session showed (no git, no file access). ``hits``: the facts the last fed
+    call bore on (ran, contradicted or showed the waste of; for replay attribution)."""
 
     def __init__(
         self,
         facts: Mapping[str, Fact],
         project_dir: str | None,
         order: Mapping[str, tuple[int, float]] | None = None,
+        *,
+        evidence: miners.Evidence = "full",
     ) -> None:
         self._facts = dict(facts)
         self._root = project_dir
         self._order = dict(order or {})
         self._state = {fid: _State() for fid in self._facts}
         self._exported: set[str] = set()
+        self._evidence = miners.check_evidence(evidence)
+        self._heads: dict[str, bool] = {}
+        self._hits: set[str] = set()
+
+    @property
+    def hits(self) -> frozenset[str]:
+        return frozenset(self._hits)
 
     def feed(self, call: ToolResultRecord) -> None:
+        self._hits = set()
         if call.sidechain:
             return
         if call.tool_name == "Bash":
@@ -536,6 +549,10 @@ class Observer:
             target = call.input.get("file_path") or call.input.get("notebook_path")
             if isinstance(target, str):
                 self._edit(target)
+        elif self._evidence == "transcript":
+            seen = miners.read_head(call, self._root)
+            if seen is not None and (seen[0] in self._heads or len(self._heads) < miners.MAX_KEYS):
+                self._heads[seen[0]] = seen[1]
 
     def _edit(self, target: str) -> None:
         rel = miners.relative_path(target, self._root)
@@ -544,6 +561,7 @@ class Observer:
         for fid, fact in self._facts.items():
             if fact.kind == "generated_dir" and rel.startswith(fact.value.rstrip("/") + "/"):
                 st = self._state[fid]
+                self._hits.add(fid)
                 st.relevant, st.edited = True, True
                 st.writes += 1
                 st.files = st.files or []
@@ -559,25 +577,29 @@ class Observer:
         for fid, fact in self._facts.items():
             st = self._state[fid]
             kind = fact.kind
+            hit = False
             if kind == "command_alias":
-                self._alias(st, fact, words, ok, text, missing)
+                hit = self._alias(st, fact, words, ok, text, missing)
             elif kind == "test_command":
                 if family == "test":
                     self._test(st, fact, norm, ok, missing)
+                    hit = True
                 core = _base(fact.value)
                 inv = miners.test_invocation(norm)
                 if missing and (
                     (inv is not None and _base(inv) == core)
                     or _starts(_words(_strip_ci(norm)), _words(core))
                 ):
-                    st.contradicted = True
+                    st.contradicted = hit = True
             elif kind == "generated_dir":
                 if family == "build" and ok and st.edited and not _checker(norm):
-                    st.waste_event = True  # the edited files were regenerated
+                    st.waste_event = hit = True  # the edited files were regenerated
             elif kind == "requires_env":
-                self._env(st, fact, cmd, norm, program, ok, text)
+                hit = self._env(st, fact, cmd, norm, program, ok, text)
             elif kind == "build_first":
-                self._build(st, fact, norm, program, ok, missing)
+                hit = self._build(st, fact, norm, program, ok, missing)
+            if hit:
+                self._hits.add(fid)
         for m in miners.EXPORT.finditer(cmd):
             self._exported.update(miners.ASSIGN.findall(m.group(1)))
 
@@ -605,43 +627,47 @@ class Observer:
     @staticmethod
     def _alias(
         st: _State, fact: Fact, words: list[str], ok: bool, text: str, missing: bool
-    ) -> None:
+    ) -> bool:
         subject, value = _words(fact.subject), _words(fact.value)
         prog = posixpath.basename(subject[-1])
         if _starts(words, value):
             st.relevant = True
             if missing:
                 st.contradicted = True
-            return
+            return True
         if _starts(words, subject) or (words and posixpath.basename(words[0]) == prog):
             st.relevant = True
             if not ok and miners.missing_program(words, miners.error_text(text)) is not None:
                 st.waste = True
             elif ok and _starts(words, subject):
                 st.unneeded = True  # the subject itself works now
+            return True
+        return False
 
     def _env(
         self, st: _State, fact: Fact, cmd: str, norm: str, program: str, ok: bool, text: str
-    ) -> None:
-        if fact.value in miners.env_names(miners.error_text(text)) and not ok:
+    ) -> bool:
+        named = not ok and fact.value in miners.env_names(miners.error_text(text))
+        if named:
             st.waste = True
         if program != fact.subject and not _starts(_words(norm), _words(fact.subject)):
-            return
+            return named
         st.relevant = True
         if ok and fact.value not in miners.set_vars(cmd) | self._exported:
             st.contradicted = True
+        return True
 
     @staticmethod
-    def _build(st: _State, fact: Fact, norm: str, program: str, ok: bool, missing: bool) -> None:
+    def _build(st: _State, fact: Fact, norm: str, program: str, ok: bool, missing: bool) -> bool:
         if program == fact.value or _starts(_words(norm), _words(fact.value)):
             st.seen = True
             if missing:
                 st.contradicted = True
             if ok and st.pending:
                 st.built = True
-            return
+            return True
         if program != fact.subject:
-            return
+            return False
         st.relevant = True
         if ok and not st.seen:
             st.unneeded = True  # the tests passed before any build
@@ -650,6 +676,7 @@ class Observer:
             st.pending, st.built = True, False
         elif st.built:
             st.waste, st.pending, st.built = True, False, False
+        return True
 
     def _rechecks(self) -> set[str]:
         """At most ``GEN_RECHECKS`` generated_dir facts per fold: edited this session first,
@@ -685,7 +712,13 @@ class Observer:
                 # the edits that would expose it): git says tracked and a file lacks a marker.
                 if fid in rechecks:
                     checked = True
-                    generated = miners.generated_evidence(self._root, fact.value, st.files or ())
+                    generated = miners.generated_evidence(
+                        self._root,
+                        fact.value,
+                        st.files or (),
+                        evidence=self._evidence,
+                        heads=self._heads,
+                    )
                     contradicted = contradicted or generated is False
                 if st.relevant:
                     repeated = st.writes >= miners.GEN_MIN_PER_SESSION
