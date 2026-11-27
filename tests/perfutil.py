@@ -13,10 +13,17 @@ T = TypeVar("T")
 
 P95_ROUNDS = 3
 
+# Read once, when conftest imports this module: the suite-wide autouse fixture deletes every
+# inherited ``TOKEN_SPAREN_*`` variable before each test, so a read inside a test always saw the
+# default (CI's perf job sets 1.5 and the strict budgets reported "factor 1.0").
+_FACTOR_ENV = os.environ.get("TOKEN_SPAREN_PERF_FACTOR")
+
 
 def perf_factor(default: float = 1.0) -> float:
-    """Budget multiplier for slower runners (env TOKEN_SPAREN_PERF_FACTOR)."""
-    return float(os.environ.get("TOKEN_SPAREN_PERF_FACTOR", str(default)))
+    """Budget multiplier for slower runners (env TOKEN_SPAREN_PERF_FACTOR, as set when the
+    session started; a test may still set it explicitly)."""
+    raw = os.environ.get("TOKEN_SPAREN_PERF_FACTOR", _FACTOR_ENV)
+    return float(raw) if raw is not None else default
 
 
 def best_of(fn: Callable[[], T], n: int) -> tuple[float, T]:
@@ -26,6 +33,27 @@ def best_of(fn: Callable[[], T], n: int) -> tuple[float, T]:
         start = time.perf_counter()
         res = fn()
         best = min(best, time.perf_counter() - start)
+    return best, res
+
+
+def best_within(
+    fn: Callable[[], T], budget: float, n: int, rounds: int = P95_ROUNDS
+) -> tuple[float, T]:
+    """Fastest single run over up to `rounds` rounds of `n` runs, stopping at the first round
+    whose fastest run is under `budget`; returns (seconds, last result).
+
+    The budget is unchanged: one run of the code must finish under it. A round of `n` runs is
+    short enough to land entirely inside a runner stall (a docs-only commit measured 202 ms
+    against 200 ms); a real regression slows every round and still fails.
+    """
+    gc.collect()
+    best, res = best_of(fn, n)
+    for _ in range(rounds - 1):
+        if best < budget:
+            break
+        gc.collect()  # garbage of the previous round is not this round's time
+        t, res = best_of(fn, n)
+        best = min(best, t)
     return best, res
 
 

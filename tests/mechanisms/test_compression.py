@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from perfutil import best_of, perf_factor
+from perfutil import best_within, perf_factor
 from sampleoutputs import big_pytest
 from userconf import to_user_config
 
@@ -580,7 +580,7 @@ def test_handler_latency_50kb(tmp_path: Path) -> None:
         ev = _bash(tmp_path, body)
         return compression.handle_post_tool(ev, StaticPolicy({}), cfg, env=env)
 
-    best, act = best_of(run, 7)
+    best, act = best_within(run, 0.050 * perf_factor(), 7)
     assert act.replace_output is not None
     assert best < 0.050 * perf_factor()
 

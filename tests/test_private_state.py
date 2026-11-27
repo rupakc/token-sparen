@@ -291,3 +291,85 @@ def test_private_mkdir_refuses_a_raced_directory(
     with pytest.raises(OSError):
         private_mkdir(tmp_path / "ts" / "logs")
     assert list(elsewhere.iterdir()) == []
+
+
+# ------------------------------------------------ Windows: no O_NOFOLLOW, junctions, reparse points
+
+FILE_REPARSE = stat.FILE_ATTRIBUTE_REPARSE_POINT
+TAG_SYMLINK, TAG_JUNCTION, TAG_CLOUD = 0xA000000C, 0xA0000003, 0x9000001A
+
+
+def _fake_stat(mode: int, attrs: int = 0, tag: int | None = None) -> os.stat_result:
+    st = os.stat_result((mode, 1, 1, 1, 0, 0, 0, 0, 0, 0))
+    fake = type("St", (), {})()
+    for name in ("st_mode", "st_ino", "st_dev", "st_size", "st_mtime"):
+        setattr(fake, name, getattr(st, name))
+    fake.st_file_attributes = attrs  # type: ignore[attr-defined]
+    if tag is not None:
+        fake.st_reparse_tag = tag  # type: ignore[attr-defined]
+    return fake  # type: ignore[no-any-return]
+
+
+def test_is_link_recognises_windows_reparse_points() -> None:
+    d, f = stat.S_IFDIR | 0o700, stat.S_IFREG | 0o600
+    assert recovery._is_link(_fake_stat(stat.S_IFLNK | 0o777))
+    assert recovery._is_link(_fake_stat(d, FILE_REPARSE, TAG_JUNCTION))  # lstat: "a directory"
+    assert recovery._is_link(_fake_stat(f, FILE_REPARSE, TAG_SYMLINK))
+    assert recovery._is_link(_fake_stat(f, FILE_REPARSE))  # no tag reported: refused
+    assert not recovery._is_link(_fake_stat(f, FILE_REPARSE, TAG_CLOUD))  # a real file
+    assert not recovery._is_link(_fake_stat(d))
+    assert not recovery._is_link(_fake_stat(f))
+
+
+def test_a_junction_like_outputs_dir_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulates Windows, where ``lstat`` reports a junction as a plain directory and
+    ``is_symlink`` is false: only the reparse attributes give it away."""
+    project = tmp_path / "proj"
+    ref = recovery.save_full(project, "full output\n")
+    out = project / ".token-sparen" / "outputs"
+    real_lstat = os.lstat
+
+    def lstat(p: os.PathLike[str] | str) -> os.stat_result:
+        if Path(p) == out:
+            return _fake_stat(stat.S_IFDIR | 0o700, FILE_REPARSE, TAG_JUNCTION)
+        return real_lstat(p)
+
+    monkeypatch.setattr(recovery.os, "lstat", lstat)
+    with pytest.raises(OSError):
+        recovery.save_full(project, "another output\n")
+    assert recovery.read_full(project, ref.id) is None
+    recovery.prune_outputs(project, ttl_days=0)
+    assert ref.path.exists()  # pruning never deletes through it
+
+
+def test_read_full_refuses_links_without_o_nofollow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows semantics: ``os.open`` follows a link (no ``O_NOFOLLOW``)."""
+    monkeypatch.setattr(recovery, "_NOFOLLOW", 0)
+    test_read_full_refuses_links(tmp_path)
+
+
+def test_gitignore_link_refused_without_o_nofollow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(recovery, "_NOFOLLOW", 0)
+    test_recovery_gitignore_never_written_through_a_link(tmp_path)
+    assert (tmp_path / "proj" / ".token-sparen" / ".gitignore").is_symlink()  # left alone
+
+
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows-only")
+def test_recovery_refuses_a_junctioned_root_on_windows(tmp_path: Path) -> None:  # pragma: no cover
+    import _winapi  # type: ignore[import-not-found]
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    project = tmp_path / "proj"
+    project.mkdir()
+    _winapi.CreateJunction(str(victim), str(project / ".token-sparen"))
+    with pytest.raises(OSError):
+        recovery.save_full(project, "full output\n")
+    assert list(victim.iterdir()) == []
+    recovery.prune_outputs(project)
