@@ -5,8 +5,9 @@ independently); every other task is deterministic (same outcome in both arms). W
 flaky pair is discordant half the time, so the screening discordant share q gives f = min(1, 2q).
 Planning uses the conservative one-sided 80 % Clopper–Pearson upper bound of q.
 
-`power` simulates the confirmatory gate itself — task-cluster BCa lower bound of the resolved
-difference > margin — under a true difference of 0 (or ``true_diff``), and `required_size`
+`power` simulates the confirmatory gate actually applied (`bench.stats.ni_gate`: min of the
+task-cluster percentile bootstrap and the Tango score lower bound on per-task
+majority outcomes, > margin) under a true difference of 0 (or ``true_diff``), and `required_size`
 picks the (tasks, seeds) with the fewest runs that reaches the target power within the pool.
 Field names of `PowerPlan.as_e4` are the ``power`` object of ``bench/e4.schema.json``.
 """
@@ -19,18 +20,19 @@ import statistics
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from bench.stats import MARGIN, Summary, bca_interval, clopper_pearson
+from bench.stats import MARGIN, Summary, clopper_pearson, gate_bound, quantile
 
 PLANNING_CONFIDENCE = 0.8
 TARGET_POWER = 0.8
 MAX_SEEDS = 3
 MIN_TASKS = 2
-# Smallest confirmation the planner proposes: with few task clusters the BCa gate is liberal
-# (simulated type-I error at the margin ≈ 0.47 at 5 tasks, ≈ 0.05 at 50, ≈ α/2 from ~80 on;
-# tests/bench/test_power.py), so sizes below this are never planned.
-MIN_PLAN_TASKS = 50
+# Smallest confirmation the planner proposes (ruling M5-T9): with few task clusters the
+# bootstrap alone is liberal (simulated type-I error at the margin ≈ 0.47 at 5 tasks, ≈ 0.05 at
+# 50; tests/bench/test_power.py), so sizes below this are never planned.
+MIN_PLAN_TASKS = 80
 
 PowerVerdict = Literal["powered", "underpowered"]
+Gate = Literal["applied", "bootstrap"]
 
 
 @dataclass(frozen=True)
@@ -78,11 +80,16 @@ def power(
     seed: int = 0,
     n_boot: int = 1000,
     true_diff: float = 0.0,
+    gate: Gate = "applied",
 ) -> float:
-    """Share of simulated confirmations whose BCa lower bound of the resolved difference
-    exceeds ``margin``. Same gate as `bench.stats.resolved_diff` + `non_inferior` (task
-    resamples via ``choices``, mid-rank bias correction, jackknife acceleration), with the
-    per-task differences kept as integers (units of 1/seeds) for speed."""
+    """Share of simulated confirmations that pass the gate (lower bound > ``margin``).
+
+    ``gate="applied"`` is the confirmatory gate of `bench.stats.ni_gate`: min(task-cluster
+    percentile bootstrap, Tango score on per-task majority outcomes); ``"bootstrap"``
+    is the percentile component alone. Deterministic tasks are concordant pairs; their outcome
+    does not matter (Tango and the bootstrap use only the discordant cells and n).
+    Per-task differences are kept as integers (units of 1/seeds) for speed; resampling is the
+    same ``choices`` scheme as `bench.stats.percentile`."""
     if not 0 <= f <= 1 or n_tasks < MIN_TASKS or seeds < 1:
         raise ValueError(f"need 0 <= f <= 1, n_tasks >= 2, seeds >= 1 (f={f}, n={n_tasks})")
     p_arm = _arm_p(f, true_diff)
@@ -91,32 +98,54 @@ def power(
     passed = 0
     for _ in range(n_sim):
         values = [0] * n_tasks
+        n10 = n01 = 0
         for i in range(n_tasks):
             if rng.random() < f:
                 if p_arm == 0.5:
                     x = rng.getrandbits(seeds).bit_count()
                 else:
                     x = sum(rng.random() < p_arm for _ in range(seeds))
-                values[i] = x - rng.getrandbits(seeds).bit_count()
-        total = sum(values)
-        if not any(values):
-            lo = 0.0
+                y = rng.getrandbits(seeds).bit_count()
+                values[i] = x - y
+                a, b = 2 * x > seeds, 2 * y > seeds
+                n10 += a and not b
+                n01 += b and not a
+        if any(values):
+            boots = sorted(sum(rng.choices(values, k=n_tasks)) for _ in range(n_boot))
+            p_lo = quantile(boots, alpha / 2) / scale
+            p_hi = quantile(boots, 1 - alpha / 2) / scale
         else:
-            boots = [sum(rng.choices(values, k=n_tasks)) for _ in range(n_boot)]
-            jack = [total - v for v in values]
-            lo = bca_interval(total, boots, jack, alpha)[0] / scale
+            p_lo = p_hi = 0.0
+        if gate == "applied":
+            cells = (0, n10, n01, n_tasks - n10 - n01)
+            lo = gate_bound(p_lo, p_hi, cells, alpha)[0]
+        else:
+            lo = p_lo
         passed += lo > margin
     return passed / n_sim
 
 
 def normal_approx_tasks(
-    f: float, seeds: int, *, margin: float = MARGIN, alpha: float = 0.05, target: float = 0.8
+    f: float,
+    seeds: int,
+    *,
+    margin: float = MARGIN,
+    alpha: float = 0.05,
+    target: float = 0.8,
+    gate: Gate = "bootstrap",
 ) -> float:
-    """Tasks needed by the normal approximation: var·(z_{1−α/2} + z_target)² / margin²,
-    var = f · 0.5 / seeds (difference of two Bin(seeds, 0.5)/seeds on flaky tasks)."""
+    """Tasks needed by the normal approximation: var·(z_{1−α/2} + z_target)² / margin².
+
+    Bootstrap component: var = f · 0.5 / seeds (difference of two Bin(seeds, 0.5)/seeds on
+    flaky tasks). Applied gate: the Tango part sees only majority outcomes, var = f · 2m(1−m)
+    with m = P(Bin(seeds, 0.5) > seeds/2), and the larger of the two governs."""
     nd = statistics.NormalDist()
     z = nd.inv_cdf(1 - alpha / 2) + nd.inv_cdf(target)
-    return f * 0.5 / seeds * z * z / (margin * margin)
+    var = f * 0.5 / seeds
+    if gate == "applied":
+        m = sum(math.comb(seeds, k) for k in range(seeds // 2 + 1, seeds + 1)) / 2**seeds
+        var = max(var, f * 2 * m * (1 - m))
+    return var * z * z / (margin * margin)
 
 
 def required_tasks(
@@ -144,7 +173,8 @@ def required_tasks(
 
     margin = kw.get("margin", MARGIN)
     alpha = kw.get("alpha", 0.05)
-    guess = normal_approx_tasks(f, seeds, margin=margin, alpha=alpha, target=target)
+    gate = kw.get("gate", "applied")
+    guess = normal_approx_tasks(f, seeds, margin=margin, alpha=alpha, target=target, gate=gate)
     start = min(max(floor, math.ceil(guess)), pool)
     if reaches(start):
         hi = start

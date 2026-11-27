@@ -58,6 +58,10 @@ def test_bca_reproducible_and_covers_normal_mean() -> None:
     assert first == stats.bca(mean_of(xs), len(xs), n_boot=500, seed=3)
     assert first != stats.bca(mean_of(xs), len(xs), n_boot=500, seed=4)
 
+    # Deterministic: every draw and every resample is seeded (no flake possible). Range: BCa for
+    # a normal mean at n = 50 undercovers slightly (z instead of t_49, plug-in variance); a
+    # 4000-draw reference run of this setup gives ≈ 0.935 (task-9 report). With 400 draws the
+    # Monte-Carlo SD is √(0.935·0.065/400) ≈ 0.012, so [0.90, 0.97] is the reference ± 3 SD.
     rng = random.Random(2026)
     covered = 0
     draws = 400
@@ -65,7 +69,7 @@ def test_bca_reproducible_and_covers_normal_mean() -> None:
         sample = [rng.gauss(10.0, 2.0) for _ in range(50)]
         lo, hi = stats.bca(mean_of(sample), 50, n_boot=1000, seed=k)
         covered += lo <= 10.0 <= hi
-    assert 0.93 <= covered / draws <= 0.97
+    assert 0.90 <= covered / draws <= 0.97
 
 
 def test_bca_needs_two_clusters() -> None:
@@ -206,3 +210,82 @@ def test_summarise_pairs_counts_and_exclusions() -> None:
 def test_repo_of_instance_id() -> None:
     assert stats.repo_of("scikit-learn__scikit-learn-12345") == "scikit-learn/scikit-learn"
     assert stats.repo_of("fake-1") == "fake"
+
+
+# --------------------------------------------------------------------------- gate (ruling M5-T9)
+
+
+def test_wilson_known_values() -> None:
+    # Newcombe (1998, single proportion) example 81/263, Wilson score: 0.2553 to 0.3662
+    assert stats.wilson(81, 263) == pytest.approx((0.2553, 0.3662), abs=1e-4)
+    assert stats.wilson(0, 10)[0] == 0.0
+    assert stats.wilson(10, 10)[1] == pytest.approx(1.0)
+
+
+def test_newcombe_paired_published_values() -> None:
+    # Armitage & Berry (1994, p. 138) tubercle bacilli, Newcombe interval as published by
+    # StatsDirect: both 20, first only 12, second only 2, neither 16 → 0.056156 to 0.329207
+    e = stats.newcombe_paired(20, 12, 2, 16)
+    assert e.point == pytest.approx(10 / 50)
+    assert (e.lo, e.hi) == pytest.approx((0.056156, 0.329207), abs=1e-6)
+    assert e.method == "newcombe-hybrid-score"
+    flipped = stats.newcombe_paired(20, 2, 12, 16)
+    assert (flipped.lo, flipped.hi) == pytest.approx((-0.329207, -0.056156), abs=1e-6)
+    same = stats.newcombe_paired(30, 0, 0, 20)
+    assert same.point == 0.0
+    assert same.lo < 0 < same.hi
+
+
+def test_tango_paired_published_values() -> None:
+    # Fagerland, Lydersen & Laake (2014) airway example, cells (++, +-, -+, --) = (1, 1, 7, 12);
+    # asymptotic score (Tango) as printed by R ratesci::rdpairci: -0.5172 to -0.0260;
+    # the same data give Newcombe/MOVER-NW -0.5069 to -0.0256 there
+    e = stats.tango_paired(1, 1, 7, 12)
+    assert e.point == pytest.approx(-6 / 21)
+    assert (e.lo, e.hi) == pytest.approx((-0.5172, -0.0260), abs=1e-4)
+    assert e.method == "tango-score"
+    nc = stats.newcombe_paired(1, 1, 7, 12)
+    assert (nc.lo, nc.hi) == pytest.approx((-0.5069, -0.0256), abs=1e-4)
+    mirrored = stats.tango_paired(12, 7, 1, 1)
+    assert (mirrored.lo, mirrored.hi) == pytest.approx((0.0260, 0.5172), abs=1e-4)
+    none = stats.tango_paired(40, 0, 0, 40)  # no discordant pair: symmetric around 0
+    assert none.lo == pytest.approx(-none.hi)
+    assert none.lo < 0
+    assert stats.tango_paired(0, 5, 0, 0).hi == 1.0
+    with pytest.raises(ValueError):
+        stats.tango_paired(0, -1, 0, 3)
+
+
+def test_majority_outcome() -> None:
+    assert stats.majority({0: True, 1: True, 2: False})
+    assert not stats.majority({0: True, 1: False, 2: False})
+    assert not stats.majority({0: True, 1: False})  # a tie counts as unresolved (both arms)
+    assert stats.majority({0: True})
+
+
+def test_ni_gate_is_min_of_bootstrap_and_tango() -> None:
+    rng = random.Random(3)
+    arm = {f"t{i}": {s: rng.random() < 0.6 for s in range(3)} for i in range(80)}
+    base = {f"t{i}": {s: rng.random() < 0.6 for s in range(3)} for i in range(80)}
+    diffs = [
+        statistics.fmean(arm[f"t{i}"].values()) - statistics.fmean(base[f"t{i}"].values())
+        for i in range(80)
+    ]
+    boot_lo, boot_hi = stats.percentile(
+        lambda idx: statistics.fmean(diffs[i] for i in idx), 80, n_boot=500, seed=1
+    )
+    n11 = n10 = n01 = n00 = 0
+    for t in arm:
+        a, b = stats.majority(arm[t]), stats.majority(base[t])
+        n11 += a and b
+        n10 += a and not b
+        n01 += b and not a
+        n00 += not a and not b
+    nc = stats.tango_paired(n11, n10, n01, n00)
+    g = stats.ni_gate(arm, base, n_boot=500, seed=1)
+    assert g.lo == pytest.approx(min(boot_lo, nc.lo))
+    assert g.hi == pytest.approx(max(boot_hi, nc.hi))
+    assert g.point == pytest.approx(statistics.fmean(diffs))
+    assert g.n == 80
+    assert g.method == stats.GATE_METHOD
+    assert stats.non_inferior(g) == (g.lo > -0.05)
