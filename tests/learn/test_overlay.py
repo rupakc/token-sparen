@@ -964,21 +964,27 @@ def test_session_start_fold_stops_at_its_time_budget(
 
 
 def test_fold_merges_natural_break_rates(tmp_path: Path) -> None:
-    """Review M1: the loop guard's natural break observations (no nudge) reach the project store
-    and, weighted, the global store; a re-fold adds nothing."""
+    """Review M1 / N-1: the loop guard's natural break observations (no nudge), per bucket and
+    pooled, reach the project store and, weighted, the global store; a re-fold adds nothing; a
+    legacy flat project entry becomes the pooled one."""
     home = _home(tmp_path)
     nat = Evidence(2.0, 1.0, 3.0, 2.0)
+    shell = Evidence(1.0, 0.0, 1.0, 1.0)
     _write(
         _pdir(home) / "posteriors.json",
         {"version": 2, "points": {}, "natural": {"loopguard": Evidence(1, 1, 2, 1).to_list()}},
     )
-    _session(home, natural={"loopguard": nat.to_list(), "bogus": [1, 2]})
+    bad = {"bad key": [1, 0, 1, 1], "cat=a/b": [1, 0, 1, 1]}
+    table = {"*": nat.to_list(), "cat=shell": shell.to_list(), **bad}
+    _session(home, natural={"loopguard": table, "bogus": {"*": [1, 2, 3]}})
     assert _fold(home).staged
     _fold(home)
-    proj = Evidence.from_list(_read(_pdir(home) / "posteriors.json")["natural"]["loopguard"])
-    assert _close(proj, Evidence(3.0, 2.0, 5.0, 3.0))
+    proj = _read(_pdir(home) / "posteriors.json")["natural"]["loopguard"]
+    assert _close(Evidence.from_list(proj["*"]), Evidence(3.0, 2.0, 5.0, 3.0))
+    assert _close(Evidence.from_list(proj["cat=shell"]), shell)
+    assert set(proj) == {"*", "cat=shell"}
     glob = _read(home / "global" / "posteriors.json")
-    assert _close(Evidence.from_list(glob["natural"]["loopguard"]), nat.scaled(0.3))
+    assert _close(Evidence.from_list(glob["natural"]["loopguard"]["*"]), nat.scaled(0.3))
     assert set(glob["natural"]) == {"loopguard"}  # only known points
     assert "natural" not in _read(_ov(home)) or not _read(_ov(home))["natural"]
 
@@ -992,12 +998,14 @@ def test_global_natural_rate_ages(tmp_path: Path) -> None:
         {
             "version": 2,
             "points": {},
-            "natural": {"loopguard": old.to_list()},
-            "natural_t": {"loopguard": 0.0},
+            "natural": {"loopguard": {"*": old.to_list(), "cat=shell": old.to_list()}},
+            "natural_t": {"loopguard|*": 0.0, "loopguard|cat=shell": 0.0},
         },
     )
     _session(home, evidence=ONE)
     _fold(home, now=100 * 86400.0)
     glob = _read(home / "global" / "posteriors.json")
-    assert _close(Evidence.from_list(glob["natural"]["loopguard"]), old.scaled(0.5))
-    assert glob["natural_t"]["loopguard"] == 100 * 86400.0
+    for bucket in ("*", "cat=shell"):
+        got = Evidence.from_list(glob["natural"]["loopguard"][bucket])
+        assert _close(got, old.scaled(0.5)), bucket
+        assert glob["natural_t"][f"loopguard|{bucket}"] == 100 * 86400.0

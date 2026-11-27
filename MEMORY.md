@@ -1519,3 +1519,10 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   config_safety_warned.json; no SessionStart notice - deferred), m-2, m-4 (global natural ages,
   `natural_t` stamps), m-5 (test seed ignored when env_path rejects the home). Deferred: m-1 user
   notice, m-3 (C2 spec note: natural data comes from patient/floor turns), m-6 (no-git subdir).
+- Fix round 2 (2026-11-27, re-review N-1, controller ruling): natural rate per decision bucket
+  (same key as the arm posterior, `cat`) plus pooled `*`; `StoreChain.natural_bar(point, bucket,
+  q)` = bucket ucb once n >= `NATURAL_BUCKET_OBS` (20), else max(pooled ucb, bucket ucb).
+  Loopguard records the decision's bucket (`dec[3]`, only `cat=...` labels; static/error -> `*`
+  only) and `*`; at most `NATURAL_MAX_BUCKETS` (32) buckets per point everywhere; fold validates
+  bucket labels (`valid_bucket`); legacy flat entries read/merge as `*`; global ageing stamps per
+  `point|bucket`. Verified the two-category null test fails with a pooled-only bar.

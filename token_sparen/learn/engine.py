@@ -260,21 +260,26 @@ class Engine:
         """``(candidates, explore)``: the arms competing in the Thompson draw and, for a
         ``natural_gate`` point, the ladder arms its floor branch explores (uniformly). A gated arm
         competes only when ``lcb_0.9`` of its savings posterior (its outcome rate when it
-        intervened) exceeds ``ucb_0.9`` of the natural rate; the draw then applies the usual
-        regret constraint (sampled regret <= tau)."""
+        intervened) exceeds the natural-rate bar of its bucket (``StoreChain.natural_bar``:
+        ``ucb_0.9``, never looser than the pooled one while the bucket is sparse); the draw then
+        applies the usual regret constraint (sampled regret <= tau)."""
         if self.held(point) or (point.tier == "high" and not self.opted_in(point)):
             return [], []
         tau = self._tau(point)
         posts = self.posteriors(point, features)
         ladder = self._ladder(point, features, posts)
-        natural = self.stores.natural_posterior(point.name) if point.natural_gate else None
-        bar = natural.ucb(GATE_Q) if natural is not None else 0.0
+        gated = point.natural_gate
+        bar = (
+            self.stores.natural_bar(point.name, self.bucket(point, features), GATE_Q)
+            if gated
+            else 0.0
+        )
         cands: list[Cand] = []
         for arm in ladder:
             s, r = posts[arm]
             if point.tier == "high" and r.ucb(HIGH_UCB_Q) > tau:
                 continue  # high tier: never explore without the regret upper bound clearing
-            if natural is not None and not s.lcb(1.0 - GATE_Q) > bar:
+            if gated and not s.lcb(1.0 - GATE_Q) > bar:
                 continue  # no better than leaving the loop alone (yet)
             cands.append((arm, s.a, s.b, r.a, r.b))
         return cands, (list(ladder) if point.natural_gate else [])

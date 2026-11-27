@@ -364,6 +364,14 @@ case-insensitive file systems, `..` spellings and directory aliases cannot bypas
 statusline launcher uses the same rule. The rejection line is written once per (variable, value)
 across hook processes (marker in `config_safety_warned.json`); `TOKEN_SPAREN_TEST_SEED` is
 ignored when the state root is rejected.
+Fix round 2 (re-review N-1): the natural break rate is kept per decision bucket (the arm
+posterior's key, `cat` for the loop guard) and pooled (`*`), in the overlay, project and global
+`natural.loopguard.<bucket>` (at most 32 buckets besides `*` per point; a legacy flat entry reads
+as `*`; global entries age per bucket). The gate's bar for an arm of bucket b is ucb_0.9 of b's
+natural rate once b has >= 20 observations, before that max(ucb_0.9 pooled, ucb_0.9 of b), so it
+is never looser than either. Observations from unlearned decisions (static / error bucket) go to
+`*` only. Note for C2: floor exploration of a gated point ignores the regret posterior (bounded
+at the floor, 5 %; the circuit breaker still stops an arm users keep rejecting).
 
 ---
 

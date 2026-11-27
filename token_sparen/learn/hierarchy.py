@@ -53,13 +53,18 @@ Scope = Literal["session", "project", "global"]
 SCHEMA_VERSION = 2
 POSTERIORS_FILE = "posteriors.json"
 SESSION_KEY = "evidence"
-# ``{point: [ea, eb, n, es2]}``: a point's natural outcome rate observed without intervention
-# (the loop guard's natural break rate, review M1), under this key in the session overlay and in
-# the project and global ``posteriors.json`` (point names and counts only, never paths).
+# ``{point: {bucket: [ea, eb, n, es2]}}``: a point's natural outcome rate observed without
+# intervention (the loop guard's natural break rate, review M1), per decision bucket and pooled
+# (``*``), under this key in the session overlay and in the project and global
+# ``posteriors.json`` (point names, bucket labels and counts only, never paths). A legacy flat
+# ``{point: [ea, eb, n, es2]}`` entry reads as the pooled one.
 NATURAL_KEY = "natural"
 NATURAL_PRIOR_MEAN = 0.8  # pessimistic for an intervention until the natural rate is measured
 NATURAL_PRIOR_STRENGTH = 10.0
 NATURAL_MIN_OBS = 5.0  # local observations before the global ones stop joining
+NATURAL_BUCKET_OBS = 20.0  # bucket observations before its own rate alone sets the gate's bar
+NATURAL_MAX_BUCKETS = 32  # natural-rate buckets kept per point (the pooled ``*`` always)
+ANY_NATURAL = "*"
 EPS = 1e-3
 DEFAULT_KAPPA = 6.0
 DEFAULT_KAPPA_REGRET = 20.0
@@ -159,22 +164,35 @@ class StoreChain:
             doc = self._docs[scope] = self._load(scope)
         return doc
 
-    def natural(self, point: str, scope: Scope) -> Evidence:
-        """``point``'s natural-rate evidence in ``scope`` (``NATURAL_KEY``; empty if none)."""
+    def natural(self, point: str, scope: Scope, bucket: str = ANY_NATURAL) -> Evidence:
+        """``point``'s natural-rate evidence of ``bucket`` in ``scope`` (empty if none)."""
         self.points(scope)  # loads (and caches) the scope's document
-        return natural_evidence({NATURAL_KEY: self._natural.get(scope)}, point)
+        return natural_evidence({NATURAL_KEY: self._natural.get(scope)}, point, bucket)
 
-    def natural_posterior(self, point: str) -> Beta:
-        """The natural (no-intervention) outcome rate of ``point``: ``Beta(NATURAL_PRIOR_MEAN *
-        NATURAL_PRIOR_STRENGTH, ...)`` plus the project's and this session's evidence, joined by
-        the global evidence while those have fewer than ``NATURAL_MIN_OBS`` observations."""
-        local = self.natural(point, "project") + self.natural(point, "session")
+    def natural_posterior(self, point: str, bucket: str = ANY_NATURAL) -> Beta:
+        """The natural (no-intervention) outcome rate of ``point`` in ``bucket`` (``*``: pooled
+        over the point): ``Beta(NATURAL_PRIOR_MEAN * NATURAL_PRIOR_STRENGTH, ...)`` plus the
+        project's and this session's evidence, joined by the global evidence while those have
+        fewer than ``NATURAL_MIN_OBS`` observations."""
+        local = self.natural(point, "project", bucket) + self.natural(point, "session", bucket)
         data = local
         if local.n < NATURAL_MIN_OBS:
-            data = local + self.natural(point, "global")
+            data = local + self.natural(point, "global", bucket)
         a = NATURAL_PRIOR_MEAN * NATURAL_PRIOR_STRENGTH + max(0.0, data.ea)
         b = (1.0 - NATURAL_PRIOR_MEAN) * NATURAL_PRIOR_STRENGTH + max(0.0, data.eb)
         return Beta(a, b, max(0.0, data.n))
+
+    def natural_bar(self, point: str, bucket: str, q: float) -> float:
+        """The natural-rate gate's bar for an arm of ``bucket``: ``ucb_q`` of the bucket's own
+        natural rate once it has ``NATURAL_BUCKET_OBS`` observations, before that the larger of
+        the pooled and the bucket ``ucb_q`` (never looser than either)."""
+        pooled = self.natural_posterior(point)
+        if bucket == ANY_NATURAL:
+            return pooled.ucb(q)
+        own = self.natural_posterior(point, bucket)
+        if own.n >= NATURAL_BUCKET_OBS:
+            return own.ucb(q)
+        return max(pooled.ucb(q), own.ucb(q))
 
     def get(self, point: str, bucket: str, arm: str, kind: Kind, scope: Scope) -> Evidence | None:
         node: Any = self.points(scope).get(point)
@@ -307,11 +325,21 @@ def prior_for(
     return _from_mean(d, k_reg if kind == "regret" else k0)
 
 
-def natural_evidence(doc: Mapping[str, Any] | None, point: str) -> Evidence:
-    """The ``NATURAL_KEY`` evidence of ``point`` in a store or overlay document (empty if absent
-    or malformed)."""
+def natural_table(doc: Mapping[str, Any] | None, point: str) -> dict[str, Any]:
+    """``point``'s ``{bucket: evidence list}`` natural table (a legacy flat list as ``*``)."""
     table = doc.get(NATURAL_KEY) if isinstance(doc, Mapping) else None
     raw = table.get(point) if isinstance(table, Mapping) else None
+    if isinstance(raw, list):
+        return {ANY_NATURAL: raw}
+    return dict(raw) if isinstance(raw, Mapping) else {}
+
+
+def natural_evidence(
+    doc: Mapping[str, Any] | None, point: str, bucket: str = ANY_NATURAL
+) -> Evidence:
+    """The ``NATURAL_KEY`` evidence of ``point`` / ``bucket`` in a store or overlay document
+    (empty if absent or malformed)."""
+    raw = natural_table(doc, point).get(bucket)
     if raw is None:
         return Evidence(0.0, 0.0, 0.0, 0.0)
     try:

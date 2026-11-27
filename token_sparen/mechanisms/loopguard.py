@@ -29,9 +29,11 @@ A decision whose redirect was never delivered is forgotten (``forget``): no savi
 regret observation for its arm. The natural break rate is observed on turns where an error
 fingerprint reached 3 occurrences with no redirect for that agent (an arm whose ``k`` was not
 reached yet: patient at 3-4), with the same 5-call window, once per agent and turn, into the
-overlay's ``natural`` evidence (fold: project and weighted global). The engine gates the
+overlay's ``natural`` evidence under the decision's bucket and pooled (``*``) (fold: project and
+weighted global). The engine gates the
 intervening arms on it (``DecisionPoint.natural_gate``): an arm competes only when lcb_0.9 of its
-break rate beats ucb_0.9 of the natural rate and its regret mean is <= tau; otherwise it is
+break rate beats ucb_0.9 of the natural rate of the same bucket (never looser than the pooled
+rate while the bucket has < 20 observations), and the draw's sampled regret is <= tau; else it is
 reached only by the floor's exploration. Regret 1 if the user interrupts a tool call after the
 redirect, or the user's next prompt starts with stop / wait / undo / revert / that's wrong /
 no, don't, or is at most ``STOP_MAX_WORDS`` (8) words and contains one (whole words, any case);
@@ -63,7 +65,13 @@ from token_sparen.emit import LEDGER_FIELD
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event
 from token_sparen.learn import decisions, features, pending, regret
-from token_sparen.learn.hierarchy import NATURAL_KEY, natural_evidence
+from token_sparen.learn.hierarchy import (
+    ANY_NATURAL,
+    NATURAL_KEY,
+    NATURAL_MAX_BUCKETS,
+    natural_evidence,
+    natural_table,
+)
 from token_sparen.learn.policy import LOOPGUARD, Decision, DecisionRecord, Policy
 from token_sparen.mechanisms import tracking
 from token_sparen.store import jsonstore, paths, session
@@ -150,6 +158,7 @@ _SPACE = re.compile(r"\s+")
 _STOP_PHRASE = r"(?:stop|wait|undo|revert|that's wrong|no,?\s+don't)\b"
 _STOP_START = re.compile(rf"^\W*{_STOP_PHRASE}", re.IGNORECASE)
 _STOP_ANY = re.compile(rf"\b{_STOP_PHRASE}", re.IGNORECASE)
+_BUCKET = re.compile(r"cat=[A-Za-z0-9_.-]+")  # a learned decision's bucket (not static / error)
 _LEAD_CD = re.compile(r"^cd\s+\S+\s*&&\s*")
 _SUBCOMMAND = re.compile(r"^[a-z][a-z0-9_-]*$")
 
@@ -316,7 +325,7 @@ class _Step:
     nudge: str | None = None
     error_loop: bool = False
     notice: str | None = None
-    natural: list[float] = field(default_factory=list)  # natural break observations (0 / 1)
+    natural: list[tuple[str, float]] = field(default_factory=list)  # (bucket, broken 0 / 1)
     forget: list[str] = field(default_factory=list)  # decisions never delivered: no evidence
     indexed: bool = False  # natural evidence was added: the overlay awaits a fold
 
@@ -337,8 +346,9 @@ def _agent_id(event: Event) -> str:
 def _settle_agent(ag: dict[str, Any], step: _Step, signal: str, regret_value: float) -> None:
     """Close an agent's turn: an open watch settles savings 1 (when observed) and regret is
     paid for a delivered redirect; a decision without one is forgotten (no evidence)."""
-    if isinstance(ag.get("natural"), dict):
-        step.natural.append(1.0)  # the turn ended first: the loop ended by itself
+    nat = ag.get("natural")
+    if isinstance(nat, dict):
+        step.natural.append((str(nat.get("b", "")), 1.0))  # the turn ended first: it ended
         ag["natural"] = None
     dec = ag.get("decision")
     if not isinstance(dec, list) or len(dec) < 4 or not isinstance(dec[0], str):
@@ -531,13 +541,14 @@ def _natural_watch(ag: dict[str, Any], fp: str | None, step: _Step) -> None:
     nat = ag.get("natural")
     if not isinstance(nat, dict):
         return
+    bucket = str(nat.get("b", ""))
     if fp is not None and fp == nat.get("fp"):
-        step.natural.append(0.0)
+        step.natural.append((bucket, 0.0))
         ag["natural"] = None
         return
     left = _num(nat.get("left")) - 1
     if left <= 0:
-        step.natural.append(1.0)
+        step.natural.append((bucket, 1.0))
         ag["natural"] = None
     else:
         nat["left"] = left
@@ -551,7 +562,9 @@ def _natural_open(ag: dict[str, Any], hit: _Hit, cfg: Config) -> None:
     if ag.get("natural_seen"):
         return
     ag["natural_seen"] = True
-    ag["natural"] = {"fp": hit.fp, "left": _param(cfg, "watch_calls", DEFAULT_WATCH)}
+    dec = ag.get("decision")
+    bucket = str(dec[3]) if isinstance(dec, list) and len(dec) >= 4 else ""
+    ag["natural"] = {"fp": hit.fp, "left": _param(cfg, "watch_calls", DEFAULT_WATCH), "b": bucket}
 
 
 @dataclass
@@ -591,12 +604,19 @@ def _record(state: dict[str, Any], step: _Step) -> None:
         outs = [*(outs if isinstance(outs, list) else []), *rows]
         state[regret.OUTCOMES_KEY] = outs[-regret.MAX_OUTCOMES :]
     if step.natural:
-        ev = natural_evidence(state, LOOPGUARD.name)
-        for x in step.natural:
-            ev = ev.observe(x, gamma=1.0, cap=P0_CAP)
+        buckets = natural_table(state, LOOPGUARD.name)
+        for bucket, x in step.natural:
+            keys = [ANY_NATURAL]
+            if _BUCKET.fullmatch(bucket) and (
+                bucket in buckets or len(buckets) <= NATURAL_MAX_BUCKETS
+            ):
+                keys.append(bucket)  # per decision bucket (the arm's), and pooled
+            for key in keys:
+                ev = natural_evidence({NATURAL_KEY: {LOOPGUARD.name: buckets}}, LOOPGUARD.name, key)
+                buckets[key] = ev.observe(x, gamma=1.0, cap=P0_CAP).to_list()
         table = state.get(NATURAL_KEY)
         table = table if isinstance(table, dict) else {}
-        table[LOOPGUARD.name] = ev.to_list()
+        table[LOOPGUARD.name] = buckets
         state[NATURAL_KEY] = table
         step.natural = []
         step.indexed = True

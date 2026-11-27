@@ -540,15 +540,18 @@ def test_pending_decisions_live_outside_the_hot_overlay(tmp_path: Path) -> None:
 LG_FEATS = {"cat": "shell"}
 
 
-def _observe_natural(eng: Engine, home: Path, broken: float) -> None:
+def _observe_natural(eng: Engine, home: Path, broken: float, bucket: str = "cat=shell") -> None:
+    """A natural break observation as the loop guard records it: its bucket and the pooled
+    ``*`` entry."""
     from token_sparen.learn.hierarchy import NATURAL_KEY
     from token_sparen.store import jsonstore
 
     def fn(state: dict[str, Any]) -> dict[str, Any]:
-        table = state.setdefault(NATURAL_KEY, {})
-        raw = table.get("loopguard")
-        ev = Evidence.from_list(raw) if raw else Evidence(0.0, 0.0, 0.0, 0.0)
-        table["loopguard"] = ev.observe(broken, gamma=1.0, cap=50.0).to_list()
+        table = state.setdefault(NATURAL_KEY, {}).setdefault("loopguard", {})
+        for key in {bucket, "*"}:
+            raw = table.get(key)
+            ev = Evidence.from_list(raw) if raw else Evidence(0.0, 0.0, 0.0, 0.0)
+            table[key] = ev.observe(broken, gamma=1.0, cap=50.0).to_list()
         return state
 
     jsonstore.update(_overlay(home), fn, {}, {"TOKEN_SPAREN_HOME": str(home)})
@@ -624,3 +627,49 @@ def test_forget_drops_the_pending_decision(tmp_path: Path) -> None:
     eng.reward(d.decision_id, 1.0, 0.0)  # nothing to update any more
     assert eng.posteriors(LOOPGUARD, LG_FEATS)["standard"][0].n == 0.0
     eng.forget("unknown")  # never raises
+
+
+def _simulate_cats(
+    home: Path, rates: dict[str, tuple[float, float]], n: int, seed: int
+) -> tuple[dict[str, Counter[str]], Engine]:
+    """Alternate decisions between categories; ``rates[cat] = (arm break rate, natural)``."""
+    from token_sparen.learn.policy import LOOPGUARD
+
+    eng = _engine(home, seed=seed)
+    rng = random.Random(seed + 1)
+    chosen: dict[str, Counter[str]] = {c: Counter() for c in rates}
+    cats = list(rates)
+    for i in range(n):
+        cat = cats[i % len(cats)]
+        feats = {"cat": cat}
+        p_arm, p0 = rates[cat]
+        d = eng.decide(LOOPGUARD, feats, _ctx(home))
+        if not eng.last_explored:
+            chosen[cat][d.arm] += 1
+        if d.arm == LOOPGUARD.safe_arm:
+            _observe_natural(eng, home, float(rng.random() < p0), f"cat={cat}")
+        else:
+            eng.reward(d.decision_id, float(rng.random() < p_arm), float(rng.random() < 0.01))
+    return chosen, eng
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_loopguard_null_effect_per_category_stays_patient(tmp_path: Path, seed: int) -> None:
+    """Re-review N-1: one category's loops end by themselves far more often (0.95 vs 0.3). A
+    null-effect redirect must not pass the gate there against a pooled natural rate."""
+    rates = {"shell": (0.95, 0.95), "test": (0.3, 0.3)}
+    chosen, _ = _simulate_cats(tmp_path / "h", rates, 1200, seed)
+    for cat, counts in chosen.items():
+        total = sum(counts.values())
+        assert total > 500 and counts["patient"] / total >= 0.95, (cat, counts)
+
+
+def test_loopguard_real_effect_category_unlocks(tmp_path: Path) -> None:
+    from token_sparen.learn.policy import LOOPGUARD
+
+    home = tmp_path / "h"
+    rates = {"shell": (0.95, 0.95), "test": (0.8, 0.3)}
+    _simulate_cats(home, rates, 1200, 4)
+    fresh = _engine(home, seed=9)
+    assert "standard" in fresh.eligible(LOOPGUARD, {"cat": "test"})
+    assert fresh.eligible(LOOPGUARD, {"cat": "shell"}) == []

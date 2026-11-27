@@ -78,12 +78,15 @@ from token_sparen.learn import breaker, decisions, pending
 from token_sparen.learn.beta import Beta, Evidence
 from token_sparen.learn.features import ANY_BUCKET, FEATURE_KEYS, backoff_keys
 from token_sparen.learn.hierarchy import (
+    ANY_NATURAL,
     NATURAL_KEY,
+    NATURAL_MAX_BUCKETS,
     POSTERIORS_FILE,
     SCHEMA_VERSION,
     SESSION_KEY,
     Kind,
     StoreChain,
+    natural_table,
     prior_for,
 )
 from token_sparen.learn.policy import DecisionPoint, get_point
@@ -277,20 +280,28 @@ def _cells(doc: object) -> tuple[list[Cell], int]:
     return cells, skipped
 
 
-def _natural(doc: object) -> list[tuple[str, Evidence]]:
-    """Well-formed ``(point, evidence)`` natural-rate entries of known points (staged)."""
-    out: list[tuple[str, Evidence]] = []
-    for point, raw in doc.items() if isinstance(doc, dict) else ():
+NaturalCell = tuple[str, str, Evidence]  # (point, bucket, evidence)
+
+
+def _natural(doc: object) -> list[NaturalCell]:
+    """Well-formed ``(point, bucket, evidence)`` natural-rate entries of known points with
+    valid bucket labels (staged; a legacy flat entry is the pooled ``*``)."""
+    out: list[NaturalCell] = []
+    for point in doc if isinstance(doc, dict) else ():
         if not isinstance(point, str) or get_point(point) is None:
             continue
-        try:
-            out.append((point, Evidence.from_list(raw)))
-        except (TypeError, ValueError):
-            continue
+        table = natural_table({NATURAL_KEY: doc}, point)
+        for bucket, raw in list(table.items())[: NATURAL_MAX_BUCKETS + 1]:
+            if not isinstance(bucket, str) or not valid_bucket(point, bucket):
+                continue
+            try:
+                out.append((point, bucket, Evidence.from_list(raw)))
+            except (TypeError, ValueError):
+                continue
     return out
 
 
-NATURAL_T_KEY = "natural_t"  # global: last update per point of the natural table (ageing)
+NATURAL_T_KEY = "natural_t"  # global: last update per point|bucket of the natural table (ageing)
 
 
 def _age_natural(doc: dict[str, Any], now: float, max_age: float) -> int:
@@ -302,22 +313,32 @@ def _age_natural(doc: dict[str, Any], now: float, max_age: float) -> int:
         stamps = doc[NATURAL_T_KEY] = {}
     aged = 0
     for point in list(table):
-        t = _num(stamps.get(point))
-        if t is None:
-            stamps[point] = now
-        elif now - t > max_age:
-            table[point] = _get(table, point).scaled(0.5).to_list()
-            stamps[point] = now
-            aged += 1
+        buckets = natural_table(doc, point)
+        for bucket in list(buckets):
+            slot = f"{point}|{bucket}"
+            t = _num(stamps.get(slot, stamps.get(point)))
+            if t is None:
+                stamps[slot] = now
+            elif now - t > max_age:
+                buckets[bucket] = _get(buckets, bucket).scaled(0.5).to_list()
+                stamps[slot] = now
+                aged += 1
+        table[point] = buckets
+        stamps.pop(point, None)  # legacy per-point stamp
     return aged
 
 
-def _add_natural(doc: dict[str, Any], natural: list[tuple[str, Evidence]], cap: float) -> None:
+def _add_natural(doc: dict[str, Any], natural: list[NaturalCell], cap: float) -> None:
+    """Add natural-rate cells into ``doc``'s table (at most ``NATURAL_MAX_BUCKETS`` buckets
+    besides ``*`` per point; a legacy flat entry becomes the pooled one)."""
     table = doc.get(NATURAL_KEY)
     if not isinstance(table, dict):
         table = doc[NATURAL_KEY] = {}
-    for point, ev in natural:
-        _add(table, point, ev, cap)
+    for point, bucket, ev in natural:
+        buckets = natural_table(doc, point)
+        if bucket in buckets or bucket == ANY_NATURAL or len(buckets) <= NATURAL_MAX_BUCKETS:
+            _add(buckets, bucket, ev, cap)
+        table[point] = buckets
 
 
 def features_of(bucket: str) -> dict[str, str] | None:
@@ -531,7 +552,7 @@ def _breaker_and_project(
     cap: float,
     env: Mapping[str, str],
     timeout: float | None,
-    natural: list[tuple[str, Evidence]] | None = None,
+    natural: list[NaturalCell] | None = None,
 ) -> None:
     """Breaker first (it decides the resets), then the project store (held lock)."""
     bpath = pdir / breaker.BREAKER_FILE
@@ -691,7 +712,7 @@ def _global(
     cap: float,
     env: Mapping[str, str],
     timeout: float | None,
-    natural: list[tuple[str, Evidence]] | None = None,
+    natural: list[NaturalCell] | None = None,
 ) -> None:
     gpath = home / "global" / POSTERIORS_FILE
     weight = min(1.0, max(0.0, _param(params, "global_weight", GLOBAL_WEIGHT)))
@@ -717,11 +738,12 @@ def _global(
                     node["t"] = now
                     rep.global_cells += 1
             if weight > 0.0:
-                _add_natural(gdoc, [(p, ev.scaled(weight)) for p, ev in natural or []], cap)
+                scaled = [(p, b, ev.scaled(weight)) for p, b, ev in natural or []]
+                _add_natural(gdoc, scaled, cap)
                 stamps = gdoc.get(NATURAL_T_KEY)
                 stamps = gdoc[NATURAL_T_KEY] = stamps if isinstance(stamps, dict) else {}
-                for p, _ in natural or []:
-                    stamps[p] = now
+                for p, b, _ in natural or []:
+                    stamps[f"{p}|{b}"] = now
             applied[tag] = [*mine, fid][-APPLIED_MAX:]
         jsonstore.write_locked(gpath, gdoc)
 

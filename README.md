@@ -161,8 +161,9 @@ All of this is on by default. Nothing is sent anywhere.
   setting. Only a line that was actually shown is judged: useful when the error then stops
   recurring within the agent's next 5 tool calls. A less patient setting is used only once its
   lines clearly end loops more often than loops end by themselves (measured on turns where an
-  error reached 3 repeats without a line, per project with a cross-project fallback, and
-  assumed high, 80 %, until measured); until then it is tried in about 5 % of loops. A line counts
+  error reached 3 repeats without a line, per tool category and project with a cross-project
+  fallback, and assumed high, 80 %, until measured); until then it is tried in about 5 % of
+  loops. A line counts
   as harmful when you interrupt or your next prompt starts with stop, wait, undo, revert,
   "that's wrong" or "no, don't" (a prompt of at most 8 words may contain it anywhere). Only
   deterministic checks, no LLM. Turn it off with `loopguard.enabled = false`; `[learn.hold] loopguard = true`
@@ -244,8 +245,8 @@ Everything stays on your machine, but some of it is plain text you should know a
     (the project's most recent session id and when it was last active, plus up to 50 recent
     session ids with their last activity, removed when a session ends), `savings_scale.json` (numbers only: recent savings
     sizes per bucket), `floor_warned.json`, `posteriors.json` and `breaker.json` (numbers only:
-    learned evidence per bucket, the loop guard's natural break rate, and recent regret values
-    per decision point), `pending.json`
+    learned evidence per bucket, the loop guard's natural break rate per bucket, and recent
+    regret values per decision point), `pending.json`
     (ids of sessions waiting to be folded) and `pretrim.json`
     (**normalised Bash commands** with per-command counts, and the learned pre-trim candidates),
     `facts.json` (repository facts mined when a session is folded: **normalised

@@ -525,3 +525,49 @@ def test_natural_posterior_prior_project_and_global(tmp_path: Path) -> None:
     _write(ov, {"natural": {"loopguard": Evidence(2.0, 0.0, 2.0, 2.0).to_list()}})
     p = StoreChain(KEY, home, "s-1").natural_posterior("loopguard")
     assert (p.a, p.b) == pytest.approx((11.0, 11.0))  # the unfolded session counts
+
+
+def test_natural_bar_per_bucket_never_looser_than_pooled(tmp_path: Path) -> None:
+    """Re-review N-1: the gate bar is the bucket's natural-rate ucb, but while the bucket has
+    fewer than NATURAL_BUCKET_OBS observations it is max(pooled ucb, bucket ucb)."""
+    home = tmp_path / "h"
+    st = StoreChain(KEY, home, "s-1")
+    pooled = Evidence(5.0, 25.0, 30.0, 5.0)  # mostly not broken
+    shell = Evidence(9.0, 1.0, 10.0, 9.0)  # 10 obs, mostly broken
+    ov = session.session_path(home, KEY, "s-1")
+    _write(ov, {"natural": {"loopguard": {"*": pooled.to_list(), "cat=shell": shell.to_list()}}})
+    st = StoreChain(KEY, home, "s-1")
+    p_pool = st.natural_posterior("loopguard")
+    p_shell = st.natural_posterior("loopguard", "cat=shell")
+    assert p_shell.mean > p_pool.mean
+    assert st.natural_bar("loopguard", "cat=shell", 0.9) == pytest.approx(
+        max(p_pool.ucb(0.9), p_shell.ucb(0.9))
+    )
+    # a sparse low-rate bucket cannot lower the bar below the pooled one either
+    low = Evidence(0.0, 3.0, 3.0, 0.0)
+    _write(
+        ov,
+        {"natural": {"loopguard": {"*": Evidence(9, 1, 10, 9).to_list(), "cat=x": low.to_list()}}},
+    )
+    st = StoreChain(KEY, home, "s-1")
+    assert st.natural_bar("loopguard", "cat=x", 0.9) == pytest.approx(
+        st.natural_posterior("loopguard").ucb(0.9)
+    )
+    # enough bucket data: the bucket alone decides
+    many = Evidence(4.0, 21.0, 25.0, 4.0)
+    _write(
+        ov,
+        {"natural": {"loopguard": {"*": Evidence(9, 1, 10, 9).to_list(), "cat=x": many.to_list()}}},
+    )
+    st = StoreChain(KEY, home, "s-1")
+    assert st.natural_bar("loopguard", "cat=x", 0.9) == pytest.approx(
+        st.natural_posterior("loopguard", "cat=x").ucb(0.9)
+    )
+
+
+def test_natural_legacy_flat_entry_reads_as_pooled(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    _natural_doc(home / "projects" / KEY / "posteriors.json", Evidence(1.0, 9.0, 10.0, 1.0))
+    st = StoreChain(KEY, home, "s-1")
+    p = st.natural_posterior("loopguard")
+    assert (p.a, p.b) == pytest.approx((9.0, 11.0))

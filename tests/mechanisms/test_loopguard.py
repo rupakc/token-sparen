@@ -865,8 +865,8 @@ def test_post_tool_output_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 # --- natural break rate (review M1, fix round 1) ------------------------------------------------
 
 
-def _natural(tmp_path: Path) -> list[float] | None:
-    raw = _overlay(tmp_path).get("natural", {}).get("loopguard")
+def _natural(tmp_path: Path, bucket: str = "*") -> list[float] | None:
+    raw = _overlay(tmp_path).get("natural", {}).get("loopguard", {}).get(bucket)
     return None if raw is None else [float(x) for x in raw]
 
 
@@ -882,6 +882,7 @@ def test_natural_break_observed_without_nudge(tmp_path: Path) -> None:
     nat = _natural(tmp_path)
     assert nat is not None and nat[0] == pytest.approx(1.0) and nat[1] == pytest.approx(0.0)
     assert nat[2] == pytest.approx(1.0)
+    assert _natural(tmp_path, "cat=shell") == nat  # the decision's bucket too (re-review N-1)
     from token_sparen.learn import pending
 
     assert pending.entries(tmp_path / "home", KEY, _env(tmp_path))  # awaits a fold
@@ -963,3 +964,12 @@ def test_stop_phrase_counts(text: str) -> None:
 )
 def test_stop_word_inside_a_longer_prompt_does_not_count(text: str | None) -> None:
     assert not loopguard.is_stop(text)
+
+
+def test_natural_rate_of_an_unlearned_bucket_is_pooled_only(tmp_path: Path) -> None:
+    pol = StaticPolicy({})
+    _prompt(tmp_path, pol)
+    for _ in range(4):
+        _tool(tmp_path, pol, _fail(tmp_path))
+    table = _overlay(tmp_path)["natural"]["loopguard"]
+    assert set(table) == {"*"}  # the static bucket is no category

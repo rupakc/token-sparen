@@ -124,7 +124,7 @@ everything else. No savings figures are claimed for them yet.
   is observed (loop broken or not within the next 5 calls; a decision that never redirected adds
   no evidence), and an earlier-nudging setting is used only once its break rate is clearly
   above the rate at which loops end by themselves (measured on turns with no redirect, per
-  project with a global fallback, assumed 80 % until measured); otherwise the guard stays at the
+  tool category and project with a global fallback, assumed 80 % until measured); otherwise the guard stays at the
   most patient setting, exploring the next one in about 5 % of decisions.
 - Failure-loop guard: a stop phrase (now also "wait") counts as regret only at the start of the
   next prompt or in a prompt of at most 8 words ("add a stop button ..." no longer counts).
