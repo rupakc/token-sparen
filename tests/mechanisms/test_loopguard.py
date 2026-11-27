@@ -1161,3 +1161,34 @@ def test_post_emit_work_is_queued_after_pay(
     with deferred.collecting() as later, pytest.raises(RuntimeError):
         _tool(tmp_path, pol, _fail(tmp_path))
     assert later == []
+
+
+def test_failed_reservation_write_sends_no_redirect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 2: the phase-2 write (decision + reservation) fails: no redirect, nothing
+    queued, the unadopted decision is forgotten; a later repeat may redirect normally."""
+    from token_sparen import deferred
+    from token_sparen.store import jsonstore
+
+    pol = Rec("eager")
+    _prompt(tmp_path, pol)
+    _tool(tmp_path, pol, _fail(tmp_path))
+    real = jsonstore.update
+    calls: list[int] = []
+
+    def second_fails(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        if len(calls) == 2:  # phase1 succeeds, phase2 (the reservation) fails
+            raise jsonstore.StoreBusy("held")
+        return real(*args, **kwargs)
+
+    with monkeypatch.context() as m, deferred.collecting() as later:
+        m.setattr(jsonstore, "update", second_fails)
+        act = _tool(tmp_path, pol, _fail(tmp_path))
+    assert act.is_noop() and later == [] and len(calls) == 2
+    ag = _overlay(tmp_path)[loopguard.STATE_KEY]["agents"][""]
+    assert "decision" not in ag and loopguard.RESERVED not in ag
+    assert pol.forgotten == [pol.decisions[0].decision_id] and _lg_records(tmp_path) == []
+    assert _tool(tmp_path, pol, _fail(tmp_path)).inject_context is not None
+    assert len(_lg_records(tmp_path)) == 1

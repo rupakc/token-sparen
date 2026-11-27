@@ -822,7 +822,12 @@ def on_tool(
                 step.decided = decision
             _evaluate(ag, hit, cfg, step, lg)
 
-        _update(path, env, phase2)
+        if not _update(path, env, phase2):
+            # no reservation written: send nothing (a later hook may still redirect); phase1's
+            # settled payouts are still paid below, the unadopted decision is forgotten
+            step.nudge = step.deliver = step.decided = step.notice = None
+            step.error_loop = False
+            step.forget.append(decision.decision_id)
 
     def after_emit() -> None:
         """Records of what the host received: never written for a response it did not get."""
