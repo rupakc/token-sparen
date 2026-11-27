@@ -16,6 +16,13 @@ tool pruning and the learned failure-loop guard (`mechanisms/loopguard.py`) are 
 Spec: `docs/specs/2026-11-25-token-sparen-design.md`; plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`;
 decisions: `MEMORY.md`.
 
+## Release and docs
+Release process: `docs/release/runbook.md` and `.claude/skills/release/` (owner-signed tag, two
+approvals `release` then `pypi`, curated notes from the `CHANGELOG.md` `[Unreleased]` section;
+the plugin installs from the `release/claude` branch). User documentation has one source,
+`docs/user/` (templates in `site/`, built by `scripts/build_site.py`, `docs` extra); the site
+deploys from release tags. Dev install: `claude --plugin-dir .` and `pip install -e ".[dev,docs]"`.
+
 ## Layout
 `token_sparen/` (core, stdlib only: `store/ compress/ mechanisms/ learn/ replay/ adapters/
 testing/`; `learn/` holds policy, decision log, engine, regret, `overlay` (session fold), `breaker`

@@ -196,3 +196,21 @@ def test_cli_refuses_dirty_tree(
 def test_readme_has_no_literal_version() -> None:
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     assert current_version() not in text
+
+
+def test_release_skill_mentions_owner_signed_tag_and_evidence_gate() -> None:
+    skill = (ROOT / ".claude" / "skills" / "release" / "SKILL.md").read_text(encoding="utf-8")
+    assert "docs/release/runbook.md" in skill
+    assert "release.yml" in skill
+    assert "owner" in skill and "signed" in skill and "tag" in skill
+    assert "render_evidence.py --check" in skill and "gate-decision.toml" in skill
+    for env in ("`release`", "`pypi`"):
+        assert env in skill
+    assert "Re-run failed jobs" in skill
+
+
+def test_changelog_has_pre1_marker_below_unreleased() -> None:
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert text.count(MARKER) == 1
+    assert text.index("## [Unreleased]") < text.index(MARKER) < text.index("## Pre-1.0 milestones")
+    assert "[1.0.0]" not in text.split(MARKER, 1)[0]  # the bump creates it, nothing writes it
