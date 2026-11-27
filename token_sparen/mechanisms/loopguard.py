@@ -21,13 +21,22 @@ triggering tool result (the tool output itself is never touched); a second detec
 agent in the same turn (counted on events after the redirect) tells the user only, at most once
 per turn.
 
-Reward: savings 1 only if a redirect was delivered while its fingerprint had >= 3 occurrences and
-the fingerprint does not recur within that agent's next ``[loopguard] watch_calls`` (5) tool
-calls of the turn (the turn ending first counts as not recurring); otherwise 0 (also for a
-decision whose ``k`` was never reached). Regret 1 if the user interrupts a tool call after the
-redirect, or the user's next prompt says stop / undo / revert / that's wrong / no, don't (whole
-words, any case); else an explicit 0 at the next prompt or SessionEnd (always 0 without a
-redirect). An error-loop trigger also tells the regret detector (``on_loop``): this turn's
+Reward (counterfactual, review M1): a redirect delivered while its fingerprint had >= 3
+occurrences is "broken" (1) if the fingerprint does not recur within that agent's next
+``[loopguard] watch_calls`` (5) tool calls of the turn (the turn ending first counts as not
+recurring), else 0; its savings are ``max(0, broken - p0)``, where ``p0`` is the natural break
+rate: how often a loop ends by itself. Every other decision (a redirect at fewer occurrences, a
+decision whose ``k`` was never reached) gets savings 0. ``p0`` is observed on turns where an
+error fingerprint reached 3 occurrences with no redirect for that agent (an arm whose ``k`` was
+not reached yet: patient at 3-4): the same 5-call window decides broken / not broken, once per
+agent and turn, into the overlay's ``natural`` evidence; the fold merges it into the project and
+(weighted) global stores. ``p0`` is the mean of ``Beta(8, 2)`` (prior mean 0.8, strength 10:
+pessimistic until data) plus the project's observations (this session's included), joined by
+the global ones while the project has fewer than ``P0_MIN_OBS``. Regret 1 if the user interrupts
+a tool call after the redirect, or the user's next prompt starts with stop / wait / undo /
+revert / that's wrong / no, don't, or is at most ``STOP_MAX_WORDS`` (8) words and contains one
+(whole words, any case); else an explicit 0 at the next prompt or SessionEnd (always 0 without
+a redirect). An error-loop trigger also tells the regret detector (``on_loop``): this turn's
 compression decisions on error-bearing outputs get 0.5 regret.
 
 State is a bounded per-turn dict in the session overlay (``loopguard``: at most ``MAX_AGENTS``
@@ -53,7 +62,9 @@ from token_sparen.config import Config, flag, flag_on, log_error, state_home
 from token_sparen.emit import LEDGER_FIELD
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import Action, Event
-from token_sparen.learn import decisions, features, regret
+from token_sparen.learn import decisions, features, pending, regret
+from token_sparen.learn.beta import Evidence
+from token_sparen.learn.hierarchy import NATURAL_KEY, POSTERIORS_FILE, natural_evidence
 from token_sparen.learn.policy import LOOPGUARD, Decision, DecisionRecord, Policy
 from token_sparen.mechanisms import tracking
 from token_sparen.store import jsonstore, paths, session
@@ -63,10 +74,14 @@ __all__ = [
     "LOOPGUARD",
     "MAX_AGENTS",
     "MAX_FINGERPRINTS",
+    "P0_MIN_OBS",
+    "P0_PRIOR_MEAN",
+    "P0_PRIOR_STRENGTH",
     "STATE_KEY",
     "command_head",
     "fingerprint",
     "is_stop",
+    "natural_rate",
     "on_prompt",
     "on_session_end",
     "on_tool",
@@ -80,6 +95,11 @@ MAX_PAIRS = 4  # edit pairs kept per file
 MAX_AFTER = 10  # fingerprints counted after an agent's redirect (for the user notice)
 MIN_REVERSALS = 2  # A -> B -> A -> B: one add-then-remove is never oscillation
 SAVINGS_MIN_N = 3  # a redirect earns savings only if the loop had this many occurrences
+P0_PRIOR_MEAN = 0.8  # natural break rate prior: pessimistic for the redirect until data
+P0_PRIOR_STRENGTH = 10.0
+P0_MIN_OBS = 5.0  # project observations before the global ones stop joining
+P0_CAP = 50.0  # session natural evidence mass cap (as the engine's posterior_cap)
+STOP_MAX_WORDS = 8  # a prompt this short counts a stop phrase anywhere, a longer one at its start
 SCAN_HEAD = 8000  # characters of an error text scanned (head + tail; exception types end a trace)
 SCAN_TAIL = 4000
 MAX_LINE = 300
@@ -135,7 +155,9 @@ _DURATION = re.compile(r"\b\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|seconds|m|min)\b")
 _CLOCK = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\b")
 _LONG_NUM = re.compile(r"\d{5,}")
 _SPACE = re.compile(r"\s+")
-_STOP = re.compile(r"\b(?:stop|undo|revert|that's wrong|no,?\s+don't)\b", re.IGNORECASE)
+_STOP_PHRASE = r"(?:stop|wait|undo|revert|that's wrong|no,?\s+don't)\b"
+_STOP_START = re.compile(rf"^\W*{_STOP_PHRASE}", re.IGNORECASE)
+_STOP_ANY = re.compile(rf"\b{_STOP_PHRASE}", re.IGNORECASE)
 _LEAD_CD = re.compile(r"^cd\s+\S+\s*&&\s*")
 _SUBCOMMAND = re.compile(r"^[a-z][a-z0-9_-]*$")
 
@@ -256,8 +278,15 @@ def _target(event: Event) -> str:
 
 
 def is_stop(prompt: str | None) -> bool:
-    """Does the user's prompt say stop / undo / revert / that's wrong / no, don't?"""
-    return bool(prompt) and _STOP.search(str(prompt).replace("’", "'")) is not None
+    """Does the user's prompt start with stop / wait / undo / revert / that's wrong / no, don't,
+    or contain one while being at most ``STOP_MAX_WORDS`` words ("add a stop button to ..." does
+    not count)?"""
+    if not prompt:
+        return False
+    text = str(prompt).replace("’", "'").strip()
+    if _STOP_START.match(text):
+        return True
+    return len(text.split()) <= STOP_MAX_WORDS and _STOP_ANY.search(text) is not None
 
 
 # --- config -------------------------------------------------------------------------------------
@@ -281,7 +310,9 @@ def _k(cfg: Config, arm: object) -> int:
 
 # --- per-turn state -----------------------------------------------------------------------------
 
-Payout = tuple[str, float | None, float | None]  # (decision id, savings, regret)
+# (decision id, savings, regret, counterfactual): a counterfactual savings value is "broken"
+# (0 / 1) and is paid as max(0, broken - p0)
+Payout = tuple[str, float | None, float | None, bool]
 
 
 @dataclass
@@ -295,6 +326,9 @@ class _Step:
     nudge: str | None = None
     error_loop: bool = False
     notice: str | None = None
+    natural: list[float] = field(default_factory=list)  # natural break observations (0 / 1)
+    session_natural: Evidence | None = None  # the overlay's natural evidence after this update
+    indexed: bool = False  # natural evidence was added: the overlay awaits a fold
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -313,22 +347,26 @@ def _agent_id(event: Event) -> str:
 def _settle_agent(ag: dict[str, Any], step: _Step, signal: str, regret_value: float) -> None:
     """Close an agent's turn: an open watch settles savings (1 only if eligible), a decision
     without a redirect gets savings 0; regret is paid (0 without a redirect)."""
+    if isinstance(ag.get("natural"), dict):
+        step.natural.append(1.0)  # the turn ended first: the loop ended by itself
+        ag["natural"] = None
     dec = ag.get("decision")
     if not isinstance(dec, list) or len(dec) < 4 or not isinstance(dec[0], str):
         return
     did = dec[0]
     watch = ag.get("watch")
     if isinstance(watch, dict):
-        step.payouts.append((did, 1.0 if watch.get("eligible") else 0.0, None))
+        eligible = bool(watch.get("eligible"))
+        step.payouts.append((did, 1.0 if eligible else 0.0, None, eligible))
         ag["watch"] = None
     elif not ag.get("nudge") and not ag.get("savings_paid"):
-        step.payouts.append((did, 0.0, None))
+        step.payouts.append((did, 0.0, None, False))
     ag["savings_paid"] = True
     if not ag.get("regret_paid"):
         ag["regret_paid"] = True
         value = regret_value if ag.get("nudge") else 0.0
         reason = signal if ag.get("nudge") else "no_redirect"
-        step.payouts.append((did, None, value))
+        step.payouts.append((did, None, value, False))
         step.outcomes.append([did, LOOPGUARD.name, str(dec[1]), "", value, dec[3], reason])
 
 
@@ -462,6 +500,7 @@ def _evaluate(ag: dict[str, Any], hit: _Hit, cfg: Config, step: _Step, lg: dict[
         return
     occurrences = hit.n + 1 if hit.osc else hit.n
     ag["nudge"] = {"fp": hit.fp, "n": hit.n}
+    ag["natural"] = None  # a redirect now shapes what follows: no longer a natural observation
     ag["watch"] = {
         "fp": hit.fp,
         "left": _param(cfg, "watch_calls", DEFAULT_WATCH),
@@ -477,16 +516,46 @@ def _watch(ag: dict[str, Any], fp: str | None, step: _Step) -> None:
     watch, dec = ag.get("watch"), ag.get("decision")
     if not isinstance(watch, dict) or not isinstance(dec, list) or not dec:
         return
+    eligible = bool(watch.get("eligible"))
     if fp is not None and fp == watch.get("fp"):
-        step.payouts.append((str(dec[0]), 0.0, None))
+        step.payouts.append((str(dec[0]), 0.0, None, eligible))
         ag["watch"], ag["savings_paid"] = None, True
         return
     left = _num(watch.get("left")) - 1
     if left <= 0:
-        step.payouts.append((str(dec[0]), 1.0 if watch.get("eligible") else 0.0, None))
+        step.payouts.append((str(dec[0]), 1.0 if eligible else 0.0, None, eligible))
         ag["watch"], ag["savings_paid"] = None, True
     else:
         watch["left"] = left
+
+
+def _natural_watch(ag: dict[str, Any], fp: str | None, step: _Step) -> None:
+    """One tool call of this agent while its loop is watched without a redirect: a recurrence
+    is "not broken" (0), the end of the window without one "broken" (1)."""
+    nat = ag.get("natural")
+    if not isinstance(nat, dict):
+        return
+    if fp is not None and fp == nat.get("fp"):
+        step.natural.append(0.0)
+        ag["natural"] = None
+        return
+    left = _num(nat.get("left")) - 1
+    if left <= 0:
+        step.natural.append(1.0)
+        ag["natural"] = None
+    else:
+        nat["left"] = left
+
+
+def _natural_open(ag: dict[str, Any], hit: _Hit, cfg: Config) -> None:
+    """An error fingerprint at >= ``SAVINGS_MIN_N`` occurrences with no redirect for this agent
+    (its arm's ``k`` not reached): watch it once per agent and turn for the natural break rate."""
+    if hit.osc or hit.fp is None or hit.n < SAVINGS_MIN_N or ag.get("nudge"):
+        return
+    if ag.get("natural_seen"):
+        return
+    ag["natural_seen"] = True
+    ag["natural"] = {"fp": hit.fp, "left": _param(cfg, "watch_calls", DEFAULT_WATCH)}
 
 
 @dataclass
@@ -499,10 +568,52 @@ class _Hit:
 # --- effects outside the lock -------------------------------------------------------------------
 
 
+def natural_rate(
+    project_key: str, env: Mapping[str, str], session_ev: Evidence | None = None
+) -> float:
+    """``p0``: the posterior mean natural break rate of a loop (no redirect). Prior
+    ``Beta(P0_PRIOR_MEAN * P0_PRIOR_STRENGTH, ...)`` plus the project's evidence and this
+    session's (not yet folded); while those are fewer than ``P0_MIN_OBS`` observations the
+    global evidence joins them. Unreadable stores count as empty."""
+    home = state_home(env)
+    local = natural_evidence(
+        jsonstore.read(paths.project_dir_for(home, project_key) / POSTERIORS_FILE, {}, env),
+        LOOPGUARD.name,
+    )
+    if session_ev is not None:
+        local = local + session_ev
+    data = local
+    if local.n < P0_MIN_OBS:
+        glob = jsonstore.read(home / "global" / POSTERIORS_FILE, {}, env)
+        data = local + natural_evidence(glob, LOOPGUARD.name)
+    a = P0_PRIOR_MEAN * P0_PRIOR_STRENGTH + max(0.0, data.ea)
+    b = (1.0 - P0_PRIOR_MEAN) * P0_PRIOR_STRENGTH + max(0.0, data.eb)
+    return a / (a + b)
+
+
+def _savings(step: _Step, event: Event, env: Mapping[str, str]) -> list[Payout]:
+    """Counterfactual savings: ``max(0, broken - p0)`` (``p0`` read only when needed)."""
+    out: list[Payout] = []
+    p0: float | None = None
+    for did, savings, regret_value, cf in step.payouts:
+        if cf and savings is not None and savings > 0.0:
+            if p0 is None:
+                try:
+                    p0 = natural_rate(event.project_key, env, step.session_natural)
+                except (OSError, ValueError) as exc:
+                    log_error(env, "loopguard", f"p0: {type(exc).__name__}: {exc}")
+                    p0 = 1.0  # unknown: no credit (intervene less when unsure)
+            savings = max(0.0, savings - p0)
+        out.append((did, savings, regret_value, False))
+    return out
+
+
 def _pay(policy: object, step: _Step, event: Event, cfg: Config, env: Mapping[str, str]) -> None:
+    if step.indexed:
+        pending.add_overlay(tracking.overlay_path(event, env), env)
     fn: Callable[[str, float | None, float | None], None] | None = regret.reward_fn(policy)
     if fn is not None:
-        for did, savings, regret_value in step.payouts:
+        for did, savings, regret_value, _ in _savings(step, event, env):
             fn(did, savings, regret_value)
     if step.outcomes:
         now = time.time()
@@ -511,12 +622,25 @@ def _pay(policy: object, step: _Step, event: Event, cfg: Config, env: Mapping[st
         decisions.append_outcomes(pdir, recs, cfg, env, "loopguard")
 
 
-def _record_outcomes(state: dict[str, Any], rows: list[list[Any]]) -> None:
-    """Settled regrets also go to the overlay's ``regret_outcomes`` (fold: circuit breaker)."""
+def _record(state: dict[str, Any], step: _Step) -> None:
+    """Settled regrets also go to the overlay's ``regret_outcomes`` (fold: circuit breaker);
+    natural break observations to its ``natural`` evidence (fold: project and global p0)."""
+    rows = step.outcomes
     if rows:
         outs = state.get(regret.OUTCOMES_KEY)
         outs = [*(outs if isinstance(outs, list) else []), *rows]
         state[regret.OUTCOMES_KEY] = outs[-regret.MAX_OUTCOMES :]
+    ev = natural_evidence(state, LOOPGUARD.name)
+    if step.natural:
+        for x in step.natural:
+            ev = ev.observe(x, gamma=1.0, cap=P0_CAP)
+        table = state.get(NATURAL_KEY)
+        table = table if isinstance(table, dict) else {}
+        table[LOOPGUARD.name] = ev.to_list()
+        state[NATURAL_KEY] = table
+        step.natural = []
+        step.indexed = True
+    step.session_natural = ev
 
 
 def _update(path: Path, env: Mapping[str, str], fn: Callable[[dict[str, Any]], None]) -> bool:
@@ -582,8 +706,8 @@ def on_tool(
     if fp is None and not editing and not interrupt:
         lg = _dict(overlay.get(STATE_KEY))
         ag = _dict(_dict(lg.get("agents")).get(agent))
-        if lg.get("turn") != turn or not ag.get("watch"):
-            return Action()  # nothing to count and no open reward window: no write
+        if lg.get("turn") != turn or not (ag.get("watch") or ag.get("natural")):
+            return Action()  # nothing to count and no open window: no write
     step = _Step()
     hit = _Hit()
 
@@ -591,15 +715,15 @@ def on_tool(
         lg = _state(state, turn, step)
         ag = _agent(lg, agent)
         if ag is None:
-            _record_outcomes(state, step.outcomes)
+            _record(state, step)
             return
         if interrupt:
             dec = ag.get("decision")
             if ag.get("nudge") and not ag.get("regret_paid") and isinstance(dec, list):
                 ag["regret_paid"] = True
-                step.payouts.append((dec[0], None, 1.0))
+                step.payouts.append((dec[0], None, 1.0, False))
                 step.outcomes.append([dec[0], LOOPGUARD.name, dec[1], "", 1.0, dec[3], "interrupt"])
-            _record_outcomes(state, step.outcomes)
+            _record(state, step)
             return
         if editing:
             osc = _oscillation(lg, ag, edit_path, moves, write)
@@ -612,13 +736,15 @@ def on_tool(
             room = _total(lg, "fps") < MAX_FINGERPRINTS
             hit.fp, hit.n = fp, (n if _bounded_add(fps, fp, n, room) else 1)
         _watch(ag, hit.fp, step)
+        _natural_watch(ag, hit.fp, step)
         if ag.get("decision") is None:
             step.need_decision = hit.fp is not None and hit.n >= (MIN_REVERSALS if hit.osc else 2)
         else:
             _evaluate(ag, hit, cfg, step, lg)
             if step.nudge is not None:
                 _account(state, step)
-        _record_outcomes(state, step.outcomes)
+            _natural_open(ag, hit, cfg)
+        _record(state, step)
 
     if not _update(path, env, phase1):
         return Action()
@@ -665,7 +791,7 @@ def _close(event: Event, policy: object, cfg: Config, env: Mapping[str, str], pr
         lg = state.pop(STATE_KEY, None)
         if isinstance(lg, dict):
             _settle(lg, step, signal, 1.0 if stop else 0.0)
-        _record_outcomes(state, step.outcomes)
+        _record(state, step)
 
     if _update(path, env, apply):
         _pay(policy, step, event, cfg, env)

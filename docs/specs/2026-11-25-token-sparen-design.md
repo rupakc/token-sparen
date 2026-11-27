@@ -317,6 +317,32 @@ and is dropped with everything else); config / root selection (`-c`, `--config`,
 `--config-file`, `--configFile`, `--root`, `--rootDir`, `--project`) gives no fact; the
 not-found / usage contradiction compares the runner row without `CI=true` and kept flags.
 
+**2026-11-27 (M3 fix wave C1, loop guard and environment paths).** Review M1, M5, minors 5-6;
+the §6.11 / §7.5 bodies are edited in place in wave C2. (1) §6.11 / §7.5, counterfactual
+savings: the loop guard's safe arm (`patient`, k = 5) still intervenes, so "the loop ended after
+the redirect" is not a saving by itself. A redirect at >= 3 occurrences is "broken" if the
+fingerprint does not recur in the agent's next 5 calls (turn end first counts as broken); its
+savings are `max(0, broken - p0)`, every other decision gets savings 0 (fractional rewards, §7.3).
+`p0`, the natural break rate, is observed once per agent and turn when an error fingerprint
+reaches 3 occurrences with no redirect (an arm whose k was not reached yet: patient at 3-4),
+with the same 5-call window; observations go to the session overlay's `natural` evidence and the
+fold merges them into the project `posteriors.json` (`natural.loopguard`) and, weighted 0.3, the
+global one (point name and counts only). `p0` = mean of Beta(8, 2) (prior mean 0.8, strength
+10) plus the project's (and the unfolded session's) evidence, joined by the global evidence while
+the project has fewer than 5 observations. Designed priors of the intervening arms are neutral
+and weak: savings mean 0.1 with strength 2 (`[learn.defaults.<point>.<arm>] savings_strength`,
+a new optional key that replaces kappa_default for that arm), regret mean = the medium tier's tau
+(0.05). The safe arm itself is still never rewarded (§7.5 unchanged for it). (2) §6.11, regret
+words: a stop phrase (stop, wait, undo, revert, that's wrong, no, don't) counts only at the start
+of the next prompt or anywhere in a prompt of at most 8 words. (3) §6.11, oscillation: the
+redirect fires at `max(2, k - 1)` reversals of the same edit pair (eager / standard 2, patient
+4). (4) §9 / state root: `TOKEN_SPAREN_HOME` (and the statusline launcher's `TOKEN_SPAREN_ROOT`)
+is honoured only outside the current project: not inside the hook's `CLAUDE_PROJECT_DIR` or cwd,
+nor their git work-tree root (found by looking for `.git` upwards, no subprocess; a directory
+that contains the user's home is not treated as a project), and on POSIX only if the path or its
+nearest existing parent is owned by the current uid. Otherwise the default root is used and the
+rejection is logged once per process to its `errors.jsonl`.
+
 ---
 
 ## 1. Intent and why

@@ -961,3 +961,23 @@ def test_session_start_fold_stops_at_its_time_budget(
         entry.HOOK_ENV.reset(token)
     folded = [s for s in [f"old-{i}" for i in range(3)] if "folded_at" in _read(_ov(home, s))]
     assert len(folded) == 2 and popen.calls == []
+
+
+def test_fold_merges_natural_break_rates(tmp_path: Path) -> None:
+    """Review M1: the loop guard's natural break observations (no nudge) reach the project store
+    and, weighted, the global store; a re-fold adds nothing."""
+    home = _home(tmp_path)
+    nat = Evidence(2.0, 1.0, 3.0, 2.0)
+    _write(
+        _pdir(home) / "posteriors.json",
+        {"version": 2, "points": {}, "natural": {"loopguard": Evidence(1, 1, 2, 1).to_list()}},
+    )
+    _session(home, natural={"loopguard": nat.to_list(), "bogus": [1, 2]})
+    assert _fold(home).staged
+    _fold(home)
+    proj = Evidence.from_list(_read(_pdir(home) / "posteriors.json")["natural"]["loopguard"])
+    assert _close(proj, Evidence(3.0, 2.0, 5.0, 3.0))
+    glob = _read(home / "global" / "posteriors.json")
+    assert _close(Evidence.from_list(glob["natural"]["loopguard"]), nat.scaled(0.3))
+    assert set(glob["natural"]) == {"loopguard"}  # only known points
+    assert "natural" not in _read(_ov(home)) or not _read(_ov(home))["natural"]

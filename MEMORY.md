@@ -1471,3 +1471,33 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   --project`) join `SCOPE_FLAGS` (no fact; side effect: `dotnet test -c Release` gives no fact);
   the Observer's not-found check compares `_base()` (runner row without `CI=true` / kept flags).
 
+
+## 2026-11-27 M3 fix wave C1: loop guard counterfactual, env paths (controller rulings M1, M5, minors 5/6)
+- M1: loop-guard savings = max(0, broken - p0) for an eligible redirect (>= 3 occurrences), paid
+  as a fractional reward (the engine's `Evidence.observe` takes fractions, so no Bernoulli
+  sampling was needed). p0 observed once per agent and turn when an error fingerprint reaches
+  3 with no redirect (any arm whose k was not reached); same 5-call window, turn end = broken;
+  a redirect for another fingerprint drops an open natural window. Stored as Evidence under
+  `natural.loopguard` in the overlay (gamma 1, cap 50), project and global `posteriors.json`
+  (global: fold delta x global_weight, no ageing). p0 = Beta(8, 2) + project + unfolded session
+  evidence, plus global while that local evidence has n < 5 (builder call: global *joins* local
+  rather than replacing it, so the session's own observations are never dropped). p0 is read
+  only when a positive counterfactual savings is paid (rare); unreadable store -> p0 = 1 (no
+  credit). Natural evidence adds the overlay to `pending.json` (a patient-only session has no
+  engine reward to do it).
+- Priors: `[learn.defaults.loopguard.standard|eager]` savings 0.1, `savings_strength = 2` (new
+  optional per-arm key, savings only; it also replaces kappa0 in the parent shrinkage for that
+  arm), regret 0.05 (= medium tau). Oscillation redirects use the same p0 (no separate rate).
+- Minor 5: `is_stop` = phrase (stop / wait / undo / revert / that's wrong / no, don't) at the
+  prompt start, or anywhere in a prompt of <= 8 words. Minor 6: spec revision log records
+  max(2, k-1) reversals.
+- M5: `config.env_path(env, name)` guards path-valued vars (`TOKEN_SPAREN_HOME`; the statusline
+  launcher re-implements it for `TOKEN_SPAREN_ROOT` since it runs before the package is
+  importable). Rejected if the realpath is inside `CLAUDE_PROJECT_DIR` / cwd or their git work
+  tree (upward `.git` stat walk, no subprocess), or (POSIX) the path / nearest existing parent is
+  not owned by the uid. Builder call: a candidate root that contains the user's home is skipped
+  (a session started in `~` or `/` is no repository; otherwise every override under `~` would be
+  rejected there). Verdict cached per (name, value, project dir, cwd); logged once per process.
+  Tests: autouse conftest fixture fakes `HOME` per test so a rejected home never reaches the
+  real `~/.token-sparen`; tests whose state root sat inside their project dir / cwd were moved
+  to a sibling `proj` / `cwd` directory.

@@ -159,9 +159,12 @@ All of this is on by default. Nothing is sent anywhere.
   line per agent and turn; if it happens again you get a terminal notice instead (no model
   tokens). How many repeats it waits for (5, 3 or 2) is learned, starting at the most patient
   setting: a line counts as useful only when it came after at least 3 repeats and the error
-  then stops recurring within the agent's next 5 tool calls, and as harmful when you interrupt
-  or your next prompt says stop, undo, revert, "that's wrong" or "no, don't". Only deterministic
-  checks, no LLM. Turn it off with `loopguard.enabled = false`; `[learn.hold] loopguard = true`
+  then stops recurring within the agent's next 5 tool calls **more often than it stops by
+  itself** (that natural rate is measured on turns where an error reached 3 repeats without a
+  line, per project with a cross-project fallback, and assumed high, 80 %, until measured), and
+  as harmful when you interrupt or your next prompt starts with stop, wait, undo, revert,
+  "that's wrong" or "no, don't" (a prompt of at most 8 words may contain it anywhere). Only
+  deterministic checks, no LLM. Turn it off with `loopguard.enabled = false`; `[learn.hold] loopguard = true`
   does **not** turn it off, it only keeps the most patient setting (5 repeats).
   `loopguard.min_k` sets the fewest repeats.
 - **Subagent brief.** A decision point that can append a short "be concise" brief to subagent
@@ -210,7 +213,10 @@ Everything stays on your machine, but some of it is plain text you should know a
 - `<project>/.token-sparen/`: recovery files under `outputs/` (full tool outputs, so they can
   contain anything a command printed), plus a `.gitignore` containing `*` so the folder is never
   committed. Created on the first compression in that project.
-- `~/.token-sparen/` (override with `TOKEN_SPAREN_HOME`):
+- `~/.token-sparen/` (override with `TOKEN_SPAREN_HOME`; an override inside the current project
+  or its git work tree, or (POSIX) not owned by you, is ignored with one line in the default
+  root's `logs/errors.jsonl`, because a repository's committed Claude Code settings can set
+  environment variables; the statusline launcher applies the same rule to `TOKEN_SPAREN_ROOT`):
   - `config.toml` (yours, optional), `trusted_extensions.json`, `statusline_install.json` (records
     your settings file's path and original `statusLine`), `statusline.sh` (launcher copy),
     `windows.json` (context window per session), `project_keys.json` (index from project to hash
@@ -236,7 +242,8 @@ Everything stays on your machine, but some of it is plain text you should know a
     (the project's most recent session id and when it was last active, plus up to 50 recent
     session ids with their last activity, removed when a session ends), `savings_scale.json` (numbers only: recent savings
     sizes per bucket), `floor_warned.json`, `posteriors.json` and `breaker.json` (numbers only:
-    learned evidence per bucket and recent regret values per decision point), `pending.json`
+    learned evidence per bucket, the loop guard's natural break rate, and recent regret values
+    per decision point), `pending.json`
     (ids of sessions waiting to be folded) and `pretrim.json`
     (**normalised Bash commands** with per-command counts, and the learned pre-trim candidates),
     `facts.json` (repository facts mined when a session is folded: **normalised
@@ -251,7 +258,8 @@ Everything stays on your machine, but some of it is plain text you should know a
     probabilities). During a turn the session overlay keeps the loop guard's state per agent (up to 16
     agents, keyed by Claude Code's subagent id): up to 50 error fingerprints and up to 50 edited
     files per turn in total, each **only as short hashes** (of the tool, command head or file path and the
-    normalised error, the file path and the edited text), with counts. The session overlay also keeps the settled regret values of its trims, each with the
+    normalised error, the file path and the edited text), with counts, and the session's natural
+    break-rate counts (numbers only). The session overlay also keeps the settled regret values of its trims, each with the
     normalised command, until the session is folded, and the **path of the session's Claude Code
     transcript** and the project directory, which only the background fold reads (at most 50 MB
     per session) to mine those facts. Project folders are named by a hash, but the

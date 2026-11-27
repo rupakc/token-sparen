@@ -245,18 +245,25 @@ regret = 0.0
 savings = 0.3
 regret = 0.05
 
-# Loop guard: savings = the loop broke within the next 5 tool calls after the redirect; regret =
-# the user's next prompt said stop / undo / revert / that's wrong / no, don't (or interrupted).
+# Loop guard (review M1): savings = how much more often the loop broke within the next 5 tool
+# calls after the redirect than it breaks by itself, max(0, broken - p0), where p0 is the natural
+# break rate observed at counts 3-4 without a redirect (per project, global fallback; prior mean
+# 0.8, strength 10). The intervening arms start neutral and weak (savings 0.1 with strength 2;
+# regret = the medium tier's tau): data, not this table, has to show a redirect helps. Regret =
+# the user's next prompt starts with (or, at most 8 words, contains) stop / wait / undo / revert /
+# that's wrong / no, don't, or the user interrupted.
 [learn.defaults.loopguard.patient]
 savings = 0.0
 regret = 0.0
 
 [learn.defaults.loopguard.standard]
-savings = 0.4
-regret = 0.03
+savings = 0.1
+savings_strength = 2
+regret = 0.05
 
 [learn.defaults.loopguard.eager]
-savings = 0.5
+savings = 0.1
+savings_strength = 2
 regret = 0.05
 
 [facts]

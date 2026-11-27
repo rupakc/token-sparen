@@ -15,10 +15,13 @@
    evidence was discounted in-session and is not discounted again). Each full bucket's evidence
    is also added to every coarser back-off level of the point, so **coarse buckets are
    aggregates** of their children (back-off parents and the ladder need data there);
+   The session's ``natural`` evidence (the loop guard's natural break rate, review M1) is added
+   to the project document's ``natural`` table the same way (no back-off levels);
 4. **global** ``global/posteriors.json``: the session's evidence (the delta, never the project
    total) times ``[learn] global_weight`` (0.3, all four fields scaled) at every level; arm
    entries carry ``t`` (last update); entries untouched for ``global_age_days`` (90) are halved
-   (all four fields) once per such period. Global holds no project keys, paths or session ids;
+   (all four fields) once per such period; the ``natural`` table gets the weighted delta too.
+   Global holds no project keys, paths or session ids;
 5. **pre-trim candidates** ``projects/<key>/pretrim.json``: decisions appended to
    ``decisions.jsonl`` since the last scan (byte offset, reset on rotation) update per-command
    stats; a normalised command (``regret.event_signature``) with >= 5 trimming compression
@@ -75,6 +78,7 @@ from token_sparen.learn import breaker, decisions, pending
 from token_sparen.learn.beta import Beta, Evidence
 from token_sparen.learn.features import ANY_BUCKET, FEATURE_KEYS, backoff_keys
 from token_sparen.learn.hierarchy import (
+    NATURAL_KEY,
     POSTERIORS_FILE,
     SCHEMA_VERSION,
     SESSION_KEY,
@@ -273,6 +277,27 @@ def _cells(doc: object) -> tuple[list[Cell], int]:
     return cells, skipped
 
 
+def _natural(doc: object) -> list[tuple[str, Evidence]]:
+    """Well-formed ``(point, evidence)`` natural-rate entries of known points (staged)."""
+    out: list[tuple[str, Evidence]] = []
+    for point, raw in doc.items() if isinstance(doc, dict) else ():
+        if not isinstance(point, str) or get_point(point) is None:
+            continue
+        try:
+            out.append((point, Evidence.from_list(raw)))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _add_natural(doc: dict[str, Any], natural: list[tuple[str, Evidence]], cap: float) -> None:
+    table = doc.get(NATURAL_KEY)
+    if not isinstance(table, dict):
+        table = doc[NATURAL_KEY] = {}
+    for point, ev in natural:
+        _add(table, point, ev, cap)
+
+
 def features_of(bucket: str) -> dict[str, str] | None:
     """Features of a ``k=v|k=v`` bucket key (``{}`` for ``*``); None if it is not one."""
     if bucket == ANY_BUCKET:
@@ -351,12 +376,14 @@ def _stage(
             return state
         evidence = state.get(SESSION_KEY)
         outcomes = state.get(OUTCOMES_KEY)
-        if FOLDED_AT in state and not evidence and not outcomes:
+        natural = state.get(NATURAL_KEY)
+        if FOLDED_AT in state and not evidence and not outcomes and not natural:
             return state  # already folded, nothing new
         staged = {
             "id": uuid.uuid4().hex,
             "evidence": evidence if isinstance(evidence, dict) else {},
             "outcomes": outcomes if isinstance(outcomes, list) else [],
+            "natural": natural if isinstance(natural, dict) else {},
             "t": now,
         }
         for key in (TRANSCRIPT_KEY, PROJECT_DIR_KEY):
@@ -368,6 +395,7 @@ def _stage(
         state[FOLDING_KEY] = staged
         state[SESSION_KEY] = {}
         state[OUTCOMES_KEY] = []
+        state.pop(NATURAL_KEY, None)
         out.append(staged)
         return state
 
@@ -435,14 +463,17 @@ def _fold(
         rep.staged = True
         fid = str(staged["id"])
         cells, rep.skipped = _cells(staged.get("evidence"))
+        natural = _natural(staged.get("natural"))
         if rep.skipped:
             log_error(env, "fold", f"fold: skipped {rep.skipped} invalid evidence entries")
         outcomes = _outcomes(staged.get("outcomes"))
         rep.outcomes = len(outcomes)
         cap = _param(params, "posterior_cap", 50.0)
         cap = cap if cap > 0.0 else 50.0
-        _breaker_and_project(rep, fid, cells, outcomes, pdir, params, now, cap, env, timeout)
-        _global(rep, fid, cells, home, key, params, now, cap, env, timeout)
+        _breaker_and_project(
+            rep, fid, cells, outcomes, pdir, params, now, cap, env, timeout, natural
+        )
+        _global(rep, fid, cells, home, key, params, now, cap, env, timeout, natural)
         _pretrim(rep, fid, outcomes, pdir, params, now, env, timeout)
         mined = _mine_facts(rep.session_id, fid, staged, pdir, now, env, timeout, params)
         rep.facts = max(0, mined)
@@ -478,6 +509,7 @@ def _breaker_and_project(
     cap: float,
     env: Mapping[str, str],
     timeout: float | None,
+    natural: list[tuple[str, Evidence]] | None = None,
 ) -> None:
     """Breaker first (it decides the resets), then the project store (held lock)."""
     bpath = pdir / breaker.BREAKER_FILE
@@ -504,6 +536,7 @@ def _breaker_and_project(
                 for target in targets(point, bucket, params):
                     _add(_node(points, point, target, arm), kind, ev, cap)
                 rep.cells += 1
+            _add_natural(pdoc, natural or [], cap)
             _mark(pdoc, fid)
         if merge or resets:
             jsonstore.write_locked(post, pdoc)
@@ -636,6 +669,7 @@ def _global(
     cap: float,
     env: Mapping[str, str],
     timeout: float | None,
+    natural: list[tuple[str, Evidence]] | None = None,
 ) -> None:
     gpath = home / "global" / POSTERIORS_FILE
     weight = min(1.0, max(0.0, _param(params, "global_weight", GLOBAL_WEIGHT)))
@@ -660,6 +694,8 @@ def _global(
                     _add(node, kind, delta, cap)
                     node["t"] = now
                     rep.global_cells += 1
+            if weight > 0.0:
+                _add_natural(gdoc, [(p, ev.scaled(weight)) for p, ev in natural or []], cap)
             applied[tag] = [*mine, fid][-APPLIED_MAX:]
         jsonstore.write_locked(gpath, gdoc)
 
@@ -918,6 +954,7 @@ def _unfolded(doc: Mapping[str, Any]) -> bool:
         or FOLDED_AT not in doc
         or bool(doc.get(SESSION_KEY))
         or bool(doc.get(OUTCOMES_KEY))
+        or bool(doc.get(NATURAL_KEY))
     )
 
 

@@ -16,10 +16,11 @@ in global scope. The first parent with ``n >= min_parent_obs`` real observations
 with ``kappa0 = kappa_default`` pseudo-counts; no recursion up the chain). The prior is
 ``Beta(m * kappa, (1 - m) * kappa, n=0)`` with the point's estimated ``kappa``. Without a
 qualifying parent the designed default ``[learn.defaults.<point>.<arm>]`` (hand-set; to be refit
-in M4) is used with strength ``kappa_default``. Regret priors (designed default and parent
-derived alike) use the fixed, stronger ``kappa_regret`` (default 20) instead: a cold trimming
-arm must not look plausibly safe after a handful of pseudo-counts. The session scope is not
-part of the chain: the session evidence is the child this prior is for.
+in M4) is used with strength ``kappa_default``, or an arm's declared ``savings_strength``
+(which also replaces ``kappa0`` above: the loop guard's weak neutral priors). Regret priors
+(designed default and parent derived alike) use the fixed, stronger ``kappa_regret`` (default
+20) instead: a cold trimming arm must not look plausibly safe after a handful of pseudo-counts.
+The session scope is not part of the chain: the session evidence is the child this prior is for.
 
 A mean of exactly 0 (the safe arm's designed default) is represented as ``Beta(EPS, kappa)``
 because a Beta needs ``a > 0``; the engine treats safe-arm savings and regret as 0 by definition.
@@ -52,6 +53,10 @@ Scope = Literal["session", "project", "global"]
 SCHEMA_VERSION = 2
 POSTERIORS_FILE = "posteriors.json"
 SESSION_KEY = "evidence"
+# ``{point: [ea, eb, n, es2]}``: a point's natural outcome rate observed without intervention
+# (the loop guard's natural break rate, review M1), under this key in the session overlay and in
+# the project and global ``posteriors.json`` (point names and counts only, never paths).
+NATURAL_KEY = "natural"
 EPS = 1e-3
 DEFAULT_KAPPA = 6.0
 DEFAULT_KAPPA_REGRET = 20.0
@@ -231,6 +236,16 @@ def designed_default(
     return min(1.0, max(0.0, _num(raw, _FALLBACK_MEAN[kind])))
 
 
+def designed_strength(
+    point: str, arm: str, kind: Kind, params: Mapping[str, Any] | None = None
+) -> float | None:
+    """``[learn.defaults.<point>.<arm>] <kind>_strength`` (> 0) if declared: a designed prior
+    strength for that arm only (e.g. the loop guard's deliberately weak priors), else None."""
+    raw = lookup_param(params, ("learn", "defaults", point, arm, f"{kind}_strength"), _valid_num)
+    value = _num(raw, 0.0)
+    return value if value > 0.0 else None
+
+
 def _from_mean(m: float, k: float) -> Beta:
     return Beta(max(m * k, EPS), max((1.0 - m) * k, EPS), 0.0)
 
@@ -251,6 +266,9 @@ def prior_for(
     """
     d = designed_default(point.name, arm, kind, stores.params)
     k0 = max(EPS, stores.learn_param("kappa_default", DEFAULT_KAPPA))
+    strength = designed_strength(point.name, arm, kind, stores.params)
+    if strength is not None and kind == "savings":
+        k0 = max(EPS, strength)
     min_obs = stores.learn_param("min_parent_obs", 5.0)
     k_reg = max(EPS, stores.learn_param("kappa_regret", DEFAULT_KAPPA_REGRET))
     for scope in _CHAIN:
@@ -262,3 +280,16 @@ def prior_for(
                 m = (ev.ea + k0 * d) / (ev.ea + ev.eb + k0)
                 return _from_mean(m, k_reg if kind == "regret" else kappa(point, arm, kind, stores))
     return _from_mean(d, k_reg if kind == "regret" else k0)
+
+
+def natural_evidence(doc: Mapping[str, Any] | None, point: str) -> Evidence:
+    """The ``NATURAL_KEY`` evidence of ``point`` in a store or overlay document (empty if absent
+    or malformed)."""
+    table = doc.get(NATURAL_KEY) if isinstance(doc, Mapping) else None
+    raw = table.get(point) if isinstance(table, Mapping) else None
+    if raw is None:
+        return Evidence(0.0, 0.0, 0.0, 0.0)
+    try:
+        return Evidence.from_list(raw)
+    except (TypeError, ValueError):
+        return Evidence(0.0, 0.0, 0.0, 0.0)

@@ -478,3 +478,28 @@ def test_regret_priors_use_kappa_regret(tmp_path: Path) -> None:
     st2 = StoreChain(KEY, home, params=cfg.data)
     r2 = prior_for(COMPRESSION, {}, "standard", "regret", st2)
     assert r2.a + r2.b == pytest.approx(30.0) and r2.mean == pytest.approx(0.04)
+
+
+@pytest.mark.parametrize("arm", ["standard", "eager"])
+def test_loopguard_priors_are_neutral_and_weak(tmp_path: Path, arm: str) -> None:
+    """Review M1: the intervening loop-guard arms start neutral (savings mean 0.1, strength 2;
+    regret mean = the medium tier's tau) so data, not the designed prior, decides them."""
+    from token_sparen.learn.policy import LOOPGUARD
+
+    st = StoreChain(KEY, tmp_path / "h")
+    s = prior_for(LOOPGUARD, {}, arm, "savings", st)
+    r = prior_for(LOOPGUARD, {}, arm, "regret", st)
+    assert s.mean == pytest.approx(0.1) and s.a + s.b == pytest.approx(2.0)
+    assert r.mean == pytest.approx(0.05)
+    assert r.a + r.b == pytest.approx(hierarchy.DEFAULT_KAPPA_REGRET)
+
+
+def test_designed_strength_only_where_declared(tmp_path: Path) -> None:
+    params = {"learn": {"defaults": {"compression": {"light": {"savings_strength": 3}}}}}
+    st = StoreChain(KEY, tmp_path / "h", params=params)
+    assert prior_for(COMPRESSION, {}, "light", "savings", st).a + prior_for(
+        COMPRESSION, {}, "light", "savings", st
+    ).b == pytest.approx(3.0)
+    st2 = StoreChain(KEY, tmp_path / "h")
+    p = prior_for(COMPRESSION, {}, "standard", "savings", st2)
+    assert p.a + p.b == pytest.approx(K0)

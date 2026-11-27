@@ -20,6 +20,7 @@ from token_sparen.mechanisms import loopguard, tracking
 from token_sparen.store import session
 
 KEY = "0123456789abcdef"
+COLD_SAVINGS = 1.0 - 0.8  # broken (1) minus the pessimistic prior natural break rate (0.8)
 SID = "s-1"
 TRACE = (
     "Traceback (most recent call last):\n"
@@ -554,7 +555,7 @@ def test_watch_counts_only_the_agents_own_calls(tmp_path: Path) -> None:
     assert pol.rewards == []
     for _ in range(5):
         _tool(tmp_path, pol, _ok(tmp_path, agent="sub-1"))
-    assert pol.rewards == [(did, 1.0, None)]
+    assert pol.rewards == [(did, pytest.approx(COLD_SAVINGS), None)]
 
 
 # --- edit-revert oscillation ----------------------------------------------------------------
@@ -636,9 +637,9 @@ def test_reward_loop_broken_after_nudge_at_three(tmp_path: Path) -> None:
     did = _nudged(tmp_path, pol)
     for _ in range(5):
         _tool(tmp_path, pol, _ok(tmp_path))
-    assert pol.rewards == [(did, 1.0, None)]
+    assert pol.rewards == [(did, pytest.approx(COLD_SAVINGS), None)]
     _prompt(tmp_path, pol, "thanks, continue")
-    assert pol.rewards == [(did, 1.0, None), (did, None, 0.0)]
+    assert pol.rewards == [(did, pytest.approx(COLD_SAVINGS), None), (did, None, 0.0)]
 
 
 def test_eager_nudge_at_two_earns_no_savings(tmp_path: Path) -> None:
@@ -677,7 +678,7 @@ def test_turn_end_settles_open_window_as_broken(tmp_path: Path) -> None:
     did = _nudged(tmp_path, pol)
     _tool(tmp_path, pol, _ok(tmp_path))
     _prompt(tmp_path, pol, "ok")
-    assert pol.rewards == [(did, 1.0, None), (did, None, 0.0)]
+    assert pol.rewards == [(did, pytest.approx(COLD_SAVINGS), None), (did, None, 0.0)]
 
 
 @pytest.mark.parametrize(
@@ -716,7 +717,7 @@ def test_session_end_settles(tmp_path: Path) -> None:
     did = _nudged(tmp_path, pol)
     ev = _event(tmp_path, "session_end")
     loopguard.on_session_end(ev, pol, _cfg(tmp_path), env=_env(tmp_path))
-    assert pol.rewards == [(did, 1.0, None), (did, None, 0.0)]
+    assert pol.rewards == [(did, pytest.approx(COLD_SAVINGS), None), (did, None, 0.0)]
 
 
 def test_nudge_counts_as_injected_tokens(tmp_path: Path) -> None:
@@ -844,3 +845,181 @@ def test_post_tool_output_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert spec["hookEventName"] == "PostToolUse"
     assert spec["additionalContext"].startswith("[token-sparen: the same edit has been made")
     assert "updatedToolOutput" not in spec
+
+
+# --- counterfactual savings (review M1) ---------------------------------------------------------
+
+
+def _natural(tmp_path: Path) -> list[float] | None:
+    raw = _overlay(tmp_path).get("natural", {}).get("loopguard")
+    return None if raw is None else [float(x) for x in raw]
+
+
+def _store_natural(path: Path, ev: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"version": 2}
+    doc.setdefault("points", {})
+    doc["natural"] = {"loopguard": ev.to_list()}
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def test_prior_natural_rate_constants() -> None:
+    assert (loopguard.P0_PRIOR_MEAN, loopguard.P0_PRIOR_STRENGTH) == (0.8, 10.0)
+
+
+def test_natural_break_observed_without_nudge(tmp_path: Path) -> None:
+    """Patient at counts 3-4: the loop is watched without a nudge; it ended by itself."""
+    pol = Rec("patient")
+    _prompt(tmp_path, pol)
+    for _ in range(3):
+        assert _tool(tmp_path, pol, _fail(tmp_path)).inject_context is None
+    assert _natural(tmp_path) is None  # window open, nothing observed yet
+    for _ in range(5):
+        _tool(tmp_path, pol, _ok(tmp_path))
+    nat = _natural(tmp_path)
+    assert nat is not None and nat[0] == pytest.approx(1.0) and nat[1] == pytest.approx(0.0)
+    assert nat[2] == pytest.approx(1.0)
+    from token_sparen.learn import pending
+
+    assert pending.entries(tmp_path / "home", KEY, _env(tmp_path))  # awaits a fold
+
+
+def test_natural_recurrence_is_not_broken(tmp_path: Path) -> None:
+    pol = Rec("patient")
+    _prompt(tmp_path, pol)
+    for _ in range(4):
+        _tool(tmp_path, pol, _fail(tmp_path))
+    nat = _natural(tmp_path)
+    assert nat is not None and nat[:3] == pytest.approx([0.0, 1.0, 1.0])
+    _prompt(tmp_path, pol, "go on")
+    assert _natural(tmp_path)[2] == pytest.approx(1.0)  # type: ignore[index]  # once per turn
+
+
+def test_natural_window_open_at_turn_end_counts_broken(tmp_path: Path) -> None:
+    pol = Rec("patient")
+    _prompt(tmp_path, pol)
+    for _ in range(3):
+        _tool(tmp_path, pol, _fail(tmp_path))
+    _tool(tmp_path, pol, _ok(tmp_path))
+    _prompt(tmp_path, pol, "next")
+    assert _natural(tmp_path)[:3] == pytest.approx([1.0, 0.0, 1.0])  # type: ignore[index]
+
+
+def test_nudged_turn_observes_no_natural_rate(tmp_path: Path) -> None:
+    pol = Rec("standard")
+    _nudged(tmp_path, pol)
+    for _ in range(5):
+        _tool(tmp_path, pol, _ok(tmp_path))
+    _prompt(tmp_path, pol, "next")
+    assert _natural(tmp_path) is None
+
+
+def test_savings_are_counterfactual_cold(tmp_path: Path) -> None:
+    pol = Rec("standard")
+    did = _nudged(tmp_path, pol)
+    for _ in range(5):
+        _tool(tmp_path, pol, _ok(tmp_path))
+    assert pol.rewards == [(did, pytest.approx(COLD_SAVINGS), None)]
+
+
+def test_savings_use_project_natural_rate(tmp_path: Path) -> None:
+    from token_sparen.learn.beta import Evidence
+
+    home = tmp_path / "home"
+    _store_natural(home / "projects" / KEY / "posteriors.json", Evidence(1.0, 9.0, 10.0, 1.0))
+    _store_natural(home / "global" / "posteriors.json", Evidence(10.0, 0.0, 10.0, 10.0))
+    pol = Rec("standard")
+    did = _nudged(tmp_path, pol)
+    for _ in range(5):
+        _tool(tmp_path, pol, _ok(tmp_path))
+    p0 = (8.0 + 1.0) / (10.0 + 10.0)  # project data wins over global
+    assert pol.rewards == [(did, pytest.approx(1.0 - p0), None)]
+
+
+def test_savings_fall_back_to_global_natural_rate(tmp_path: Path) -> None:
+    from token_sparen.learn.beta import Evidence
+
+    home = tmp_path / "home"
+    _store_natural(home / "projects" / KEY / "posteriors.json", Evidence(1.0, 1.0, 2.0, 1.0))
+    _store_natural(home / "global" / "posteriors.json", Evidence(0.0, 10.0, 10.0, 0.0))
+    pol = Rec("standard")
+    did = _nudged(tmp_path, pol)
+    _prompt(tmp_path, pol, "ok")  # turn end: window settles as broken
+    p0 = (8.0 + 1.0) / (10.0 + 12.0)  # too little project data: global joins it
+    assert pol.rewards[0] == (did, pytest.approx(1.0 - p0), None)
+
+
+def test_savings_never_negative(tmp_path: Path) -> None:
+    from token_sparen.learn.beta import Evidence
+
+    home = tmp_path / "home"
+    _store_natural(home / "projects" / KEY / "posteriors.json", Evidence(50.0, 0.0, 50.0, 50.0))
+    pol = Rec("standard")
+    did = _nudged(tmp_path, pol)
+    _tool(tmp_path, pol, _fail(tmp_path))  # recurred: broken 0
+    assert pol.rewards == [(did, 0.0, None)]
+    pol2 = Rec("standard")
+    (tmp_path / "b").mkdir()
+    _store_natural(
+        tmp_path / "b" / "home" / "projects" / KEY / "posteriors.json",
+        Evidence(50.0, 0.0, 50.0, 50.0),
+    )
+    did2 = _nudged(tmp_path / "b", pol2)
+    for _ in range(5):
+        _tool(tmp_path / "b", pol2, _ok(tmp_path / "b"))
+    assert pol2.rewards[0][1] == pytest.approx(1.0 - 58.0 / 60.0)
+    assert did2
+
+
+def test_session_natural_observations_count(tmp_path: Path) -> None:
+    """Observations of this session (not yet folded) join the project's own rate."""
+    pol = Rec("patient")
+    _prompt(tmp_path, pol)
+    for _ in range(4):  # natural: recurred (not broken)
+        _tool(tmp_path, pol, _fail(tmp_path))
+    pol2 = Rec("standard")
+    _prompt(tmp_path, pol2, "again")
+    for _ in range(3):
+        _tool(tmp_path, pol2, _fail(tmp_path, q="other"))
+    for _ in range(5):
+        _tool(tmp_path, pol2, _ok(tmp_path))
+    did = pol2.decisions[0].decision_id
+    # project has < 5 observations, global none: prior + the session's one observation
+    assert [r for r in pol2.rewards if r[0] == did][0] == (
+        did,
+        pytest.approx(1.0 - 8.0 / 11.0),
+        None,
+    )
+
+
+# --- stop phrases (review minor 5) --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "stop",
+        "Wait",
+        "wait, that is not what I meant",
+        "Stop. The migration config was fine, the failing part is the seed data for users",
+        "Revert the parser change and then continue with the migration of all the tables",
+        "  No, don't touch the lockfile; it is generated by the release tooling every time",
+        "please stop now",
+    ],
+)
+def test_stop_phrase_counts(text: str) -> None:
+    assert loopguard.is_stop(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "add a stop button to the toolbar and wire it to the timer service",
+        "the undo stack loses entries after a revert of the second document in a row",
+        "please make the worker wait for the queue to drain before it shuts down",
+        "",
+        None,
+    ],
+)
+def test_stop_word_inside_a_longer_prompt_does_not_count(text: str | None) -> None:
+    assert not loopguard.is_stop(text)
