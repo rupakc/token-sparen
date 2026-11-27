@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,6 +21,7 @@ import pytest
 from sampleoutputs import big_pytest
 
 from token_sparen.adapters.claude import entry
+from token_sparen.adapters.claude.settings import plain_command
 from token_sparen.cli import main as cli_main
 from token_sparen.facts import miners
 from token_sparen.learn import hierarchy
@@ -40,6 +42,26 @@ def _git_project(project: Path) -> None:
         subprocess.run(["git", "-C", str(project), *args], check=True, capture_output=True)
 
 
+_PLACEHOLDER = re.compile(r"<(project|home|claude|transcripts|plugin|tmp)>((?:/[A-Za-z0-9._-]+)*)")
+_LAUNCHER_CMD = "sh <home>/statusline.sh"
+
+
+def _native(text: str, subst: dict[str, str], quote: bool) -> str:
+    """Placeholders back to this machine's paths, separators included (a fixture written on
+    POSIX says ``<home>/statusline.sh``; on Windows that is ``C:\\...\\home\\statusline.sh``).
+    The launcher command is rendered as the CLI writes it (quoted for the shell)."""
+    home_launcher = str(Path(subst["<home>"]) / "statusline.sh")
+    cmd = plain_command(home_launcher)
+    text = text.replace(_LAUNCHER_CMD, json.dumps(cmd)[1:-1] if quote else cmd)
+
+    def one(m: re.Match[str]) -> str:
+        base = Path(subst[f"<{m.group(1)}>"])
+        native = str(base.joinpath(*[x for x in m.group(2).split("/") if x]))
+        return json.dumps(native)[1:-1] if quote else native
+
+    return _PLACEHOLDER.sub(one, text)
+
+
 def _copy(src: Path, dest: Path, subst: dict[str, str]) -> None:
     if not src.is_dir():
         return
@@ -54,8 +76,7 @@ def _copy(src: Path, dest: Path, subst: dict[str, str]) -> None:
         except UnicodeDecodeError:
             target.write_bytes(data)
             continue
-        for old, new in subst.items():
-            text = text.replace(old, json.dumps(new)[1:-1] if path.suffix != ".sh" else new)
+        text = _native(text, subst, quote=path.suffix != ".sh")
         target.write_bytes(text.encode("utf-8"))
         if path.suffix == ".sh":
             os.chmod(target, 0o755)
@@ -425,7 +446,9 @@ def test_fold_isolates_a_newer_store(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
 
 def _lines_about(home: Path, needle: str) -> int:
-    return sum(needle in json.dumps(e) for e in _errors(home))
+    """Log lines naming ``needle`` (a ``/``-separated path suffix, matched in native form)."""
+    native = str(Path(*needle.split("/")))
+    return sum(any(native in str(v) for v in e.values()) for e in _errors(home))
 
 
 def test_store_problems_logged_once_per_session(
@@ -568,3 +591,30 @@ def test_written_by_is_recorded(tmp_path: Path) -> None:
     other = tmp_path / "breaker.json"
     jsonstore.update(other, lambda d: {"x": 1}, {}, {})
     assert schema.WRITTEN_BY not in _load(other)
+
+
+# --------------------------------------------------------------------------- Windows paths
+def test_launcher_matches_across_windows_spellings() -> None:
+    """A statusLine written by the CLI on Windows is recognised however the launcher path is
+    spelled (separators, drive/user case), so `statusline uninstall` reverts it."""
+    import ntpath
+    import posixpath
+
+    from token_sparen.adapters.claude import settings
+
+    win = r"C:\Work\Dev\.token-sparen\statusline.sh"
+    assert settings.same_path("c:/work/dev/.token-sparen/statusline.sh", win, ntpath)
+    assert not settings.same_path("/home/Dev/x.sh", "/home/dev/x.sh", posixpath)
+    # the CLI quotes the launcher, so a Windows path survives the shell split it is read with
+    assert settings._split(settings.plain_command(win)) == ["sh", win]
+    # an unquoted Windows path would lose its backslashes: fixtures are rendered quoted
+    assert settings._split(f"sh {win}") != ["sh", win]
+
+
+def test_fixture_paths_are_rendered_natively(tmp_path: Path) -> None:
+    subst = {f"<{n}>": str(tmp_path / n) for n in ("project", "home", "claude")}
+    subst |= {"<transcripts>": str(tmp_path / "t"), "<plugin>": str(ROOT), "<tmp>": str(tmp_path)}
+    text = '{"a": "<project>/.claude/settings.local.json", "c": "sh <home>/statusline.sh"}'
+    doc = json.loads(_native(text, subst, quote=True))
+    assert doc["a"] == str(tmp_path / "project" / ".claude" / "settings.local.json")
+    assert doc["c"] == plain_command(str(tmp_path / "home" / "statusline.sh"))
