@@ -217,8 +217,11 @@ Everything stays on your machine, but some of it is plain text you should know a
   committed. Created on the first compression in that project.
 - `~/.token-sparen/` (override with `TOKEN_SPAREN_HOME`; an override inside the current project
   or its git work tree (however it is spelled), or (POSIX) not owned by you, is ignored with one
-  line in the default root's `logs/errors.jsonl`, because a repository's committed Claude Code settings can set
-  environment variables; the statusline launcher applies the same rule to `TOKEN_SPAREN_ROOT`):
+  line in the default root's `logs/errors.jsonl`, because a repository's committed Claude Code
+  settings can set environment variables; a not-yet-created path is accepted when its nearest
+  existing parent is yours or a root-owned sticky dir such as /tmp. The statusline launcher
+  applies the same rule to `TOKEN_SPAREN_ROOT`, except that its root must already exist and be
+  yours):
   - `config.toml` (yours, optional), `trusted_extensions.json`, `statusline_install.json` (records
     your settings file's path and original `statusLine`), `statusline.sh` (launcher copy),
     `windows.json` (context window per session), `project_keys.json` (index from project to hash

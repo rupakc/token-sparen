@@ -74,7 +74,8 @@ Use the repo `.venv`. All must pass before a commit.
   or off; `compression.allow_ctypes = []` is the config-only switch.
 - State root `~/.token-sparen/` (override `TOKEN_SPAREN_HOME`, ignored when it resolves inside
   the current project or its git work tree (by file identity) or, on POSIX, is not owned by the
-  user); project key = first 16 hex of sha256(normalised git remote), else sha256(realpath).
+  user, unless it is a not-yet-created path under a root-owned sticky dir such as /tmp);
+  project key = first 16 hex of sha256(normalised git remote), else sha256(realpath).
   `global/` and project keys hold no raw paths, commands or session ids. Per-project files under
   `projects/<key>/` are plain text and may hold user-local data (last prompt <= 2000 chars, file
   paths, normalised commands, 500 chars of Bash commands in `decisions.jsonl`), as does
