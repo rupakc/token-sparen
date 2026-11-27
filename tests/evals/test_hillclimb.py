@@ -74,6 +74,25 @@ def write(path: Path, text: str) -> Path:
     return path
 
 
+def proposed(
+    folder: Path,
+    text: str,
+    cutoff: str = "2026-11-08",
+    dogfood_start: str = "2026-11-26",
+) -> Path:
+    """A proposal file with the dev report that wrote it (``dev.json`` beside it, its dates)."""
+    path = write(folder / "proposal.toml", text)
+    doc = {
+        "kind": "hillclimb-dev",
+        "split": "dev",
+        "cutoff": cutoff,
+        "dogfood_start": dogfood_start,
+        "proposal_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+    write(folder / "dev.json", json.dumps(doc))
+    return path
+
+
 def entry(
     key: str, values: Sequence[Any], point: str = "compression", measured_by: str | None = None
 ) -> str:
@@ -197,7 +216,7 @@ def test_harness_stdout_template(
     for name in ("dev.json", "trail.jsonl", "proposal.toml"):
         assert_mode(out / name, 0o600)
     # the confirmation prints the same template
-    proposal = write(tmp_path / "p.toml", '[learn]\nsavings_reward = "fraction"\n')
+    proposal = proposed(tmp_path / "p", '[learn]\nsavings_reward = "fraction"\n')
     assert hc.main([*args, "--confirm", str(proposal)]) == 0
     captured = capsys.readouterr()
     m = re.fullmatch(
@@ -256,7 +275,7 @@ def test_confirm_runs_once_per_proposal(
     src = corpus(tmp_path / "t")
     space = write(tmp_path / "space.toml", SMALL_SPACE)
     out = tmp_path / "private"
-    proposal = write(tmp_path / "p.toml", '[learn]\nsavings_reward = "fraction"\n')
+    proposal = proposed(tmp_path / "p", '[learn]\nsavings_reward = "fraction"\n')
     spy = Spy(monkeypatch)
     args = ["--space", str(space), "--transcripts", str(src), "--out", str(out), "--quiet"]
     assert hc.main([*args, "--confirm", str(proposal)]) == 0
@@ -270,12 +289,14 @@ def test_confirm_runs_once_per_proposal(
     assert doc["baseline"]["groups"] == doc["proposal"]["groups"] == 3  # same paired run
     assert doc["insufficient"] is True and doc["accepted"] is False  # 3 groups only
     ledger = json.loads(hc.ledger_path().read_text(encoding="utf-8"))
-    assert ledger["proposal_sha256"] == hashlib.sha256(proposal.read_bytes()).hexdigest()
-    assert doc["ledger"] == ledger
-    assert "recorded" in ledger
+    (window,) = ledger["windows"]
+    assert window["proposal_sha256"] == hashlib.sha256(proposal.read_bytes()).hexdigest()
+    assert (window["cutoff"], window["dogfood_start"]) == ("2026-11-08", "2026-11-26")
+    assert doc["ledger"] == window
+    assert "recorded" in window
     assert_mode(hc.ledger_path(), 0o600)
     before = (out / "confirm.json").read_bytes()
-    other = write(tmp_path / "q.toml", "[compression]\nmin_saving_ratio = 0.3\n")
+    other = proposed(tmp_path / "q", "[compression]\nmin_saving_ratio = 0.3\n")
     elsewhere = [*args[:4], "--out", str(tmp_path / "elsewhere"), "--quiet"]
     for again, argv in ((proposal, args), (other, args), (other, elsewhere)):
         # the same proposal or any other, into the same --out or another: refused
@@ -295,7 +316,7 @@ def test_concurrent_confirms_run_exactly_once(
     import time
 
     space = write(tmp_path / "space.toml", SMALL_SPACE)
-    proposal = write(tmp_path / "p.toml", '[learn]\nsavings_reward = "fraction"\n')
+    proposal = proposed(tmp_path / "p", '[learn]\nsavings_reward = "fraction"\n')
     runs: list[int] = []
 
     def slow(*_a: Any, **_k: Any) -> runner.RunResult:
@@ -701,15 +722,12 @@ def test_sim_rows_are_averaged_over_at_least_three_seeds(
 def test_split_dates_and_campaign_are_flags(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """M4-G4: ``--cutoff``, ``--dogfood-start`` and ``--campaign`` (one ledger per campaign);
-    the plain replay default cutoff is the harness's."""
+    """M4-G4: ``--cutoff``, ``--dogfood-start`` and ``--campaign`` (a label); the plain replay
+    default cutoff is the harness's; a confirmation takes its dates from its dev report."""
     from token_sparen.replay import replay
 
     assert replay.DEFAULT_CUTOFF == hc.DEV_CUTOFF == date(2026, 11, 8)
     assert runner.DEFAULT_CUTOFF == hc.DEV_CUTOFF
-    assert hc.ledger_path().name == "confirm-m4.json"  # the default campaign
-    assert hc.ledger_path("m5").name == "confirm-m5.json"
-    assert hc.ledger_path("m5").parent == hc.ledger_path().parent
     src = corpus(tmp_path / "t")
     space = write(tmp_path / "space.toml", SMALL_SPACE)
     out = tmp_path / "private"
@@ -728,17 +746,19 @@ def test_split_dates_and_campaign_are_flags(
         "2026-10-04",
         "2026-12-01",
     )
-    proposal = write(tmp_path / "p.toml", '[learn]\nsavings_reward = "fraction"\n')
+    # confirm with no date flags: the dev report's dates
+    proposal = proposed(
+        tmp_path / "p", '[learn]\nsavings_reward = "fraction"\n', "2026-10-04", "2026-12-01"
+    )
     spy.calls.clear()
-    assert hc.main([*args, *dates, "--campaign", "m5", "--confirm", str(proposal)]) == 0
+    conf = ["--space", str(space), "--transcripts", str(src), "--quiet"]
+    assert hc.main([*conf, "--out", str(tmp_path / "c"), "--confirm", str(proposal)]) == 0
     capsys.readouterr()
-    assert [c["cutoff"] for c in spy.calls] == [date(2026, 10, 4)]
-    assert hc.ledger_path("m5").exists() and not hc.ledger_path().exists()
-    doc = json.loads((out / "confirm.json").read_text(encoding="utf-8"))
-    assert doc["campaign"] == "m5" and doc["cutoff"] == "2026-10-04"
-    # the m5 look is spent; the default campaign's is not (a new campaign, a new ledger)
-    assert hc.main([*args, *dates, "--campaign", "m5", "--confirm", str(proposal)]) == 2
-    capsys.readouterr()
+    assert [(c["cutoff"], c["dogfood_start"]) for c in spy.calls] == [
+        (date(2026, 10, 4), date(2026, 12, 1))
+    ]
+    doc = json.loads((tmp_path / "c" / "confirm.json").read_text(encoding="utf-8"))
+    assert doc["cutoff"] == "2026-10-04" and doc["dogfood_start"] == "2026-12-01"
     # malformed ids or dates are refused before anything runs
     _forbid_runs(monkeypatch)
     for bad in (
@@ -752,6 +772,72 @@ def test_split_dates_and_campaign_are_flags(
             hc.main([*args, *bad, "--confirm", str(proposal)])
         assert exc.value.code == 2
     capsys.readouterr()
+
+
+def test_test_window_is_read_once_whatever_the_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Re-review New-2: one ledger of used test windows [cutoff, dogfood_start); a confirm whose
+    window overlaps a recorded one is refused, whatever its campaign label; a confirm whose
+    date flags disagree with its dev report (or without a dev report) is refused."""
+    space = write(tmp_path / "space.toml", SMALL_SPACE)
+    runs: list[Any] = []
+
+    def fake(*_a: Any, **kw: Any) -> runner.RunResult:
+        runs.append((kw["cutoff"], kw["dogfood_start"]))
+        return runner.RunResult(by_split={"test": {}})
+
+    monkeypatch.setattr(runner, "run_parallel", fake)
+    text = '[learn]\nsavings_reward = "fraction"\n'
+    n = iter(range(100))
+
+    def go(*extra: str, prop: Path) -> tuple[int, str]:
+        argv = ["--space", str(space), "--transcripts", str(tmp_path / "none")]
+        out = str(tmp_path / f"o{next(n)}")
+        code = hc.main([*argv, "--out", out, "--confirm", str(prop), *extra])
+        return code, capsys.readouterr().err.strip()
+
+    refused = "hillclimb: confirm refused (already run once)"
+    first = proposed(tmp_path / "a", text)  # 2026-11-08 .. 2026-11-26
+    assert go("--campaign", "m4", prop=first) == (0, "")
+    # another campaign label, same window
+    assert go("--campaign", "m4b", prop=first) == (2, refused)
+    # an overlapping window (a later cutoff inside the used one), any label
+    inside = proposed(tmp_path / "b", text, "2026-11-20", "2026-12-20")
+    assert go("--campaign", "m5", prop=inside) == (2, refused)
+    earlier = proposed(tmp_path / "c", text, "2026-10-01", "2026-11-09")
+    assert go("--campaign", "m5", prop=earlier) == (2, refused)
+    # a later window that does not overlap is allowed, once
+    later = proposed(tmp_path / "d", text, "2026-11-26", "2026-12-31")
+    assert go("--campaign", "m5", prop=later) == (0, "")
+    assert go("--campaign", "m6", prop=later) == (2, refused)
+    assert runs == [
+        (date(2026, 11, 8), date(2026, 11, 26)),
+        (date(2026, 11, 26), date(2026, 12, 31)),
+    ]
+    windows = json.loads(hc.ledger_path().read_text(encoding="utf-8"))["windows"]
+    assert [(w["campaign"], w["cutoff"], w["dogfood_start"]) for w in windows] == [
+        ("m4", "2026-11-08", "2026-11-26"),
+        ("m5", "2026-11-26", "2026-12-31"),
+    ]
+    # flags that disagree with the dev report, or no dev report at all: refused, nothing read
+    mismatch = "hillclimb: confirm refused (split dates differ from the dev report)"
+    fresh = proposed(tmp_path / "e", text, "2027-01-10", "2027-02-01")
+    assert go("--cutoff", "2027-01-11", prop=fresh) == (2, mismatch)
+    assert go("--dogfood-start", "2027-02-02", prop=fresh) == (2, mismatch)
+    lonely = write(tmp_path / "f" / "proposal.toml", text)
+    no_dev = "hillclimb: confirm refused (no dev report for this proposal)"
+    assert go(prop=lonely) == (2, no_dev)
+    write(tmp_path / "f" / "dev.json", json.dumps({"proposal_sha256": "0" * 64}))
+    assert go(prop=lonely) == (2, no_dev)
+    assert len(runs) == 2 and len(json.loads(hc.ledger_path().read_text())["windows"]) == 2
+    # matching flags are fine
+    assert go("--cutoff", "2027-01-10", "--dogfood-start", "2027-02-01", prop=fresh) == (0, "")
+    # a corrupt ledger refuses (never reset)
+    hc.ledger_path().write_text("{not json", encoding="utf-8")
+    again = proposed(tmp_path / "g", text, "2028-01-01", "2028-02-01")
+    assert go(prop=again) == (2, refused)
+    assert len(runs) == 3
 
 
 LEVEL_SPACE = (
@@ -801,8 +887,8 @@ def test_confirm_checks_each_proposed_level_on_its_own_arm(
     worse = {g: _row(10.0, trims=10, regret=0.2 + 10 * 0.3 * tau) for g in groups}
     space = write(tmp_path / "space.toml", LEVEL_SPACE)
     coords = hc.load_space(space)
-    proposal = write(
-        tmp_path / "p.toml",
+    proposal = proposed(
+        tmp_path / "p",
         '[compression.levels.aggressive]\nkeep_ratio = 0.1\n[learn]\nsavings_reward = "fraction"\n',
     )
     table = {
@@ -834,7 +920,7 @@ def test_confirm_checks_each_proposed_level_on_its_own_arm(
     # absolute tau per arm, too
     high = {g: _row(10.0, trims=10, regret=10 * 1.5 * tau) for g in groups}
     hc._E2_CACHE.clear()
-    monkeypatch.setattr(hc, "claim_ledger", lambda sha, campaign="m4": {"proposal_sha256": sha})
+    monkeypatch.setattr(hc, "claim_window", lambda sha, *a, **k: {"proposal_sha256": sha})
     table.update({"cmp_aggressive_cand": high, "cmp_aggressive_ref": high})
     path, _, _ = hc.confirm(coords, proposal, [tmp_path], tmp_path / "o2", jobs=1, seed=0)
     reasons = json.loads(path.read_text(encoding="utf-8"))["verdict"]["reasons"]
@@ -844,7 +930,7 @@ def test_confirm_checks_each_proposed_level_on_its_own_arm(
     path, _, lines = hc.confirm(coords, proposal, [tmp_path], tmp_path / "o3", jobs=1, seed=0)
     assert json.loads(path.read_text(encoding="utf-8"))["accepted"] is True
     assert lines[0] == "compression.levels.aggressive.keep_ratio: accepted"
-    only_sim = write(tmp_path / "q.toml", '[learn]\nsavings_reward = "fraction"\n')
+    only_sim = proposed(tmp_path / "q", '[learn]\nsavings_reward = "fraction"\n')
     calls.clear()
     hc.confirm(coords, only_sim, [tmp_path], tmp_path / "o4", jobs=1, seed=0)
     assert [name for name, _ in calls[0]] == ["sim"] * len(hc.SIM_SEEDS)

@@ -4,9 +4,11 @@ E1 **dev** split only, write one joint proposal, and confirm it **once** on the 
     python evals/hillclimb/run.py --space evals/hillclimb/space.toml --jobs N --out DIR --quiet
     python evals/hillclimb/run.py --confirm DIR/proposal.toml --jobs N --out DIR --quiet
 
-(``DIR``: a private directory outside any git work tree.) ``--campaign ID`` (default ``m4``),
-``--cutoff`` (default 2026-11-08, ``replay.DEFAULT_CUTOFF``) and ``--dogfood-start`` (default
-2026-11-26) set the campaign and its split; a new campaign needs a new id (and its own ledger).
+(``DIR``: a private directory outside any git work tree.) ``--cutoff`` (default 2026-11-08,
+``replay.DEFAULT_CUTOFF``) and ``--dogfood-start`` (default 2026-11-26) set the dev search's
+split; ``--confirm`` takes both from the dev report it confirms (given flags must match).
+``--campaign ID`` (default ``m4``) is a label only; a new campaign needs a test window no
+confirmation has read.
 
 **Space.** ``[[entry]]`` tables ``{key, values, point[, measured_by]}``: explicit grids only
 (at most ``MAX_VALUES`` values, the current default among them), every value a config key the
@@ -42,14 +44,17 @@ proposal: keys that moved) and ``dev.json`` (the run's summary with the proposal
 or fewer than ``MIN_TRIMS`` trims per evaluated point on either side: the verdict is
 ``insufficient`` (the coordinate stays; a confirmation rejects).
 
-**Confirmation** (``--confirm``). One-shot per campaign: the proposal is checked (grid values of
-measured keys only), then the ledger ``<state root>/hillclimb/confirm-<campaign>.json``
-(whatever ``--out`` is) is created exclusively (``O_CREAT | O_EXCL``, 0600) with the campaign,
-the proposal's sha256 and the time **before** any test outcome is computed (the runner's
-date/marker pre-scan of the files is not an outcome); if it exists, the confirmation is refused,
-so of any number of confirmations of a campaign exactly one runs. A deleted ledger cannot be
-detected: any second look at test invalidates the result (cite the ``confirm.json`` id, which
-records the ledger). It reads the test split once: the ``sim`` lane (proposal and defaults in
+**Confirmation** (``--confirm``). One look per test window: the proposal is checked (grid values
+of measured keys only) and its dev report (``dev.json`` beside it, with its sha256) must exist;
+the split dates are the dev report's (``SplitMismatch`` if given flags differ). Then, under a
+lock and **before** any test outcome is computed (the runner's date/marker pre-scan of the files
+is not an outcome), the test window ``[cutoff, dogfood_start)`` is appended to the one ledger
+``<state root>/hillclimb/test-windows.json`` (whatever ``--out`` or the campaign label is;
+atomic write, 0600), unless it overlaps a recorded window: then the confirmation is refused, so
+of any number of confirmations reading overlapping test windows exactly one runs. An unreadable
+ledger refuses (never reset). A deleted ledger cannot be detected: any second look at test
+invalidates the result (cite the ``confirm.json`` id, which records the ledger entry). It
+reads the test split once: the ``sim`` lane (proposal and defaults in
 the same paired run, every seed of ``SIM_SEEDS``, averaged per group) and, for every
 ``compression.levels.<arm>`` key in the proposal, the ``compression`` lane on that arm
 (proposal versus defaults, paired by group). It accepts all or nothing: on the sim lane the
@@ -59,8 +64,8 @@ proxy-regret-per-trim difference <= 0.2 tau(point) and the proxy regret per trim
 (``ope.tau_for``); per proposed arm the same two regret bounds and the minimum evidence (reasons
 ``arm:<arm>:...``); E2 100 % and ``inline_rate`` not below the defaults'. Breaker trips are
 reported, not gated (the plan's acceptance rule does not list them). Writes ``confirm.json``
-privately (``dev_report``: the id of the ``dev.json`` beside the proposal that wrote it, else
-null; ``arms``: the per-arm figures).
+privately (``dev_report``: the id of the ``dev.json`` whose dates it used; ``arms``: the
+per-arm figures).
 
 **Privacy.** Files go through ``replay.report.write_private`` (0600, never inside a git work
 tree). ``--quiet`` stdout is only ``report: <path> id: <12 hex>``, ``status: complete|incomplete``
@@ -71,12 +76,14 @@ exception type only. Commit messages cite the report id, never a figure.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import math
 import os
 import random
 import re
+import secrets
 import shutil
 import sys
 import tempfile
@@ -110,13 +117,14 @@ from token_sparen.learn.policy import COMPRESSION, StaticPolicy, get_point
 from token_sparen.mechanisms import compression, guards, loopguard, prune, read_dedupe
 from token_sparen.replay import replay, report, runner
 from token_sparen.replay.runner import Event, SessionInfo
+from token_sparen.store import jsonstore
 
 HERE = Path(__file__).resolve().parent
 SPACE = HERE / "space.toml"
 MODULE = "evals.hillclimb.run"
 DEV_CUTOFF = date(2026, 11, 8)  # dev < cutoff <= test (M4 plan; = replay's default); --cutoff
 DOGFOOD_START = date(2026, 11, 26)  # sessions from here on are excluded whole; --dogfood-start
-CAMPAIGN = "m4"  # ``--campaign``: one confirmation (one ledger) per campaign
+CAMPAIGN = "m4"  # ``--campaign``: a label recorded in the reports and the ledger
 CAMPAIGN_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 SIM_SEEDS = (0, 1, 2)  # sim lane: seed offsets per evaluation (mean per group), M4-G2
 MAX_VALUES = 5
@@ -125,7 +133,8 @@ RESAMPLES = 2000
 ALPHA = 0.05  # 95 % percentile interval
 NONINFERIORITY = 0.2  # regret-per-trim margin, times tau(point)
 MAX_PASSES = 2
-LEDGER_DIR = "hillclimb"  # under the state root: ``confirm-<campaign>.json``
+LEDGER = ("hillclimb", "test-windows.json")  # under the state root: every used test window
+LEDGER_LOCK_S = 30.0  # concurrent confirmations wait for the ledger lock this long
 MIN_GROUPS = 8  # project groups with >= 1 trim needed before anything is decided
 MIN_TRIMS = 30  # trims per evaluated point (each side) needed before anything is decided
 EXCLUDED = ("learn.tau", "ope")  # never searched (prefixes of dotted keys)
@@ -158,7 +167,15 @@ class ProposalError(ValueError):
 
 
 class ConfirmRefused(RuntimeError):
-    """The one confirmation of this campaign already ran."""
+    """The test window was already read (overlaps a recorded one), or the ledger is unusable."""
+
+
+class NoDevReport(RuntimeError):
+    """No dev report (``dev.json`` with the proposal's sha256) beside the proposal."""
+
+
+class SplitMismatch(RuntimeError):
+    """``--cutoff`` / ``--dogfood-start`` disagree with the dev report being confirmed."""
 
 
 # --------------------------------------------------------------------------- space
@@ -964,45 +981,75 @@ def campaign_id(text: str) -> str:
     return text
 
 
-def ledger_path(campaign: str = CAMPAIGN) -> Path:
-    """The campaign's one-shot confirmation ledger: under the state root, whatever ``--out``
-    is (``hillclimb/confirm-<campaign>.json``)."""
-    return state_home(os.environ) / LEDGER_DIR / f"confirm-{campaign_id(campaign)}.json"
+def ledger_path() -> Path:
+    """The one ledger of used test windows: under the state root, whatever ``--out`` or the
+    campaign label is."""
+    return state_home(os.environ).joinpath(*LEDGER)
 
 
-def claim_ledger(sha: str, campaign: str = CAMPAIGN) -> dict[str, str]:
-    """Create the campaign's ledger exclusively (``O_CREAT | O_EXCL``, 0600) or raise
-    ``ConfirmRefused``: of any number of confirmations of one campaign, concurrent or not,
-    exactly one gets past this."""
-    path = ledger_path(campaign)
-    report._mkdirs_private(path.parent)
+def _window(entry: Any) -> tuple[date, date] | None:
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        raise ConfirmRefused("the confirmation of this campaign already ran") from None
+        return date.fromisoformat(entry["cutoff"]), date.fromisoformat(entry["dogfood_start"])
+    except (TypeError, KeyError, ValueError):
+        return None
+
+
+def claim_window(
+    sha: str, cutoff: date, dogfood_start: date, campaign: str = CAMPAIGN
+) -> dict[str, str]:
+    """Record the test window ``[cutoff, dogfood_start)`` in the ledger (locked, atomic write,
+    0600) or raise ``ConfirmRefused`` if it overlaps any recorded window, whatever the campaign
+    label: of any number of confirmations reading overlapping test windows, concurrent or not,
+    exactly one gets past this. An unreadable ledger, or an entry without a window, refuses
+    (never reset)."""
+    path = ledger_path()
+    report._mkdirs_private(path.parent)
     entry = {
         "campaign": campaign,
+        "cutoff": cutoff.isoformat(),
+        "dogfood_start": dogfood_start.isoformat(),
         "proposal_sha256": sha,
         "recorded": datetime.now(UTC).isoformat(),
     }
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(entry, fh, sort_keys=True)
-        fh.write("\n")
-        fh.flush()
-        os.fsync(fh.fileno())
+    with jsonstore.locked(path, timeout=LEDGER_LOCK_S):
+        data, bad = jsonstore._load(path)
+        if bad is not None:
+            raise ConfirmRefused("the test-window ledger is unreadable")
+        windows = (data or {}).get("windows", [])
+        if not isinstance(windows, list):
+            raise ConfirmRefused("the test-window ledger is unreadable")
+        for used in windows:
+            got = _window(used)
+            if got is None or (got[0] < dogfood_start and cutoff < got[1]):
+                raise ConfirmRefused("this test window was already read")
+        doc = {"version": 1, "windows": [*windows, entry]}
+        tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh, sort_keys=True)
+                fh.write("\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
     return entry
 
 
-def _dev_report(proposal_path: Path, sha: str) -> str | None:
-    """The id of the dev report written with this proposal (``dev.json`` beside it), if any."""
+def dev_report(proposal_path: Path, sha: str) -> tuple[str, date, date]:
+    """(id, cutoff, dogfood start) of the dev report that wrote this proposal (``dev.json``
+    beside it with the proposal's sha256); ``NoDevReport`` otherwise."""
     dev_json = Path(proposal_path).parent / "dev.json"
     try:
         doc = json.loads(dev_json.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
-    if isinstance(doc, dict) and doc.get("proposal_sha256") == sha:
-        return report.report_id(dev_json)
-    return None
+        raise NoDevReport("no dev report") from None
+    got = _window(doc) if isinstance(doc, dict) else None
+    if got is None or doc.get("proposal_sha256") != sha or not got[0] < got[1]:
+        raise NoDevReport("no dev report")
+    return report.report_id(dev_json), got[0], got[1]
 
 
 def dev(
@@ -1075,13 +1122,19 @@ def confirm(
     jobs: int,
     seed: int,
     campaign: str = CAMPAIGN,
-    cutoff: date = DEV_CUTOFF,
-    dogfood_start: date = DOGFOOD_START,
+    cutoff: date | None = None,
+    dogfood_start: date | None = None,
 ) -> tuple[Path, bool, list[str]]:
+    """Confirm ``proposal_path`` once on the test split of the dev report that wrote it (its
+    dates; ``cutoff`` / ``dogfood_start``, if given, must agree, else ``SplitMismatch``)."""
     proposal = load_proposal(proposal_path, coords)  # before the one shot is used
     sha = hashlib.sha256(Path(proposal_path).read_bytes()).hexdigest()
+    dev_id, dev_cutoff, dev_dogfood = dev_report(proposal_path, sha)
+    if cutoff not in (None, dev_cutoff) or dogfood_start not in (None, dev_dogfood):
+        raise SplitMismatch("split dates differ from the dev report")
+    cutoff, dogfood_start = dev_cutoff, dev_dogfood
     report.check_out_path(out / "confirm.json")
-    ledger = claim_ledger(sha, campaign)  # before any test outcome is computed
+    ledger = claim_window(sha, cutoff, dogfood_start, campaign)  # before any test read
     e2_ok, e2_reasons = e2_gate(proposal)
     evaluator = Evaluator(
         paths, jobs=jobs, seed=seed, split="test", cutoff=cutoff, dogfood_start=dogfood_start
@@ -1124,7 +1177,7 @@ def confirm(
         "generated": datetime.now(UTC).date().isoformat(),
         "proposal_sha256": sha,
         "ledger": ledger,
-        "dev_report": _dev_report(proposal_path, sha),  # None: not the dev run's proposal
+        "dev_report": dev_id,  # the id of the dev.json whose dates this confirmation used
         "proposal_overlay": proposal,
         "seed": seed,
         "sim_seeds": list(evaluator.sim_seeds),
@@ -1167,25 +1220,27 @@ def main(argv: list[str] | None = None) -> int:
         "--campaign",
         type=campaign_id,
         default=CAMPAIGN,
-        help=f"campaign id: one test confirmation (ledger) per campaign (default {CAMPAIGN})",
+        help=f"campaign label for the reports and the ledger (default {CAMPAIGN})",
     )
     ap.add_argument(
         "--cutoff",
         type=date.fromisoformat,
-        default=DEV_CUTOFF,
-        help=f"dev < cutoff <= test, YYYY-MM-DD (default {DEV_CUTOFF.isoformat()})",
+        help=f"dev < cutoff <= test, YYYY-MM-DD (default {DEV_CUTOFF.isoformat()}; with "
+        "--confirm: the dev report's, which a given value must match)",
     )
     ap.add_argument(
         "--dogfood-start",
         type=date.fromisoformat,
-        default=DOGFOOD_START,
-        help=f"sessions from this day on are excluded (default {DOGFOOD_START.isoformat()})",
+        help=f"sessions from this day on are excluded (default {DOGFOOD_START.isoformat()}; "
+        "with --confirm: the dev report's, which a given value must match)",
     )
     ap.add_argument("--quiet", action="store_true", help="print only the fixed template")
     args = ap.parse_args(argv)
-    if not args.cutoff < args.dogfood_start:
+    if args.confirm is None:
+        args.cutoff = args.cutoff or DEV_CUTOFF
+        args.dogfood_start = args.dogfood_start or DOGFOOD_START
+    if args.cutoff and args.dogfood_start and not args.cutoff < args.dogfood_start:
         ap.error("--cutoff must be before --dogfood-start")
-    split = {"campaign": args.campaign, "cutoff": args.cutoff, "dogfood_start": args.dogfood_start}
     try:
         coords = load_space(args.space)
     except SpaceError:
@@ -1198,18 +1253,42 @@ def main(argv: list[str] | None = None) -> int:
         paths = args.transcripts or [Path.home() / ".claude" / "projects"]
         if args.confirm is not None:
             path, complete, lines = confirm(
-                coords, args.confirm, paths, out, jobs=jobs, seed=args.seed, **split
+                coords,
+                args.confirm,
+                paths,
+                out,
+                jobs=jobs,
+                seed=args.seed,
+                campaign=args.campaign,
+                cutoff=args.cutoff,
+                dogfood_start=args.dogfood_start,
             )
         else:
             space_sha = hashlib.sha256(Path(args.space).read_bytes()).hexdigest()
             path, complete, lines = dev(
-                coords, paths, out, jobs=jobs, seed=args.seed, space_sha=space_sha, **split
+                coords,
+                paths,
+                out,
+                jobs=jobs,
+                seed=args.seed,
+                space_sha=space_sha,
+                campaign=args.campaign,
+                cutoff=args.cutoff,
+                dogfood_start=args.dogfood_start,
             )
     except ProposalError:
         print("hillclimb: invalid proposal (ProposalError)", file=sys.stderr)
         return 2
     except ConfirmRefused:
         print("hillclimb: confirm refused (already run once)", file=sys.stderr)
+        return 2
+    except NoDevReport:
+        print("hillclimb: confirm refused (no dev report for this proposal)", file=sys.stderr)
+        return 2
+    except SplitMismatch:
+        print(
+            "hillclimb: confirm refused (split dates differ from the dev report)", file=sys.stderr
+        )
         return 2
     except Exception as exc:  # noqa: BLE001 - never echo a message that could quote data
         print(f"hillclimb failed ({type(exc).__name__})", file=sys.stderr)

@@ -21,12 +21,15 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   (`regret.expected_resends(governor.remaining_turns(...))` over a governor-style burn meter),
   paid at trim time; actual later re-sends only price the reported net savings. The harness
   runs three seeds per evaluation (`SIM_SEEDS`, one pass) and averages them per project group.
-- Unset `guards.pretrim_bounded_keep_ratio` follows the packaged standard keep ratio, no longer
-  a configured one, so tuning `compression.levels.standard.keep_ratio` never moves the pre-trim
-  arm (a project value is compared with that packaged ratio).
-- Harness flags `--campaign ID` (ledger `confirm-<id>.json`, default `m4`), `--cutoff`
-  (default 2026-11-08) and `--dogfood-start` (default 2026-11-26); `replay`'s default
-  `--cutoff` is now 2026-11-08, the tuning split's.
+- Unset `guards.pretrim_bounded_keep_ratio` is the larger of the packaged and the configured
+  `compression.levels.standard.keep_ratio`: a raised standard arm still raises the pre-trim arm,
+  a lowered (or tuned-down) one never lowers it (a project value is compared with that ratio).
+- Harness flags `--cutoff` (default 2026-11-08), `--dogfood-start` (default 2026-11-26) and
+  `--campaign ID` (a label). The one-shot ledger is now one file of used test windows
+  (`hillclimb/test-windows.json`, locked, atomic): a confirmation whose window overlaps a
+  recorded one is refused whatever its campaign label. `--confirm` takes its dates from the dev
+  report beside the proposal (required) and refuses date flags that disagree. `replay`'s
+  default `--cutoff` is now 2026-11-08, the tuning split's.
 
 ### M4 campaign outcome (defaults unchanged)
 
