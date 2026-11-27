@@ -235,3 +235,24 @@ def test_skill_preapprovals_are_read_only_or_restoring() -> None:
         assert rule in allowed, f"unexpected pre-approval {rule}"
     tools = re.findall(r"^\s*-\s*'?([A-Za-z]+)", front.split("allowed-tools:", 1)[1], re.M)
     assert set(tools) == {"Bash"}, tools  # no Write, Edit or other tool is pre-approved
+
+
+def test_shipped_and_release_code_never_imports_tests() -> None:
+    """Release tooling, the package and the bench harness never depend on a test module (a test
+    refactor must not break a release mid-way; `tests/` is absent from sdist and the tree)."""
+    import ast
+
+    offenders: list[str] = []
+    for top in ("scripts", "token_sparen", "bench"):
+        for path in sorted((ROOT / top).rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                names: list[str] = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    names = [node.module]
+                for name in names:
+                    if name == "tests" or name.startswith("tests."):
+                        offenders.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}")
+    assert offenders == []

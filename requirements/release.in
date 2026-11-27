@@ -1,0 +1,4 @@
+# Release build tools (M6 Task 10). Regenerate release.txt with the command in its header.
+build
+twine
+setuptools>=77

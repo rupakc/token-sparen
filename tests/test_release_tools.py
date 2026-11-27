@@ -603,7 +603,7 @@ def notes_deps(monkeypatch: pytest.MonkeyPatch) -> None:
         return [line for line in text.splitlines() if "%" in line]
 
     monkeypatch.setattr(rn, "_load_render_evidence", lambda: render)
-    monkeypatch.setattr(rn, "_load_figure_violations", lambda: figures)
+    monkeypatch.setattr(rn, "figure_violations", figures)
 
 
 def test_release_notes_extracts_single_section(
@@ -648,13 +648,6 @@ def test_release_notes_cli_and_fail_closed(
     assert rn.main([*argv, "--out", str(out)]) == 0
     assert "The first release." in out.read_text("utf-8")
     assert rn.main([*argv, "--version", "9.9.9"]) == 1
-
-    def missing() -> Any:
-        raise ImportError("not there")
-
-    monkeypatch.setattr(rn, "_load_figure_violations", missing)
-    with pytest.raises(RuntimeError, match="figure_violations"):
-        rn.release_notes(repo / "CHANGELOG.md", "1.0.0", evidence=None, tree=tree)
 
 
 # --- build_claude_tree --------------------------------------------------------------------------

@@ -1,0 +1,310 @@
+name: Release
+
+# A release is an owner-signed annotated tag vX.Y.Z on main (exactly: milestone and RC tags such
+# as v0.4.0-m4 or v1.0.0-rc1 never match). A manual dispatch is a dry run: CI + build only, no
+# tag checks, nothing pushed, attested or published.
+#
+# Order: gate (CI) + verify-tag -> build -> draft-release -> [owner approves `release`]
+# provenance -> push-tree (release/claude) -> [owner approves `pypi`] publish-pypi -> finalize.
+# Resume after a failure with "Re-run failed jobs" only (the `dist` artifact is reused, so the
+# hashes stay stable); a full re-run of a tag is allowed only before publish-pypi succeeded.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Actions are pinned to full commit SHAs; every checkout drops the token from .git/config. The
+# only secret is TOKEN_SPAREN_DENYLIST, passed explicitly; the owner's signing key and tagger
+# email are public repository variables (RELEASE_SIGNING_KEY, RELEASE_TAGGER).
+jobs:
+  gate:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    secrets:
+      TOKEN_SPAREN_DENYLIST: ${{ secrets.TOKEN_SPAREN_DENYLIST }}
+
+  verify-tag:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ github.ref_name }}
+      REPO: ${{ github.repository }}
+      RELEASE_TAGGER: ${{ vars.RELEASE_TAGGER }}
+      RELEASE_SIGNING_KEY: ${{ vars.RELEASE_SIGNING_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tag name is exactly vX.Y.Z
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not a release tag"; exit 1; }
+          [ -n "$RELEASE_TAGGER" ] || { echo "::error::repository variable RELEASE_TAGGER is not set"; exit 1; }
+      - name: GitHub verifies an annotated tag signed by the release tagger
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ref=$(gh api "repos/$REPO/git/ref/tags/$TAG")
+          [ "$(jq -r '.object.type' <<<"$ref")" = "tag" ] || { echo "::error::$TAG is not an annotated tag"; exit 1; }
+          tag_sha=$(jq -r '.object.sha' <<<"$ref")
+          obj=$(gh api "repos/$REPO/git/tags/$tag_sha")
+          jq -e --arg tag "$TAG" --arg tagger "$RELEASE_TAGGER" '
+            .tag == $tag
+            and .object.type == "commit"
+            and .verification.verified == true
+            and .verification.reason == "valid"
+            and (.tagger.email | ascii_downcase) == ($tagger | ascii_downcase)' <<<"$obj" >/dev/null \
+            || { echo "::error::$TAG is not a verified tag signed by the release tagger"; exit 1; }
+          commit=$(jq -r '.object.sha' <<<"$obj")
+          [ "$commit" = "$GITHUB_SHA" ] || { echo "::error::tag commit $commit != $GITHUB_SHA"; exit 1; }
+          echo "TAG_OBJECT=$tag_sha" >> "$GITHUB_ENV"
+      - name: Signature by the owner's key only, tagged commit on main with the release subject
+        run: |
+          set -euo pipefail
+          # actions/checkout may replace an annotated tag by a lightweight one: fetch it as is
+          git fetch --no-tags --force origin "+refs/tags/$TAG:refs/tags/$TAG" "+refs/heads/main:refs/remotes/origin/main"
+          [ "$(git rev-parse "refs/tags/$TAG")" = "$TAG_OBJECT" ] || { echo "::error::local tag object differs"; exit 1; }
+          python3 scripts/release_trust.py trust --email "$RELEASE_TAGGER" --key-env RELEASE_SIGNING_KEY --signers "$RUNNER_TEMP/allowed_signers"
+          python3 scripts/release_trust.py verify-tag "$TAG" --email "$RELEASE_TAGGER"
+          commit=$(git rev-parse "$TAG^{commit}")
+          git merge-base --is-ancestor "$commit" origin/main || { echo "::error::$TAG is not on main"; exit 1; }
+          subject=$(git log -1 --format=%s "$commit")
+          [ "$subject" = "chore(release): $TAG" ] || { echo "::error::tagged commit subject is '$subject', expected 'chore(release): $TAG'"; exit 1; }
+
+  build:
+    needs: [gate, verify-tag]
+    if: always() && needs.gate.result == 'success' && (github.event_name != 'push' || needs.verify-tag.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      plugin_hash: ${{ steps.meta.outputs.plugin_hash }}
+    env:
+      TAG: ${{ github.ref_name }}
+      RELEASE_TAGGER: ${{ vars.RELEASE_TAGGER }}
+      RELEASE_SIGNING_KEY: ${{ vars.RELEASE_SIGNING_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+      # No pip cache (a cache written by another workflow must not reach an attested build) and
+      # hash-pinned build tools; the published archives use the pinned backend (no isolation).
+      - run: pip install --no-cache-dir --require-hashes --no-deps -r requirements/release.txt
+      - name: Reproducible archives (SOURCE_DATE_EPOCH = commit time)
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - name: Release check (tag)
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          # the gate-decision signature (git %G?) must be checked against the owner's key only
+          python scripts/release_trust.py trust --email "$RELEASE_TAGGER" --key-env RELEASE_SIGNING_KEY --signers "$RUNNER_TEMP/allowed_signers"
+          python scripts/release_check.py --mode tag --tag "$TAG"
+      - name: Release check (dry run)
+        if: github.event_name != 'push'
+        run: python scripts/release_check.py --mode dry-run
+      - name: Build wheel and sdist
+        run: |
+          set -euo pipefail
+          python -m build --no-isolation --outdir dist
+          twine check --strict dist/*.whl dist/*.tar.gz
+          python scripts/check_wheel.py
+      - name: release/claude tree, notes and checksums
+        id: meta
+        run: |
+          set -euo pipefail
+          version=$(python -c "import token_sparen; print(token_sparen.__version__)")
+          python scripts/build_claude_tree.py --out dist/tree
+          evidence=()
+          if [ -f docs/evidence/e4.json ]; then evidence=(--evidence docs/evidence/e4.json); fi
+          # a dry run of a development version rehearses the notes of the [Unreleased] section
+          notes_version="$version"
+          if [[ "$version" == *.dev* ]]; then notes_version=Unreleased; fi
+          python scripts/release_notes.py --version "$notes_version" --tree dist/tree "${evidence[@]}" --out dist/NOTES.md
+          (cd dist && sha256sum -- *.whl *.tar.gz > SHA256SUMS && cat SHA256SUMS)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "plugin_hash=$(python scripts/plugin_hash.py dist/tree)" >> "$GITHUB_OUTPUT"
+      - name: Deny-list over everything that will be published
+        run: python scripts/check_denylist.py --path dist --require-private-words
+        env:
+          TOKEN_SPAREN_DENYLIST: ${{ secrets.TOKEN_SPAREN_DENYLIST }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: dist
+          path: dist
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+  draft-release:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Draft release (idempotent)
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes-file dist/NOTES.md
+          gh release upload "$TAG" --clobber dist/*.whl dist/*.tar.gz dist/SHA256SUMS
+
+  provenance:
+    needs: draft-release
+    if: github.event_name == 'push'
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+
+  push-tree:
+    needs: [build, provenance]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      REPO: ${{ github.repository }}
+      BRANCH: release/claude
+      PLUGIN_HASH: ${{ needs.build.outputs.plugin_hash }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: dist
+          path: ${{ runner.temp }}/dist
+      - name: Fast-forward release/claude to the built tree (never force)
+        run: |
+          set -euo pipefail
+          tree="$RUNNER_TEMP/dist/tree"
+          [ "$(python3 scripts/plugin_hash.py "$tree")" = "$PLUGIN_HASH" ] || { echo "::error::tree hash differs from build"; exit 1; }
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          work="$RUNNER_TEMP/tree-repo"
+          git init -q "$work"
+          cd "$work"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://github.com/$REPO.git"
+          base=$(git ls-remote --heads origin "refs/heads/$BRANCH" | cut -f1)
+          parent=()
+          if [ -n "$base" ]; then
+            git fetch --no-tags -q origin "$base"
+            parent=(-p "$base")
+          fi
+          git --work-tree="$tree" add --all --force .
+          tree_sha=$(git write-tree)
+          msg="release: $TAG (plugin ${PLUGIN_HASH:0:12})"
+          if [ -n "$base" ] && [ "$(git rev-parse "$base^{tree}")" = "$tree_sha" ] \
+             && [ "$(git log -1 --format=%s "$base")" = "$msg" ]; then
+            echo "release/claude already holds $TAG (re-run): nothing to push"
+            exit 0
+          fi
+          commit=$(git commit-tree "$tree_sha" "${parent[@]}" -m "$msg")
+          now=$(git ls-remote --heads origin "refs/heads/$BRANCH" | cut -f1)
+          [ "$now" = "$base" ] || { echo "::error::$BRANCH moved since this job started; refusing"; exit 1; }
+          # a plain push: the remote rejects anything that is not a fast-forward of $base
+          git -c "http.https://github.com/.extraheader=$auth" push origin "$commit:refs/heads/$BRANCH"
+
+  publish-pypi:
+    needs: [build, push-tree]
+    if: github.event_name == 'push'
+    environment:
+      name: pypi
+      url: https://pypi.org/project/token-sparen/${{ needs.build.outputs.version }}/
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: dist
+          path: release-dist
+      - name: Wheel and sdist only, checked against SHA256SUMS
+        run: |
+          set -euo pipefail
+          mkdir pypi-dist
+          cp release-dist/*.whl release-dist/*.tar.gz pypi-dist/
+          [ "$(find pypi-dist -type f | wc -l)" -eq 2 ] || { echo "::error::expected one wheel and one sdist"; exit 1; }
+          (cd release-dist && sha256sum --check --strict SHA256SUMS)
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
+        with:
+          packages-dir: pypi-dist/
+          skip-existing: true
+
+  finalize:
+    needs: [build, publish-pypi]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.build.outputs.version }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: PyPI serves exactly the built files (sha256 vs SHA256SUMS)
+        run: |
+          set -euo pipefail
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS "https://pypi.org/pypi/token-sparen/$VERSION/json" -o pypi.json \
+               && [ "$(jq '.urls | length' pypi.json)" -ge 2 ]; then break; fi
+            sleep 30
+          done
+          while read -r digest name; do
+            served=$(jq -r --arg f "$name" '.urls[] | select(.filename == $f) | .digests.sha256' pypi.json)
+            [ "$served" = "$digest" ] || { echo "::error::$name: PyPI sha256 '$served' != built $digest"; exit 1; }
+          done < dist/SHA256SUMS
+      - name: Publish the GitHub Release (latest only if it is the highest release)
+        run: |
+          set -euo pipefail
+          highest=$( { gh release list --exclude-drafts --exclude-pre-releases --limit 1000 \
+                         --json tagName --jq '.[].tagName'; echo "$TAG"; } \
+                     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          if [ "$highest" = "$TAG" ]; then latest=--latest; else latest=--latest=false; fi
+          gh release edit "$TAG" --draft=false "$latest"

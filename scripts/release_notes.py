@@ -2,8 +2,8 @@
 
 Footer: install lines, the documentation site, the Evidence table (`render_evidence`, M6 Task 6)
 and the plugin hash of the `release/claude` tree. An empty section is refused, and the notes
-outside the Evidence table must pass the docs figure rule (`figure_violations`, M6 Task 5):
-savings claims appear only in the Evidence table, with their confidence intervals.
+outside the Evidence table must pass the docs figure rule (`scripts.docs_lint.figure_violations`,
+M6 Task 5): savings claims appear only in the Evidence table, with their confidence intervals.
 
 Usage: ``python scripts/release_notes.py --version X.Y.Z [--changelog CHANGELOG.md]
 [--evidence docs/evidence/e4.json] [--tree DIR] [--out NOTES.md]``.
@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.build_claude_tree import SITE_URL, build_claude_tree  # noqa: E402
+from scripts.docs_lint import figure_violations  # noqa: E402
 from scripts.plugin_hash import plugin_hash  # noqa: E402
 from scripts.release_check import HEADING, section  # noqa: E402
 from scripts.render_evidence import render_evidence  # noqa: E402
@@ -33,16 +34,6 @@ REPO = "rupakc/token-sparen"
 def _load_render_evidence() -> Callable[..., str]:
     """`render_evidence.render_evidence(path, tree)` (a seam for tests)."""
     return render_evidence
-
-
-def _load_figure_violations() -> Callable[[str], list[str]]:
-    # TODO(merge M6 Task 5): import figure_violations from its non-test home once Task 5 lands
-    # and drop the tests/ fallback (a script should not depend on a test module).
-    try:
-        from scripts.render_evidence import figure_violations  # type: ignore[attr-defined]
-    except ImportError:
-        from tests.test_user_docs import figure_violations
-    return figure_violations  # type: ignore[no-any-return]
 
 
 def _section(changelog: Path, version: str) -> str:
@@ -83,16 +74,9 @@ def release_notes(
 ) -> str:
     """Notes for ``version``. ``tree`` is the built `release/claude` tree (built from the
     changelog's repository when omitted). Raises `ValueError` on an empty or missing section
-    or a figure outside the Evidence table, `RuntimeError` when a checker is unavailable."""
+    or a figure outside the Evidence table."""
     body = _section(changelog, version)
-    try:
-        render = _load_render_evidence()
-        figures = _load_figure_violations()
-    except ImportError as exc:
-        raise RuntimeError(
-            f"render_evidence / figure_violations unavailable ({exc}); notes are never "
-            "published unchecked"
-        ) from exc
+    render = _load_render_evidence()
     if tree is None:
         with tempfile.TemporaryDirectory(prefix="token-sparen-tree-") as tmp:
             built = Path(tmp) / "tree"
@@ -104,7 +88,7 @@ def release_notes(
         digest = plugin_hash(tree)
         table = render(evidence, tree).strip("\n")
     prose = f"{body}\n\n{_footer(version, digest)}"
-    violations = figures(prose)
+    violations = figure_violations(prose)
     if violations:
         raise ValueError(
             "release notes state a figure outside the Evidence table: " + "; ".join(violations)
