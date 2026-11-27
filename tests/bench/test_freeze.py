@@ -14,6 +14,9 @@ from scripts.plugin_hash import plugin_hash
 
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
 GIT += ["-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false", "-c", "init.defaultBranch=main"]
+# test repos store and check out bytes verbatim on every OS (Windows runners default to
+# core.autocrlf=true); test_freeze_hashes_bytes_as_stored_despite_checkout_conversion simulates it
+GIT += ["-c", "core.autocrlf=false"]
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -140,6 +143,68 @@ def test_freeze_drops_tracked_unhashed_files(repo: Path, tmp_path: Path) -> None
     frozen = fz.freeze(repo, "HEAD", tmp_path / "frozen", dry_run=True)
     assert not (frozen.path / "token_sparen" / ".gitignore").exists()
     fz.verify(frozen)
+
+
+def _blob_hash(repo: Path, commit: str) -> str:
+    """Reference: plugin_hash of the blobs as stored in git (no checkout conversion)."""
+    import hashlib
+
+    listing = _git(repo, "ls-tree", "-r", "--name-only", commit)
+    hashed = [
+        p
+        for p in listing.splitlines()
+        if p == ".claude-plugin/plugin.json"
+        or (
+            p.startswith(("hooks/", "skills/", "token_sparen/"))
+            and not p.endswith("/.gitattributes")
+        )
+    ]
+    lines = ""
+    for rel in sorted(hashed):
+        data = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "blob", f"{commit}:{rel}"],
+            check=True,
+            capture_output=True,
+        ).stdout
+        lines += f"{rel}\0{hashlib.sha256(data).hexdigest()}\n"
+    return hashlib.sha256(lines.encode()).hexdigest()
+
+
+def test_freeze_hashes_bytes_as_stored_despite_checkout_conversion(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Windows simulation: core.autocrlf=true in the repo config, plus attributes that make
+    `git archive`/checkout rewrite bytes (eol=crlf, export-subst, export-ignore). The frozen
+    plugin must hold the blobs exactly as stored, so its hash is the same on every OS."""
+    _write(
+        repo,
+        ".gitattributes",
+        b"hooks/*.py text eol=crlf\nskills/** export-ignore\ntoken_sparen/*.py export-subst\n",
+    )
+    _write(repo, "token_sparen/sub.py", b"COMMIT = '$Format:%H$'\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "attributes")
+    _git(repo, "tag", "v2")
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.autocrlf", "true"], check=True
+    )  # persistent repo config, as on a Windows runner (the GIT helper's -c would override it)
+    commit = _git(repo, "rev-parse", "HEAD")
+    frozen = fz.freeze(repo, "v2", tmp_path / "frozen")
+    assert (frozen.path / "hooks" / "run.py").read_bytes() == b"print(1)\n"  # no CRLF
+    assert (frozen.path / "skills" / "demo" / "SKILL.md").exists()  # export-ignore not applied
+    assert (frozen.path / "token_sparen" / "sub.py").read_bytes() == b"COMMIT = '$Format:%H$'\n"
+    assert frozen.plugin_hash == _blob_hash(repo, commit)
+    fz.verify(frozen)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_freeze_refuses_committed_symlink(repo: Path, tmp_path: Path) -> None:
+    (repo / "hooks" / "link.py").symlink_to("run.py")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "link")
+    with pytest.raises(fz.FreezeError, match="symlink"):
+        fz.freeze(repo, "HEAD", tmp_path / "frozen", dry_run=True)
+    assert not (tmp_path / "frozen").exists()
 
 
 def test_frozen_hash_equals_checkout_of_same_commit(repo: Path, tmp_path: Path) -> None:
