@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, get_args
 
 from bench.leak import TOKEN_ENV, scan_for_token, token_from_env
+from bench.ledger import FinalRun
 from bench.tasks import arm64_image
 from token_sparen.store.jsonstore import locked
 
@@ -112,18 +113,6 @@ class Grader(Protocol):
     def grade(
         self, preds: Path, run_id: str, instance_ids: Sequence[str]
     ) -> dict[str, bool | None]: ...
-
-
-@dataclass(frozen=True)
-class FinalRun:
-    """A ledger key whose final outcome is graded (status ``ok`` or ``agent_fail``)."""
-
-    key: str
-    stage: str
-    arm: str
-    seed: int
-    instance_id: str
-    patch: str
 
 
 class GradeLedger(Protocol):
