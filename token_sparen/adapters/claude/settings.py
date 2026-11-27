@@ -476,7 +476,13 @@ def add_deny_rules(
     """Append the bare ``rules`` not yet in ``permissions.deny`` (a ``prune.WriteResult``).
     ``fresh_backup`` (no rule of ours is in the file): the backup is replaced by the file as it
     is now, so a backup left by an earlier cycle never holds an older state than the user's.
-    ``journal(new, created)`` runs just before the write (the caller records its intent)."""
+    ``journal(new, created)`` runs just before the write (the caller records its intent).
+    A symbolic link (the file or its folder) is refused: git's answer is about the link, while
+    the write would land in the target, possibly a tracked file in another repository."""
+    if _linked(path):
+        return WriteResult(
+            False, message=f"{path} is a symbolic link (or inside one); nothing was changed"
+        )
     target = _target(path)
     for attempt in (0, 1):
         try:
@@ -513,6 +519,11 @@ def add_deny_rules(
             return _prune_failure(exc)
         return WriteResult(True, new, present, created)
     raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _linked(path: Path) -> bool:
+    """``path`` or its parent folder is a symbolic link (lstat; a missing path is not)."""
+    return any(p.is_symlink() for p in (path, path.parent))
 
 
 def remove_deny_rules(

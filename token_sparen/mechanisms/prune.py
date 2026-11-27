@@ -748,15 +748,41 @@ def _regret(doc: dict[str, Any], rule: str, reason: str) -> None:
 
 
 def _revert_policy(
-    doc: dict[str, Any], key: str, writer: DenyWriter, env: Mapping[str, str]
+    doc: dict[str, Any],
+    key: str,
+    writer: DenyWriter,
+    env: Mapping[str, str],
+    here: str | None = None,
 ) -> list[str]:
-    """Pruning is off for project ``key``: remove the rules recorded under it (a record written
-    under another key, e.g. before a remote change, follows that key's switch, not this one)."""
+    """Pruning is off for project ``key``: remove the rules recorded under it, and (``here``,
+    at fold) those of this checkout's record written under another key (a changed git remote:
+    the opt-in is never carried across keys, so its rules are restored, with a notice)."""
     done: set[str] = set()
     for fkey, entry in list(_files(doc).items()):
-        if isinstance(entry, dict) and entry.get("key", key) == key:
-            done.update(_restore_file(doc, fkey, None, None, writer, env))
+        if not isinstance(entry, dict):
+            continue
+        other = entry.get("key", key) != key
+        if other and fkey != here:
+            continue
+        removed = _restore_file(doc, fkey, None, None, writer, env)
+        done.update(removed)
+        if other and removed:
+            _notice(
+                entry,
+                f"token-sparen restored {', '.join(removed)}: tool pruning is not enabled for "
+                "this project under its current identity (its git remote changed); "
+                f"`{CLI} prune enable` opts it in again.",
+            )
     return sorted(done)
+
+
+def _foreign_key_record(doc: Mapping[str, Any], key: str, fkey: str) -> bool:
+    entry = _files(doc).get(fkey)
+    return (
+        isinstance(entry, dict)
+        and entry.get("key", key) != key
+        and bool(_strs(entry.get("owned")) or _strs(entry.get("pending_add")))
+    )
 
 
 def _owned_under(doc: Mapping[str, Any], key: str) -> bool:
@@ -939,10 +965,14 @@ def fold_session(
         return []  # never opted in here: no work, nothing written
     view = _read(home, project_key, fkey, env)
     if not active(view, s):
-        if _owned_under(view, project_key) or _strs(_files(view).get(fkey, {}).get("pending_add")):
+        if (
+            _owned_under(view, project_key)
+            or _foreign_key_record(view, project_key, fkey)
+            or _strs(_files(view).get(fkey, {}).get("pending_add"))
+        ):
             with _open(home, project_key, fkey, env, timeout) as st:
                 reconcile(st.doc, writer)
-                _revert_policy(st.doc, project_key, writer, env)
+                _revert_policy(st.doc, project_key, writer, env, here=fkey)
                 st.save()
         return []
     raw_tr = staged.get(transcript_key)
@@ -957,6 +987,9 @@ def fold_session(
                 st.save()
             return []
         reconcile(doc, writer)
+        own = _files(doc).get(fkey)
+        if isinstance(own, dict):
+            own["key"] = project_key  # active here too (user-wide opt-in): adopted, lease goes on
         if transcript is not None and doc.get("seeded") is not True:
             dirs = [*_history_dirs(writer, project_dir, env), transcript.parent]
             seed(doc, history_files(list(dict.fromkeys(dirs))))

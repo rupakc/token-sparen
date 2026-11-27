@@ -1411,3 +1411,67 @@ def test_recovered_restore_keeps_the_users_file(
     _killed_mid_apply(env, proj, monkeypatch)
     assert main(["prune", "restore", "--all", "--project", str(proj)]) == 0
     assert json.loads(_local(proj).read_text(encoding="utf-8")) == {"env": {"A": "1"}}
+
+
+# Fix round 2 (R1-I1): opt-in is not carried across project keys; the fold restores instead
+def _remote_change(proj: Path) -> None:
+    subprocess.run(
+        ["git", "-C", str(proj), "remote", "add", "origin", "https://example.invalid/t/r.git"],
+        check=True,
+    )
+
+
+def test_remote_change_restores_at_the_next_fold(env: dict[str, str], proj: Path) -> None:
+    _user_config(env, "[prune]\nbuiltins = true\nlease_sessions = 2\n")
+    _enable(env, proj)  # a per-project opt-in, under the old key
+    _three(env, proj)
+    assert _deny(proj) == ["WebFetch", "WebSearch"]
+    _remote_change(proj)
+    _fold(env, proj, "r1")
+    assert not _local(proj).exists()  # not enabled under the new key: restored (exact revert)
+    assert prune.all_owned(_doc(env, proj)) == []
+    msg = _hook(env, "SessionStart", {"source": "startup"})["systemMessage"]
+    assert "WebFetch, WebSearch" in msg and "not enabled" in msg
+    for sid in ("r2", "r3", "r4"):
+        _fold(env, proj, sid)
+    assert not _local(proj).exists()  # and never pruned again under the new key
+
+
+def test_remote_change_with_user_wide_opt_in_keeps_the_lease(
+    env: dict[str, str], proj: Path
+) -> None:
+    _user_config(env, "[prune]\nenabled = true\nbuiltins = true\nlease_sessions = 2\n")
+    _three(env, proj)
+    assert _deny(proj) == ["WebFetch", "WebSearch"]
+    _remote_change(proj)
+    _fold(env, proj, "r1")
+    assert _deny(proj) == ["WebFetch", "WebSearch"]  # active under the new key too: adopted
+    assert _reg(env)["files"][prune.file_key(_local(proj))]["key"] == _key(env, proj)
+    _fold(env, proj, "r2")
+    assert not _local(proj).exists()  # the lease ended after 2 sessions
+
+
+def test_symlinked_settings_file_is_never_written(
+    env: dict[str, str], proj: Path, tmp_path: Path
+) -> None:
+    elsewhere = tmp_path / "dotfiles" / "settings.local.json"
+    elsewhere.parent.mkdir()
+    elsewhere.write_text("{}\n", encoding="utf-8")
+    _local(proj).parent.mkdir()
+    _local(proj).symlink_to(elsewhere)
+    _enable(env, proj)
+    _three(env, proj)
+    assert elsewhere.read_text(encoding="utf-8") == "{}\n" and _local(proj).is_symlink()
+    msg = _hook(env, "SessionStart", {"source": "startup"})["systemMessage"]
+    assert "symbolic link" in msg and "nothing was changed" in msg
+
+
+def test_symlinked_settings_folder_is_never_written(
+    env: dict[str, str], proj: Path, tmp_path: Path
+) -> None:
+    elsewhere = tmp_path / "shared-claude"
+    elsewhere.mkdir()
+    (proj / ".claude").symlink_to(elsewhere, target_is_directory=True)
+    _enable(env, proj)
+    _three(env, proj)
+    assert not (elsewhere / "settings.local.json").exists()

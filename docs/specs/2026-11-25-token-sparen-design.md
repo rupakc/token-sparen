@@ -268,6 +268,11 @@ Ownership records (owned rules, created containers, the journal with the contain
 will create, leases, notices) move from `prune.json` to a user-level `prune_rules.json` keyed by
 settings-file real path, so a project-key change never orphans a rule; a checkout's own record is
 used whatever key it was written under (a policy revert only touches records of its own key).
+Fix round 2: the opt-in is never carried across project keys. At each fold of a checkout whose
+record was written under another key: if pruning is active under the current key (user-wide
+opt-in) the record is adopted (re-keyed) and its lease continues; otherwise its rules are
+restored (no regret) with a notice at the next SessionStart. A settings file that is a symbolic
+link, or inside a linked `.claude` folder, is never written.
 
 ---
 

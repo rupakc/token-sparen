@@ -471,3 +471,14 @@ def test_git_exposure_refuses_location_variables(
         monkeypatch.setenv(var, str(tmp_path / "elsewhere"))
         assert settings.git_exposure(tmp_path) == "unknown", var
         monkeypatch.delenv(var)
+
+
+def test_add_deny_rules_refuses_a_symlink(tmp_path: Path) -> None:
+    real = tmp_path / "real.json"
+    real.write_text("{}", encoding="utf-8")
+    link = tmp_path / "p" / ".claude" / "settings.local.json"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(real)
+    res = settings.add_deny_rules(link, ["mcp__a"])
+    assert not res.ok and "symbolic link" in res.message
+    assert real.read_text(encoding="utf-8") == "{}"

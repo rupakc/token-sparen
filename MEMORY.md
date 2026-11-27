@@ -1422,3 +1422,8 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   the current checkout's record is always visible). Journal records the containers the write
   creates (`pending_created`), so a recovered restore is exact. Review m1 (user re-adds a
   journaled rule before reconcile), m4 (statusline backup on settings.local.json) still open.
+- Fix round 2 (2026-11-27, re-review R1-I1): opt-in not migrated across project keys; a fold of
+  a checkout whose registry record carries another key restores its rules (notice) unless the
+  current key is active (user-wide opt-in), in which case it is re-keyed. Symlinked settings file
+  or `.claude` folder: never written. Open minors: registry lock held across first-time seed();
+  `/clear` SessionEnd->SessionStart idle race; m1; m4.

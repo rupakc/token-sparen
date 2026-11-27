@@ -92,7 +92,10 @@ everything else. No savings figures are claimed for them yet.
   `GIT_DIR`/`GIT_INDEX_FILE` set, not a work tree) counts as exposed.
 - Ownership of tool-pruning deny rules is kept per settings file in `~/.token-sparen/
   prune_rules.json`, so a changed git remote (new project key) never orphans a rule; older
-  per-project records are migrated on read.
+  per-project records are migrated on read. A per-project opt-in is not carried to the new key:
+  the next fold restores those rules and says so.
+- Tool pruning refuses to write a settings file that is a symbolic link (or inside a linked
+  `.claude` folder), whose target git cannot vouch for.
 - Tool pruning no longer grows confident from its own intervention: a pruned server collects no
   evidence, and each prune is a lease (`[prune] lease_sessions`, default 15; a project may only
   lower it) after which the server is restored and pruned again only on fresh evidence.

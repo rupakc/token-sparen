@@ -492,11 +492,14 @@ first change the file is copied once to `settings.local.json.token-sparen.bak`; 
 and re-check the file just before replacing it. The file is written only when git confirms it is
 untracked and covered by `.gitignore`; a file that is tracked, not ignored, outside a git work
 tree, or whose status git cannot report (git missing, failing or too slow, or `GIT_DIR`-style
-variables pointing elsewhere) is never written, nor one that is not a strict JSON object
-(comments, duplicate keys); you are told why (token-sparen does not edit `.gitignore`). The
+variables pointing elsewhere) is never written, nor a symbolic link (or a file inside a linked
+`.claude` folder), nor one that is not a strict JSON object (comments, duplicate keys); you are
+told why (token-sparen does not edit `.gitignore`). The
 backup is refreshed when token-sparen starts a new round of rules in a file where it owns none,
 so it never predates your own edits. Sibling clones and worktrees of one repository share what
-was learned, but each checkout's file and rules are tracked separately.
+was learned, but each checkout's file and rules are tracked separately. A `prune enable` belongs
+to the project as identified then: if its git remote changes, the next fold restores the tools
+pruned under the old identity and tells you (`prune enable` opts the project in again).
 
 Recovery: each session start shows one line, `Pruned (unused here): A, B — run \`... prune
 restore <tool>\` if needed.`, to you and to the model (with the plugin's own launcher path when
