@@ -102,8 +102,11 @@ def _mkdirs_private(directory: Path) -> None:
             os.chmod(d, 0o700)  # whatever the umask
 
 
-def write_private(path: Path, data: Any) -> Path:
-    """Check ``path``, then write ``data`` as JSON atomically with mode 0600."""
+def write_private(path: Path, data: Any, *, raw: bool = False) -> Path:
+    """Check ``path``, then write ``data`` as JSON atomically with mode 0600 (``raw``: ``data``
+    is text written as is, e.g. JSON lines or TOML)."""
+    if raw and not isinstance(data, str):
+        raise TypeError("raw data must be text")
     out = check_out_path(path)
     _mkdirs_private(out.parent)
     fd, tmp = tempfile.mkstemp(dir=out.parent, prefix=".report-", suffix=".tmp")
@@ -113,8 +116,11 @@ def write_private(path: Path, data: Any) -> Path:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             if POSIX:
                 os.fchmod(fh.fileno(), 0o600)  # mkstemp already does; explicit for clarity
-            json.dump(data, fh, indent=2, sort_keys=True)
-            fh.write("\n")
+            if raw:
+                fh.write(data)
+            else:
+                json.dump(data, fh, indent=2, sort_keys=True)
+                fh.write("\n")
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, out)

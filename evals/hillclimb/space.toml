@@ -1,0 +1,140 @@
+# Pre-declared hill-climbing grids (spec 10.6, M4). Committed BEFORE any real-data run: a tuned
+# value can only be one of these. Every grid includes the current default (token_sparen/params/
+# defaults.toml), holds at most 5 values and lies inside the owning module's clamp
+# (tests/evals/test_hillclimb.py). [learn.tau] and [ope] are never searched. M3 keys (facts,
+# prune, loop guard) only move toward less intervention (values >= current).
+#
+# Order = coordinate-ascent order. Objective lane: `sim` for learn.savings_reward,
+# learn.ladder_retry_decisions and learn.defaults.*; the frozen-engine `compression` replay for
+# every other key. Keys no replay lane reads (guards, read de-dupe, M3) cannot show a gain on E1
+# and stay unchanged: they are listed so a choice is never made off-grid.
+#
+# Not searchable: the BM25 relevance weights (module constants, not config keys) and designed
+# prior strengths of the compression point (no config key; only the loop guard declares one,
+# and the loop guard is not replayed by the sim lane).
+
+# --- compression (frozen-engine replay; a level's keys are measured on that level's arm)
+
+[[entry]]
+key = "compression.levels.standard.keep_ratio"
+values = [0.25, 0.3, 0.35, 0.4, 0.5]
+point = "compression"
+
+[[entry]]
+key = "compression.levels.light.keep_ratio"
+values = [0.5, 0.6, 0.7]
+point = "compression"
+
+[[entry]]
+key = "compression.levels.aggressive.keep_ratio"
+values = [0.1, 0.15, 0.2, 0.25]
+point = "compression"
+
+[[entry]]
+key = "compression.min_saving_ratio"
+values = [0.1, 0.15, 0.2, 0.3]
+point = "compression"
+
+# --- read de-dupe thresholds (never below the 2000-token floor)
+
+[[entry]]
+key = "read_dedupe.min_tokens"
+values = [2000, 4000]
+point = "read_dedupe"
+
+[[entry]]
+key = "read_dedupe.max_turn_gap"
+values = [4, 8, 12]
+point = "read_dedupe"
+
+# --- guard limits (the bounded pre-trim arm's keep ratio: unset today = the standard ratio)
+
+[[entry]]
+key = "guards.pretrim_bounded_keep_ratio"
+values = [0.25, 0.35, 0.5]
+point = "pretrim"
+
+[[entry]]
+key = "guards.pretrim_lines"
+values = [80, 120, 200]
+point = "pretrim"
+
+[[entry]]
+key = "guards.max_read_bytes"
+values = [5000000, 10000000]
+point = "compression"
+
+# --- learning (sim lane): reward mode, ladder retry, designed priors on the snapped grid
+#     (means in {0.02, 0.05, 0.1, 0.2, 0.3, 0.5} plus the current default)
+
+[[entry]]
+key = "learn.savings_reward"
+values = ["scaled", "fraction", "counterfactual", "cost"]
+point = "compression"
+
+[[entry]]
+key = "learn.ladder_retry_decisions"
+values = [0, 10, 20, 50]
+point = "compression"
+
+[[entry]]
+key = "learn.defaults.compression.light.savings"
+values = [0.2, 0.3, 0.35, 0.5]
+point = "compression"
+
+[[entry]]
+key = "learn.defaults.compression.light.regret"
+values = [0.02, 0.05, 0.1]
+point = "compression"
+
+[[entry]]
+key = "learn.defaults.compression.standard.savings"
+values = [0.3, 0.5, 0.6]
+point = "compression"
+
+[[entry]]
+key = "learn.defaults.compression.standard.regret"
+values = [0.02, 0.04, 0.05, 0.1]
+point = "compression"
+
+[[entry]]
+key = "learn.defaults.compression.aggressive.savings"
+values = [0.3, 0.5, 0.8]
+point = "compression"
+
+[[entry]]
+key = "learn.defaults.compression.aggressive.regret"
+values = [0.05, 0.08, 0.1, 0.2]
+point = "compression"
+
+# --- M3 keys, conservative direction only (values >= current)
+
+[[entry]]
+key = "facts.activate_lcb"
+values = [0.55, 0.65, 0.75]
+point = "facts"
+
+[[entry]]
+key = "facts.retire_ucb"
+values = [0.4, 0.5]
+point = "facts"
+
+[[entry]]
+key = "prune.min_sessions"
+values = [3, 5, 8]
+point = "prune"
+
+[[entry]]
+key = "prune.min_prompts"
+values = [15, 30]
+point = "prune"
+
+[[entry]]
+key = "prune.idle_minutes"
+values = [60, 120]
+point = "prune"
+
+[[entry]]
+key = "loopguard.min_k"
+values = [2, 3]
+point = "loopguard"

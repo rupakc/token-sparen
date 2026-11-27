@@ -10,6 +10,31 @@ Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones 
 and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`
 for M3); the package version stays `0.1.0.dev0` until v1.0.
 
+### M4 hill-climbing harness
+
+- `evals/hillclimb/run.py`: searches the grids pre-declared in `evals/hillclimb/space.toml` on
+  the E1 dev split only (coordinate ascent in file order, a second pass only if the first moved
+  a key; per coordinate successive halving by project group: seeded 25 % sample, top half on
+  50 %, best on 100 %) and writes one joint `proposal.toml`. Objective: cost-weighted net
+  savings of one lane, never summed across lanes (frozen-engine compression replay per project
+  group for static keys, the `sim` lane for `learn.savings_reward`,
+  `learn.ladder_retry_decisions` and `learn.defaults.*`). A value is admissible only under the
+  acceptance rule (paired bootstrap by project group, 2000 seeded resamples: net-savings lower
+  bound > 0, proxy regret per trim non-inferior to the defaults within 0.2 tau and at most tau,
+  E2 100 % with `inline_rate` per level not below the defaults', sim breaker trips not above the
+  reference engine's).
+- `--confirm proposal.toml`: evaluates the joint proposal against the defaults once on the test
+  split (one paired `sim` run), all or nothing; one-shot per plan (a private ledger in `--out`
+  refuses every later confirmation); only grid values are accepted.
+- `space.toml`: every grid includes the current default, holds at most 5 values and is checked
+  against the owning module's clamp before any run; `[learn.tau]` and `[ope]` are never
+  searched; M3 keys (facts, pruning, loop guard) only toward less intervention.
+- Private files only (`trail.jsonl`, `proposal.toml`, `dev.json`, `confirm.json`, mode 0600,
+  outside any git work tree; `report.write_private(..., raw=True)` writes text files);
+  `--quiet` prints only the report path and id, `status:` and `<key>: accepted|rejected|unchanged`.
+- `hill-climb` skill and `eval-hillclimber` agent: commit messages cite the private report id,
+  never a figure.
+
 ### M4 simulation lane and offline LinTS challenger
 
 - E2 eval: a `pretrim` pass (the `guards.pretrim_level` arm on Bash-output cases) gates `guards.*` keys too; `run(levels, params)` and `--params OVERLAY.toml` evaluate candidate parameters (a temporary user config in the isolated home; unknown or mistyped keys raise `ValueError`); the report gains `inline_rate` per level, the share of needles visible in the compressed text rather than only via the recovery file.
