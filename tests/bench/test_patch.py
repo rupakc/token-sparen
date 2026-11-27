@@ -64,9 +64,16 @@ def test_patch_excludes_tool_artefacts_keeps_new_files(repo: tuple[Path, str]) -
         ".context-mode/db",
         ".tokeneconomizer/state.json",
         ".headroom/logs/proxy.log",
-        "weird:name*.txt",  # pathspec magic characters stay literal (kept: not excluded)
     ):
         _write(root, rel, "tool\n")
+    # pathspec magic characters stay literal (kept: not excluded). `:` and `*` are not legal in
+    # Windows file names (`:` opens an NTFS stream), so that name is POSIX-only; the benchmark
+    # itself extracts patches inside Linux containers.
+    odd = ["weird [ab] name's?.txt" if os.name == "posix" else "weird [ab] name's.txt"]
+    if os.name == "posix":
+        odd.append("weird:name*.txt")
+    for rel in odd:
+        _write(root, rel, "agent\n")
     patch = pt.extract_patch(str(root), base, excludes, run=pt.git_runner())
     assert _files(patch) == {
         "src.py",
@@ -74,7 +81,7 @@ def test_patch_excludes_tool_artefacts_keeps_new_files(repo: tuple[Path, str]) -
         "data.bin",
         ".claude/settings.json",
         "docs/CLAUDE.md",
-        "weird:name*.txt",
+        *odd,
     }
     assert "GIT binary patch" in patch
     # the patch applies cleanly to the base commit
