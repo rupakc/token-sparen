@@ -725,10 +725,14 @@ attribute reward to it. Tier governs exploration (§7.6).
   this error has repeated {n}× this turn ({fp}). Consider stepping back: re-read the error,
   check assumptions, or try a different approach.]` (oscillation has its own text). At most one
   per agent and turn; a second detection only tells the **user**, at most once per turn. An
-  error-loop trigger also calls `RegretDetector.on_loop`. Ordering (M4): the redirect's state
-  (nudge, savings watch, injected-tokens cost), the decision record and the `on_loop` call are
-  written only after the hook's response reached the host (`token_sparen/deferred.py`); a hook
-  the watchdog answered with the no-op records none of them, so the next repeat may redirect.
+  error-loop trigger also calls `RegretDetector.on_loop`. Ordering (M4): the redirect is
+  reserved in the session overlay under the overlay lock before the response, so a parallel
+  trigger of the same agent and turn only reaches the user notice (still one redirect per agent
+  and turn); the redirect's state (nudge, savings watch, injected-tokens cost), the decision
+  record and the `on_loop` call are written only after the hook's response reached the host
+  (`token_sparen/deferred.py`). A reservation never confirmed (the watchdog answered with the
+  no-op, or the write failed) counts as sent: never re-sent, never logged, forgotten at
+  settlement.
   The prompt-side settlement is an always-run handler that runs first in the UserPromptSubmit
   chain, so another prompt handler's latency overrun cannot turn a "stop" into an expiry.
 - **Reward** (§7.5): only a delivered redirect is observed. An error-loop redirect at >= 3

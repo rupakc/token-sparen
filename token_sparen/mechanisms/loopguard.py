@@ -95,6 +95,7 @@ __all__ = [
 ]
 
 STATE_KEY = "loopguard"
+RESERVED = "sending"  # an agent's redirect reserved in-lock, not yet confirmed delivered
 ARM_K: dict[str, int] = {"patient": 5, "standard": 3, "eager": 2}
 MAX_AGENTS = 16  # agents (main + subagents) tracked per turn; later ones are not counted
 MAX_FINGERPRINTS = 50  # fingerprints, and files watched for oscillation, per turn (all agents)
@@ -506,15 +507,20 @@ def _oscillation(
 
 def _evaluate(ag: dict[str, Any], hit: _Hit, cfg: Config, step: _Step, lg: dict[str, Any]) -> None:
     """Apply the agent's arm to this event: the first trigger becomes the redirect; a later
-    detection (counted on events after the redirect) becomes the user notice. The redirect's
-    state (``nudge``, ``watch``) is only prepared here: ``_deliver`` writes it once the hook's
-    response reached the host."""
+    detection (counted on events after the redirect) becomes the user notice. The redirect is
+    reserved here (``RESERVED``, in-lock: any later trigger of the agent's turn sees it as sent,
+    so parallel hooks never redirect twice); ``_deliver`` turns the reservation into ``nudge``
+    and ``watch`` once the hook's response reached the host. A reservation never turned (the
+    hook overran or the write failed) stays: never re-sent, never logged, forgotten at
+    settlement."""
     dec = ag.get("decision")
     if not isinstance(dec, list) or len(dec) < 4 or hit.fp is None:
         return
     k = _k(cfg, dec[1])
     need = max(MIN_REVERSALS, k - 1) if hit.osc else k
     nudge = ag.get("nudge")
+    if not isinstance(nudge, dict):
+        nudge = ag.get(RESERVED)
     if isinstance(nudge, dict):
         after = _dict(ag.get("after"))
         ag["after"] = after
@@ -528,6 +534,7 @@ def _evaluate(ag: dict[str, Any], hit: _Hit, cfg: Config, step: _Step, lg: dict[
     if hit.n < need:
         return
     occurrences = hit.n + 1 if hit.osc else hit.n
+    ag[RESERVED] = {"did": dec[0], "fp": hit.fp, "turn": lg.get("turn"), "t": time.time()}
     step.deliver = {
         "did": dec[0],
         "nudge": {"fp": hit.fp, "n": hit.n},
@@ -545,8 +552,8 @@ def _evaluate(ag: dict[str, Any], hit: _Hit, cfg: Config, step: _Step, lg: dict[
 
 
 def _deliver(state: dict[str, Any], turn: int, agent: str, step: _Step) -> None:
-    """After the response: record the delivered redirect (``nudge``, its savings ``watch``, the
-    injected-tokens ledger), unless the turn moved on or another hook already redirected."""
+    """After the response: turn this hook's reservation into the delivered redirect (``nudge``,
+    its savings ``watch``, the injected-tokens ledger), unless the turn moved on."""
     pend = step.deliver
     lg = state.get(STATE_KEY)
     if pend is None or not isinstance(lg, dict) or lg.get("turn") != turn:
@@ -554,9 +561,12 @@ def _deliver(state: dict[str, Any], turn: int, agent: str, step: _Step) -> None:
     ag = _dict(lg.get("agents")).get(agent)
     if not isinstance(ag, dict) or ag.get("nudge"):
         return
-    dec = ag.get("decision")
+    res, dec = ag.get(RESERVED), ag.get("decision")
+    if not isinstance(res, dict) or res.get("did") != pend["did"]:
+        return
     if not isinstance(dec, list) or not dec or dec[0] != pend["did"]:
         return
+    del ag[RESERVED]
     ag["nudge"] = pend["nudge"]
     ag["natural"] = None  # a redirect now shapes what follows: no longer a natural observation
     ag["watch"] = pend["watch"]
@@ -624,7 +634,7 @@ def _natural_watch(ag: dict[str, Any], fp: str | None, step: _Step) -> None:
 def _natural_open(ag: dict[str, Any], hit: _Hit, cfg: Config) -> None:
     """An error fingerprint at >= ``SAVINGS_MIN_N`` occurrences with no redirect for this agent
     (its arm's ``k`` not reached): watch it once per agent and turn for the natural break rate."""
-    if hit.osc or hit.fp is None or hit.n < SAVINGS_MIN_N or ag.get("nudge"):
+    if hit.osc or hit.fp is None or hit.n < SAVINGS_MIN_N or ag.get("nudge") or ag.get(RESERVED):
         return
     if ag.get("natural_seen"):
         return
@@ -832,9 +842,9 @@ def on_tool(
             sctx = tracking.session_ctx(event, overlay, path)
             regret.RegretDetector(cfg, env).on_loop(sctx, None)
 
-    if step.deliver is not None or step.decided is not None or step.error_loop:
-        deferred.after_emit(after_emit)
     _pay(policy, step, event, cfg, env)
+    if step.deliver is not None or step.decided is not None or step.error_loop:
+        deferred.after_emit(after_emit)  # last: nothing fallible after it (review M1)
     return Action(inject_context=step.nudge, user_message=step.notice)
 
 

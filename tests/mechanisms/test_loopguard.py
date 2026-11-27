@@ -1008,7 +1008,8 @@ def test_summary_total_counts_in_other_runners(make: Any, kind: str) -> None:
 
 def test_no_nudge_state_without_delivery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A hook that overruns its budget after the guard decided returns the no-op: no nudge
-    state, no ledger cost and no decision record are written; the next repeat redirects."""
+    state, no ledger cost and no decision record are written. Its reservation counts as sent
+    (fix round 1, ruling on I1): the next repeat never redirects again, and is never logged."""
     import time
 
     from token_sparen.adapters.claude import entry
@@ -1054,13 +1055,14 @@ def test_no_nudge_state_without_delivery(tmp_path: Path, monkeypatch: pytest.Mon
     ov = overlay()
     ag = ov[loopguard.STATE_KEY]["agents"][""]
     assert ag.get("decision") and not ag.get("nudge") and not ag.get("watch")
+    assert ag[loopguard.RESERVED]["did"] == ag["decision"][0]
     assert not ov.get("injected_tokens")
     assert records() == []
     out = _hook(tmp_path, "PostToolUseFailure", {**fail, "tool_use_id": "tu-3"}, monkeypatch)
-    assert out["hookSpecificOutput"]["additionalContext"].startswith("[token-sparen: this error")
-    assert overlay()[loopguard.STATE_KEY]["agents"][""]["nudge"]
-    assert overlay().get("injected_tokens")
-    assert len(records()) == 1
+    assert "additionalContext" not in out.get("hookSpecificOutput", {})  # never re-sent
+    ag = overlay()[loopguard.STATE_KEY]["agents"][""]
+    assert not ag.get("nudge") and not overlay().get("injected_tokens")
+    assert records() == []
 
 
 def test_late_delivery_after_the_turn_moved_on_records_nothing(tmp_path: Path) -> None:
@@ -1080,18 +1082,82 @@ def test_late_delivery_after_the_turn_moved_on_records_nothing(tmp_path: Path) -
     assert _lg_records(tmp_path) == [] and pol.forgotten == [pol.decisions[0].decision_id]
 
 
-def test_concurrent_delivery_records_once(tmp_path: Path) -> None:
+@pytest.mark.parametrize("arm", ["eager", "standard"])
+def test_parallel_same_agent_failures_redirect_once(tmp_path: Path, arm: str) -> None:
+    """Review I1: hooks of parallel calls overlap before the first one's post-emit record; the
+    in-lock reservation keeps the redirect at one per agent and turn (a repeat: user notice)."""
+    from token_sparen import deferred
+
+    pol = Rec(arm)
+    _prompt(tmp_path, pol)
+    for _ in range(loopguard.ARM_K[arm] - 1):
+        _tool(tmp_path, pol, _fail(tmp_path))
+    with deferred.collecting() as first:
+        assert _tool(tmp_path, pol, _fail(tmp_path)).inject_context is not None
+    acts = []
+    queues = []
+    for _ in range(3):  # parallel calls, all before the first one's record
+        with deferred.collecting() as q:
+            acts.append(_tool(tmp_path, pol, _fail(tmp_path)))
+        queues.append(q)
+    assert [a.inject_context for a in acts] == [None, None, None]
+    assert sum(a.user_message is not None for a in acts) == 1  # the user notice, once
+    for q in [first, *queues]:
+        deferred.run(q, pytest.fail)
+    ov = _overlay(tmp_path)
+    ag = ov[loopguard.STATE_KEY]["agents"][""]
+    assert ag["nudge"]["n"] == loopguard.ARM_K[arm] and loopguard.RESERVED not in ag
+    assert ov["injected_tokens"] == loopguard.estimate_tokens(
+        NUDGE.format(n=ag["nudge"]["n"], fp=ag["nudge"]["fp"])
+    )
+    assert len(_lg_records(tmp_path)) == 1
+
+
+def test_failed_post_emit_write_never_redirects_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The redirect went out but its record failed (StoreBusy): no second redirect later that
+    turn, no decision record, and the decision is forgotten at settlement."""
+    from token_sparen import deferred
+    from token_sparen.store import jsonstore
+
+    pol = Rec("eager")
+    _prompt(tmp_path, pol)
+    _tool(tmp_path, pol, _fail(tmp_path))
+    with deferred.collecting() as later:
+        assert _tool(tmp_path, pol, _fail(tmp_path)).inject_context is not None
+
+    def busy(*args: Any, **kwargs: Any) -> None:
+        raise jsonstore.StoreBusy("held")
+
+    with monkeypatch.context() as m:
+        m.setattr(jsonstore, "update", busy)
+        deferred.run(later, pytest.fail)  # logged and swallowed by ``_update``
+    for _ in range(4):
+        assert _tool(tmp_path, pol, _fail(tmp_path)).inject_context is None
+    ag = _overlay(tmp_path)[loopguard.STATE_KEY]["agents"][""]
+    assert not ag.get("nudge") and ag[loopguard.RESERVED]
+    assert _lg_records(tmp_path) == [] and not _overlay(tmp_path).get("injected_tokens")
+    _prompt(tmp_path, pol, "next")
+    assert pol.forgotten == [pol.decisions[0].decision_id]
+    assert [r for r in pol.rewards if r[0] == pol.decisions[0].decision_id] == []
+
+
+def test_post_emit_work_is_queued_after_pay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review M1: a failure before the return (here ``_pay``) leaves nothing queued, so no
+    record can follow a redirect the handler never returned."""
     from token_sparen import deferred
 
     pol = Rec("eager")
     _prompt(tmp_path, pol)
     _tool(tmp_path, pol, _fail(tmp_path))
-    with deferred.collecting() as first:
-        assert _tool(tmp_path, pol, _fail(tmp_path)).inject_context is not None
-    with deferred.collecting() as second:  # a parallel call before the first one's record
-        assert _tool(tmp_path, pol, _fail(tmp_path)).inject_context is not None
-    deferred.run(first, pytest.fail)
-    deferred.run(second, pytest.fail)
-    ag = _overlay(tmp_path)[loopguard.STATE_KEY]["agents"][""]
-    assert ag["nudge"]["n"] == 2 and ag["logged"] is True
-    assert len(_lg_records(tmp_path)) == 1
+
+    def boom(*args: Any) -> None:
+        raise RuntimeError("pay")
+
+    monkeypatch.setattr(loopguard, "_pay", boom)
+    with deferred.collecting() as later, pytest.raises(RuntimeError):
+        _tool(tmp_path, pol, _fail(tmp_path))
+    assert later == []

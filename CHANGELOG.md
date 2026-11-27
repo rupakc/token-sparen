@@ -22,7 +22,8 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
 - Loop guard: the redirect's state, its injected-tokens cost, the decision record and the
   regret detector's loop signal are written only after the hook's response reached Claude Code
   (new `token_sparen/deferred.py`); a hook answered with the watchdog's no-op records none of
-  them.
+  them. The redirect is reserved under the overlay lock first, so parallel failing calls of one
+  agent still get at most one redirect per turn; an unconfirmed reservation is never re-sent.
 - Compression: a stack-frame head is an error line only when it matches outside its file
   location, so library frames such as `requests/exceptions.py` can be folded again (E2 stays
   100 %).

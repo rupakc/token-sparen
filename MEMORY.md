@@ -1548,10 +1548,16 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - Post-emit work: `token_sparen/deferred.py` (`after_emit`, queued inside a hook, run by the
   adapter after its response is written, dropped when the watchdog wrote the no-op; runs at once
   outside a hook). The loop guard defers the redirect's state, ledger cost, decision record and
-  `on_loop`; the adopted decision (`ag["decision"]`) stays in-lock so concurrent hooks agree. A
-  decision adopted by a hook that overran is logged by the hook that later delivers its redirect
-  (`ag["logged"]`), else forgotten at settlement. Worst case: a delivered redirect without its
-  record (post-emit overrun or a concurrent double delivery), never a record without delivery.
+  `on_loop`; the adopted decision (`ag["decision"]`) stays in-lock so concurrent hooks agree.
+  Fix round 1 (controller ruling on review I1): the redirect is reserved in-lock
+  (`ag["sending"] = {did, fp, turn, t}`) before the response; any later trigger of that agent
+  and turn sees it as sent (user notice only), so parallel hooks never redirect twice. The
+  post-emit step turns the reservation into `nudge` + ledger + decision record; a reservation
+  never turned (StoreBusy, watchdog) is treated as delivered: never re-sent, never logged,
+  forgotten at settlement. A decision adopted by a hook that overran without reserving is logged
+  by the hook that later delivers its redirect (`ag["logged"]`). Work is queued only as the last
+  step before the handler returns (review M1). Worst case: a delivered redirect without its
+  record; never a record without delivery, never two redirects per agent and turn.
   The user notice's `warned` flag stays in-lock (at most a lost notice, never a repeated one).
 - `is_error_line` (and its byte twin `error_line_indices`) judges a stack-frame head (Python
   `File "<path>", line N`; JS/JVM `at [fn (]<path>:N[:M][)]`) without its file location, so a
