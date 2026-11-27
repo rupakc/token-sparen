@@ -1727,3 +1727,7 @@ and the two new issues they found.
   2 s search deadline, warning says where to set `TOKEN_SPAREN_PYTHON`, uv TTL documented.
   Known trade-off: python.org macOS framework Pythons are group-`admin` writable and so are not
   accepted as `TOKEN_SPAREN_PYTHON` (still found via PATH).
+
+## 2026-11-27 M6 Task 6 (evidence renderer) reconciled names
+- Evidence file `docs/evidence/e4.json`; loader `bench.e4.load_e4` (E4Error); gate field `gate.verdict` (passed|failed|underpowered); plugin hash = `scripts.plugin_hash.plugin_hash(tree)` vs `doc["plugin_hash"]`. `scripts/render_evidence.py`: render_evidence, check_release_gate, replace_block; markers `<!-- evidence:start/end -->`. Decision file `docs/release/gate-decision.toml` needs `version` (= plugin.json version) and non-empty `rationale`; failed is never overridable.
+- Test file is `tests/test_render_evidence.py` (tests/learn/test_evidence.py already uses the other basename).

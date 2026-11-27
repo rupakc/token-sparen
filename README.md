@@ -15,13 +15,20 @@ shows a live token meter. Everything runs locally.
 
 ## Status
 
-Pre-release (see `token-sparen --version`). The mechanisms below work today; how strongly to trim is learned per
-project from your own sessions (see [How it learns](#how-it-learns)), starting conservatively.
-There are **no published benchmark numbers yet**, so this README makes no savings claims; measure
-on your own sessions with `/token-sparen` or `token-sparen stats`. Both report **net** savings:
+v1.0 target, Claude Code only (other hosts are planned for a later release). The mechanisms below
+work today; how strongly to trim is learned per project from your own sessions (see
+[How it learns](#how-it-learns)), starting conservatively. This README makes no savings claims
+beyond the [Evidence](#evidence) section below; measure on your own sessions with `/token-sparen`
+or `token-sparen stats`. Both report **net** savings:
 tokens removed by trims, minus the tokens the agent spent re-reading trimmed output, minus the
 tokens token-sparen itself injected (`stats` also prints the gross figure and both parts; the
 statusline `saved` segment uses the same net figure). Net can be zero or negative.
+
+## Evidence
+
+<!-- evidence:start -->
+No published benchmark results yet. Results appear here only from the live benchmark (E4), each with its 95 % CI, number of tasks, seeds, model, date and the plugin hash it measured.
+<!-- evidence:end -->
 
 ## Requirements
 
@@ -71,6 +78,10 @@ doctor` finds one the same way, and says so when there is none.
 claude plugin marketplace add rupakc/token-sparen
 claude plugin install token-sparen@token-sparen
 ```
+
+The marketplace entry tracks the `release/claude` branch of this repository (the built plugin
+tree). To work on token-sparen itself, see [CONTRIBUTING.md](CONTRIBUTING.md) for the development
+install.
 
 That is all the plugin needs. Start a new Claude Code session afterwards (or reload plugins) so
 the hooks are picked up.
@@ -474,6 +485,13 @@ The runtime checks (error lines kept, line counts consistent, failures disabled)
 *buggy* extensions, not *malicious* ones. Trust follows content, not location: an identical copy of
 a trusted file in another project also loads.
 
+## Settings it may change (statusline, tool pruning)
+
+Two opt-in features write Claude Code settings, each backed up and reversible: the
+[live statusline](#live-statusline-opt-in) (`token-sparen statusline install`) and
+[tool pruning](#tool-pruning-opt-in) (deny rules, only on git confirmation). Nothing else edits
+your settings; details are in [What it writes to disk](#what-it-writes-to-disk).
+
 ## Privacy
 
 Nothing leaves your machine. token-sparen has no telemetry and makes no network requests. Its local
@@ -732,6 +750,11 @@ print aggregate numbers only (no paths, ids or text), and write a JSON report wi
 report path must be outside any git work tree, so a report can never be committed by accident. (On Windows file modes do not apply: keep the report inside your user profile, whose
 default permissions are private to you.)
 While they run, error log lines keep only where an error happened, never its message.
+
+## Documentation
+
+See the [docs/user](docs/user) folder (privacy and security notes), the project site and the
+repository wiki; [CHANGELOG.md](CHANGELOG.md) lists changes.
 
 ## Credits and licence
 
