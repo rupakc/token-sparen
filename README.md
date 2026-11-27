@@ -426,6 +426,10 @@ files are plain text, though: recovered outputs, your last prompt, file paths an
 are stored as described in [What it writes to disk](#what-it-writes-to-disk). Delete
 `~/.token-sparen/` and `<project>/.token-sparen/` at any time.
 
+Replay and the hill-climbing harness read your own transcripts on your machine only; their
+reports are written with owner-only permissions outside any git work tree, and the project never
+commits figures derived from anyone's sessions.
+
 ## How it learns
 
 A small constrained bandit chooses, per decision point and context bucket (context fill, tool
@@ -636,6 +640,12 @@ it may only move loop-guard defaults toward less intervention. Failures are reco
 `report: <path> id: <12 hex>` (the id is the first 12 hex digits of the report's sha256) and
 then `status: complete` or `status: incomplete`, so a run can be cited without printing any
 figure; `ope --quiet` prints the report line only.
+
+The defaults themselves are tuned offline with the hill-climbing harness
+(`evals/hillclimb/`; method in [`docs/reports/m4-method.md`](docs/reports/m4-method.md)): grids
+declared in advance, one look at a held-out split, accept all or nothing. It reads transcripts
+locally, writes only private files outside any git work tree, and prints no figures with
+`--quiet`; its results are cited by report id only and never committed.
 
 `token-sparen ope --log <decisions.jsonl...> --target static|engine-snapshot --out <file>`
 estimates how another policy would have done on your logged decisions (IPS, self-normalised IPS,

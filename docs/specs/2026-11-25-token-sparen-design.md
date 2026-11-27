@@ -7,6 +7,16 @@ Status: APPROVED 2026-11-25 (with §6.12 live statusline added at approval) · D
 
 ## Revision log
 
+**2026-11-27 (M4).** §7.9: refit priors and tuned values carry provenance "selected on maintainer
+E1 dev split, private report <id>" (first twelve hex digits of the report hash) and no figures;
+this resolves the tension with §10.1 (numbers never committed, not even as aggregates): a grid
+choice is a decision, not an aggregate. §10.6: tuned values come only from grids pre-declared in
+`evals/hillclimb/space.toml`; one look at the held-out test split; accept all-or-nothing by a
+paired (per project group) bootstrap rule with a non-inferiority margin on proxy regret, E2 at
+100 % including inline rate, and minimum evidence; a commit for an accepted change cites the
+private report id and contains no figure. §7.8: the LinTS challenger is offline-only (not wired to
+hooks). §6.6 output-style directives move to M5 (needs E4). Method: `docs/reports/m4-method.md`.
+
 **2026-11-26 (after M1).** Synced with the decisions recorded in `MEMORY.md` and the shipped code.
 Changes: §3 C1 (Python >= 3.11); §5 hook events (PostToolUseFailure and SessionEnd instead of
 PostToolBatch) and the Event/Action field names; §6.1 never-larger rule, failed tool results,
@@ -608,7 +618,7 @@ attribute reward to it. Tier governs exploration (§7.6).
   needed) flags task boundaries; recommend `/compact` (or host equivalent) to the
   **user** at boundaries when context is large. Never auto-compacts.
 
-### 6.6 Output-style directives — tier: high (off by default)
+### 6.6 Output-style directives — tier: high (off by default; moved to M5, needs E4)
 - Optional one-time directives (e.g. "be concise in prose; never shorten code") injected once per
   session. Off by default; enabled only if the live benchmark shows non-inferior quality. (Evidence
   from the landscape: a plain "be concise" prompt captures most of what terse-output plugins claim.)
@@ -900,7 +910,7 @@ candidate (prior Beta(1, 1), unused prompts as zero-regret observations, a resto
 
 ### 7.8 Offline evaluation and challengers
 Decision logs with propensities allow **IPS and doubly-robust** estimates of any candidate policy
-on past sessions. A LinTS challenger (deferred to M4) and every tuned hyper-parameter are
+on past sessions. An offline-only LinTS challenger (in `evals/`, not wired to hooks, so no propensity concern) and every tuned hyper-parameter are
 evaluated this way; promotion only on held-out improvement (§10.6).
 
 ### 7.9 Lessons from the references (design requirements)
@@ -908,7 +918,9 @@ evaluated this way; promotion only on held-out improvement (§10.6).
   67 % re-reads. Fixed by §7.5–7.6.
 - Reference A's command signature collapsed `cd x && …` to `cd` → fixed by normalised argv.
 - Reference A's "empirically calibrated" priors were hand-set → our designed defaults are
-  **hand-set until M4**, then refit by offline replay and documented with their provenance.
+  **hand-set until M4**, then refit by offline replay (snapped to a coarse pre-declared grid) and
+  documented with their provenance only as "selected on maintainer E1 dev split, private report
+  <id>", never with figures (§10.1).
 - Reference B's fixed gates delayed facts to ~session 5 and pruning had no in-session recovery →
   §6.8, §6.10.
 
@@ -1016,9 +1028,13 @@ plugin version** (hash recorded). No claim without a reproducible script in `ben
 ### 10.6 Hill-climbing
 Every tunable (keep ratios, thresholds, priors, λ targets, size floors, compressor rules) is a
 parameter in `token_sparen/params/defaults.toml` (inside the package so the wheel carries it). Loop: propose change → E2 must stay 100 % → E1/E3 on **dev**
-split must improve the objective (savings with regret ≤ target) → confirm on **held-out test**
-split → (periodically) E4 confirmation. Search: coordinate ascent + successive halving; every
-accepted change is a commit with its eval delta. Never tune on the test split (Reference B's flaw).
+split must improve the objective (savings with regret ≤ target), choosing only values from grids
+pre-declared in `evals/hillclimb/space.toml` → confirm **once** on the **held-out test**
+split: accept all-or-nothing iff the paired (by project group) bootstrap lower bound of the
+net-savings difference is above zero, the proxy-regret-per-trim difference versus the current
+defaults is within 0.2·τ and the absolute value within τ at every point, E2 is 100 % (inline rate
+not below the defaults'), and the minimum evidence holds; otherwise defaults stay → (periodically) E4 confirmation. Search: coordinate ascent + successive halving; every
+accepted change is a commit citing the private report id (first twelve hex digits), without figures. Never tune on the test split (Reference B's flaw).
 
 ## 11. Repository, CI, release, docs
 
