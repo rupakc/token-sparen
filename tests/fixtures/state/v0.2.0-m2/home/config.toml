@@ -1,2 +1,4 @@
 [adapter]
 latency_budget_ms = 5000
+[compression]
+min_tokens = 500

@@ -1183,7 +1183,12 @@ def _facts_cmd(args: argparse.Namespace) -> int:
         return doc
 
     private_mkdir(pdir)
-    jsonstore.update(store, toggle, {}, os.environ)
+    try:
+        jsonstore.update(store, toggle, {}, os.environ)
+    except jsonstore.NewerSchema as exc:
+        if off:
+            return _facts_downgraded(exc, "token-sparen facts disable")
+        raise
     state = "disabled" if off else "enabled"
     print(f"token-sparen facts: injection {state} for this project")
     return 0
@@ -1257,7 +1262,10 @@ def _prune_cmd(args: argparse.Namespace) -> int:
             print(f"warning: nothing will be written to {target} while {why}.")
         return 0
     if args.action == "disable":
-        done = prune.disable(home, key, env, checkout=project)
+        try:
+            done = prune.disable(home, key, env, checkout=project)
+        except jsonstore.NewerSchema as exc:
+            return _prune_downgraded(exc, project, None, "token-sparen prune disable")
         print(
             "token-sparen prune: disabled for this project"
             + (f"; restored {', '.join(done)}" if done else "")
@@ -1267,6 +1275,11 @@ def _prune_cmd(args: argparse.Namespace) -> int:
         return 0
     if args.all == (args.tool is not None):
         raise CliError("prune restore needs a tool name or --all")
+    command = "token-sparen prune restore " + ("--all" if args.all else shlex.quote(args.tool))
+    try:
+        prune.check_current(home, key, env)
+    except jsonstore.NewerSchema as exc:
+        return _prune_downgraded(exc, project, None if args.all else args.tool, command)
     doc = prune.read_doc(home, key, env, checkout=project)
     if args.all:
         every = prune.restore(home, key, None, None, env, checkout=project)  # every checkout
@@ -1287,6 +1300,39 @@ def _prune_cmd(args: argparse.Namespace) -> int:
         raise CliError(f"could not change {', '.join(where)}; see `token-sparen doctor`", code=1)
     for fkey, rules in restored.items():
         print(f"token-sparen prune: restored {', '.join(rules)} in {fkey}")
+    return 0
+
+
+def _command_line(argv: list[str]) -> str:
+    return " ".join(["token-sparen", *(shlex.quote(a) for a in argv)])
+
+
+def _prune_downgraded(
+    exc: jsonstore.NewerSchema, project: Path, tool: str | None, command: str
+) -> int:
+    """``prune disable`` / ``restore`` when the prune state is newer than this code: undo what
+    the settings file and its backup identify, without parsing the newer state."""
+    from token_sparen.adapters.claude import settings
+
+    target = settings.local_settings_path(project)
+    removed, why = settings.undo_by_backup(project, tool)
+    if removed:
+        print(f"token-sparen prune: removed {', '.join(removed)} from {target}")
+    elif why is not None:
+        print(f"token-sparen prune: nothing removed from {target}: {why}", file=sys.stderr)
+    else:
+        print(f"token-sparen prune: no rule of token-sparen's found in {target}")
+    print(f"token-sparen: {exc.advice(command)} (other checkouts and the opt-in)", file=sys.stderr)
+    return 0 if removed or why is None else 1
+
+
+def _facts_downgraded(exc: jsonstore.NewerSchema, command: str) -> int:
+    """``facts disable`` when ``facts.json`` is newer: this version never injects from it."""
+    print(
+        "token-sparen facts: this version does not inject facts from a newer facts.json, so "
+        "injection is already off while it runs"
+    )
+    print(f"token-sparen: {exc.advice(command)} (to keep it off there)", file=sys.stderr)
     return 0
 
 
@@ -1332,6 +1378,9 @@ def main(argv: list[str] | None = None) -> int:
         args.cmd = [*args.cmd, *tail]
     try:
         return _dispatch(args)
+    except jsonstore.NewerSchema as exc:  # state from a newer version: say what to do
+        print(f"token-sparen: {exc.advice(_command_line(argv))}", file=sys.stderr)
+        return 1
     except CliError as exc:
         print(f"token-sparen: {exc}", file=sys.stderr)
         return exc.code

@@ -1,1 +1,1 @@
-{"scan": {"offset": 3630, "head": "70821b77dc4d1f14"}, "applied": ["62fe9ecf47b94710ae4341cafb8f7bd8", "a7eed8db5ebb4c048c1f062286eb4783"], "candidates": {}, "stats": {"pytest -v": [1.0, 0.17418712674187126, 1.0, 1795807860.162526]}}
+{"scan": {"offset": 3629, "head": "46155bc5ea1ffbf1"}, "applied": ["8646ea09b1114dd9a8c9ad6bf9ad0fc7", "a6f6aa7162cc40ee940b0d109c7a28cd"], "candidates": {}, "stats": {"pytest -v": [1.0, 0.17418712674187126, 1.0, 1795809338.4869308]}}

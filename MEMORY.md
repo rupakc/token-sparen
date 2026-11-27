@@ -1717,3 +1717,13 @@ and the two new issues they found.
   works in Claude Code only".
 - Open: 0.x recovery outputs are not in the recovery id registry, so `show` refuses them after
   an upgrade (files remain readable by path). Adopting them safely needs a ruling (sec-open-3).
+- Fix round 1 (rulings I-1..I-3, T4-c2): `fold` runs each store step isolated (`step()` in
+  `overlay._fold`); a `NewerSchema` step is recorded in `FoldReport.held`, the staged fold keeps
+  `done` steps and stays pending (`RETAIN_MAX` = 20 pending sessions, then cleared). Store
+  problems log via `jsonstore.log_once` (per process + `logs/once.json` keyed by
+  sha256(path, session)); hooks and folds set `jsonstore.LOG_SESSION`. Versioned docs get
+  `written_by` on every write so an older CLI can name the writer. Downgrade undo: prune
+  rules identified by format (`mcp__<server>` or a bare PascalCase built-in) minus the
+  settings-file backup (`settings.undo_by_backup`); statusline by its launcher command;
+  everything else prints `NewerSchema.advice(command)`. v1 posteriors copied to
+  `posteriors.v1.bak.json` first.

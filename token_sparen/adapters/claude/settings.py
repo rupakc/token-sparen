@@ -275,7 +275,12 @@ def _set_record(env: Mapping[str, str], slot: str, record: Any) -> Any:
     return previous[0]
 
 
+STATUSLINE_CMD = "token-sparen statusline uninstall"
+
+
 def _failure(exc: BaseException) -> InstallResult:
+    if isinstance(exc, jsonstore.NewerSchema):
+        return InstallResult(False, "error", f"token-sparen: {exc.advice(STATUSLINE_CMD)}")
     if isinstance(exc, _Changed):
         reason = f"{exc} kept changing while we wrote it; nothing was changed, try again"
     else:
@@ -347,13 +352,18 @@ def uninstall_statusline(
     env = os.environ if env is None else env
     target = _target(settings_file)
     slot = _slot(target)
+    newer: jsonstore.NewerSchema | None = None
     for attempt in (0, 1):
         try:
             data, _, stamp = _load_stamped(target)
             meta = jsonstore.read(_meta_path(env), {}, env)
-            jsonstore.refuse_newer(_meta_path(env), meta, env)  # a newer install's record
+            jsonstore.refuse_newer(_meta_path(env), meta, env)
         except _Invalid as exc:
             return InstallResult(False, "error", str(exc))
+        except jsonstore.NewerSchema as exc:
+            # A newer install's record: not parsed and left as it is. Our statusLine is still
+            # recognised by its launcher command, so the settings file is reverted without it.
+            newer, meta = exc, {}
         except OSError as exc:
             return _failure(exc)
         installs = meta.get("installs")
@@ -365,7 +375,7 @@ def uninstall_statusline(
         args = _ours(current, launcher or recorded_launcher) or _ours(current, recorded_launcher)
         try:
             if args is None:
-                if isinstance(record, dict):
+                if isinstance(record, dict) and newer is None:
                     _set_record(env, slot, None)
                     return InstallResult(
                         True, "unchanged", "statusline was changed since install; left as it is"
@@ -379,14 +389,18 @@ def uninstall_statusline(
             else:
                 data.pop(KEY, None)
             _write(target, data, stamp)
-            _set_record(env, slot, None)
+            if newer is None:
+                _set_record(env, slot, None)
         except (OSError, jsonstore.StoreBusy, ValueError, _Changed) as exc:
             if isinstance(exc, _Changed) and attempt == 0:
                 continue
             return _failure(exc)
         action: Outcome = "restored" if had else "removed"
         what = "original statusline restored" if had else "statusline removed"
-        return InstallResult(True, action, f"token-sparen: {what} in {settings_file}")
+        text = f"token-sparen: {what} in {settings_file}"
+        if newer is not None:
+            text += f"; the install record is kept: {newer.advice(STATUSLINE_CMD)} to drop it"
+        return InstallResult(True, action, text)
     raise AssertionError("unreachable")  # pragma: no cover
 
 
@@ -590,6 +604,43 @@ def _drop_backup(target: Path, data: Mapping[str, Any]) -> None:
             backup.unlink()
     except (OSError, ValueError):
         return
+
+
+def _ours_by_format(rule: Any) -> bool:
+    """The rule format tool pruning writes: an MCP server (``mcp__<server>``) or a bare
+    built-in tool name. A user's own rules usually carry a pattern (``Bash(rm:*)``)."""
+    if not isinstance(rule, str):
+        return False
+    return prune._is_server(rule) or re.fullmatch(r"[A-Z][A-Za-z0-9]*", rule) is not None
+
+
+def undo_by_backup(project_dir: Path, tool: str | None = None) -> tuple[list[str], str | None]:
+    """Remove the deny rules tool pruning wrote to this checkout's settings file without
+    reading its (newer) state: a rule counts as ours when it has our format and is absent from
+    the settings-file backup token-sparen took before its first rule. ``tool``: only the rules
+    covering it. Returns (rules removed, None) or ([], why nothing was done)."""
+    target = local_settings_path(project_dir)
+    backup = target.with_name(target.name + BACKUP_SUFFIX)
+    if not target.is_file():
+        return [], None
+    if _linked(target):
+        return [], f"{target} is a symbolic link (or inside one)"
+    current = deny_rules(target)
+    if current is None:
+        return [], f"{target} is not valid settings JSON"
+    if not backup.is_file():
+        return [], f"no backup ({backup.name}) to tell token-sparen's rules from yours"
+    try:
+        before = {r for r in _deny_list(_load(backup)[0]) if isinstance(r, str)}
+    except (_Invalid, OSError):
+        return [], f"{backup.name} is not valid settings JSON"
+    ours = sorted(r for r in current if _ours_by_format(r) and r not in before)
+    if tool is not None:
+        ours = prune.tool_rule(tool, ours)
+    if not ours:
+        return [], None
+    res = remove_deny_rules(target, ours, {}, cleanup=False)
+    return (res.changed, None) if res.ok else ([], res.message)
 
 
 def deny_rules(path: Path) -> set[str] | None:

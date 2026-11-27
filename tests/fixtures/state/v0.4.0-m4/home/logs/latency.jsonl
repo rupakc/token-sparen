@@ -1,1 +1,5 @@
-{"ts": 1795807863.657726, "event": "SessionStart", "ms": 4.101, "outcome": "noop"}
+{"ts": 1795809337.74769, "event": "PostToolUse", "ms": 10.354, "outcome": "action"}
+{"ts": 1795809337.8679209, "event": "PostToolUseFailure", "ms": 8.995, "outcome": "noop"}
+{"ts": 1795809338.140807, "event": "PostToolUseFailure", "ms": 4.649, "outcome": "noop"}
+{"ts": 1795809342.34681, "event": "PreToolUse", "ms": 2.746, "outcome": "noop"}
+{"ts": 1795809347.363657, "event": "PostToolUseFailure", "ms": 4.319, "outcome": "noop"}

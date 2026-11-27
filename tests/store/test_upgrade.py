@@ -194,10 +194,11 @@ def test_milestone_state_loads_or_quarantines(
     home = where["home"]
     before = _json_docs(home)
     assert before, "fixture is empty"
+    baseline = len(_errors(home))  # lines the milestone itself logged (e.g. the floor warning)
     _session(where)
     captured = capsys.readouterr()
     assert "Traceback" not in captured.err and "Traceback" not in captured.out
-    errors = _errors(home)
+    errors = _errors(home)[baseline:]
     assert not any("Traceback" in json.dumps(e) for e in errors), errors
     after = _json_docs(home)
     for rel in before:
@@ -235,8 +236,21 @@ def test_milestone_state_is_kept(tag: str, tmp_path: Path, monkeypatch: pytest.M
         "prune": _load(pdir / "prune.json"),
         "sessions": {p.name for p in (pdir / "sessions").glob("*.json")},
         "outputs": {p.name for p in (where["proj"] / ".token-sparen" / "outputs").glob("*")},
+        "trust": _load(home / "trusted_extensions.json"),
+        "floor": _load(pdir / "floor_warned.json"),
+        "open": _load(pdir / "sessions" / "fixture-s3.json"),
     }
     _session(where)
+    # user settings and bookkeeping: trusted drop-ins, the floor warning record
+    assert kept["trust"] and _load(home / "trusted_extensions.json") == kept["trust"]
+    assert kept["floor"] and _load(pdir / "floor_warned.json") == kept["floor"]
+    # a session left with its turn open keeps its overlay (loop-guard turn state included)
+    if kept["open"] is not None:
+        now = _load(pdir / "sessions" / "fixture-s3.json")
+        assert now is not None
+        assert {k: v for k, v in kept["open"].items() if k == "loopguard"} == {
+            k: v for k, v in now.items() if k == "loopguard"
+        }
     if kept["secret"] is not None:
         assert (home / "secret").read_bytes() == kept["secret"]
     assert _load(home / "statusline_install.json") == kept["statusline"]
@@ -269,6 +283,11 @@ def test_legacy_shapes_migrate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     doc = _load(pdir / "prune.json")
     assert doc["version"] == prune.VERSION and doc["enabled"] is True and "files" not in doc
     assert "settings-a" in _load(home / prune.REGISTRY_FILE)["files"]
+    # ... after a copy of the old document is kept beside it
+    legacy = json.loads(
+        (FIXTURES / "legacy" / "home" / "projects" / KEY / "posteriors.json").read_text()
+    )
+    assert _load(pdir / "posteriors.v1.bak.json") == legacy
     # a truncated document is quarantined (moved aside) or left alone, always logged
     assert "pretrim.json" in errors
     assert _load(pdir / "facts.json")["disabled"] is True
@@ -326,8 +345,13 @@ def test_older_reader_never_downgrades_state(
     for path, data in bumped.items():
         assert path.read_bytes() == data, path.relative_to(home)
         assert not list(path.parent.glob(f"{path.name}.corrupt-*")), path
-    # the statusline a newer install recorded is neither removed nor re-recorded
-    assert claude_settings.read_bytes() == settings_bytes
+    # `statusline uninstall` still reverted the settings file (recognised by the launcher):
+    # it is back to what it was before the install, and `install` refused the newer record
+    assert "statusLine" not in json.loads(claude_settings.read_text(encoding="utf-8"))
+    assert json.loads(claude_settings.read_bytes()) == json.loads(
+        (where["claude"] / "settings.json.token-sparen.bak").read_bytes()
+    )
+    assert settings_bytes != claude_settings.read_bytes()
     errors = json.dumps(_errors(home))
     assert "newer" in errors
 
@@ -359,3 +383,174 @@ def test_fixture_generator_is_importable() -> None:
     spec.loader.exec_module(mod)
     assert mod.TAGS == TAGS and mod.REMOTE == REMOTE
     assert shutil.which("git") is not None
+
+
+# --------------------------------------------------------------------------- fix round 1
+def _bump(path: Path, version: int, writer: str = "1.3.0") -> bytes:
+    doc = _load(path) or {}
+    doc.update({"version": version, schema.WRITTEN_BY: writer, "from_the_future": True})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path.read_bytes()
+
+
+def test_fold_isolates_a_newer_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """I-1: a newer global store skips only the global step; the project store, facts and
+    pretrim still fold, the session stays pending (bounded) and a re-fold does not re-apply."""
+    from token_sparen.learn import overlay, pending
+
+    where = _install("v0.4.0-m4", tmp_path, monkeypatch)
+    home, pdir = where["home"], where["home"] / "projects" / KEY
+    gpath = home / "global" / "posteriors.json"
+    gbytes = _bump(gpath, hierarchy.SCHEMA_VERSION + 1)
+    applied_post = len(_load(pdir / "posteriors.json")["applied"])
+    applied_facts = len(_load(pdir / "facts.json")["applied"])
+    _session(where)
+    assert gpath.read_bytes() == gbytes
+    assert len(_load(pdir / "posteriors.json")["applied"]) == applied_post + 1
+    assert len(_load(pdir / "facts.json")["applied"]) == applied_facts + 1
+    assert SID in pending.entries(home, KEY, _env(where))  # retained for a later fold
+    staged = _load(pdir / "sessions" / f"{SID}.json")[overlay.FOLDING_KEY]
+    assert "global" not in staged[overlay.DONE_KEY] and "project" in staged[overlay.DONE_KEY]
+    # a re-fold resumes after the completed steps: nothing is applied twice
+    assert cli_main(["fold", "--session", SID, "--project", str(where["proj"])]) == 0
+    assert len(_load(pdir / "posteriors.json")["applied"]) == applied_post + 1
+    # bounded: past RETAIN_MAX pending sessions the fold clears it (evidence for the newer
+    # store dropped)
+    monkeypatch.setattr(overlay, "RETAIN_MAX", 0)
+    assert cli_main(["fold", "--session", SID, "--project", str(where["proj"])]) == 0
+    assert SID not in pending.entries(home, KEY, _env(where))
+    assert overlay.FOLDING_KEY not in _load(pdir / "sessions" / f"{SID}.json")
+    assert gpath.read_bytes() == gbytes
+
+
+def _lines_about(home: Path, needle: str) -> int:
+    return sum(needle in json.dumps(e) for e in _errors(home))
+
+
+def test_store_problems_logged_once_per_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I-2 (ruling T4-c2): a newer or corrupt store is logged once per store per session,
+    across the session's hook processes, not once per hook."""
+    where = _install("v0.4.0-m4", tmp_path, monkeypatch)
+    home, pdir = where["home"], where["home"] / "projects" / KEY
+    _bump(home / "global" / "posteriors.json", hierarchy.SCHEMA_VERSION + 1)
+    (pdir / "pretrim.json").write_text('{"x": [1,', encoding="utf-8")
+    text = big_pytest(12_000)
+
+    def post(sid: str, n: int) -> None:
+        jsonstore._SEEN.clear()  # a fresh hook process
+        payload = {
+            "session_id": sid,
+            "cwd": str(where["proj"]),
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest -v"},
+            "tool_use_id": f"tu-{sid}-{n}",
+            "tool_response": {"stdout": text, "stderr": "", "interrupted": False},
+        }
+        _hook("PostToolUse", payload, _env(where))
+
+    for n in range(3):
+        post("once-a", n)
+    assert _lines_about(home, "global/posteriors.json") == 1
+    assert _lines_about(home, "pretrim.json") == 1
+    for n in range(2):
+        post("once-b", n)  # another session: one more line each
+    assert _lines_about(home, "global/posteriors.json") == 2
+    assert _lines_about(home, "pretrim.json") == 2
+    marker = home / "logs" / jsonstore.ONCE_FILE
+    assert "once-a" not in marker.read_text(encoding="utf-8")  # no raw session id or path
+    assert str(home) not in marker.read_text(encoding="utf-8")
+
+
+def _deny(path: Path, rules: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"permissions": {"deny": rules}}), encoding="utf-8")
+
+
+def test_downgrade_undo_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """I-3: with every store from a newer version, the opt-out commands still undo what the
+    settings files identify, and otherwise say what to do; never a raw exception."""
+    where = _install("v0.4.0-m4", tmp_path, monkeypatch)
+    home, pdir, proj = where["home"], where["home"] / "projects" / KEY, where["proj"]
+    bumped = {
+        p: _bump(p, schema.KNOWN_VERSIONS[p.name] + 1)
+        for p in (
+            pdir / "prune.json",
+            home / prune.REGISTRY_FILE,
+            home / "statusline_install.json",
+            pdir / "facts.json",
+        )
+    }
+    local = proj / ".claude" / "settings.local.json"
+    _deny(local, ["Bash(rm:*)", "mcp__mine", "mcp__unused", "NotebookEdit"])
+    _deny(local.with_name(local.name + ".token-sparen.bak"), ["Bash(rm:*)", "mcp__mine"])
+    capsys.readouterr()
+
+    assert cli_main(["prune", "restore", "NotebookEdit", "--project", str(proj)]) == 0
+    out = capsys.readouterr()
+    assert "removed NotebookEdit" in out.out
+    assert "state written by token-sparen 1.3.0" in out.err
+    assert "run `token-sparen prune restore NotebookEdit` from that version" in out.err
+    assert cli_main(["prune", "disable", "--project", str(proj)]) == 0
+    out = capsys.readouterr()
+    assert "removed mcp__unused" in out.out and "token-sparen prune disable" in out.err
+    deny = json.loads(local.read_text(encoding="utf-8"))["permissions"]["deny"]
+    assert deny == ["Bash(rm:*)", "mcp__mine"]  # the user's rules (in the backup) stay
+
+    assert cli_main(["statusline", "uninstall"]) == 0
+    out = capsys.readouterr()
+    assert "statusline removed" in out.out and "state written by token-sparen 1.3.0" in out.out
+    assert "statusLine" not in json.loads((where["claude"] / "settings.json").read_text())
+
+    assert cli_main(["facts", "disable"]) == 0
+    out = capsys.readouterr()
+    assert "already off" in out.out and "token-sparen facts disable" in out.err
+    assert cli_main(["facts", "forget", "0" * 12]) == 1
+    out = capsys.readouterr()
+    assert "state written by token-sparen 1.3.0" in out.err and "NewerSchema" not in out.err
+    assert "Traceback" not in out.err
+    for path, data in bumped.items():
+        assert path.read_bytes() == data, path
+
+
+def test_downgrade_undo_without_backup_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    where = _install("v0.4.0-m4", tmp_path, monkeypatch)
+    proj = where["proj"]
+    _bump(where["home"] / "projects" / KEY / "prune.json", prune.VERSION + 1, writer="")
+    local = proj / ".claude" / "settings.local.json"
+    _deny(local, ["mcp__unused"])
+    assert cli_main(["prune", "disable", "--project", str(proj)]) == 1
+    out = capsys.readouterr()
+    assert "no backup" in out.err and "a newer token-sparen" in out.err
+    assert json.loads(local.read_text(encoding="utf-8"))["permissions"]["deny"] == ["mcp__unused"]
+
+
+def test_prune_lockfree_reads_ignore_a_newer_store(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    env = {"TOKEN_SPAREN_HOME": str(home)}
+    path = prune.store_path(home, KEY)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"version": 99, "enabled": True, "tools": {"X": {}}}))
+    reg = prune.registry_path(home)
+    reg.write_text(json.dumps({"version": 99, "files": {"f": {"key": KEY, "owned": ["X"]}}}))
+    doc = prune.read_doc(home, KEY, env)
+    assert doc.get("enabled") is not True and doc["files"] == {}
+    assert prune.pruned_count(home, KEY, env) == 0
+
+
+def test_written_by_is_recorded(tmp_path: Path) -> None:
+    import token_sparen
+
+    path = tmp_path / "facts.json"
+    jsonstore.update(path, lambda d: {"version": 1, "facts": {}}, {}, {})
+    assert _load(path)[schema.WRITTEN_BY] == token_sparen.__version__
+    other = tmp_path / "breaker.json"
+    jsonstore.update(other, lambda d: {"x": 1}, {}, {})
+    assert schema.WRITTEN_BY not in _load(other)

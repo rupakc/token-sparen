@@ -42,6 +42,11 @@ TAGS = ("v0.1.0-m1", "v0.2.0-m2", "v0.3.0-m3", "v0.4.0-m4")
 REMOTE = "https://example.invalid/fixtures/demo.git"
 OUT = ROOT / "tests" / "fixtures" / "state"
 SESSIONS = ("fixture-s1", "fixture-s2")
+OPEN_SESSION = "fixture-s3"
+DROPIN = (
+    '"""Synthetic drop-in extension for the state fixtures (provides nothing)."""\n\n'
+    'TOKEN_SPAREN_EXTENSION = {"api": "1.x", "compressors": []}\n'
+)
 SKIP_SUFFIXES = (".lock",)
 # the recovery folder's ``*`` .gitignore would hide the fixture from git (it is recreated)
 SKIP_NAMES = (".gitignore",)
@@ -128,7 +133,14 @@ def drive(tree: Path, work: Path) -> None:
     scripts.mkdir()
     home.mkdir(mode=0o700)
     (claude / "settings.json").write_text('{"model": "default"}\n', encoding="utf-8")
-    (home / "config.toml").write_text("[adapter]\nlatency_budget_ms = 5000\n", encoding="utf-8")
+    (home / "config.toml").write_text(
+        # min_tokens below the 2000 floor: the floor warning record (floor_warned.json)
+        "[adapter]\nlatency_budget_ms = 5000\n[compression]\nmin_tokens = 500\n",
+        encoding="utf-8",
+    )
+    ext = home / "extensions"
+    ext.mkdir(mode=0o700)
+    (ext / "fixture_ext.py").write_text(DROPIN, encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith(("TOKEN_SPAREN_", "CLAUDE_"))}
     env.update(
         TOKEN_SPAREN_HOME=str(home),
@@ -139,6 +151,7 @@ def drive(tree: Path, work: Path) -> None:
     )
     cli(tree, ["prune", "enable", "--project", str(project)], env, project)
     cli(tree, ["statusline", "install"], env, project)
+    cli(tree, ["extensions", "trust", str(ext / "fixture_ext.py"), "--yes"], env, project)
     text = big_pytest(12_000)
     big = (project / "big.py").read_text(encoding="utf-8")
     for n, sid in enumerate(SESSIONS):
@@ -190,6 +203,30 @@ def drive(tree: Path, work: Path) -> None:
             cli(tree, ["facts", "disable"], env, project)
             cli(tree, ["facts", "enable"], env, project)
     cli(tree, ["fold"], env, project)
+    # a session left with its turn open (loop-guard turn state in the overlay, unfolded)
+    sid = OPEN_SESSION
+    transcript = scripts / f"{sid}.jsonl"
+    write_transcript(transcript, sid, project)
+    base = {"session_id": sid, "cwd": str(project), "transcript_path": str(transcript)}
+    for name, extra in (
+        ("SessionStart", {"source": "startup", "model": "model-a"}),
+        ("UserPromptSubmit", {"prompt": "build it"}),
+    ):
+        hook(tree, name, {**base, "hook_event_name": name, **extra}, env)
+    for i in range(3):
+        hook(
+            tree,
+            "PostToolUseFailure",
+            {
+                **base,
+                "hook_event_name": "PostToolUseFailure",
+                "tool_name": "Bash",
+                "tool_input": {"command": "make build"},
+                "tool_use_id": f"tu-{sid}-fail-{i}",
+                "error": "Exit code 2\nerror: missing target build",
+            },
+            env,
+        )
 
 
 def placeholders(work: Path, tree: Path) -> list[tuple[str, str]]:

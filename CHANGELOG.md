@@ -20,8 +20,21 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
 - No downgrade: a versioned document (`posteriors.json`, `facts.json`, `prune.json`,
   `prune_rules.json`, `statusline_install.json`, `savings_scale.json`; `store/schema.py`) whose
   version is newer than this code knows is read-only: never rewritten (`NewerSchema`, logged),
-  so an older CLI cannot downgrade state a newer plugin wrote. `statusline uninstall` refuses
-  while a newer install's record is present. Files without a version get none added.
+  so an older CLI cannot downgrade state a newer plugin wrote. Files without a version get
+  none added.
+- The session fold isolates each store: a newer store skips only its own step (project,
+  global, pre-trim, facts, prune, backfill); the other steps still run, and the session stays
+  pending to finish that step later (at most 20 pending sessions, then it is cleared).
+- A newer or corrupt state file is logged once per store per session (`logs/once.json` holds
+  short hashes only), not once per hook.
+- Versioned documents record `written_by` (the token-sparen version that wrote them). After a
+  downgrade, `prune disable` / `prune restore` remove from this checkout's settings file the
+  rules in token-sparen's format that are not in its backup, `statusline uninstall` reverts the
+  `statusLine` it recognises, `facts disable` explains that this version does not inject from a
+  newer `facts.json`, and any other command prints `state written by token-sparen <version>;
+  upgrade to it, or run <command> from that version` instead of an exception. README documents
+  the full uninstall path.
+- A v1 `posteriors.json` is copied to `posteriors.v1.bak.json` before it is rewritten.
 - `doctor` prints the plugin version and the `token-sparen` on PATH and warns
   `CLI x differs from plugin y; the plugin's hooks use y` when they differ (a warning only).
 - The `/token-sparen` skill runs the plugin's bundled CLI first (`python3

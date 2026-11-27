@@ -1,0 +1,1 @@
+{"turn": 1, "last_prompt": "build it", "governor": {"offset": 1177, "burn": 21000, "ids": {"msg-fixture-s3-1": 9000, "msg-fixture-s3-2": 12000}, "last_ctx": 12000, "model": "model-a", "path": "8bc638783c373a53", "size": 1177, "catching_up": false, "head": "ff426d4d2f06193b7172dae219786dce709586f9", "turn_start_burn": 21000}, "boundary": {"recent": [[]]}}

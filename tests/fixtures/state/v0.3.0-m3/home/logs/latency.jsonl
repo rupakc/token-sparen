@@ -1,2 +1,1 @@
-{"ts": 1795807849.305012, "event": "PostToolUseFailure", "ms": 6.92, "outcome": "noop"}
-{"ts": 1795807853.366834, "event": "UserPromptSubmit", "ms": 5.061, "outcome": "noop"}
+{"ts": 1795809326.4380941, "event": "PreToolUse", "ms": 2.564, "outcome": "noop"}

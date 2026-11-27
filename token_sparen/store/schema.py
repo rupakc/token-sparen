@@ -13,6 +13,10 @@ from __future__ import annotations
 
 from typing import Any
 
+# Since 1.0 a versioned document also records the version that wrote it, so an older
+# token-sparen meeting a newer document can name it ("state written by token-sparen X").
+WRITTEN_BY = "written_by"
+
 KNOWN_VERSIONS: dict[str, int] = {
     "posteriors.json": 2,  # learn.hierarchy.SCHEMA_VERSION (project and global/)
     "facts.json": 1,  # facts.miners.VERSION
