@@ -150,6 +150,13 @@ everything else. No savings figures are claimed for them yet.
   failing test run, tool output untouched, rewarded at the next prompt) and the kill switch (no
   output and no file written by any hook).
 
+#### Documentation
+- The design spec's M3 sections (6.8, 6.10, 6.11, 7.5-7.7) now describe the shipped code; the
+  optional LLM fact proposer is marked deferred and pruning for hosts other than Claude Code is
+  scoped to v1.1. README lists every `[prune]` default and what a project file may change
+  (`prune.allow` off only, `prune.lease_sessions` lower only). Drift report:
+  `docs/reports/drift-m3.md`.
+
 ### M0 to M2
 
 #### Added

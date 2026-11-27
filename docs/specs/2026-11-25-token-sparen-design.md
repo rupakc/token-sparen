@@ -373,6 +373,20 @@ is never looser than either. Observations from unlearned decisions (static / err
 `*` only. Note for C2: floor exploration of a gated point ignores the regret posterior (bounded
 at the floor, 5 %; the circuit breaker still stops an arm users keep rejecting).
 
+**2026-11-27 (M3 review fix wave: spec body synchronised).** Documentation only, no behaviour
+change. The bodies of §6.8, §6.9, §6.10, §6.11, §7.5, §7.6 and §7.7 are rewritten in place to describe
+the M3 code after fix waves A, B and C1, so the body can be read without the entries above:
+§6.8 fold-time miners with the wave B evidence rules, `truth` / `effect` / `baseline` lifecycle,
+recency-ranked injection; §6.8(b) LLM proposer marked **deferred** (not in v1.0); §6.10 user-only
+opt-in, own Beta / `ucb` gate, session-end-fold apply, lease, positive git confirmation,
+user-level ownership registry, `token-sparen prune restore`; non-Claude host mechanisms scoped
+to v1.1 (§14); §6.11 `additionalContext` delivery, no burst trigger, per-agent state,
+`max(2, k - 1)` oscillation reversals, delivered-only Bernoulli reward and natural break rate;
+§7.5 loop-guard natural-rate gate, facts and pruning outside the engine; §7.6 gated floor
+exploration and the pruning breaker equivalent; §7.7 the fingerprint definition (tool + target +
+normalised error line, or the failing-test-set hash) replaces "token shingles". §6.9 is
+brought in line too (fixed per-kind templates instead of a verb set, Task 25).
+
 ---
 
 ## 1. Intent and why
@@ -582,44 +596,146 @@ attribute reward to it. Tier governs exploration (§7.6).
   recoverability rules (Claude Code delivers them as `{status, agentId, content:[{type:text,...}]}`).
 
 ### 6.8 Micro-skills: learned repository facts (cross-session) — tier: medium
-- **Sources**: (a) deterministic miners for repeated failures across sessions (command-not-found →
-  working spelling, missing env var, required build step, generated-file locations, test command);
-  (b) optional LLM proposer (off by default; uses the host's own CLI in headless mode, cheapest
-  model, every k sessions) that proposes facts with citations to ≥ 2 sessions.
-- **Lifecycle as a bandit, not fixed gates**: each candidate fact is an arm-pair
-  (`inject`/`withhold`) with a Beta posterior over "injecting this fact reduces waste in sessions
-  where it is relevant"; reward from relevance-conditioned waste (did the failure it prevents recur?).
-  Facts activate as soon as the posterior clears a lower-confidence bound (faster than fixed
-  3/4-session gates), and retire on contradiction (one contradiction retires high-stakes facts).
-- Injection at SessionStart as a compact, budgeted block (max N facts / M tokens), relevance-ranked.
+- **Sources**: (a) deterministic miners (`facts/miners.py`) that run at fold time only, never in a
+  hook, over one session's Claude Code transcript (main chain, at most 50 MB): `command_alias`
+  (command-not-found, then the same argv launched another way within 3 tool calls), `requires_env`
+  (an error naming an ALL_CAPS variable, then the same command succeeding with it set; the
+  variable **name** only), `build_first` (a failed test command passing when the tool call
+  immediately before it is a build; lint / type-check commands are not builds), `generated_dir`
+  (>= 2 edits under a conventional output directory **and** positive evidence of generation at
+  fold time: `git check-ignore` reports the directory ignored, or every edited file carries a
+  generated marker such as `DO NOT EDIT` / `@generated` in its first 5 lines; edits alone are
+  never evidence, git missing or timing out is not evidence), and `test_command` (the runner
+  invocation only, from a fixed table: `pytest`, `python -m pytest`, `npm test`, `cargo test`,
+  `go test ./...`, `make test`, ...; every path, test id and option is dropped except
+  watch-mode stoppers and a leading `CI=true`; a command run in another directory, with a
+  directory / package / config / root option, or matching no table row gives no fact).
+  In-project absolute paths are made project-relative; anything else outside the project is
+  rejected. Candidates go to `projects/<key>/facts.json` with session-id digests as evidence; a
+  fact needs evidence from >= 2 distinct sessions.
+  (b) **Deferred:** an optional LLM proposer (host CLI in headless mode, facts cited to >= 2
+  sessions) is not part of v1.0; v1.0 ships the deterministic miners only. If it is built it will
+  be off by default and user-only.
+- **Lifecycle as a bandit, not fixed gates** (`facts/lifecycle.py`): each fact keeps an `effect`
+  Beta (injected relevant sessions only: 1 when the waste it targets was absent, 0 when present)
+  and a withheld `baseline` Beta. Withholding is a propensity floor (`[facts] withhold_floor =
+  0.1` per active fact and session, logged with its propensity), not a Thompson draw.
+  Confirmations (the waste -> fix pattern re-mined while the fact is not injected) add to a
+  separate `truth` count. Activation (candidate -> active): >= 2 sessions and either
+  `Beta(1 + truth, 1).lcb(0.1) > activate_lcb` (0.55) or, while no withheld baseline exists, >= 3
+  sessions; `test_command` and `generated_dir` (mined from counts, not a fix) need >= 5 sessions
+  and >= 1 observed waste event; one active test command at a time. Retirement is final: on
+  contradiction (the first for `requires_env`, `build_first`, `generated_dir`, the second for the
+  others; a `generated_dir` is contradicted when git says the directory is not ignored and a
+  file there lacks the marker, re-checked for at most 3 such facts per fold), when unneeded,
+  when `effect.ucb(0.9) < retire_ucb` (0.4), when >= 3 withheld sessions show the baseline doing
+  as well, after >= 8 injected relevant sessions when `effect.ucb(0.9) < baseline.mean + 0.1`
+  (baseline prior 0.5 until withheld sessions exist), and for frequency kinds after 10 stale
+  sessions or 30 days.
+- Injection at SessionStart (`startup`, `resume` deduplicated, `clear`, `compact`) as a labelled
+  data block (§6.9), at most `[facts] max_facts` (8) facts / `max_tokens` (300) estimated tokens
+  through the emit gate (counted as injected tokens), **recency-ranked** (most recent evidence
+  first: the hook has no task context yet). `[facts] enabled` defaults to true; a project file
+  may only switch facts off or lower the budget.
 
 ### 6.9 Fact-injection security
-- Facts are derived from repo-controlled output, so they are **data, not instructions**: every
-  fact passes a strict template (`<subject> <verb> <object>` with an allow-listed verb set such as
-  "run tests with", "requires env", "build first with", "generated files live in"), length cap,
-  no imperative free text, no URLs, no shell metacharacters outside a quoted command field; injected
-  inside a clearly delimited, labelled data block. LLM-proposed detector regexes are rejected in
-  favour of a fixed detector vocabulary (no ReDoS).
+- Facts are derived from repo-controlled output, so they are **data, not instructions**
+  (`facts/sanitize.py`): every fact is checked when mined and again when rendered; its subject
+  and value must be one plain command-token sequence (allow-listed characters, <= 120 chars,
+  printable ASCII) with no URLs, no shell metacharacters or command substitution (not even in a
+  quoted field), no instruction words, nothing secret-like and no path outside the project. It is
+  rendered only through one fixed, neutral past-tense template per kind (an observation, never an
+  imperative; e.g. "`pytest` was not found here; `python -m pytest` worked") and injected inside
+  a clearly delimited, labelled data block whose first line says the facts are data, not
+  instructions. Detectors are a fixed vocabulary in code; there is no proposed-regex path (no
+  ReDoS).
 
 ### 6.10 Tool pruning (cross-session) — tier: high
-- Per project, tools never used across sufficient evidence are candidates. Each candidate tool is a
-  bandit arm `keep`/`prune` with conservative priors; pruning is applied only between sessions and
-  only after the repo has been idle (to protect prompt caching).
-- **In-session recovery (new)**: the SessionStart context lists pruned tools in one line and how to
-  restore (`token-sparen restore <tool>` or the host's re-enable); any attempt to use a pruned tool
-  or explicit user mention immediately restores it for the project and records strong negative
-  reward.
-- Host mechanism: Claude Code — deny rules in project `.claude/settings.local.json` (opt-in,
-  disclosed, reversible, backed up); Codex — `.codex/config.toml` toggles (trusted projects);
-  Gemini/Qwen — `BeforeToolSelection` allow-list; OpenCode V2 — `session.hook("context")` tool list.
-  Protected list (Read/Edit/Write/Bash and equivalents) is never pruned.
+- **Opt-in, user-only** (`mechanisms/prune.py`): nothing is observed or written unless
+  `token-sparen prune enable` opted the project in or the user's own `~/.token-sparen/config.toml`
+  sets `[prune] enabled = true` (never from env, a session or a project file). A project's
+  `token-sparen.toml` may only set `[prune] allow = false` (never prune here; our rules are
+  reverted) or lower `[prune] lease_sessions`. Enabling first scans the project's transcripts of
+  the last 60 days (at most 50 MB) so that no tool used before is ever pruned.
+- **Candidates and gate**: whole **MCP servers** (`mcp__<server>`, none of whose tools was ever
+  used), never single MCP tools; built-in tools only with the user-only `[prune] builtins = true`
+  and only when an SDK `init` record listed them. Evidence is gathered at fold time from the
+  session transcript (available and used tools, subagents included). Each candidate has a Beta
+  over "pruning it would have caused a restore" (prior Beta(1, 1); each prompt of a session in
+  which it was available and unused is a zero-regret observation, a restore is 1.0). It is pruned
+  only with `min_sessions` (3) sessions spanning `min_prompts` (15) prompts **and**
+  `ucb(0.95) <= tau` (0.01; about 300 unused prompts). No Thompson exploration: a prune is a
+  settings write, not a per-call arm, so it is not an engine decision point (§7.5, §7.6).
+  Protected, never pruned: Read/Edit/Write/Bash and their equivalents (Grep, Glob, Agent, every
+  `Task*` tool, TodoWrite, AskUserQuestion, Skill, ToolSearch, plan mode, SendMessage), every
+  tool or server ever used in the project, every tool restored once.
+- **When**: new rules are written **only by the detached session-end fold** (`fold --session
+  <id> --prune-apply`), effective from the next session, and only when no other un-ended session
+  of the project was active in the last `idle_minutes` (60; protects the prompt cache);
+  otherwise they stay pending. No hook (SessionStart included) writes a new rule. git is asked
+  before the store locks are taken, so a hook restore never waits on it.
+- **Lease**: a pruned tool collects no evidence while pruned (its "unused" is caused by the
+  pruning). Each prune is a lease of `[prune] lease_sessions` (15) folded sessions of that
+  checkout; then the rule is restored (no regret) for at least one session and pruned again only
+  on fresh evidence from un-pruned sessions (`min_sessions` / `min_prompts` again).
+- **In-session recovery**: the SessionStart context lists pruned tools in one line, to the model
+  and the user, with the restore command `token-sparen prune restore <tool>` (pre-approved in the
+  `/token-sparen` skill). A ToolSearch query naming a pruned tool, a direct call (PreToolUse,
+  PostToolUseFailure, PermissionDenied), a user prompt naming it, a rule the user deleted, or (at
+  fold) a "No such tool" attempt in the transcript removes our rule at once, records regret 1.0
+  and keeps the tool for good. The message does not promise mid-session availability (Claude
+  Code may need a new session to show the tool again). `prune restore --all` and `prune
+  disable` remove exactly the rules token-sparen wrote, in every checkout of the project.
+- **Host mechanism (v1.0, Claude Code)**: a bare deny rule (e.g. `"mcp__server"`) appended to
+  the checkout's `.claude/settings.local.json` by the adapter's `DenyWriter`
+  (`adapters/claude/settings.py`; the mechanism itself is host-neutral). The file is written
+  only on **positive git confirmation** that it is untracked and ignored (`git ls-files` exit 0
+  with no output and `git check-ignore` exit 0); a tracked, not-ignored or non-git file, any
+  other git outcome (missing, failing, timing out, `GIT_DIR`-style variables set), a symbolic
+  link or a file that is not a strict JSON object is never written, with a notice. Before the
+  first rule the file is backed up once to `settings.local.json.token-sparen.bak` (refreshed
+  when a new round starts in a file where token-sparen owns no rule); writes are atomic after a
+  re-check of the file; a rule the user already had is never claimed. Ownership (owned rules,
+  created containers, the crash-safety journal written before each settings write, leases,
+  notices) lives in the user-level registry `~/.token-sparen/prune_rules.json`, keyed by the
+  settings file's real path, so sibling clones and worktrees are tracked separately and a project
+  key change never orphans a rule; the opt-in is not carried across keys (the next fold restores
+  rules written under the old key unless pruning is active under the new one).
+- **Other hosts (v1.1, §14)**: Codex `.codex/config.toml` toggles (trusted projects),
+  Gemini/Qwen `BeforeToolSelection` allow-list, OpenCode V2 `session.hook("context")` tool list.
+  Not implemented in v1.0; they will plug in as further `DenyWriter`s.
 
 ### 6.11 Failure-loop guard — tier: medium
-- Detects repeated identical failure signatures, error bursts, and oscillating edits within a turn
-  using cheap deterministic signals (normalised error fingerprints, edit-revert detection). The
-  intervention threshold is a learned arm (`patient`/`standard`/`eager`). Intervention is one short
-  redirect appended to the next tool result (or block reason) suggesting a different approach; at
-  most one per turn; second detection notifies the **user** only. No LLM judge by default (optional).
+- **Detection** (`mechanisms/loopguard.py`), within one turn and separately per agent
+  (`agent_id`; the main agent is `""`), with cheap deterministic signals only: (a) a **repeated
+  error**: the same error fingerprint (§7.7) of a failed tool call `k` times; a failure with no
+  informative error line (a bare `Exit code N`) has no fingerprint and never counts; (b) **edit
+  oscillation**: the same edit made and undone on one file region (an Edit reversing the region's
+  previous edit pair, or a Write switching back and forth between two contents); one
+  add-then-remove never counts, and the redirect fires at `max(2, k - 1)` reversals. There is no
+  error-burst trigger.
+- **Learned threshold**: arms `patient` / `standard` / `eager` = k 5 / 3 / 2 (safe arm
+  `patient`), decided once per agent and turn at the first repeat and logged for every arm; k is
+  never below `[loopguard] min_k` (2; a project may only raise it). `[learn.hold] loopguard =
+  true` keeps `patient`; `[loopguard] enabled = false` switches the guard off.
+- **Intervention**: one short redirect as `additionalContext` on the triggering PostToolUse or
+  PostToolUseFailure result (the tool output is never rewritten or blocked): `[token-sparen:
+  this error has repeated {n}× this turn ({fp}). Consider stepping back: re-read the error,
+  check assumptions, or try a different approach.]` (oscillation has its own text). At most one
+  per agent and turn; a second detection only tells the **user**, at most once per turn. An
+  error-loop trigger also calls `RegretDetector.on_loop`.
+- **Reward** (§7.5): only a delivered redirect is observed. An error-loop redirect at >= 3
+  occurrences observes savings = "broken" in {0, 1}: 1 if the fingerprint does not recur in the
+  agent's next `[loopguard] watch_calls` (5) tool calls of the turn (the turn ending first counts
+  as broken). A redirect at 2 occurrences (`eager`) or for an oscillation observes regret only. A
+  decision whose redirect was never delivered is forgotten (no savings, no regret observation).
+  Regret 1 if the user interrupts after the redirect, or the next prompt starts with stop / wait
+  / undo / revert / that's wrong / no, don't, or has at most 8 words and contains one; else an
+  explicit 0 at the next prompt or SessionEnd. The **natural break rate** (p0) is observed once
+  per agent and turn when a fingerprint reaches 3 occurrences without a redirect (an arm whose k
+  was not reached yet), with the same 5-call window, per decision bucket and pooled; the engine
+  gates the intervening arms on it (§7.5).
+- No LLM judge.
 
 ### 6.12 Live statusline (Claude Code; owner requirement) — tier: none (zero model tokens)
 - A live statusline rendered on every Claude Code refresh, e.g.
@@ -691,17 +807,60 @@ times the expected re-sends). Cost-weighting (cache-read/cache-write/input/outpu
 ratios, so a change that breaks the prompt cache is charged) is deferred to M4; the E1 report and
 E4 (§10.4) already use it.
 
+**Loop guard (§6.11): the safe arm still intervenes.** `patient` (k = 5) redirects too, so "the
+loop ended after the redirect" is not a saving by itself, and S of the safe arm stays 0 by
+definition. Therefore: (a) only a delivered redirect is observed; an error-loop redirect at >= 3
+occurrences observes S as a Bernoulli ("broken" in {0, 1}), an `eager` redirect at 2
+occurrences or an oscillation redirect observes R only, and an undelivered decision is dropped
+from pending (`Engine.forget`: no S, no R = 0). (b) The **natural break rate** p0 is its own
+Beta (prior mean 0.8, strength 10: pessimistic for an intervention until measured), from
+fingerprints that reached 3 occurrences without a redirect, per decision bucket and pooled,
+project + unfolded session, with global evidence joining while the local data has < 5
+observations. Natural observations come mostly from `patient` turns (counts 3-4) and held or static
+sessions; the same p0 is the bar for redirects at any k. (c) **Natural-rate gate**
+(`DecisionPoint.natural_gate`): an intervening arm competes in the Thompson draw only when lcb_0.9
+of its S posterior > the bar, the bar being ucb_0.9 of its bucket's p0 once the bucket has >= 20
+observations and otherwise max(pooled ucb_0.9, bucket ucb_0.9) (never looser than either); the
+draw's usual constraint (sampled R <= τ) still applies. Otherwise the decision is `patient`. The
+intervening arms' designed priors are neutral and weak (S mean 0.1, strength 2 via `savings_strength`; R mean = medium τ, 0.05).
+
+**Facts and pruning use their own constrained Betas, not this engine.** A fact's lifecycle
+(§6.8) is an `effect` Beta from injected sessions against a withheld `baseline` Beta (withholding
+is a logged propensity floor), with a separate `truth` count for activation and contradictions
+for retirement. A prune (§6.10) is a settings write, not a per-call arm: one regret Beta per
+candidate (prior Beta(1, 1), unused prompts as zero-regret observations, a restore = 1), gated by
+`ucb(0.95) <= 0.01`; it has no propensity floor and no off-policy evaluation.
+
 ### 7.6 Exploration safety
 - Each tier has a **propensity floor** for the safe arm (always some probability of `off`), so the
-  baseline is genuinely observed and logged propensities enable off-policy evaluation.
-- High-tier arms (pruning, directives) never explore above their current level without a lower
-  confidence bound clearing; **circuit breaker**: if rolling regret rate exceeds 2× target, the point
-  reverts to its safe default for the project and notifies the user.
+  baseline is genuinely observed and logged propensities enable off-policy evaluation. Exception:
+  for a natural-gated point (the loop guard) the safe arm is already the default, so the floor
+  (medium 0.05) explores the ladder's intervening arms uniformly instead (`standard`; `eager`
+  only once `standard` is established); propensities stay exact, and a `[learn.hold]` point
+  explores nothing. This floor exploration ignores the regret posterior; it is bounded by the
+  floor (5 %), and the circuit breaker still stops an arm users keep rejecting.
+- **Circuit breaker** (every learned engine point, the loop guard included): if the rolling regret
+  rate of a point's intervening arms exceeds 2× target (with a lower-bound check), the point
+  reverts to its safe default for the project for a few sessions and notifies the user.
+- High-tier engine points (output-style directives, §6.6; none is built in v1.0) never explore
+  without the regret upper bound clearing and only with the user's `[learn.optin]`. **Tool
+  pruning** is not an engine point (§7.5): its safety is the user-only opt-in, the
+  `ucb(0.95) <= 0.01` gate, the idle gate, the lease, and restore-for-good on any attempted use,
+  which plays the breaker's role (a restored tool is never pruned again).
 
 ### 7.7 Other ML / statistics
 - EWMA burn projection and cache-hit estimation (§6.4); change-point detection for task boundaries
-  (§6.5); BM25-lite line relevance (§6.1); error fingerprinting via normalised token shingles
-  (§6.11); fact lifecycle bandits (§6.8); pruning bandits (§6.10).
+  (§6.5); BM25-lite line relevance (§6.1); fact lifecycle bandits (§6.8); pruning bandits (§6.10).
+- **Error fingerprinting** (§6.11) is exact by design, so distinct errors never merge: a short
+  hash of the tool name, its target (Bash: the normalised command head, e.g. `npm test`; file
+  tools: the path) and the most specific error line plus the last exception type named, with only
+  volatile parts normalised (case folded; directories reduced to base names, line:col, hex ids,
+  durations, clock times, long numbers; quoted values and literals kept). A test-runner report
+  (pytest, jest, go test, cargo test) is keyed instead by the count of failing test ids and a
+  hash of the whole sorted id set plus the first failure's error line, so fixing a suite one
+  test at a time changes the fingerprint. Only the
+  first 8000 and last 4000 characters are scanned; boilerplate (`Exit code N`, tags, test-run
+  summary lines) is never an error line.
 
 ### 7.8 Offline evaluation and challengers
 Decision logs with propensities allow **IPS and doubly-robust** estimates of any candidate policy

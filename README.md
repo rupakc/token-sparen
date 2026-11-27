@@ -278,7 +278,10 @@ Everything stays on your machine, but some of it is plain text you should know a
 - Claude Code `settings.json`: **only** if you run `token-sparen statusline install` (see below),
   with a backup and exact restore.
 - `<project>/.claude/settings.local.json`: **only** if you opt in to
-  [tool pruning](#tool-pruning-opt-in), with a backup and exact restore.
+  [tool pruning](#tool-pruning-opt-in), and only when git confirms the file is untracked and
+  ignored: bare `permissions.deny` entries, appended by the background session-end fold, with a
+  backup `settings.local.json.token-sparen.bak` next to it and exact restore (`prune restore
+  --all`, `prune disable`).
 - Hooks fail open: any internal error or a hook slower than 400 ms returns "no change" and logs one
   line to `errors.jsonl`.
 
@@ -340,10 +343,10 @@ session); anything else is ignored and logged once.
 | `compression.compiler.warnings.*` | only move from `count` to `keep` |
 | `compression.skip_tools` | only add tools |
 | `compression.allow_ctypes` | only remove content types |
-| `compression.trim_file_contents` | only set `false` |
-| `read_dedupe.max_turn_gap`, `read_dedupe.max_entries`, `compression.save_deadline_ms`, `adapter.latency_budget_ms`, `facts.max_facts`, `facts.max_tokens` | only lower |
+| `compression.trim_file_contents`, `prune.allow` | only set `false` (`prune.allow = false`: never prune here, and token-sparen's rules are reverted) |
+| `read_dedupe.max_turn_gap`, `read_dedupe.max_entries`, `compression.save_deadline_ms`, `adapter.latency_budget_ms`, `facts.max_facts`, `facts.max_tokens`, `prune.lease_sessions` | only lower (`prune.lease_sessions`: pruned tools are restored sooner) |
 | `learn.tau.<tier>` lower; `learn.floor.<tier>`, `learn.ladder_obs` higher; `learn.hold.<point>` only `true`; `learn.breaker_min_obs`, `learn.breaker_every` lower; `learn.breaker_lcb_q`, `learn.breaker_sessions` higher | only make learning more careful |
-| everything else, including `learn.enabled` and all other `learn.*`, `compression.levels.*.{head,tail}` and `guards.pretrim_*` (a larger head/tail displaces prompt-relevant lines), `governor.hard_stop`, `governor.session_budget_tokens`, `governor.windows`, `adapter.latency_sample_rate`, `adapter.latency_log_max_bytes`, `extensions.*`, the other `facts.*` keys, and any key not listed | nothing (user config, env or `config set` only) |
+| everything else, including `learn.enabled` and all other `learn.*`, `compression.levels.*.{head,tail}` and `guards.pretrim_*` (a larger head/tail displaces prompt-relevant lines), `governor.hard_stop`, `governor.session_budget_tokens`, `governor.windows`, `adapter.latency_sample_rate`, `adapter.latency_log_max_bytes`, `extensions.*`, the other `facts.*` keys, the other `prune.*` keys (including `prune.enabled`: pruning is opted in only with `prune enable` or your own `config.toml`), `loopguard.watch_calls`, `ope.*`, and any key not listed | nothing (user config, env or `config set` only) |
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -367,6 +370,13 @@ session); anything else is ignored and logged once.
 | `loopguard.min_k` | 2 | fewest repeats of one error before the redirect (the learned setting is 2, 3 or 5) |
 | `learn.hold.loopguard` | false | `true` keeps the most patient setting (5 repeats); it does not switch the guard off |
 | `loopguard.watch_calls` | 5 | tool calls after the redirect that decide whether the loop broke (user only) |
+| `prune.enabled` | false | tool pruning ([opt-in](#tool-pruning-opt-in)); read only from your own `config.toml` (or set per project by `token-sparen prune enable`) |
+| `prune.builtins` | false | also prune built-in tools an SDK `init` record listed as always loaded (your `config.toml` only) |
+| `prune.allow` | true | `false`: never prune here and revert token-sparen's rules (a project may set it) |
+| `prune.min_sessions`, `prune.min_prompts` | 3, 15 | unused sessions and prompts before a tool is a candidate (user only) |
+| `prune.tau`, `prune.ucb_q` | 0.01, 0.95 | prune only when the regret bound `ucb(ucb_q) <= tau` (about 300 unused prompts; user only) |
+| `prune.idle_minutes` | 60 | new rules are written only if no other session of the project was active this long (user only) |
+| `prune.lease_sessions` | 15 | a pruned tool is restored after this many sessions to observe it again (a project may only lower it) |
 | `learn.enabled` | true | learn how strongly to trim; `false` uses the fixed defaults, which trim more than a cold learner (user config, env or `config set` only) |
 | `learn.hold.compression` | false | `true` stops all trimming of tool output (see [Turning it off](#turning-it-off)) |
 | `learn.hold.read_dedupe` | false | `true` stops read pointers |

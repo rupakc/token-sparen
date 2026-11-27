@@ -1526,3 +1526,13 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   only) and `*`; at most `NATURAL_MAX_BUCKETS` (32) buckets per point everywhere; fold validates
   bucket labels (`valid_bucket`); legacy flat entries read/merge as `*`; global ageing stamps per
   `point|bucket`. Verified the two-category null test fails with a pooled-only bar.
+
+## 2026-11-27 M3 fix wave C2: spec and README synchronised (documentation only)
+- Spec bodies of §6.8-§6.11 and §7.5-§7.7 rewritten in place to describe the M3 code after waves
+  A, B and C1; revision log entry "M3 review fix wave: spec body synchronised".
+- §6.8(b) LLM fact proposer marked deferred (not in v1.0; if built: off by default, user-only).
+  §6.10 pruning for Codex / Gemini / Qwen / OpenCode scoped to v1.1 (§14), via further
+  `DenyWriter`s.
+- README defaults table lists every `[prune]` key; project-config table adds `prune.allow`
+  (false only) and `prune.lease_sessions` (lower only), matching `PROJECT_POLICY`.
+- Public drift report `docs/reports/drift-m3.md`: no open divergences; 2 deferred items.

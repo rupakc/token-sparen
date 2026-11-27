@@ -2,7 +2,7 @@
 
 MIT open-source token optimizer plugin for coding agents (Claude Code first). Shipped (M0/M1):
 recoverable output compression, read de-dupe, guards, budget governor, boundary advice, live
-statusline, extensions. M2 (in progress): one learning engine (contextual Thompson-sampling bandit
+statusline, extensions. M2: one learning engine (contextual Thompson-sampling bandit
 with a quality constraint) steers every hook decision (`learn/hookpolicy.py`, built lazily per
 hook; `[learn] enabled = false` -> `StaticPolicy`), with regret detection, session fold and
 circuit breaker; `replay` (E1) and `ope` (E3) evaluate offline into private reports. M3: repo-fact
@@ -72,15 +72,20 @@ Use the repo `.venv`. All must pass before a commit.
   both; a project may only narrow them.
 - `[learn.hold] compression = true` stops every output trim (pre-trim included), with learning on
   or off; `compression.allow_ctypes = []` is the config-only switch.
-- State root `~/.token-sparen/` (override `TOKEN_SPAREN_HOME`); project key = first 16 hex of
-  sha256(normalised git remote), else sha256(realpath). `global/` and project keys hold no raw paths,
-  commands or session ids. Per-project files under `projects/<key>/` are plain text and may hold
-  user-local data (last prompt <= 2000 chars, file paths, normalised commands, 500 chars of Bash
-  commands in `decisions.jsonl`), as does user-local bookkeeping (trusted extensions, statusline
-  install record). Keep README's disk disclosure ("What it writes to disk") accurate.
+- State root `~/.token-sparen/` (override `TOKEN_SPAREN_HOME`, ignored when it resolves inside
+  the current project or its git work tree (by file identity) or, on POSIX, is not owned by the
+  user); project key = first 16 hex of sha256(normalised git remote), else sha256(realpath).
+  `global/` and project keys hold no raw paths, commands or session ids. Per-project files under
+  `projects/<key>/` are plain text and may hold user-local data (last prompt <= 2000 chars, file
+  paths, normalised commands, 500 chars of Bash commands in `decisions.jsonl`), as does
+  user-local bookkeeping (trusted extensions, statusline install record, `prune_rules.json`: the
+  tool-pruning ownership registry keyed by settings-file path). Keep README's disk disclosure
+  ("What it writes to disk") accurate.
 - Hook commands reference files only via `${CLAUDE_PLUGIN_ROOT}`; no top-level `bin/`, no unpinned
   `npx`/`uvx`, no non-image plugin file > 256 KiB.
 - Settings writes (statusline, tool pruning) are opt-in, backed up, reversible, disclosed in README.
+  Tool-pruning deny rules are written only by the session-end fold and only on positive git
+  confirmation that the settings file is untracked and ignored.
 - Quality is a hard constraint, never traded in a weighted sum. Never tune on the test split.
 - Reimplement ideas, copy no code from any reference or competitor; credit in `NOTICE`.
 
