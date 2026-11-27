@@ -157,3 +157,42 @@ def test_bump_rejects_bad_versions(tmp_path: Path, bad: str) -> None:
         mod.bump(root, bad, date=None)
     assert (root / "CHANGELOG.md").read_text(encoding="utf-8") == before
     assert current_version(root) == version
+
+
+def test_bump_writes_lf_only(tmp_path: Path) -> None:
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    for rel in ("token_sparen/__init__.py", ".claude-plugin/plugin.json", "CHANGELOG.md"):
+        path = root / rel
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    changed = mod.bump(root, "1.0.0", date=None)
+    for path in changed:
+        assert b"\r" not in path.read_bytes()
+
+
+def test_bump_dry_run_writes_nothing(tmp_path: Path) -> None:
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    changed = mod.bump(root, "1.0.0", date=None, dry_run=True)
+    assert len(changed) == 3
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+
+
+def test_cli_refuses_dirty_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    monkeypatch.setattr(mod, "ROOT", root)
+    monkeypatch.setattr(mod, "is_dirty", lambda root: True)
+    assert mod.main(["1.0.0"]) == 1
+    assert "uncommitted" in capsys.readouterr().err
+    assert current_version(root) != "1.0.0"
+    assert mod.main(["1.0.0", "--allow-dirty"]) == 0
+    assert current_version(root) == "1.0.0"
+
+
+def test_readme_has_no_literal_version() -> None:
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert current_version() not in text

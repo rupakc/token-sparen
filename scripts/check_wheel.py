@@ -73,7 +73,7 @@ def main() -> int:
         found = re.search(r"^Version: (.+)$", meta, re.MULTILINE)
         if not found or found.group(1).strip() != __version__:
             sys.exit(f"FAIL wheel METADATA version {found and found.group(1)} != {__version__}")
-        print(f"ok wheel {wheel.name}:{len(_subpackages())} packages + data present")
+        print(f"ok wheel {wheel.name}: {len(_subpackages())} packages + data present")
         env_dir = tmp / "venv"
         venv.EnvBuilder(with_pip=True).create(env_dir)
         bindir = env_dir / ("Scripts" if sys.platform == "win32" else "bin")

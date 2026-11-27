@@ -255,6 +255,16 @@ def test_doctor_ok_in_tmp_home(
     assert "round-trip" in out
 
 
+def test_doctor_prints_version(
+    env: dict[str, str], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import token_sparen
+
+    _doctor_env(env, monkeypatch)
+    main(["doctor"])
+    assert f"token-sparen: {token_sparen.__version__}" in capsys.readouterr().out
+
+
 def test_doctor_reports_and_fixes_tmp_files(
     env: dict[str, str], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -64,8 +65,28 @@ def _changelog_text(text: str, new: str, date: str | None) -> str:
     return f"{text[:start]}{UNRELEASED}\n\n{heading}{body}{text[end:]}"
 
 
-def bump(root: Path, new: str, *, date: str | None) -> list[Path]:
-    """Set the version everywhere; return the files written."""
+def is_dirty(root: Path) -> bool:
+    """True when ``git status`` shows uncommitted changes (or git cannot tell)."""
+    try:
+        proc = subprocess.run(  # noqa: S603
+            ["git", "status", "--porcelain"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return True
+    return bool(proc.stdout.strip())
+
+
+def _write(path: Path, text: str) -> None:
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+
+
+def bump(root: Path, new: str, *, date: str | None, dry_run: bool = False) -> list[Path]:
+    """Set the version everywhere; return the files written (or that would be, on a dry run)."""
     if _key(new) <= _key(current_version(root)):
         raise ValueError(f"{new} is not greater than the current {current_version(root)}")
     if date is not None and not DATE_RE.match(date):
@@ -78,11 +99,11 @@ def bump(root: Path, new: str, *, date: str | None) -> list[Path]:
     if not PLUGIN_RE.search(plugin_text):
         raise ValueError("no version in .claude-plugin/plugin.json")
     log_text = _changelog_text(changelog.read_text(encoding="utf-8"), new, date)
-    init.write_text(INIT_RE.sub(f'__version__ = "{new}"', init_text, count=1), encoding="utf-8")
-    plugin.write_text(
-        PLUGIN_RE.sub(lambda m: f"{m[1]}{new}{m[3]}", plugin_text, count=1), encoding="utf-8"
-    )
-    changelog.write_text(log_text, encoding="utf-8")
+    if dry_run:
+        return [init, plugin, changelog]
+    _write(init, INIT_RE.sub(f'__version__ = "{new}"', init_text, count=1))
+    _write(plugin, PLUGIN_RE.sub(lambda m: f"{m[1]}{new}{m[3]}", plugin_text, count=1))
+    _write(changelog, log_text)
     return [init, plugin, changelog]
 
 
@@ -95,7 +116,7 @@ def set_date(root: Path, version: str, date: str) -> Path:
     old = f"## [{version}] - Unreleased"
     if text.count(old) != 1:
         raise ValueError(f"CHANGELOG.md has no single {old!r} heading")
-    changelog.write_text(text.replace(old, f"## [{version}] - {date}"), encoding="utf-8")
+    _write(changelog, text.replace(old, f"## [{version}] - {date}"))
     return changelog
 
 
@@ -103,13 +124,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
     parser.add_argument("version", nargs="?")
     parser.add_argument("--date", default=None)
+    parser.add_argument("--dry-run", action="store_true", help="list the files, write nothing")
+    parser.add_argument("--allow-dirty", action="store_true", help="skip the clean-tree check")
     parser.add_argument("--set-date", nargs=2, metavar=("VERSION", "DATE"))
     args = parser.parse_args(argv)
+    if not args.dry_run and not args.allow_dirty and is_dirty(ROOT):
+        print("error: uncommitted changes; commit or pass --allow-dirty", file=sys.stderr)
+        return 1
     try:
         if args.set_date:
             print(set_date(ROOT, *args.set_date).relative_to(ROOT))
         elif args.version:
-            for path in bump(ROOT, args.version, date=args.date):
+            for path in bump(ROOT, args.version, date=args.date, dry_run=args.dry_run):
                 print(path.relative_to(ROOT))
         else:
             parser.error("give a version or --set-date VERSION DATE")
