@@ -79,7 +79,13 @@ def doc(plugin_hash: str, verdict: str = "passed") -> dict[str, Any]:
                 "confirmatory": False,
             },
         ],
-        "gate": {"verdict": verdict, "reasons": []},
+        "gate": {
+            "verdict": verdict,
+            "reasons": [],
+            "plan_sha256": "1" * 64,
+            "ledger_chain_head": "2" * 64,
+            "grades_chain_head": "3" * 64,
+        },
         "style_rule": "keep_off",
     }
 

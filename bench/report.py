@@ -38,6 +38,7 @@ from bench.e4 import (
     DISCLOSURE_CODES,
     EXCLUSION_CAUSES,
     EXCLUSION_REASONS,
+    GATE_ANCHOR_FIELDS,
     GATE_REASON_CODES,
     MARGIN_PP,
     TREATMENT_ARM,
@@ -605,6 +606,7 @@ def _document(
     if gate is not None:
         gate_doc = {"verdict": gate.verdict, "reasons": list(gate.reasons)}
         gate_doc |= {f: getattr(gate, f) for f in PLAN_FIELDS}
+        gate_doc |= {f: getattr(gate, f, None) for f in GATE_ANCHOR_FIELDS}
     return {
         "schema_version": E4_SCHEMA_VERSION,
         "source": "E4",

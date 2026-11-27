@@ -63,6 +63,9 @@ def _codes(name: str) -> tuple[Any, ...]:
 EXCLUSION_REASONS: tuple[str, ...] = _codes("exclusion_reason")
 EXCLUSION_CAUSES: tuple[str | None, ...] = _codes("exclusion_cause")
 GATE_REASON_CODES: tuple[str, ...] = _codes("gate_reason")
+# what anchors a confirmation's evidence (M5 Task 10 ruling N4): the recorded plan's hash and
+# the heads of the verified ledger and grades hash chains; required on a confirmation gate
+GATE_ANCHOR_FIELDS: tuple[str, ...] = ("plan_sha256", "ledger_chain_head", "grades_chain_head")
 DISCLOSURE_CODES: tuple[str, ...] = _codes("disclosure")
 
 
@@ -301,6 +304,10 @@ def _stage_rules(doc: Mapping[str, Any], row: Mapping[str, Any] | None) -> list[
             errors.append("power: required (not null) in confirmation")
         if gate is None and "gate" in doc:
             errors.append("gate: required (not null) in confirmation")
+        if isinstance(gate, Mapping):
+            for name in GATE_ANCHOR_FIELDS:
+                if gate.get(name) is None:
+                    errors.append(f"gate.{name}: required in confirmation")
     non_inferior = row.get("non_inferior") if row is not None else None
     if verdict == "passed" and (non_inferior is not True or power_verdict != "powered"):
         errors.append("gate: 'passed' needs non_inferior true and power verdict 'powered'")
@@ -336,6 +343,7 @@ __all__: Sequence[str] = (
     "DISCLOSURE_CODES",
     "EXCLUSION_CAUSES",
     "EXCLUSION_REASONS",
+    "GATE_ANCHOR_FIELDS",
     "GATE_REASON_CODES",
     "SCHEMA_FILE",
     "SCHEMA_VERSION",

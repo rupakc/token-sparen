@@ -17,9 +17,17 @@ from typing import Any
 import pytest
 
 from bench import gate as g
+from bench import grade as gr
 from bench import stages
 from bench.grade import grades_path
-from bench.ledger import Ledger, LedgerError, RunKey
+from bench.ledger import (
+    CHAIN_FIELD,
+    Ledger,
+    LedgerError,
+    RunKey,
+    record_sha256,
+    sha256_text,
+)
 from bench.power import FlipModel, PowerPlan
 from bench.stats import Exclusion, RunRow, Summary
 
@@ -107,6 +115,12 @@ def persist(
     def end(key: str, **fields: Any) -> None:
         records.append({"kind": "end", "at": next(at), "key": key, "attempt": 1} | fields | extra)
 
+    def grade(key: str, resolved: bool | None) -> None:
+        grades.append(
+            {"kind": "grade", "stage": stage, "key": key, "resolved": resolved,
+             "patch_sha256": patch_sha(key)}
+        )  # fmt: skip
+
     for r in s.runs:
         key = f"c/{stage}/{r.arm}/{r.seed}/{r.instance_id}"
         start(key, r.plugin_hash)
@@ -120,8 +134,9 @@ def persist(
             claude_code_version=r.claude_code_version,
             plugin_hash=r.plugin_hash,
             live=r.live,
+            patch_sha256=patch_sha(key),
         )
-        grades.append({"kind": "grade", "stage": stage, "key": key, "resolved": r.resolved})
+        grade(key, r.resolved)
     for e in s.exclusions:
         key = f"c/{stage}/{e.arm}/{e.seed}/{e.instance_id}"
         ph = HASH if e.arm in stages.FROZEN_ARMS else None
@@ -131,13 +146,18 @@ def persist(
                 end(key, status="infra_fail", sub=e.cause or "api", repo="r/r")
         elif e.reason == "ungraded":
             end(key, status="ok", sub="success", run_cost=1.0, repo="r/r", model=MODEL,
-                claude_code_version=VERSION, plugin_hash=ph, live=True)  # fmt: skip
+                claude_code_version=VERSION, plugin_hash=ph, live=True,
+                patch_sha256=patch_sha(key))  # fmt: skip
             if e.cause == "harness_error":
-                grades.append({"kind": "grade", "stage": stage, "key": key, "resolved": None})
+                grade(key, None)
+    last: dict[str, Any] = (led.records() or [led.header])[-1]
     with led.path.open("a", encoding="utf-8") as fh:
-        fh.writelines(json.dumps(r, sort_keys=True) + "\n" for r in records)
-    with grades_path(led).open("w", encoding="utf-8") as fh:
-        fh.writelines(json.dumps(r, sort_keys=True) + "\n" for r in grades)
+        for rec in records:
+            if stage == "confirmation":
+                rec[CHAIN_FIELD] = record_sha256(last)
+            fh.write(json.dumps(rec, sort_keys=True) + "\n")
+            last = rec
+    gr._append(grades_path(led), grades)
     led = Ledger(led.path)
     if plan_after_runs:  # what a direct `Ledger.append` could do, bypassing `write_plan`
         doc = stages._plan_doc(
@@ -151,6 +171,20 @@ def persist(
 
 
 Store = Callable[..., Ledger]
+
+
+def patch_sha(key: str) -> str:
+    return sha256_text(f"patch {key}\n")
+
+
+def raw_append(led: Ledger, rec: dict[str, Any], *, chain: bool = True) -> None:
+    """Write a record straight into the file (no `Ledger.append` checks), chained like the
+    ledger would chain it when ``chain`` (what a careful forger could do)."""
+    if chain and led.header.get("stage") == "confirmation":
+        records = Ledger(led.path).records()
+        rec = rec | {CHAIN_FIELD: record_sha256(records[-1] if records else led.header)}
+    with led.path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, sort_keys=True) + "\n")
 
 
 @pytest.fixture
@@ -193,7 +227,14 @@ def test_gate_passes_on_noninferior_valid_run(store: Store) -> None:
     res = g.gate(ledger=store(_confirm()), **KW)
     assert res.verdict == "passed", res.reasons
     assert res.check is not None and res.check.passed and res.check.estimate.n == 100
-    assert res.as_e4() == {"verdict": "passed", "reasons": []} and res.reasons == []
+    assert res.reasons == []
+    assert res.as_e4() == {
+        "verdict": "passed",
+        "reasons": [],
+        "plan_sha256": res.plan_sha256,
+        "ledger_chain_head": res.ledger_chain_head,
+        "grades_chain_head": res.grades_chain_head,
+    }
     assert any("resolved-diff" in d for d in res.details)
     # the persisted plan's pins, for the report (Task 11)
     assert (res.plugin_hash, res.model, res.claude_code_version) == (HASH, MODEL, VERSION)
@@ -345,9 +386,7 @@ def test_reasons_are_codes(store: Store) -> None:
     """Closed vocabulary for e4.json (`bench.e4.GATE_REASON_CODES` once Task 11 merges)."""
     from bench import e4
 
-    shared = getattr(e4, "GATE_REASON_CODES", None)
-    if shared is not None:
-        assert set(g.REASON_CODES) <= set(shared)
+    assert set(g.REASON_CODES) <= set(e4.GATE_REASON_CODES)
     cases = [
         g.gate(ledger=store(_confirm(harmed=30), verdict="underpowered"), **KW),
         g.gate(ledger=store(_swap(_confirm(harmed=4), 1, live=False)), **(KW | {"e2_ok": False})),
@@ -368,12 +407,16 @@ def _reroll(led: Ledger, keys: list[str], *, append_invalidate: bool = True) -> 
         led.append(
             {"kind": "end", "key": k, "attempt": 2, "status": "ok", "sub": "success",
              "run_cost": 0.8, "repo": "r/r", "model": MODEL, "claude_code_version": VERSION,
-             "live": True} | pins
+             "live": True, "patch_sha256": sha256_text(f"re-roll {k}")} | pins
         )  # fmt: skip
-    with grades_path(led).open("a", encoding="utf-8") as fh:
-        for k in keys:
-            rec = {"kind": "grade", "stage": "confirmation", "key": k, "resolved": True}
-            fh.write(json.dumps(rec) + "\n")
+    gr._append(
+        grades_path(led),
+        [
+            {"kind": "grade", "stage": "confirmation", "key": k, "resolved": True,
+             "patch_sha256": sha256_text(f"re-roll {k}")}
+            for k in keys
+        ],
+    )  # fmt: skip
     return Ledger(led.path)
 
 
@@ -422,3 +465,111 @@ def test_infra_only_key_may_be_retried(store: Store) -> None:
     led.invalidate(RunKey.from_id(k), reason="operator: docker restarted")
     res = g.gate(ledger=_reroll(led, [k], append_invalidate=False), **KW)
     assert res.verdict == "passed", res.details
+
+
+HARMED = [f"c/confirmation/token-sparen/0/r__r-{i}" for i in range(0, 24, 2)]
+
+
+def _rerun_raw(led: Ledger, keys: list[str]) -> None:
+    plan = stages.read_plan(led)
+    pins = {"plugin_hash": plan.plugin_hash, "plan_sha256": plan.sha256}
+    for k in keys:
+        raw_append(led, {"kind": "start", "key": k, "attempt": 2, "at": 9e9} | pins)
+        raw_append(
+            led,
+            {"kind": "end", "key": k, "attempt": 2, "at": 9e9, "status": "ok", "sub": "success",
+             "run_cost": 0.8, "repo": "r/r", "model": MODEL, "claude_code_version": VERSION,
+             "live": True, "patch_sha256": sha256_text(f"re-roll {k}")} | pins,
+        )  # fmt: skip
+
+
+def test_second_graded_run_without_invalidate_is_refused(store: Store) -> None:
+    """Review N4(a): a second start/end appended for a graded key (no invalidate record),
+    regraded resolved, turned `failed` into `passed`."""
+    led = store(_confirm(harmed=12))
+    assert g.gate(ledger=led, **KW).verdict == "failed"
+    with pytest.raises(LedgerError, match="graded"):  # the API refuses the second start
+        led.append({"kind": "start", "key": HARMED[0], "attempt": 2})
+    _rerun_raw(led, HARMED)
+    gr._append(
+        grades_path(led),
+        [
+            {"kind": "grade", "stage": "confirmation", "key": k, "resolved": True,
+             "patch_sha256": sha256_text(f"re-roll {k}")}
+            for k in HARMED
+        ],
+    )  # fmt: skip
+    with pytest.raises(g.GateRefused, match="after its graded run"):
+        g.gate(ledger=Ledger(led.path), **KW)
+    # a second graded end alone (no start) too
+    led2 = store(_confirm(harmed=12))
+    end = next(r for r in led2.records() if r["kind"] == "end" and r["key"] == HARMED[0])
+    raw_append(led2, {k: v for k, v in end.items() if k != CHAIN_FIELD} | {"at": 9e9})
+    with pytest.raises(g.GateRefused, match="more than one graded run"):
+        g.gate(ledger=Ledger(led2.path), **KW)
+
+
+def test_second_grade_is_refused(store: Store) -> None:
+    """Review N4(b): a second definite grade for the same key and patch (last one wins in
+    `load_grades`) turned `failed` into `passed`."""
+    led = store(_confirm(harmed=12))
+    gr._append(
+        grades_path(led),
+        [
+            {"kind": "grade", "stage": "confirmation", "key": k, "resolved": True,
+             "patch_sha256": patch_sha(k)}
+            for k in HARMED
+        ],
+    )  # fmt: skip
+    with pytest.raises(g.GateRefused, match="more than one grade"):
+        g.gate(ledger=led, **KW)
+
+
+def test_grade_must_match_the_final_patch(store: Store) -> None:
+    led = store(_confirm())
+    other = [{"kind": "grade", "stage": "confirmation", "key": "c/confirmation/x/0/r__r-0",
+              "resolved": True, "patch_sha256": patch_sha("x")}]  # fmt: skip
+    gr._append(grades_path(led), other)
+    with pytest.raises(g.GateRefused, match="grade"):
+        g.gate(ledger=led, **KW)
+    led2 = store(_confirm())
+    path = grades_path(led2)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    first = json.loads(lines[0])
+    path.write_text("", encoding="utf-8")
+    gr._append(path, [first | {"patch_sha256": "0" * 64}] + [json.loads(x) for x in lines[1:]])
+    with pytest.raises(g.GateRefused, match="patch"):
+        g.gate(ledger=led2, **KW)
+
+
+def test_ledger_and_grades_are_hash_chained(store: Store) -> None:
+    """Ruling N4(b): every confirmation record carries the sha256 of the previous one; the gate
+    verifies both chains and returns their heads for e4.json."""
+    led = store(_confirm())
+    res = g.gate(ledger=led, **KW)
+    assert res.ledger_chain_head == led.chain_head()
+    assert res.grades_chain_head == gr.grades_chain_head(grades_path(led))
+    assert res.as_e4()["ledger_chain_head"] == res.ledger_chain_head
+    assert res.as_e4()["plan_sha256"] == res.plan_sha256
+    # appending moves the head
+    led.append({"kind": "pause", "reason": "weekly"})
+    assert Ledger(led.path).chain_head() != res.ledger_chain_head
+    # an edited record breaks the chain
+    lines = led.path.read_text(encoding="utf-8").splitlines()
+    i = next(n for n, x in enumerate(lines) if '"kind": "end"' in x and "token-sparen" in x)
+    lines[i] = lines[i].replace('"run_cost": 0.8', '"run_cost": 0.7')
+    led.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(g.GateRefused, match="chain"):
+        g.gate(ledger=Ledger(led.path), **KW)
+    # a deleted grade line breaks the grades chain
+    led2 = store(_confirm())
+    path = grades_path(led2)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    path.write_text("\n".join(lines[:3] + lines[4:]) + "\n", encoding="utf-8")
+    with pytest.raises(g.GateRefused, match="chain"):
+        g.gate(ledger=led2, **KW)
+    # an unchained record appended straight into the ledger
+    led3 = store(_confirm())
+    raw_append(led3, {"kind": "pause", "reason": "weekly"}, chain=False)
+    with pytest.raises(g.GateRefused, match="chain"):
+        g.gate(ledger=Ledger(led3.path), **KW)

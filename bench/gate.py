@@ -6,7 +6,11 @@ power verdict, with a content hash, written before the first run; every run reco
 that hash — `bench.stages.read_plan`). The summary is built from the ledger and its grades file,
 never passed in. Any run key outside the plan (task, arm or seed) refuses the gate.
 
-The gate refuses (`GateRefused`) when a graded confirmation run was reopened (invalidate or
+The ledger and the confirmation grades are hash-chained (ruling N4): the gate verifies both
+chains and returns their heads for e4.json (anchored by the signed release commit). It refuses
+(`GateRefused`) on a broken chain, a confirmation key with more than one graded run or a start
+after it, more than one definite grade, a grade for another patch or without a run, and when a
+graded confirmation run was reopened (invalidate or
 retry) — re-running graded runs is outcome-selective (ruling N3) — and on anything but a
 complete confirmation: every planned task
 needs, in baseline and token-sparen at the plan's seed, a graded final run or an exclusion that
@@ -34,7 +38,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from bench.ledger import Ledger
+from bench.e4 import GATE_REASON_CODES
+from bench.grade import grades_chain_head, grades_path
+from bench.ledger import GRADED, Ledger, LedgerError, read_jsonl
 from bench.stages import (
     CORE_ARMS,
     FROZEN_ARMS,
@@ -62,9 +68,9 @@ SCOPE = (
 
 GateVerdict = Literal["passed", "failed", "underpowered"]
 
-# Closed vocabulary of `GateResult.reasons` (the `gate_reason` enum of e4.schema.json, owned by
-# Task 11 as `bench.e4.GATE_REASON_CODES`; a test checks this is a subset once both meet).
-# Human-readable text with figures goes to `GateResult.details`, never into e4.json.
+# The codes this gate emits, all from the closed `gate_reason` vocabulary of e4.schema.json
+# (`bench.e4.GATE_REASON_CODES`; checked at import). Human-readable text with figures goes to
+# `GateResult.details`, never into e4.json.
 REASON_CODES: tuple[str, ...] = (
     "plan_hash_not_release",
     "plugin_hash_mismatch",
@@ -80,6 +86,8 @@ REASON_CODES: tuple[str, ...] = (
     "one_sided_pending",
     "excess_exclusions_imputed",
 )
+if not set(REASON_CODES) <= set(GATE_REASON_CODES):  # pragma: no cover - a schema/code drift
+    raise ImportError("bench.gate emits reason codes outside bench.e4.GATE_REASON_CODES")
 
 
 class GateRefused(ValueError):
@@ -99,10 +107,20 @@ class GateResult:
     claude_code_version: str | None = None
     price_confirmed_on: str | None = None
     details: list[str] = field(default_factory=list)  # human-readable, for the operator only
+    # heads of the verified hash chains (ruling N4), anchored by the signed release commit
+    ledger_chain_head: str | None = None
+    grades_chain_head: str | None = None
 
     def as_e4(self) -> dict[str, Any]:
-        """The ``gate`` object of ``e4.json`` (codes only)."""
-        return {"verdict": self.verdict, "reasons": list(self.reasons)}
+        """The ``gate`` object of ``e4.json``: codes only, plus the plan hash and both chain
+        heads (`bench.e4.GATE_ANCHOR_FIELDS`)."""
+        return {
+            "verdict": self.verdict,
+            "reasons": list(self.reasons),
+            "plan_sha256": self.plan_sha256,
+            "ledger_chain_head": self.ledger_chain_head,
+            "grades_chain_head": self.grades_chain_head,
+        }
 
 
 Finding = tuple[str, str]  # (code, detail)
@@ -160,6 +178,43 @@ def _outside(key: str, plan: StagePlan) -> bool:
     return parts[2] not in plan.arms or parts[3] != str(plan.seed) or parts[4] not in plan.tasks
 
 
+def _rerun_problems(ledger: Ledger, grades: list[dict[str, Any]]) -> list[str]:
+    """Ruling N4(a): each confirmation key has at most one graded end and no start after it;
+    at most one definite grade, whose patch is the final end's; no grade without a run."""
+    ends: dict[str, list[dict[str, Any]]] = {}
+    problems: list[str] = []
+    for rec in ledger.records():
+        key = rec.get("key")
+        if not isinstance(key, str) or key.split("/")[1:2] != ["confirmation"]:
+            continue
+        graded = [e for e in ends.get(key, []) if e.get("status") in GRADED]
+        if rec.get("kind") == "start" and graded:
+            problems.append(f"{key}: started again after its graded run")
+        elif rec.get("kind") == "end":
+            if rec.get("status") in GRADED and graded:
+                problems.append(f"{key}: more than one graded run")
+            ends.setdefault(key, []).append(rec)
+    finals = {
+        k: [e for e in lst if e.get("status") in GRADED][-1]
+        for k, lst in ends.items()
+        if any(e.get("status") in GRADED for e in lst)
+    }
+    seen: set[str] = set()
+    for rec in grades:
+        if rec.get("kind") != "grade" or rec.get("stage") != "confirmation":
+            continue
+        key = str(rec.get("key"))
+        if key not in finals:
+            problems.append(f"{key}: a grade without a graded run")
+        elif rec.get("patch_sha256") != finals[key].get("patch_sha256"):
+            problems.append(f"{key}: a grade for another patch than the run's")
+        if rec.get("resolved") is not None:
+            if key in seen:
+                problems.append(f"{key}: more than one grade")
+            seen.add(key)
+    return problems
+
+
 def gate(
     *,
     ledger: Ledger,
@@ -182,6 +237,18 @@ def gate(
         plan = read_plan(ledger)
     except PlanError as exc:
         raise GateRefused(f"confirmation plan: {exc}") from exc
+    try:
+        ledger_head = ledger.chain_head()
+        grades_head = grades_chain_head(grades_path(ledger))
+        grades = read_jsonl(grades_path(ledger))
+    except LedgerError as exc:
+        raise GateRefused(f"tamper check: {exc} (ledger or grades hash chain)") from exc
+    rerun = _rerun_problems(ledger, grades)
+    if rerun:
+        raise GateRefused(
+            f"{len(rerun)} re-run/re-grade problem(s), e.g. {rerun[0]}: a graded confirmation "
+            "run is never re-run or re-graded (ruling N4)"
+        )
     reopened = ledger.reopened_graded("confirmation")
     if reopened:
         raise GateRefused(
@@ -229,6 +296,8 @@ def gate(
             model=plan.model,
             claude_code_version=plan.claude_code_version,
             price_confirmed_on=plan.price_confirmed_on,
+            ledger_chain_head=ledger_head,
+            grades_chain_head=grades_head,
             details=[*extra, *(f"{code}: {text}" for code, text in findings), bound],
         )
 

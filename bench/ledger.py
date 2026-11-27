@@ -36,6 +36,10 @@ Every later record has ``kind`` (one of `RECORD_KINDS`) and ``at`` (epoch second
   bounded rounds).
 * ``excluded``: the fields of `Ledger.excluded_after_retries` for a key that stays unrunnable
   after its rounds (an audit record; the method computes the live list).
+In a confirmation ledger every record after the header also carries ``prev_sha256``, the
+sha256 of the previous record's canonical JSON (`record_sha256`; the header's for the first),
+so an edited, inserted or removed record breaks the chain (`Ledger.chain_head`).
+
 * ``plan`` (confirmation only, before the first ``start``; `bench.stages.write_plan`):
   ``plan`` (planned tasks, arms, seed, model, Claude Code version, plugin_hash, power verdict)
   and ``plan_sha256`` over its canonical JSON. Every confirmation ``start`` and ``end`` carries
@@ -56,7 +60,7 @@ import hashlib
 import json
 import os
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -97,8 +101,11 @@ MAX_INFRA_ATTEMPTS = 3
 # cause that is not the key's (rate, disk floor, an expired token, a leak)
 NOT_AN_ATTEMPT = frozenset({"rate", "disk", "auth", "leak"})
 LOCK_TIMEOUT_S = 30.0
-# the stage whose graded runs are never reopened (M5 Task 10 ruling N3)
+# the stage whose graded runs are never reopened (M5 Task 10 ruling N3) and whose records are
+# hash-chained (ruling N4): each carries the sha256 of the previous record
 PROTECTED_STAGE = "confirmation"
+CHAIN_FIELD = "prev_sha256"
+GENESIS = "0" * 64  # the chain origin of a file without a header (grades.jsonl)
 
 
 class LedgerError(ValueError):
@@ -108,6 +115,45 @@ class LedgerError(ValueError):
 def sha256_text(text: str) -> str:
     """sha256 of a patch's on-disk bytes (`bench.patch.patch_bytes`)."""
     return hashlib.sha256(patch_bytes(text)).hexdigest()
+
+
+def record_sha256(rec: Mapping[str, Any]) -> str:
+    """sha256 of a record's canonical JSON (sorted keys, compact, ASCII): the chain link."""
+    text = json.dumps(rec, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+    return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+def chain_head(records: Sequence[Mapping[str, Any]], *, genesis: str) -> str:
+    """Verify that each record's `CHAIN_FIELD` is the hash of the one before (the first's is
+    ``genesis``); return the hash of the last record (``genesis`` when empty)."""
+    prev = genesis
+    for i, rec in enumerate(records):
+        if rec.get(CHAIN_FIELD) != prev:
+            raise LedgerError(f"hash chain broken at record {i + 1}")
+        prev = record_sha256(rec)
+    return prev
+
+
+def _last_doc(path: Path) -> dict[str, Any] | None:
+    """The last complete record of ``path`` (a torn tail is skipped), reading backwards."""
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return None
+    data = b""
+    with path.open("rb") as fh:
+        pos = size
+        while pos > 0:
+            start = max(0, pos - 65536)
+            fh.seek(start)
+            data = fh.read(pos - start) + data
+            pos = start
+            body = data[: data.rfind(b"\n") + 1]
+            lines = [x for x in body.split(b"\n") if x.strip()]
+            if len(lines) >= 2 or (pos == 0 and lines):
+                doc = json.loads(lines[-1].decode("utf-8"))
+                return doc if isinstance(doc, dict) else None
+    return None
 
 
 @dataclass(frozen=True)
@@ -251,14 +297,37 @@ class Ledger:
     def campaign(self) -> str:
         return str(self.header["campaign"])
 
+    @property
+    def chained(self) -> bool:
+        return self.header.get("stage") == PROTECTED_STAGE
+
     def append(self, rec: Mapping[str, Any]) -> None:
+        """Append one record. In a confirmation ledger the record is hash-chained to the
+        previous one, and a ``start`` for a key that already has a graded final is refused
+        (ruling N4: a graded confirmation run is never re-run)."""
         if rec.get("kind") not in RECORD_KINDS:
             raise LedgerError(f"unknown ledger record kind: {rec.get('kind')!r}")
         doc = dict(rec)
         doc.setdefault("at", time.time())
         doc["at"] = float(doc["at"])
+        doc.pop(CHAIN_FIELD, None)
+        if self.chained and doc["kind"] == "start" and isinstance(doc.get("key"), str):
+            key = RunKey.from_id(doc["key"])
+            if key.stage == PROTECTED_STAGE and self.final(key) is not None:
+                raise LedgerError(f"{key.id} has a graded outcome: confirmation never re-runs it")
         with locked(self.path, timeout=LOCK_TIMEOUT_S):
+            if self.chained:
+                last = _last_doc(self.path)
+                doc[CHAIN_FIELD] = record_sha256(last if last is not None else self.header)
             _write_line(self.path, doc)
+
+    def chain_head(self) -> str:
+        """Verify the hash chain of a confirmation ledger (from its header) and return its
+        head: the hash of the last record, published in e4.json and anchored by the signed
+        release commit. `LedgerError` on any break (an edited, inserted or removed record)."""
+        if not self.chained:
+            raise LedgerError("only a confirmation ledger is hash-chained")
+        return chain_head(self.records(), genesis=record_sha256(self.header))
 
     def records(self) -> list[dict[str, Any]]:
         """Every record after the header, in append order (re-read when the file changed;
