@@ -25,19 +25,21 @@ if str(ROOT) not in sys.path:
 from scripts.build_claude_tree import SITE_URL, build_claude_tree  # noqa: E402
 from scripts.plugin_hash import plugin_hash  # noqa: E402
 from scripts.release_check import HEADING, section  # noqa: E402
+from scripts.render_evidence import render_evidence  # noqa: E402
 
 REPO = "rupakc/token-sparen"
 
 
-def _load_render_evidence() -> Callable[[Path | None], str]:
-    from scripts.render_evidence import render_evidence
-
-    return render_evidence  # type: ignore[no-any-return]
+def _load_render_evidence() -> Callable[..., str]:
+    """`render_evidence.render_evidence(path, tree)` (a seam for tests)."""
+    return render_evidence
 
 
 def _load_figure_violations() -> Callable[[str], list[str]]:
+    # TODO(merge M6 Task 5): import figure_violations from its non-test home once Task 5 lands
+    # and drop the tests/ fallback (a script should not depend on a test module).
     try:
-        from scripts.render_evidence import figure_violations
+        from scripts.render_evidence import figure_violations  # type: ignore[attr-defined]
     except ImportError:
         from tests.test_user_docs import figure_violations
     return figure_violations  # type: ignore[no-any-return]
@@ -62,6 +64,8 @@ def _footer(version: str, digest: str) -> str:
         "## Install\n\n"
         "Claude Code plugin:\n\n"
         "```\n"
+        # TODO(M6 Task 14 Step 6): until marketplace.json's source is release/claude, this
+        # marketplace resolves to main (ruling M6-B3; Task 14 Step 6 switches it after v1.0.0).
         f"claude plugin marketplace add {REPO}\n"
         "claude plugin install token-sparen@token-sparen\n"
         "```\n\n"
@@ -94,9 +98,11 @@ def release_notes(
             built = Path(tmp) / "tree"
             build_claude_tree(changelog.resolve().parent, built)
             digest = plugin_hash(built)
+            # with the tree, the renderer notes when the evidence measured another build
+            table = render(evidence, built).strip("\n")
     else:
         digest = plugin_hash(tree)
-    table = render(evidence).strip("\n")
+        table = render(evidence, tree).strip("\n")
     prose = f"{body}\n\n{_footer(version, digest)}"
     violations = figures(prose)
     if violations:

@@ -6,8 +6,13 @@ limits. ``tag`` mode adds: the tag matches ``^v\\d+\\.\\d+\\.\\d+$`` exactly (mi
 such as ``v0.4.0-m4``, ``v0.5.0-screen1`` or ``v1.0.0-rc1`` never release) and equals ``v`` +
 version; the CHANGELOG heading is dated (not ``Unreleased``); for ``X.Y.0`` the E4 release gate
 (`render_evidence.check_release_gate`) passes on the built tree and the evidence's plugin hash
-equals the built tree's; for a patch ``X.Y.Z`` (Z > 0) the patch rule (ruling N4) applies
-instead. ``dry-run`` needs no tag and no evidence and skips the gate.
+equals the built tree's; for a patch ``X.Y.Z`` (Z > 0) the patch rule (ruling N4, amended by
+C1/I1/I2) applies instead: the reused evidence measured an earlier release of the same
+MAJOR.MINOR, its verdict is ``passed`` (or ``underpowered`` with a valid signed ``ship``
+decision for that evidence), the README states the measured version and hash, the CHANGELOG
+lists the runtime changes, and no behaviour file (``BEHAVIOUR_PATHS``) changed between the
+measured commit and the release commit. Tag mode also requires a clean work tree. ``dry-run``
+needs no tag and no evidence and skips the gate.
 
 Owner override (ruling M5-B1, file format fixed by the M6 controller): only when the evidence's
 gate verdict is ``underpowered`` (never ``failed``, never missing evidence) is a committed
@@ -26,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import json
 import re
 import subprocess
@@ -43,6 +47,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.build_claude_tree import TreeError, build_claude_tree  # noqa: E402
 from scripts.plugin_hash import plugin_hash  # noqa: E402
+from scripts.render_evidence import check_release_gate, e4_id  # noqa: E402
 
 Mode = Literal["tag", "dry-run"]
 MODES = ("tag", "dry-run")
@@ -55,8 +60,18 @@ EVIDENCE = Path("docs/evidence/e4.json")
 DECISION = Path("docs/release/gate-decision.toml")
 TREATMENT_ARM = "token-sparen"
 RUNTIME_HEADING = "### Runtime changes"
-# a change below these needs a new E4 confirmation (defaults or learning behaviour)
-CONFIRMATION_PATHS = ("token_sparen/params/", "token_sparen/learn/")
+# ruling I2: a patch that touches any of these between the measured commit and the release
+# commit changes behaviour and needs a new E4 confirmation
+BEHAVIOUR_PATHS = (
+    "token_sparen/params/",
+    "token_sparen/learn/",
+    "token_sparen/mechanisms/",
+    "token_sparen/compress/",
+    "token_sparen/adapters/",
+    "hooks/",
+    "skills/",
+)
+BEHAVIOUR_FILES = frozenset({"token_sparen/config.py"})
 UNRELEASED = "Unreleased"
 DECISION_KEYS = frozenset({"version", "decision", "rationale", "date", "e4_id"})
 
@@ -67,10 +82,9 @@ def is_release_tag(tag: str) -> bool:
 
 
 def _load_gate() -> Callable[..., Any]:
-    """`check_release_gate(evidence, tree, decision) -> GateResult(ok, reason)` (M6 Task 6)."""
-    from scripts.render_evidence import check_release_gate
-
-    return check_release_gate  # type: ignore[no-any-return]
+    """`render_evidence.check_release_gate` (a seam for tests; a gate that cannot be loaded is
+    a release problem, never a skip)."""
+    return check_release_gate
 
 
 def _load_e4() -> Callable[[Path], dict[str, Any]]:
@@ -207,10 +221,10 @@ def _decision_content(data: dict[str, Any], root: Path, version: str, where: str
         problems.append(f"{where}: date must be an ISO date (YYYY-MM-DD), got {date!r}")
     evidence = root / EVIDENCE
     if "e4_id" in data and evidence.is_file():
-        e4_id = hashlib.sha256(evidence.read_bytes()).hexdigest()[:12]
-        if data["e4_id"] != e4_id:
+        expected = e4_id(evidence)
+        if data["e4_id"] != expected:
             problems.append(
-                f"{where}: e4_id {data['e4_id']!r} != {e4_id} (decided on other evidence)"
+                f"{where}: e4_id {data['e4_id']!r} != {expected} (decided on other evidence)"
             )
     return problems
 
@@ -229,15 +243,25 @@ def decision_problems(root: Path, version: str) -> list[str]:
     dirty = _git(root, "status", "--porcelain", "--", where)
     if dirty.returncode != 0 or dirty.stdout.strip():
         problems.append(f"{where}: not committed as is (uncommitted changes)")
-    last = _git(root, "log", "-1", "--format=%H %G?", "--", where)
+    # --full-history: a merge whose resolution changed the file is not simplified away.
+    # %G? = G means "good signature by a key this git trusts": the release job must trust only
+    # the owner's key (gpg keyring or gpg.ssh.allowedSignersFile; Task 10).
+    last = _git(root, "log", "-1", "--full-history", "--format=%H %G?", "--", where)
     fields = last.stdout.split()
     if last.returncode != 0 or not fields:
         problems.append(f"{where}: never committed; the owner commits it signed")
-    elif fields[1:] != ["G"]:
+        return problems
+    if fields[1:] != ["G"]:
         status = fields[1] if len(fields) > 1 else "?"
         problems.append(
             f"{where}: commit {fields[0][:12]} is not signed by a trusted owner key "
             f"(git %G? = {status!r}, needs 'G')"
+        )
+    signed = _git(root, "rev-parse", "--verify", "--quiet", f"{fields[0]}:{where}")
+    head = _git(root, "rev-parse", "--verify", "--quiet", f"HEAD:{where}")
+    if signed.returncode != 0 or head.returncode != 0 or signed.stdout != head.stdout:
+        problems.append(
+            f"{where}: the file at HEAD is not the one in signed commit {fields[0][:12]}"
         )
     return problems
 
@@ -275,14 +299,42 @@ def _gate(root: Path, tree: Path, version: str) -> list[str]:
     return problems
 
 
+def _reusable(root: Path, version: str, doc: dict[str, Any]) -> list[str]:
+    """Rulings C1/I1: the prior evidence was releasable and measured this MAJOR.MINOR."""
+    problems: list[str] = []
+    measured = str(doc.get("plugin_version", ""))
+    m = RELEASE_VERSION.fullmatch(measured)
+    r = RELEASE_VERSION.fullmatch(version)
+    assert r is not None  # release_check only routes X.Y.Z here
+    if m is None or m.group(1, 2) != r.group(1, 2) or int(m.group(3)) >= int(r.group(3)):
+        problems.append(
+            f"patch rule: the evidence measured {measured!r}, not an earlier {r[1]}.{r[2]}.x; "
+            f"a new minor or major ({r[1]}.{r[2]}) needs its own E4 confirmation"
+        )
+    gate = doc.get("gate")
+    verdict = gate.get("verdict") if isinstance(gate, dict) else None
+    if verdict == "underpowered" and m is not None:
+        override = decision_problems(root, measured)
+        problems += [
+            f"patch rule: underpowered evidence without a valid decision: {p}" for p in override
+        ]
+    elif verdict != "passed":
+        problems.append(
+            f"patch rule: the reused evidence's gate verdict is {verdict!r} (needs 'passed', or "
+            "'underpowered' with a signed 'ship' decision); a new E4 run is required"
+        )
+    return problems
+
+
 def _patch_rule(root: Path, version: str, changelog: str) -> list[str]:
-    """X.Y.Z with Z > 0 (ruling N4): (a) README states the measured version and hash, (b) the
-    section lists runtime changes, (c) nothing under params/ or learn/ changed since the
-    measured ref."""
+    """X.Y.Z with Z > 0 (ruling N4 as amended by C1/I1/I2): the reused evidence was releasable
+    and measured this MAJOR.MINOR; (a) README states the measured version and hash, (b) the
+    section lists runtime changes, (c) no behaviour file (`BEHAVIOUR_PATHS`) changed between
+    the measured commit and the release commit."""
     doc, error = _evidence(root)
     if doc is None:
         return [f"patch rule: {error} (a patch ships on the last measured evidence)"]
-    problems: list[str] = []
+    problems = _reusable(root, version, doc)
     ref = _measured_ref(doc) or str(doc.get("plugin_version", ""))
     digest = str(doc.get("plugin_hash", ""))[:12]
     readme = root / "README.md"
@@ -310,12 +362,24 @@ def _patch_rule(root: Path, version: str, changelog: str) -> list[str]:
         problems.append(f"patch rule (c): git diff failed: {diff.stderr.strip()}")
         return problems
     for rel in diff.stdout.splitlines():
-        if rel.startswith(CONFIRMATION_PATHS):
+        if rel.startswith(BEHAVIOUR_PATHS) or rel in BEHAVIOUR_FILES:
             problems.append(
-                f"patch rule (c): {rel} changed since {ref}: defaults or learning behaviour "
-                "changed, a new E4 confirmation is required"
+                f"patch rule (c): {rel} changed since {ref}: behaviour changed, "
+                "a new E4 confirmation is required"
             )
     return problems
+
+
+def _dirty(root: Path) -> list[str]:
+    """M1: tag mode checks what is committed, never local edits or stray files."""
+    status = _git(root, "status", "--porcelain")
+    if status.returncode != 0:
+        return [f"cannot read git status: {status.stderr.strip()}"]
+    lines = status.stdout.splitlines()
+    if not lines:
+        return []
+    shown = ", ".join(line[3:] for line in lines[:5]) + (" ..." if len(lines) > 5 else "")
+    return [f"work tree not clean (tag mode checks only committed content): {shown}"]
 
 
 def release_check(root: Path, *, tag: str | None, mode: Mode) -> list[str]:
@@ -341,6 +405,7 @@ def release_check(root: Path, *, tag: str | None, mode: Mode) -> list[str]:
             return problems
         if tag is None:
             return [*problems, "tag mode needs --tag vX.Y.Z"]
+        problems += _dirty(root)
         if not is_release_tag(tag):
             problems.append(f"{tag!r} is not a release tag (only vX.Y.Z releases)")
         elif tag != f"v{version}":

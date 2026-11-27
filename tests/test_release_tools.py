@@ -206,9 +206,9 @@ def passing_gate(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     return calls
 
 
-def _released(repo: Path, tmp_path: Path) -> Path:
+def _released(repo: Path, tmp_path: Path, *, verdict: str = "passed") -> Path:
     """``repo`` at 1.0.0 with evidence measuring its tree, committed."""
-    _write_evidence(repo, _tree_hash(repo, tmp_path))
+    _write_evidence(repo, _tree_hash(repo, tmp_path), verdict=verdict)
     _commit(repo, "docs: evidence")
     return repo
 
@@ -269,8 +269,19 @@ def test_tag_mode_requires_dated_heading(
     assert any("exactly one" in p for p in problems), problems
 
 
-def _patch(repo: Path, tmp_path: Path, touched: str, *, runtime: str = "- Fixed a crash.") -> None:
-    _released(repo, tmp_path)
+def _patch(
+    repo: Path,
+    tmp_path: Path,
+    touched: str,
+    *,
+    runtime: str = "- Fixed a crash.",
+    version: str = "1.0.1",
+    verdict: str = "passed",
+    before: Callable[[], None] | None = None,
+) -> None:
+    _released(repo, tmp_path, verdict=verdict)
+    if before is not None:
+        before()
     target = repo / touched
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("a", encoding="utf-8") as fh:
@@ -284,10 +295,10 @@ def _patch(repo: Path, tmp_path: Path, touched: str, *, runtime: str = "- Fixed 
         ),
         encoding="utf-8",
     )
-    _set_version(repo, "1.0.1", date="2026-12-10")
+    _set_version(repo, version, date="2026-12-10")
     changelog = repo / "CHANGELOG.md"
     changelog.write_text(changelog.read_text("utf-8").replace("- none", runtime), encoding="utf-8")
-    _commit(repo, "chore(release): v1.0.1")
+    _commit(repo, f"chore(release): v{version}")
 
 
 def test_patch_rule_allows_labelled_runtime_fix(
@@ -313,7 +324,18 @@ def test_patch_rule_allows_labelled_runtime_fix(
 
 
 @pytest.mark.parametrize(
-    "touched", ["token_sparen/params/defaults.toml", "token_sparen/learn/engine.py"]
+    "touched",
+    [
+        "token_sparen/params/defaults.toml",
+        "token_sparen/learn/engine.py",
+        # ruling I2: every behaviour file, not only defaults and learning
+        "token_sparen/mechanisms/compression.py",
+        "token_sparen/compress/_shared.py",
+        "token_sparen/adapters/claude/entry.py",
+        "token_sparen/config.py",
+        "hooks/run.py",
+        "skills/token-sparen/SKILL.md",
+    ],
 )
 def test_patch_rule_refuses_params_or_learn_change(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, touched: str
@@ -322,6 +344,67 @@ def test_patch_rule_refuses_params_or_learn_change(
     _patch(repo, tmp_path, touched)
     problems = rc.release_check(repo, tag="v1.0.1", mode="tag")
     assert any(touched in p and "new E4" in p for p in problems), problems
+
+
+@pytest.mark.parametrize("verdict", ["failed", "underpowered"])
+def test_patch_refuses_evidence_that_never_passed(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verdict: str
+) -> None:
+    """Review C1: a patch must not ride on failed or un-overridden underpowered evidence."""
+    monkeypatch.setattr(rc, "_load_gate", lambda: _gate(True))
+    _patch(repo, tmp_path, "token_sparen/cli.py", verdict=verdict)
+    problems = rc.release_check(repo, tag="v1.0.1", mode="tag")
+    assert any("patch rule" in p and ("verdict" in p or "decision" in p) for p in problems), (
+        problems
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ssh signing setup is POSIX-only here")
+def test_patch_reuses_underpowered_evidence_with_signed_ship_decision(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(rc, "_load_gate", lambda: _gate(True))
+
+    def decide() -> None:
+        _ssh_signing(repo, tmp_path)
+        _decision(repo)  # version 1.0.0: the measured release, not the patch
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-S", "-m", "docs: owner decision")
+
+    _patch(repo, tmp_path, "token_sparen/cli.py", verdict="underpowered", before=decide)
+    assert rc.release_check(repo, tag="v1.0.1", mode="tag") == []
+    _decision(repo, decision="hold")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-S", "-m", "docs: owner holds")
+    problems = rc.release_check(repo, tag="v1.0.1", mode="tag")
+    assert any("hold" in p for p in problems), problems
+
+
+@pytest.mark.parametrize("version", ["1.1.1", "2.0.1"])
+def test_patch_rule_same_major_minor_only(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    """Review I1: evidence for 1.0.0 never covers an unmeasured 1.1.x or 2.0.x."""
+    monkeypatch.setattr(rc, "_load_gate", lambda: _gate(True))
+    _patch(repo, tmp_path, "token_sparen/cli.py", version=version)
+    problems = rc.release_check(repo, tag=f"v{version}", mode="tag")
+    assert any("own E4 confirmation" in p for p in problems), problems
+
+
+def test_tag_mode_requires_clean_work_tree(
+    repo: Path, tmp_path: Path, passing_gate: list[tuple[Any, ...]]
+) -> None:
+    """Review M1: tag mode judges committed content only."""
+    _released(repo, tmp_path)
+    assert rc.release_check(repo, tag="v1.0.0", mode="tag") == []
+    (repo / "NOTICE").write_text("edited\n", encoding="utf-8")
+    problems = rc.release_check(repo, tag="v1.0.0", mode="tag")
+    assert any("not clean" in p and "NOTICE" in p for p in problems), problems
+    _git(repo, "checkout", "--", "NOTICE")
+    (repo / "stray.txt").write_text("x\n", encoding="utf-8")
+    problems = rc.release_check(repo, tag="v1.0.0", mode="tag")
+    assert any("not clean" in p and "stray.txt" in p for p in problems), problems
+    assert rc.release_check(repo, tag=None, mode="dry-run") == []  # dry runs may be dirty
 
 
 def test_patch_rule_needs_resolvable_measured_ref(
@@ -511,7 +594,8 @@ def test_release_check_reports_tree_problems(repo: Path) -> None:
 
 @pytest.fixture
 def notes_deps(monkeypatch: pytest.MonkeyPatch) -> None:
-    def render(path: Path | None) -> str:
+    def render(path: Path | None, tree: Path | None = None) -> str:
+        assert tree is not None, "the renderer gets the tree (notes a different measured build)"
         return "| arm | estimate |\n|---|---|\n| token-sparen | 43 % (95 % CI 40 to 46) |"
 
     def figures(text: str) -> list[str]:
