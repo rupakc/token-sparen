@@ -12,7 +12,7 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
 
 ### M4 simulation lane and offline LinTS challenger
 
-- E2 eval: `run(levels, params)` and `--params OVERLAY.toml` evaluate candidate parameters (a temporary user config in the isolated home; unknown or mistyped keys raise `ValueError`); the report gains `inline_rate` per level, the share of needles visible in the compressed text rather than only via the recovery file.
+- E2 eval: a `pretrim` pass (the `guards.pretrim_level` arm on Bash-output cases) gates `guards.*` keys too; `run(levels, params)` and `--params OVERLAY.toml` evaluate candidate parameters (a temporary user config in the isolated home; unknown or mistyped keys raise `ValueError`); the report gains `inline_rate` per level, the share of needles visible in the compressed text rather than only via the recovery file.
 
 - `replay --lanes sim`: runs the live learning engine chronologically over past sessions per
   project group, in a temporary state root deleted afterwards (its own `HOME` and
