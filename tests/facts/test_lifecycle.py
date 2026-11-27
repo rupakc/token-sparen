@@ -929,3 +929,13 @@ def test_ci_prefixed_test_command_is_its_own_runner(tmp_path: Path) -> None:
     log = Log().prompt().bash("CI=true npm test -- --watchAll=false", "ok")
     o = _observe(log, tmp_path, fact)[fid]
     assert o.relevant and not o.contradicted and not o.waste
+
+
+def test_ci_prefixed_test_command_not_found_contradicts(tmp_path: Path) -> None:
+    """Fix round 2: the not-found / usage check strips a leading ``CI=true`` from the value."""
+    fact = _fact("test_command", "tests", "CI=true npm test -- --watchAll=false")
+    fid = fact_id(fact)
+    gone = Log().prompt().bash("CI=true npm test", 'npm ERR! Missing script: "test"', err=True)
+    assert _observe(gone, tmp_path, fact)[fid].contradicted
+    plain = Log().prompt().bash("npm test", 'npm ERR! Missing script: "test"', err=True)
+    assert _observe(plain, tmp_path, fact)[fid].contradicted

@@ -118,7 +118,8 @@ everything else. No savings figures are claimed for them yet.
 - Repository facts: a generated-directory fact learned from edits alone is no longer injected
   and is retired unless git or a generated marker confirms it; a test command run from a
   subdirectory or for one package (`cd tests/unit && pytest`, `cargo test -p core`) is no
-  longer learned; watch-mode stoppers such as `--watchAll=false` and `CI=true` are kept.
+  longer learned, nor one that picks a config or root (`-c`, `--config`, `--rootDir`); watch-mode
+  stoppers such as `--watchAll=false` and `CI=true` are kept (`--run` for vitest only).
 
 #### Security
 - Tool pruning is the second settings write after the statusline: it needs an explicit opt-in

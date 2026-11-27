@@ -1466,4 +1466,8 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   `-c/--config` and `tox -e` (owner list only), m2 regex anchoring, m4 zombie entries, m6.
   Horizon rule reasoning (concern 1): the plain `ucb < retire_ucb` rule already existed, so the
   ruling must mean a comparison against the (prior, else withheld) baseline.
+- Fix round 2 (2026-11-27, re-review minors ruled must-fix): `--run` kept only for vitest
+  (`KEEP_FLAGS_BY`); config/root flags (`-c --config --config-file --configFile --root --rootDir
+  --project`) join `SCOPE_FLAGS` (no fact; side effect: `dotnet test -c Release` gives no fact);
+  the Observer's not-found check compares `_base()` (runner row without `CI=true` / kept flags).
 

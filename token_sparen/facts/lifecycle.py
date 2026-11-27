@@ -465,6 +465,19 @@ def _starts(words: list[str], prefix: list[str]) -> bool:
     return bool(prefix) and words[: len(prefix)] == prefix
 
 
+def _strip_ci(value: str) -> str:
+    """A test command without its leading ``CI=true`` (``normalize_command`` drops it from the
+    session's commands, so the value is compared without it)."""
+    prefix = miners.CI_PREFIX + " "
+    return value[len(prefix) :] if value.startswith(prefix) else value
+
+
+def _base(value: str) -> str:
+    """The runner row of a test command value: no ``CI=true``, no kept watch-mode flags."""
+    kept = {"--", *miners.KEEP_FLAGS, *(f for fs in miners.KEEP_FLAGS_BY.values() for f in fs)}
+    return " ".join(w for w in _words(_strip_ci(value)) if w not in kept)
+
+
 def _missing(text: str) -> bool:
     """Not-found or usage error text (the value command no longer works as stated)."""
     err = miners.error_text(text)
@@ -551,8 +564,11 @@ class Observer:
             elif kind == "test_command":
                 if family == "test":
                     self._test(st, fact, norm, ok, missing)
+                core = _base(fact.value)
+                inv = miners.test_invocation(norm)
                 if missing and (
-                    miners.test_invocation(norm) == fact.value or _starts(words, _words(fact.value))
+                    (inv is not None and _base(inv) == core)
+                    or _starts(_words(_strip_ci(norm)), _words(core))
                 ):
                     st.contradicted = True
             elif kind == "generated_dir":

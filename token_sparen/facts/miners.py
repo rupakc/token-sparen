@@ -375,6 +375,14 @@ SCOPE_FLAGS: frozenset[str] = frozenset(
         "--rootdir",
         "--workspace",
         "--projects",
+        # a config / root selection may point at a narrower suite (jest, vitest, pytest)
+        "-c",
+        "--config",
+        "--config-file",
+        "--configFile",
+        "--root",
+        "--rootDir",
+        "--project",
     }
 )
 SCOPE_FLAGS_BY: dict[str, frozenset[str]] = {
@@ -389,8 +397,10 @@ SCOPE_FLAGS_BY: dict[str, frozenset[str]] = {
 }
 # Options that never narrow the selection but stop a watch / interactive mode: kept and
 # rendered with the runner (after ``--`` when they were passed through it). ``CI=true`` in
-# front of the command is kept likewise.
-KEEP_FLAGS: tuple[str, ...] = ("--watchAll=false", "--watch=false", "--no-watch", "--run", "--ci")
+# front of the command is kept likewise. ``KEEP_FLAGS_BY`` adds flags kept only for one
+# runner (vitest's bare ``--run``; for others ``--run`` may take a value: ``go test -run X``).
+KEEP_FLAGS: tuple[str, ...] = ("--watchAll=false", "--watch=false", "--no-watch", "--ci")
+KEEP_FLAGS_BY: dict[str, tuple[str, ...]] = {"vitest": ("--run",)}
 CI_PREFIX = "CI=true"
 
 
@@ -439,9 +449,10 @@ def test_invocation(norm: str) -> str | None:
     found = _runner_match(words)
     if found is None or _scoped(words):
         return None
+    keep = KEEP_FLAGS + KEEP_FLAGS_BY.get(posixpath.basename(found[-1]), ())
     sep = words.index("--") if "--" in words else len(words)
-    before = [w for w in words[:sep] if w in KEEP_FLAGS]
-    after = [w for w in words[sep:] if w in KEEP_FLAGS]
+    before = [w for w in words[:sep] if w in keep]
+    after = [w for w in words[sep:] if w in keep]
     tail = [*before, *(["--", *after] if after else [])]
     return " ".join([*([CI_PREFIX] if ci else []), *head, *found, *tail])
 

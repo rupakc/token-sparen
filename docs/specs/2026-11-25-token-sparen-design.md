@@ -312,6 +312,10 @@ gives no test_command fact (no fact beats a narrow one); stored values with a `c
 retired. (3) Owner call: the non-narrowing watch-mode stoppers `--watchAll=false`,
 `--watch=false`, `--no-watch`, `--run`, `--ci` (after `--` when passed through it) and a leading
 `CI=true` are kept in the value; `npx vitest run` is its own row.
+Fix round 2: `--run` is kept only for vitest (elsewhere it may take a value, `go test -run X`,
+and is dropped with everything else); config / root selection (`-c`, `--config`,
+`--config-file`, `--configFile`, `--root`, `--rootDir`, `--project`) gives no fact; the
+not-found / usage contradiction compares the runner row without `CI=true` and kept flags.
 
 ---
 
