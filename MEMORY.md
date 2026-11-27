@@ -1772,3 +1772,12 @@ and the two new issues they found.
   `## [1.0.0]` heading. No allowlist entries were added to `docs_lint`.
 - Release skill points to `docs/release/runbook.md`; the tag, `release` and `pypi` approvals stay
   owner actions. Spec revision log has the M6 entry.
+
+## 2026-11-27 M5 Task 8: grading mode from the arm64 spike (ruling M5-N3)
+- Decided before any agent run: grade with the official `swebench` 5.0.2 (own venv,
+  `bench/requirements-grade.txt`) on the prebuilt arm64 images, mode `swebench5-arm64`
+  (`bench/data/grade_mode.json`). Spike: gold patches of `django__django-12774` and
+  `sphinx-doc__sphinx-8265` both resolved via `write_arm64_dataset` + `swebench eval`; a no-op
+  patch stayed unresolved. No pinned 4.x and no amd64 emulation needed. Local grading only (no
+  hosted grader); un-gradable tasks are dropped by `preflight` and disclosed. Grading needs
+  network (some eval scripts pip-install the package).
