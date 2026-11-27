@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from userconf import to_user_config
 
 from token_sparen.adapters.claude import entry
 from token_sparen.cli import main
@@ -71,7 +72,7 @@ def proj(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _env(tmp_path: Path, proj: Path, **extra: str) -> dict[str, str]:
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home"), "CLAUDE_PROJECT_DIR": str(proj)}
     env.update(extra)
-    return env
+    return to_user_config(env)  # facts.* is user-only: the user's file, not env
 
 
 def _write_facts(env: dict[str, str], proj: Path, *facts: Fact, **doc_extra: Any) -> Path:
@@ -150,7 +151,9 @@ def test_session_start_respects_disable_and_config(tmp_path: Path, proj: Path) -
     env = _env(tmp_path, proj, TOKEN_SPAREN_FACTS__ENABLED="false")
     _write_facts(env, proj, ALIAS)
     assert _start(env) is None
-    env = _env(tmp_path, proj, TOKEN_SPAREN_FACTS__WITHHOLD_FLOOR="0")
+    env = _env(
+        tmp_path, proj, TOKEN_SPAREN_FACTS__WITHHOLD_FLOOR="0", TOKEN_SPAREN_FACTS__ENABLED="true"
+    )
     _write_facts(env, proj, ALIAS, disabled=True)
     assert _start(env, sid="s2") is None
     _write_facts(env, proj, ALIAS)

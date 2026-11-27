@@ -8,7 +8,9 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sampleoutputs import big_pytest
@@ -639,13 +641,17 @@ def test_doctor_round_trip_does_not_depend_on_learning(
     arm must not make `doctor` report a broken install, so it runs with learning off."""
     from token_sparen import cli
 
-    seen: dict[str, str] = {}
+    seen: dict[str, Any] = {}
 
     def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        seen.update(kwargs["env"])  # type: ignore[arg-type]
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        user = Path(env["TOKEN_SPAREN_HOME"]) / "config.toml"
+        seen.update(tomllib.loads(user.read_text(encoding="utf-8")))
         return subprocess.CompletedProcess([], 0, "{}", "")
 
     monkeypatch.setattr(cli.subprocess, "run", run)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/python3")
     cli._round_trip(Path(__file__).resolve().parents[1])
-    assert seen["TOKEN_SPAREN_LEARN__ENABLED"] == "false"
+    # from the temporary user file: a TOKEN_SPAREN_* variable may only narrow
+    assert seen["learn"]["enabled"] is False

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from userconf import to_user_config
 
 import token_sparen
 from token_sparen.adapters.claude import entry
@@ -48,7 +49,7 @@ def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
     proj.mkdir(parents=True, exist_ok=True)
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home"), "CLAUDE_PROJECT_DIR": str(proj)}
     env.update(extra)
-    return env
+    return to_user_config(env)  # widening settings live in the user's file (env only narrows)
 
 
 def _bash_payload(stdout: str = "x") -> str:
@@ -146,11 +147,10 @@ def test_unserialisable_action_is_noop(tmp_path: Path) -> None:
 )
 def test_readonly_home_fail_open(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    home.mkdir()
+    env = _env(tmp_path, TOKEN_SPAREN_ADAPTER__LATENCY_SAMPLE_RATE="1.0")  # writes config.toml
     home.chmod(0o500)
     try:
         entry.register("post_tool", _replace)
-        env = _env(tmp_path, TOKEN_SPAREN_ADAPTER__LATENCY_SAMPLE_RATE="1.0")
         rc, out = _run("PostToolUse", _bash_payload(), env)
         assert rc == 0
         json.loads(out)  # well-formed whatever happened

@@ -10,20 +10,23 @@ from pathlib import Path
 from typing import Any
 
 from sampleoutputs import big_pytest
+from userconf import write_user_config
 
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def _run(event: str, payload: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
+def _run(event: str, payload: dict[str, Any], tmp_path: Path, **extra: str) -> dict[str, Any]:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("TOKEN_SPAREN_", "CLAUDE_"))}
     env.update(
         {
             "TOKEN_SPAREN_HOME": str(tmp_path / "home"),
             "CLAUDE_PROJECT_DIR": str(tmp_path / "proj"),
-            "TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS": "5000",  # slow CI runners
             "TOKEN_SPAREN_TEST_SEED": "2",  # deterministic engine draws (non-default home only)
+            **extra,
         }
     )
+    # slow CI runners: a larger budget widens, so it goes in the user's file (env only narrows)
+    write_user_config(tmp_path / "home", {"adapter": {"latency_budget_ms": 5000}})
     proc = subprocess.run(
         [sys.executable, "-I", str(ROOT / "hooks" / "run.py"), event],
         input=json.dumps(payload),
@@ -115,3 +118,32 @@ def test_e2e_agent_result_compressed(tmp_path: Path) -> None:
     assert block["type"] == "text" and "[token-sparen: kept " in block["text"]
     assert len(block["text"]) <= len("\n".join(blocks))  # never more than the model saw
     assert "FAILED tests/test_cache.py::test_cache_eviction" in block["text"]
+
+
+def test_e2e_env_narrowing_reaches_the_hook(tmp_path: Path) -> None:
+    """Through the real launcher: a narrowing TOKEN_SPAREN_* variable is honoured (the output is
+    left whole), a widening one is ignored with one logged line."""
+    (tmp_path / "proj").mkdir()
+    payload = _payload(
+        "PostToolUse",
+        tool_name="Bash",
+        tool_input={"command": "pytest -v"},
+        tool_use_id="tu-narrow",
+        tool_response={
+            "stdout": big_pytest(),
+            "stderr": "",
+            "interrupted": False,
+            "isImage": False,
+        },
+    )
+    out = _run(
+        "PostToolUse",
+        payload,
+        tmp_path,
+        TOKEN_SPAREN_COMPRESSION__MIN_TOKENS="999999999",  # narrows: never trim
+        TOKEN_SPAREN_COMPRESSION__TRIM_FILE_CONTENTS="true",  # widens: ignored
+    )
+    assert out == {}
+    errors = (tmp_path / "home" / "logs" / "errors.jsonl").read_text(encoding="utf-8")
+    assert errors.count("TOKEN_SPAREN_COMPRESSION__TRIM_FILE_CONTENTS") == 1
+    assert "MIN_TOKENS" not in errors

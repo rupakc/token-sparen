@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from sampleoutputs import big_pytest
+from userconf import to_user_config
 
 from token_sparen.adapters.claude import entry, statusline
 from token_sparen.learn import overlay
@@ -41,6 +42,8 @@ class Driver:
             "TOKEN_SPAREN_TEST_SEED": seed,
             **env,
         }
+        # widening settings live in the user's file (a TOKEN_SPAREN_* variable may only narrow)
+        self.env = to_user_config(self.env)
         self.n = 0
 
     def hook(self, event: str, **payload: Any) -> dict[str, Any]:

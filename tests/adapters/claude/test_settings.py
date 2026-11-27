@@ -482,3 +482,35 @@ def test_add_deny_rules_refuses_a_symlink(tmp_path: Path) -> None:
     res = settings.add_deny_rules(link, ["mcp__a"])
     assert not res.ok and "symbolic link" in res.message
     assert real.read_text(encoding="utf-8") == "{}"
+
+
+def test_settings_write_refuses_tracked_settings_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Threat model (malicious repository): a committed settings.local.json, even one the
+    repository's own .gitignore claims to ignore (force-added), is never a write target, so our
+    deny rules can never end up in a commit."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    for k in list(os.environ):
+        if k.startswith("GIT_"):
+            monkeypatch.delenv(k)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (repo / ".gitignore").write_text(".claude/settings.local.json\n", encoding="utf-8")
+    writer = settings.ClaudeDenyWriter()
+    assert writer.exposure(repo) is None  # untracked and ignored: the only writable state
+    local = writer.settings_file(repo)
+    _write(local, {"permissions": {"deny": []}})
+    subprocess.run(["git", "-C", str(repo), "add", "-f", str(local)], check=True)
+    assert writer.exposure(repo) == "tracked"
+    (repo / ".gitignore").write_text("", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "rm", "-q", "--cached", str(local)], check=True)
+    assert writer.exposure(repo) == "unignored"

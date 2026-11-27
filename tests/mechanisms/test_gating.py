@@ -19,6 +19,7 @@ from sampleoutputs import (
     plain_text,
     python_source,
 )
+from userconf import to_user_config
 
 from token_sparen import config as config_mod
 from token_sparen.compress import detect
@@ -270,11 +271,19 @@ def test_user_opt_in_widens(tmp_path: Path) -> None:
     assert compression.gated(_bash(tmp_path, "./x", "x"), "diff", cfg) == "ctype_not_allowed"
 
 
-def test_env_widens(tmp_path: Path) -> None:
-    cfg = _cfg(tmp_path, COMPRESSION__ALLOW_CTYPES="text,diff")
+def test_user_file_widens_env_cannot(tmp_path: Path) -> None:
+    (tmp_path / "e").mkdir()
+    assert _cfg(tmp_path / "e", COMPRESSION__ALLOW_CTYPES="text,diff").get(
+        "compression.allow_ctypes"
+    ) == _cfg(tmp_path / "e").get("compression.allow_ctypes")  # env may only narrow
+    tmp_path = tmp_path / "u"
+    to_user_config(_env(tmp_path, COMPRESSION__ALLOW_CTYPES="text,diff"))
+    cfg = _cfg(tmp_path)
     _trimmed(tmp_path, _bash(tmp_path, "./tool", plain_text()), cfg)
     assert compression.gated(_read(tmp_path, "x"), "text", cfg) == "file_content"
-    cfg = _cfg(tmp_path, COMPRESSION__TRIM_FILE_CONTENTS="true")
+    (tmp_path / "home" / "config.toml").unlink()
+    to_user_config(_env(tmp_path, COMPRESSION__TRIM_FILE_CONTENTS="true"))
+    cfg = _cfg(tmp_path)
     assert compression.gated(_read(tmp_path, "x"), "diff", cfg) is None
     assert compression.gated(_read(tmp_path, "x"), "text", cfg) == "ctype_not_allowed"
 

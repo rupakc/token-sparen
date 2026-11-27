@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from perfutil import best_of, perf_factor
 from sampleoutputs import big_pytest
+from userconf import to_user_config
 
 from token_sparen import recovery
 from token_sparen.compress import CompressContext, CompressResult, Level, registry
@@ -44,7 +45,7 @@ def _env(tmp_path: Path) -> dict[str, str]:
 def _cfg(tmp_path: Path, **over: str) -> Config:
     env = _env(tmp_path)
     env.update({f"TOKEN_SPAREN_{k}": v for k, v in over.items()})
-    return load_config(tmp_path / "proj", env)
+    return load_config(tmp_path / "proj", to_user_config(env))  # env may only narrow
 
 
 def _event(
