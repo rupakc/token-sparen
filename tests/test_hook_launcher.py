@@ -14,12 +14,14 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import pytest
 from sampleoutputs import big_pytest
+from userconf import to_user_config
 
 ROOT = Path(__file__).resolve().parent.parent
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="fake sh executables")
@@ -337,7 +339,8 @@ def _hook_env(tmp_path: Path, **extra: str) -> dict[str, str]:
         TOKEN_SPAREN_NO_UV="1",
     )
     env.update(extra)
-    return env
+    # widening settings belong in the user's config.toml (env may only narrow)
+    return to_user_config(env)
 
 
 def _post_payload(proj: Path) -> str:
@@ -490,3 +493,96 @@ def test_pythonpath_cannot_inject_modules(tmp_path: Path, forced: bool) -> None:
     if forced:
         calls = log.read_text(encoding="utf-8").splitlines()
         assert calls and all(c.startswith("-I ") for c in calls)  # probe and re-exec
+
+
+# --- TOKEN_SPAREN_PYTHON safety (a committed settings env can set it) ----------------------------
+
+
+@posix_only
+def test_env_python_writable_by_others_is_rejected_and_logged_once(
+    pyfind: ModuleType, tmp_path: Path
+) -> None:
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    shared = _fake_python(tmp_path / "shared", "python", (3, 12))
+    env = _env(tmp_path, bindir, TOKEN_SPAREN_PYTHON=str(shared))
+    for target in (shared, shared.parent):
+        target.chmod(0o777)
+        assert pyfind.find_python(env, (3, 9), use_cache=False) is None
+        assert pyfind.find_python(env, (3, 9), use_cache=False) is None
+        target.chmod(0o755)
+    log = tmp_path / "home" / "logs" / "errors.jsonl"
+    lines = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 1 and "TOKEN_SPAREN_PYTHON ignored" in lines[0]["error"]
+    assert pyfind.find_python(env, (3, 9), use_cache=False) == (str(shared), "TOKEN_SPAREN_PYTHON")
+
+
+@posix_only
+def test_env_python_rechecked_on_cache_hit(
+    pyfind: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proj = tmp_path / "projX"
+    inside = _fake_python(proj, "py", (3, 12))
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    env = _env(tmp_path, bindir, TOKEN_SPAREN_PYTHON=str(inside))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # prime the cache from outside the project
+    assert pyfind.find_python(env, (3, 9), root=str(ROOT)) == (str(inside), "TOKEN_SPAREN_PYTHON")
+    monkeypatch.chdir(proj)  # same cache key, now inside: the cached choice must not be served
+    assert pyfind.find_python(env, (3, 9), root=str(ROOT)) is None
+    monkeypatch.chdir(elsewhere)
+    assert pyfind.find_python(env, (3, 9), root=str(ROOT)) is not None
+    inside.chmod(0o777)  # became writable by others after it was cached
+    assert pyfind.find_python(env, (3, 9), root=str(ROOT)) is None
+
+
+def test_force_flag_needs_an_accepted_state_home(
+    runpy_mod: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proj = tmp_path / "proj"
+    (proj / "inside").mkdir(parents=True)
+    monkeypatch.chdir(proj)
+
+    def execv(*a: object) -> None:
+        raise AssertionError("forced re-exec with a rejected TOKEN_SPAREN_HOME")
+
+    monkeypatch.setattr(os, "execv", execv)
+    env = {
+        "TOKEN_SPAREN_LAUNCHER_FORCE_REEXEC": "1",
+        "TOKEN_SPAREN_HOME": str(proj / "inside"),  # inside the project: state_root rejects it
+        "CLAUDE_PROJECT_DIR": str(proj),
+        "TOKEN_SPAREN_PYTHON": sys.executable,
+        "PATH": "",
+        "TOKEN_SPAREN_NO_UV": "1",
+    }
+    assert runpy_mod._hop(["run.py", "PostToolUse"], env, (3, 12)) is None
+    alone = {"TOKEN_SPAREN_HOME": str(tmp_path / "home"), "TOKEN_SPAREN_PYTHON": sys.executable}
+    assert runpy_mod._hop(["run.py", "PostToolUse"], alone, (3, 12)) is None
+
+
+@posix_only
+def test_launcher_cache_is_private(pyfind: ModuleType, tmp_path: Path) -> None:
+    bindir = tmp_path / "bin"
+    _fake_python(bindir, "python3.12", (3, 12))
+    env = _env(tmp_path, bindir)
+    assert pyfind.find_python(env, (3, 9)) is not None
+    assert (tmp_path / "home" / "launcher.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_search_has_an_overall_deadline(pyfind: ModuleType, tmp_path: Path) -> None:
+    timeouts: list[float] = []
+
+    def run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        timeouts.append(kw["timeout"])
+        time.sleep(0.3)
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    def which(name: str) -> str | None:
+        return f"/fake/{name}"
+
+    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "none"), "TOKEN_SPAREN_NO_UV": "1"}
+    assert pyfind.search(env, (3, 9), which, run, "linux", "/fake/self", deadline=1.0) is None
+    assert 1 <= len(timeouts) <= 5 and all(t <= 1.0 for t in timeouts)
+    assert pyfind.SEARCH_DEADLINE <= 2.0

@@ -35,7 +35,8 @@ def _hop(argv, env, version):
     if not child:
         try:
             pyfind = _load_pyfind()
-            found = pyfind.find_python(env, tuple(version[:2]))
+            if old or pyfind.forced(env):
+                found = pyfind.find_python(env, tuple(version[:2]))
             if found is not None:
                 rc = pyfind.relaunch(
                     found[0], ["-I", "-S", os.path.abspath(__file__)] + list(argv[1:])

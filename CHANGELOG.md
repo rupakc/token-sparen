@@ -20,8 +20,14 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   cached in `~/.token-sparen/launcher.json` and re-checked when `python3` or the chosen
   interpreter changes or disappears. POSIX re-launches with `execv`, Windows with a child process
   on inherited stdio (exit code passed through); `TOKEN_SPAREN_REEXEC` stops a second hop and is
-  removed before the hook runs. Measured cost: about 40-45 ms per hook call (p95,
-  `tests/perf/test_launcher_reexec.py`).
+  removed before the hook runs. The search is bounded to 2 s; `launcher.json` is private
+  (0600). Measured cost: about 40-55 ms per hook call (`tests/perf/test_launcher_reexec.py`),
+  paid only when `python3` is older than 3.11.
+- `TOKEN_SPAREN_PYTHON` follows the env-path safety rule: honoured only outside the current
+  project / git work tree, and (POSIX) when the interpreter and its directory are owned by the
+  user or root and not group/world-writable; re-checked on every cache hit, a rejection logged
+  once. The test-only `TOKEN_SPAREN_LAUNCHER_FORCE_REEXEC` needs a `TOKEN_SPAREN_HOME` the state
+  root accepts.
 - With no Python >= 3.11 the hooks stay a no-op, show one warning (`systemMessage`) and log one
   `errors.jsonl` line (`"kind": "launcher"`) at most once a day.
 - `run_cli.py` (the `/token-sparen` CLI fallback) and the statusline launcher use the same search.

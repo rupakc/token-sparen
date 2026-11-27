@@ -14,7 +14,8 @@ CONTENTS_WRITE_JOBS = frozenset({"draft-release", "push-tree", "finalize", "wiki
 ID_TOKEN_JOBS = frozenset({"provenance", "publish-pypi", "deploy-pages"})
 _USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)(.*)$")
 _PINNED = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}")
-_HOOK_COMMAND = re.compile(r'python3 "\$\{CLAUDE_PLUGIN_ROOT\}/hooks/[a-z_]+\.py"( \w+)?')
+# isolated (`-I`): a repository's committed settings env must not inject PYTHONPATH/PYTHONSTARTUP
+_HOOK_COMMAND = re.compile(r'python3 -I "\$\{CLAUDE_PLUGIN_ROOT\}/hooks/[a-z_]+\.py"( \w+)?')
 
 
 def _workflows() -> list[Path]:
@@ -228,7 +229,7 @@ def test_skill_preapprovals_are_read_only_or_restoring() -> None:
     rules = re.findall(r"^\s*-\s*'?(Bash\(.*\))'?\s*$", front, re.MULTILINE)
     assert rules
     allowed = {f"Bash(token-sparen {c}:*)" for c in PREAPPROVED} | {
-        f'Bash(python3 "${{CLAUDE_PLUGIN_ROOT}}/hooks/run_cli.py" {c}:*)' for c in PREAPPROVED
+        f'Bash(python3 -I "${{CLAUDE_PLUGIN_ROOT}}/hooks/run_cli.py" {c}:*)' for c in PREAPPROVED
     }
     for rule in rules:
         assert rule in allowed, f"unexpected pre-approval {rule}"

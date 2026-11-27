@@ -36,10 +36,20 @@ statusline `saved` segment uses the same net figure). Net can be zero or negativ
   is installed (with downloads disabled; set `TOKEN_SPAREN_NO_UV=1` to skip uv). A candidate is
   used only if it reports version >= 3.11 itself. The choice is cached in
   `~/.token-sparen/launcher.json`, so the search runs once (again when `python3` or the chosen
-  interpreter changes or disappears). The cost of the extra interpreter start is measured by
-  `tests/perf/test_launcher_reexec.py`: about 40-45 ms per hook call (p95) on the development
-  machine; you avoid it by putting Python >= 3.11 first on your `PATH` as `python3`.
-  `/token-sparen doctor` names the interpreter the hooks actually use and fails if there is none.
+  interpreter changes or disappears); the whole search is bounded to 2 seconds. The cost of the
+  extra interpreter start is measured by `tests/perf/test_launcher_reexec.py`: about 40-55 ms
+  per hook call on the development machine, paid only when your `python3` is older than 3.11
+  (without the launcher those hooks would not run at all); you avoid it by putting Python >= 3.11
+  first on your `PATH` as `python3`. `token-sparen doctor` names the interpreter the hooks
+  actually use and fails if there is none.
+- `TOKEN_SPAREN_PYTHON` must be set in the environment Claude Code is started from (your shell
+  profile); `config.toml` cannot set it, because the launcher runs before any Python >= 3.11 can
+  read it. It is honoured only if it resolves outside the current project and its git work tree
+  and, on macOS/Linux, the interpreter file and its directory are owned by you or root and not
+  writable by group or others (a repository's committed Claude Code settings can set environment
+  variables); otherwise it is skipped with one line in `logs/errors.jsonl`. Some installers
+  (for example python.org's macOS framework, group `admin` writable) fail this check; such a
+  Python is still found through `PATH` (`python3.12` etc.).
 - macOS and Linux. Windows: hooks need a `python3` on `PATH` to start (`token-sparen doctor`
   suggests `py -3` or `python` if it is missing), and the statusline launcher is not supported yet.
 
@@ -47,11 +57,13 @@ statusline `saved` segment uses the same net figure). Net can be zero or negativ
 Python >= 3.11. They keep your session working (fail open), show this warning at most once a day
 and log one line a day to `~/.token-sparen/logs/errors.jsonl` (`"kind": "launcher"`). Install
 Python 3.11 or newer (python.org, Homebrew, your package manager, or `uv python install 3.12`), or
-point `TOKEN_SPAREN_PYTHON` at one in the environment Claude Code is launched from (for example
-`export TOKEN_SPAREN_PYTHON=/opt/homebrew/bin/python3.12` in your shell profile; a value inside
-the current project is ignored, because a repository's committed settings can set environment
-variables). Then run `/token-sparen doctor`: its `hook python` line shows which interpreter the
-hooks will use.
+`export TOKEN_SPAREN_PYTHON=/path/to/python3.12` in your shell profile, and restart Claude Code.
+A "nothing found" result is remembered for up to 10 minutes; a new `python3.x` on `PATH` is
+noticed at once, but a Python installed only through uv (found by `uv python find`) is picked up
+after those 10 minutes (or delete `~/.token-sparen/launcher.json`). Then run
+`token-sparen doctor` in a terminal: its `hook python` line shows which interpreter the hooks
+will use. `doctor` itself needs a Python >= 3.11 too: `python3 -I <plugin dir>/hooks/run_cli.py
+doctor` finds one the same way, and says so when there is none.
 
 ## Install
 

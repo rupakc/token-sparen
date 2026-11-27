@@ -1716,5 +1716,14 @@ and the two new issues they found.
 - Security ruling (2026-11-27): interpreters run isolated (`-I`) everywhere: hooks.json, the
   skill's CLI fallback and the `prune restore` hint (`python3 -I .../run_cli.py`), re-launch,
   probes, statusline (already `-I`).
-- Measured re-exec overhead (p95, end-to-end subprocess PostToolUse, dev machine): ~40-46 ms;
-  budget direct p95 + 40 ms x `TOKEN_SPAREN_PERF_FACTOR` (CI uses 1.5).
+- Measured re-exec overhead (end-to-end subprocess PostToolUse, dev machine): ~40-55 ms.
+- Fix round 1 rulings (2026-11-27): I1 supply-chain test requires `python3 -I` for hook commands
+  and pre-approvals; I2 `TOKEN_SPAREN_PYTHON` accepted only outside the project/work tree and
+  (POSIX) when the interpreter and its dir are owned by the user or root and not group/world
+  writable, re-checked on every cache hit (cache key adds project dir + cwd when it is set),
+  rejection logged once; the force seed needs a `TOKEN_SPAREN_HOME` that `state_root` accepts;
+  I3 perf gate = per-pair extra time, `perfutil.best_p95` (3 rounds), budget 60 ms x factor;
+  I4 widening test settings go to the temporary user `config.toml`. Minors: `launcher.json` 0600,
+  2 s search deadline, warning says where to set `TOKEN_SPAREN_PYTHON`, uv TTL documented.
+  Known trade-off: python.org macOS framework Pythons are group-`admin` writable and so are not
+  accepted as `TOKEN_SPAREN_PYTHON` (still found via PATH).

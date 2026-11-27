@@ -167,6 +167,8 @@ def hop(root, args):
             import _pyfind as pyfind
         finally:
             sys.path.remove(hooks)
+        if sys.version_info >= (3, 11) and not pyfind.forced(os.environ):
+            return None
         found = pyfind.find_python(os.environ, tuple(sys.version_info[:2]), root=root)
         if found is None:
             return None

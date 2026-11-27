@@ -49,7 +49,8 @@ def _hop(argv, env, version):
     found = None
     try:
         pyfind = _load_pyfind()
-        found = pyfind.find_python(env, tuple(version[:2]))
+        if old or pyfind.forced(env):  # the seed needs a TOKEN_SPAREN_HOME the state root accepts
+            found = pyfind.find_python(env, tuple(version[:2]))
     except Exception:  # noqa: BLE001 - fail open
         found = None
     if found is not None:

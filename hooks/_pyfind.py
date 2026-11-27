@@ -25,6 +25,7 @@ CACHE_FILE = "launcher.json"
 CACHE_ENTRIES = 32
 NEGATIVE_TTL = 600.0  # seconds a "nothing found" result is trusted before searching again
 PROBE_TIMEOUT = 5.0
+SEARCH_DEADLINE = 2.0  # seconds for the whole search (probes and uv), well inside the hook timeout
 PROBE = "import sys; v = sys.version_info; print(v[0], v[1], sys.executable)"
 MISSING = "no python >= 3.11"
 
@@ -34,8 +35,15 @@ def _truthy(value):
 
 
 def forced(env):
-    """Test seed: re-exec even on a new interpreter (honoured only with ``TOKEN_SPAREN_HOME``)."""
-    return _truthy(env.get(FORCE_FLAG)) and bool(env.get("TOKEN_SPAREN_HOME"))
+    """Test seed: re-exec even on a new interpreter. Honoured only together with a
+    ``TOKEN_SPAREN_HOME`` that ``state_root`` accepts (outside the project, ours)."""
+    raw = env.get("TOKEN_SPAREN_HOME")
+    if not _truthy(env.get(FORCE_FLAG)) or not raw:
+        return False
+    try:
+        return state_root(env) == os.path.abspath(raw)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # --- path safety (same rule as token_sparen.config.env_path) -----------------------------------
@@ -128,14 +136,73 @@ def state_root(env):
     return os.path.join(os.path.expanduser("~"), ".token-sparen")
 
 
+def _safe_file(path):
+    """POSIX: owned by us or root and not group/world-writable."""
+    getuid = getattr(os, "getuid", None)
+    if os.name != "posix" or getuid is None:
+        return True
+    st = os.stat(path)
+    return st.st_uid in (getuid(), 0) and not st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+
+
+def trusted_interpreter(env, path):
+    """``TOKEN_SPAREN_PYTHON`` may be honoured: it resolves outside the current project and its
+    git work tree, and (POSIX) the interpreter file and its directory are owned by the user or
+    root and not group- or world-writable (a repository's committed settings env can set it)."""
+    try:
+        real = os.path.realpath(path)
+        if _inside_project(env, path) or _inside_project(env, real):
+            return False
+        return _safe_file(real) and _safe_file(os.path.dirname(real))
+    except (OSError, ValueError):
+        return False
+
+
+def _env_python(env, which):
+    raw = env.get("TOKEN_SPAREN_PYTHON")
+    if not raw:
+        return None
+    return raw if os.path.dirname(raw) else which(raw)
+
+
+def _log_rejected(env, raw):
+    """One ``errors.jsonl`` line per rejected ``TOKEN_SPAREN_PYTHON`` value (a short hash of it
+    in ``launcher.json``); best effort."""
+    try:
+        home = state_root(env)
+        if not _cache_usable(home):
+            return
+        shown = hashlib.sha256(raw.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+        data = _read_cache(home)
+        if data.get("rejected_python") == shown:
+            return
+        data["rejected_python"] = shown
+        _write_cache(home, data)
+        os.makedirs(os.path.join(home, "logs"), mode=0o700, exist_ok=True)
+        rec = {
+            "ts": time.time(),
+            "kind": "launcher",
+            "where": "launcher",
+            "error": "TOKEN_SPAREN_PYTHON ignored (inside the current project, or the "
+            "interpreter or its directory is writable by others or not owned by you or root); "
+            "set it outside any repository, e.g. in your shell profile",
+        }
+        with open(os.path.join(home, "logs", "errors.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except Exception:  # noqa: BLE001
+        return
+
+
 # --- probing ----------------------------------------------------------------------------------
 
 
-def probe(cmd, run=None):
+def probe(cmd, run=None, timeout=PROBE_TIMEOUT):
     """``(major, minor, executable)`` of the interpreter ``cmd`` (a list), or None."""
     import subprocess  # lazy: the cached path never needs it
 
     run = subprocess.run if run is None else run
+    if timeout <= 0:
+        return None
     try:
         proc = run(
             list(cmd) + ["-I", "-c", PROBE],
@@ -143,7 +210,7 @@ def probe(cmd, run=None):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             universal_newlines=True,
-            timeout=PROBE_TIMEOUT,
+            timeout=timeout,
         )
         if proc.returncode != 0:
             return None
@@ -168,12 +235,12 @@ def _stamp(path):
     return [_real(path), st.st_mtime_ns]
 
 
-def _uv_python(env, which, run):
+def _uv_python(env, which, run, timeout=PROBE_TIMEOUT):
     import subprocess
 
     run = subprocess.run if run is None else run
     uv = which("uv")
-    if not uv:
+    if not uv or timeout <= 0:
         return None
     child = dict(env)
     child["UV_PYTHON_DOWNLOADS"] = "never"
@@ -185,7 +252,7 @@ def _uv_python(env, which, run):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             universal_newlines=True,
-            timeout=PROBE_TIMEOUT,
+            timeout=timeout,
             env=child,
             cwd=os.path.expanduser("~"),  # no project discovery: a repo's .venv is not ours
         )
@@ -195,13 +262,15 @@ def _uv_python(env, which, run):
     return lines[-1].strip() if lines else None
 
 
-def _candidates(env, which, run, platform):
-    """``(cmd, how)`` pairs in search order; lazy so the search stops at the first hit."""
-    raw = env.get("TOKEN_SPAREN_PYTHON")
-    if raw:
-        path = raw if os.path.dirname(raw) else which(raw)
-        if path and not _inside_project(env, path):
+def _candidates(env, which, run, platform, left):
+    """``(cmd, how)`` pairs in search order; lazy so the search stops at the first hit.
+    ``left()`` is the time left before the search deadline."""
+    path = _env_python(env, which)
+    if path:
+        if trusted_interpreter(env, path):
             yield [path], "TOKEN_SPAREN_PYTHON"
+        else:
+            _log_rejected(env, env.get("TOKEN_SPAREN_PYTHON") or "")
     for minor in range(NEWEST_MINOR, MIN_VERSION[1] - 1, -1):
         name = f"python3.{minor}"
         path = which(name)
@@ -217,21 +286,28 @@ def _candidates(env, which, run, platform):
                 yield [launcher, f"-3.{minor}"], f"py -3.{minor}"
             yield [launcher, "-3"], "py -3"
     if not _truthy(env.get("TOKEN_SPAREN_NO_UV")):
-        path = _uv_python(env, which, run)
+        path = _uv_python(env, which, run, min(PROBE_TIMEOUT, left()))
         if path:
             yield [path], "uv python find"
 
 
-def search(env, current_version, which, run, platform, self_exe):
+def search(env, current_version, which, run, platform, self_exe, deadline=SEARCH_DEADLINE):
     own = _real(self_exe) if self_exe else None
     tried = set()
-    for cmd, how in _candidates(env, which, run, platform):
+    end = time.monotonic() + deadline
+
+    def left():
+        return end - time.monotonic()
+
+    for cmd, how in _candidates(env, which, run, platform, left):
+        if left() <= 0:
+            return None
         if len(cmd) == 1:
             real = _real(cmd[0])
             if real in tried or (real == own and tuple(current_version[:2]) < MIN_VERSION):
                 continue
             tried.add(real)
-        got = probe(cmd, run)
+        got = probe(cmd, run, min(PROBE_TIMEOUT, left()))
         if got is None or (got[0], got[1]) < MIN_VERSION:
             continue
         # a single path is used as given (a venv's python must keep its venv); a ``py`` launcher
@@ -256,7 +332,8 @@ def _write_cache(home, data):
     path = os.path.join(home, CACHE_FILE)
     tmp = f"{path}.tmp-{os.getpid()}"
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with open(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
         os.replace(tmp, path)
     except OSError:
@@ -275,6 +352,13 @@ def _cache_key(env, root, self_exe, platform):
         _truthy(env.get("TOKEN_SPAREN_NO_UV")),
         platform,
     ]
+    if env.get("TOKEN_SPAREN_PYTHON"):
+        # whether it may be honoured depends on the project (inside or outside it)
+        try:
+            cwd = os.getcwd()
+        except OSError:
+            cwd = ""
+        parts += [env.get("CLAUDE_PROJECT_DIR") or "", cwd]
     blob = json.dumps(parts, sort_keys=True).encode("utf-8", "surrogatepass")
     return hashlib.sha256(blob).hexdigest()[:24]
 
@@ -333,7 +417,11 @@ def find_python(
             and hit.get("seen") == _fingerprint(env, which, platform)
         ):
             return None
-        if hit.get("path") and hit.get("stamp") == _stamp(hit["path"]):
+        if (
+            hit.get("path")
+            and hit.get("stamp") == _stamp(hit["path"])
+            and (hit.get("how") != "TOKEN_SPAREN_PYTHON" or trusted_interpreter(env, hit["path"]))
+        ):
             return hit["path"], hit.get("how", "cache")
     found = search(env, current_version, which, run, platform, self_exe)
     if cached:
@@ -381,8 +469,10 @@ def relaunch(path, args, platform=None, execv=None, run=None):
 def warning_text(current_version):
     return (
         f"token-sparen is inactive: hooks started with Python {current_version[0]}."
-        f"{current_version[1]} and no Python >= 3.11 was found. Install Python 3.11 or newer, "
-        "or set TOKEN_SPAREN_PYTHON to one, then run `/token-sparen doctor`."
+        f"{current_version[1]} and no Python >= 3.11 was found. Install Python 3.11 or newer "
+        "(found automatically on PATH), or export TOKEN_SPAREN_PYTHON=/path/to/python3.x in the "
+        "shell profile Claude Code is started from (a value set in a project's settings is "
+        "ignored), restart Claude Code, then run `token-sparen doctor`."
     )
 
 
