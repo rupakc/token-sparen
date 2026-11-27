@@ -244,6 +244,16 @@ def test_render_inject_context_combined(tmp_path: Path, name: str) -> None:
     }
 
 
+def test_render_failure_takes_context_but_never_replaces(tmp_path: Path) -> None:
+    """PostToolUseFailure accepts ``additionalContext`` (the loop guard's redirect) but its
+    result can never be replaced."""
+    ev = _ev(tmp_path, "PostToolUseFailure", tool_name="Bash", tool_input={}, error="boom")
+    out = ClaudeAdapter().render(ev, Action(inject_context="ctx", replace_output="new"))
+    assert out == {
+        "hookSpecificOutput": {"hookEventName": "PostToolUseFailure", "additionalContext": "ctx"}
+    }
+
+
 def test_render_ignores_unsupported_fields(tmp_path: Path) -> None:
     a = ClaudeAdapter()
     ev = _ev(tmp_path, "PreCompact")

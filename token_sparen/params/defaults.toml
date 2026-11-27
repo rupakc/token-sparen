@@ -178,6 +178,7 @@ subagent_brief = true
 compression = false
 pretrim = false
 read_dedupe = false
+loopguard = false
 
 # Propensity floor per tier: probability of choosing the safe arm outright.
 [learn.floor]
@@ -198,6 +199,9 @@ levels = [["cat", "size"], ["size"], []]
 
 [learn.backoff.subagent_brief]
 levels = [["phase"], []]
+
+[learn.backoff.loopguard]
+levels = [["cat"], []]
 
 # Designed default prior means (the last link of the prior chain), with strength kappa_default.
 # Hand-set, to be refit in M4 from E1 replay data. A safe arm's mean 0 is stored as Beta(1e-3, kappa).
@@ -241,6 +245,20 @@ regret = 0.0
 savings = 0.3
 regret = 0.05
 
+# Loop guard: savings = the loop broke within the next 5 tool calls after the redirect; regret =
+# the user's next prompt said stop / undo / revert / that's wrong / no, don't (or interrupted).
+[learn.defaults.loopguard.patient]
+savings = 0.0
+regret = 0.0
+
+[learn.defaults.loopguard.standard]
+savings = 0.4
+regret = 0.03
+
+[learn.defaults.loopguard.eager]
+savings = 0.5
+regret = 0.05
+
 [facts]
 # Learned repository facts (micro-skills), injected at SessionStart as a labelled data block.
 # A project file may only switch them off or lower max_facts / max_tokens.
@@ -267,7 +285,14 @@ tau = 0.01            # high tier: regret ucb must be <= tau
 ucb_q = 0.95
 
 [loopguard]
-# Failure-loop guard: planned (M3), no keys yet.
+# Failure-loop guard (spec 6.11): within one turn, the same normalised error k times (k learned:
+# patient 5, standard 3, eager 2), `burst` failures, or an edit reverted to an earlier state gets
+# one short redirect (additionalContext); a second detection only tells the user. A project file
+# may only switch it off or make it more patient (raise min_k / burst).
+enabled = true
+min_k = 2          # floor on the arm's k (a project may only raise it)
+burst = 8          # failures in one turn that trigger regardless of fingerprint
+watch_calls = 5    # tool calls after the redirect that decide "loop broken" (savings 1)
 
 [adapter]
 latency_budget_ms = 400  # hard cap per hook; on overrun the hook returns the host no-op

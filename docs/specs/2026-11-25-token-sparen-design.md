@@ -214,6 +214,19 @@ Code; only with the user-only `[prune] builtins = true` and an SDK init listing)
 per settings-file real path (sibling clones, worktrees); tool calls count as activity for the idle
 gate. Details in `MEMORY.md`.
 
+**2026-11-27 (M3, Task 28).** §6.11 as built (`mechanisms/loopguard.py`): the redirect is
+delivered as `additionalContext` on PostToolUse and PostToolUseFailure (where most failures
+arrive and results cannot be replaced), never by rewriting the tool result. Text:
+`[token-sparen: this error has repeated {n}× this turn ({fp}). Consider stepping back: re-read
+the error, check assumptions, or try a different approach.]`; at most one per turn, a second
+detection is a terminal notice only. Arms patient/standard/eager = k 5/3/2 (safe arm patient),
+decided once per turn at the first repeat; `[loopguard] min_k` floors k, `burst` (8) failures
+trigger regardless. Oscillation: an Edit reversing an earlier pair or a Write returning to an
+earlier content hash of the same file. Reward: savings 1 if the fingerprint does not recur
+within the next 5 tool calls of the turn, else 0; regret 1 on a user interrupt or a next prompt
+saying stop/undo/revert/that's wrong/no, don't, else 0. A turn without a trigger logs no
+decision. A trigger calls `RegretDetector.on_loop`. No LLM judge.
+
 ---
 
 ## 1. Intent and why

@@ -185,17 +185,20 @@ def test_builtin_order() -> None:
         "_on_regret",
         "_on_read_dedupe",
         "_on_compress",
+        "_on_loopguard",
         "_on_activity",
         "_on_track",
     ]
     assert entry.HANDLERS["post_tool"][-1] in entry.ALWAYS_RUN
     assert entry.HANDLERS["post_tool"][-2] in entry.ALWAYS_RUN
+    assert entry.HANDLERS["post_tool"][-3] in entry.ALWAYS_RUN  # the loop guard sees every call
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["post_tool_failure"]]
     assert names == [
         "_on_prune_tool",
         "_on_governor_post",
         "_on_regret",
         "_on_compress",
+        "_on_loopguard",
         "_on_track",
     ]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["prompt"]]
@@ -205,12 +208,13 @@ def test_builtin_order() -> None:
         "_on_boundary",
         "_on_regret",
         "_on_prune_prompt",
+        "_on_loopguard_prompt",
     ]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["pre_compact"]]
     assert names == ["_on_pre_compact", "_on_compact_instructions"]
     assert "session_start" in entry.HANDLERS
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["session_end"]]
-    assert names == ["_on_regret", "_on_fold_spawn"]
+    assert names == ["_on_regret", "_on_loopguard_end", "_on_fold_spawn"]
     names = [getattr(f, "__name__", "") for f in entry.HANDLERS["permission_denied"]]
     assert names == ["_on_prune_tool"]
 

@@ -7,7 +7,8 @@ with a quality constraint) steers every hook decision (`learn/hookpolicy.py`, bu
 hook; `[learn] enabled = false` -> `StaticPolicy`), with regret detection, session fold and
 circuit breaker; `replay` (E1) and `ope` (E3) evaluate offline into private reports. M3: repo-fact
 learning (miners, lifecycle bandit, SessionStart injection) and opt-in tool pruning
-(`mechanisms/prune.py`, deny rules via `adapters/claude/settings.py`) are in. North star:
+(`mechanisms/prune.py`, deny rules via `adapters/claude/settings.py`) and the learned
+failure-loop guard (`mechanisms/loopguard.py`) are in. North star:
 maximise tokens saved subject to no measurable quality loss.
 Spec: `docs/specs/2026-11-25-token-sparen-design.md`. Plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`.
 Decisions: `MEMORY.md`.
@@ -15,7 +16,7 @@ Decisions: `MEMORY.md`.
 ## Layout
 - `token_sparen/` core (stdlib only): `cli.py events.py config.py estimate.py transcript.py emit.py recovery.py extensions.py`
   - `store/` JSON+JSONL state, `compress/` compressors, `mechanisms/` decision-point mechanisms
-    (compression, guards, read_dedupe, governor, boundary, subagent, tracking, prune)
+    (compression, guards, read_dedupe, governor, boundary, subagent, tracking, prune, loopguard)
   - `learn/` policy, decision log, engine, regret, session fold (`overlay`), circuit `breaker`,
     `ope` (off-policy evaluation)
   - `replay/` E1 offline replay and the private report writer (`--out` outside any git tree)
@@ -53,7 +54,8 @@ Use the repo `.venv`. All must pass before a commit.
   `read_dedupe.min_tokens` are floored at 2000 (a higher value is honoured).
 - Never larger: a replacement is used only if it is no longer than the host's preview of the
   output and saves >= `min_saving_ratio`.
-- Failed tool results are not replaceable on Claude Code (PostToolUseFailure); do no work for them.
+- Failed tool results are not replaceable on Claude Code (PostToolUseFailure); do no replacement
+  work for them (only `additionalContext`, e.g. the loop guard's redirect).
 - No PreToolUse command rewriting: a pre-trim is a PostToolUse compression arm, never a shell edit.
 - Mechanisms and compressors never import `token_sparen.adapters` (hosts own tool-output shapes).
 - Never elide lines matching `ERROR_PATTERNS`.

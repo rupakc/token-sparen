@@ -38,7 +38,10 @@ _CATEGORIES: dict[str, ToolCategory] = {
     "Agent": "agent",
 }
 _BASH_KEEP = ("persistedOutputPath", "persistedOutputSize")
-_INJECT_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "PostToolUse"})
+# PostToolUseFailure cannot replace its result but does accept additionalContext.
+_INJECT_EVENTS = frozenset(
+    {"SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure"}
+)
 _EXTRA_KEYS = (
     "hook_event_name",
     "permission_mode",

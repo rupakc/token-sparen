@@ -1296,3 +1296,33 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   else in every recorded checkout holding it, and prints each settings file. User notices are
   stored and shown per checkout (`files[fkey].notices`).
 
+
+## 2026-11-27 Failure-loop guard (Task 28)
+- Delivery is `additionalContext`, never `updatedToolOutput`: most failures arrive as
+  PostToolUseFailure, whose result cannot be replaced, and rewriting a result could derail
+  correct work. `translate` now renders `additionalContext` for PostToolUseFailure.
+- Signals are deterministic only: failure events (PostToolUseFailure, never successful output)
+  fingerprinted as sha1[:10] of the exception type + error line (the line naming the last
+  exception type, else the first error-looking line) after normalising quoted values, paths,
+  hex ids and digits; scans the first 8000 + last 4000 characters. Oscillation is a per-file
+  pseudo-fingerprint: an Edit reversing an earlier (old, new) pair or a Write returning to an
+  earlier content hash; the first reversal counts 2, so the arm's k applies to it too. A burst of
+  `[loopguard] burst` (8) failures triggers regardless of fingerprint and arm.
+- `LOOPGUARD` arms patient/standard/eager -> k 5/3/2, safe arm patient (the static fallback);
+  decided once per turn at the first repeat (or burst); `k = max(arm k, min_k)`. Features: tool
+  category only (`[["cat"], []]`).
+- The decision record is logged only when the redirect fires (owner ruling: a turn without a
+  trigger logs no decision). The engine's pending entry for an untriggered decision simply ages
+  out. Consequence for OPE: loopguard decisions in `decisions.jsonl` are conditional on a trigger.
+- Second detection = the trigger condition counted on events after the redirect (the redirected
+  fingerprint counts its triggering occurrence too); one terminal notice per turn.
+- Reward: savings 0 at a recurrence within `watch_calls` (5) calls, 1 at the window end or when
+  the turn/session ends first. Regret 1 on `is_interrupt` after the redirect or a next prompt
+  matching stop/undo/revert/that's wrong/no, don't (whole words, curly apostrophe folded), else
+  an explicit 0 at the next prompt or SessionEnd. Regret outcomes go to `decisions.jsonl` and the
+  overlay's `regret_outcomes` (circuit breaker) with an empty command signature (no pre-trim
+  effect). The redirect's tokens are added to the injected-tokens ledger.
+- A trigger calls `RegretDetector.on_loop(ctx, None)`: this turn's compression decisions on
+  error-bearing ctypes get 0.5 regret (settled with their window).
+- Config: project may only set `enabled = false` and raise `min_k` / `burst`; `watch_calls` is
+  user-only.

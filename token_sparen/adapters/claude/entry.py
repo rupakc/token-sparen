@@ -31,6 +31,7 @@ from token_sparen.mechanisms import (
     compression,
     governor,
     guards,
+    loopguard,
     prune,
     read_dedupe,
     subagent,
@@ -134,6 +135,19 @@ def _on_compress(event: Event, cfg: Config) -> Action:
     if action.replace_output is not None and event.tool is not None and event.tool.name == "Read":
         read_dedupe.forget(event, env=env)  # the model never saw this read in full
     return action
+
+
+def _on_loopguard(event: Event, cfg: Config) -> Action:
+    """Failure-loop guard: the redirect goes out as additionalContext, never as a replacement."""
+    return loopguard.on_tool(event, _policy(), cfg, env=HOOK_ENV.get())
+
+
+def _on_loopguard_prompt(event: Event, cfg: Config) -> Action:
+    return loopguard.on_prompt(event, _policy(), cfg, env=HOOK_ENV.get())
+
+
+def _on_loopguard_end(event: Event, cfg: Config) -> Action:
+    return loopguard.on_session_end(event, _policy(), cfg, env=HOOK_ENV.get())
 
 
 def _on_pre_invalidate(event: Event, cfg: Config) -> Action:
@@ -243,6 +257,7 @@ for _kind, _fn in (
     ("prompt", _on_boundary),
     ("prompt", _on_regret),  # after the turn count: expires regret windows (explicit 0)
     ("prompt", _on_prune_prompt),  # the user named a pruned tool: restore it
+    ("prompt", _on_loopguard_prompt),  # after the turn count: settles the previous turn
     ("pre_tool", _on_prune_tool),  # first: a later block ends the chain; never blocks itself
     ("pre_tool", _on_activity),
     ("pre_tool", _on_pre_invalidate),
@@ -254,6 +269,7 @@ for _kind, _fn in (
     ("post_tool", _on_regret),  # sees this call before it is itself trimmed or tracked
     ("post_tool", _on_read_dedupe),
     ("post_tool", _on_compress),
+    ("post_tool", _on_loopguard),  # always: counts every call, adds context only
     ("post_tool", _on_activity),  # always (also after a replacement)
     ("post_tool", _on_track),  # last + always: its lock wait never eats compression's budget
     # same chain minus de-dupe; the host decides whether a failure result can be replaced
@@ -261,6 +277,7 @@ for _kind, _fn in (
     ("post_tool_failure", _on_governor_post),
     ("post_tool_failure", _on_regret),
     ("post_tool_failure", _on_compress),
+    ("post_tool_failure", _on_loopguard),
     ("post_tool_failure", _on_track),
     ("pre_compact", _on_pre_compact),  # sets last_compact_turn, clears the read table
     ("pre_compact", _on_compact_instructions),
@@ -271,10 +288,11 @@ for _kind, _fn in (
     ("session_start", _on_fold_pending),
     ("session_start", _on_breaker_notice),  # after the fold: a trip it causes is shown now
     ("session_end", _on_regret),  # settles every open regret window
+    ("session_end", _on_loopguard_end),
     ("session_end", _on_fold_spawn),  # after settling: the fold sees every regret outcome
     ("permission_denied", _on_prune_tool),
 ):
-    always = _fn is _on_track or (_kind == "post_tool" and _fn is _on_activity)
+    always = _fn in (_on_track, _on_loopguard) or (_kind == "post_tool" and _fn is _on_activity)
     register(cast(EventKind, _kind), _contained(cast(Handler, _fn)), always=always)
 
 

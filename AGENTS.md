@@ -11,8 +11,8 @@ Thompson-sampling bandit with a hard quality constraint) steers every hook decis
 (`learn/hookpolicy.py`, built lazily per hook; `[learn] enabled = false` -> `StaticPolicy`), with
 regret detection, a session `fold` and a circuit breaker; `replay` (E1) and `ope` (E3) evaluate
 offline into private reports. Defaults are quality-first: file contents are never trimmed and only
-an allow-list of content types is offered for compression. Planned (M3): repo-fact learning and
-tool pruning; `facts`/`prune` are CLI stubs.
+an allow-list of content types is offered for compression. M3: repo-fact learning, opt-in
+tool pruning and the learned failure-loop guard (`mechanisms/loopguard.py`) are in.
 Spec: `docs/specs/2026-11-25-token-sparen-design.md`; plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`;
 decisions: `MEMORY.md`.
 
@@ -41,7 +41,7 @@ python scripts/check_denylist.py
 - Hooks fail open (no-op response plus one line in `~/.token-sparen/logs/errors.jsonl`); non-LLM p95 < 50 ms.
 - Outputs under 2000 estimated tokens are never modified (`min_tokens` is floored at 2000); lines matching `ERROR_PATTERNS` are never elided.
 - Never larger: a replacement must not exceed the host's preview of the output.
-- Failed tool results are not replaceable on Claude Code; no PreToolUse command rewriting (pre-trim is a PostToolUse arm).
+- Failed tool results are not replaceable on Claude Code (only `additionalContext`, e.g. the loop guard); no PreToolUse command rewriting (pre-trim is a PostToolUse arm).
 - Mechanisms and compressors never import `token_sparen.adapters`.
 - Every elision carries the recovery marker and the full text is saved under `<project>/.token-sparen/outputs/`.
 - `TOKEN_SPAREN_DISABLE=1` disables every hook.

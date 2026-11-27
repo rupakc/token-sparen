@@ -31,6 +31,7 @@ FEATURE_KEYS: dict[str, tuple[str, ...]] = {
     "pretrim": ("ctype", "size"),
     "read_dedupe": ("cat", "size"),
     "subagent_brief": ("phase",),
+    "loopguard": ("cat",),
 }
 
 

@@ -478,3 +478,39 @@ def test_free_rules_are_explicit_keys() -> None:
 def test_boundary_history_is_bounded(tmp_path: Path) -> None:
     proj, env = _setup(tmp_path, project="[boundary]\nhistory = 50\n")
     assert load_config(proj, env).get("boundary.history") == 3
+
+
+# --------------------------------------------------------------------------- loop guard (Task 28)
+
+
+def test_project_may_only_disable_the_loop_guard(tmp_path: Path) -> None:
+    proj, env = _setup(tmp_path, project="[loopguard]\nenabled = false\n")
+    assert load_config(proj, env).get("loopguard.enabled") is False
+    proj, env = _setup(
+        tmp_path / "b",
+        user="[loopguard]\nenabled = false\n",
+        project="[loopguard]\nenabled = true\n",
+    )
+    assert load_config(proj, env).get("loopguard.enabled") is False
+
+
+def test_project_may_only_raise_loop_guard_min_k(tmp_path: Path) -> None:
+    proj, env = _setup(tmp_path, project="[loopguard]\nmin_k = 6\nburst = 12\n")
+    cfg = load_config(proj, env)
+    assert (cfg.get("loopguard.min_k"), cfg.get("loopguard.burst")) == (6, 12)
+    proj, env = _setup(tmp_path / "b", project="[loopguard]\nmin_k = 1\nburst = 3\n")
+    cfg = load_config(proj, env)
+    defaults = packaged_defaults()["loopguard"]
+    assert cfg.get("loopguard.min_k") == defaults["min_k"]
+    assert cfg.get("loopguard.burst") == defaults["burst"]
+    proj, env = _setup(tmp_path / "c", project="[loopguard]\nwatch_calls = 1\n")
+    assert load_config(proj, env).get("loopguard.watch_calls") == defaults["watch_calls"]
+
+
+def test_user_may_set_any_loop_guard_key(tmp_path: Path) -> None:
+    proj, env = _setup(tmp_path, user="[loopguard]\nmin_k = 1\nburst = 3\nwatch_calls = 2\n")
+    cfg = load_config(proj, env)
+    assert (cfg.get("loopguard.min_k"), cfg.get("loopguard.burst")) == (1, 3)
+    assert cfg.get("loopguard.watch_calls") == 2
+    assert policy_for(("loopguard", "enabled")) == "false_only"
+    assert policy_for(("loopguard", "min_k")) == "max"
