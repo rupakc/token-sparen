@@ -252,5 +252,34 @@ def test_ci_has_docs_job_without_deploy() -> None:
     assert "pages" not in job.replace("pip", "") and "write" not in job
 
 
+def test_raw_html_and_unsafe_urls_never_reach_the_site(tmp_path: Path) -> None:
+    src = make_src(tmp_path)
+    (src / "install.md").write_text(
+        "# Install\n\n<script>alert(1)</script>\n\n"
+        '<img src=x onerror="alert(2)">\n\n'
+        "[bad](javascript:alert(3)) [bad2](JaVa&#9;ScRiPt:alert(4)) "
+        "[ok](https://example.org/x)\n\n"
+        'inline <b onclick="x()">bold</b> text\n\n<!-- note -->\n\n'
+        "```\n<script>shown</script>\n```\n",
+        encoding="utf-8",
+    )
+    text = (build(tmp_path) / "install.html").read_text(encoding="utf-8")
+    body = text.split("<main>")[1].split("</main>")[0]
+    assert "<script" not in body.lower() and "<img" not in body.lower()
+    assert not re.search(r"<[^>]*\son\w+=", body)
+    assert 'href="javascript' not in body.lower()
+    assert 'href="https://example.org/x"' in body
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body  # shown as text
+    assert "&lt;script&gt;shown&lt;/script&gt;" in body  # code fence untouched
+    assert "note" not in body
+
+
+def test_docs_workflow_refuses_prereleases_and_off_main_tags() -> None:
+    text = _active(ROOT / ".github" / "workflows" / "docs.yml")
+    assert "grep -Eq '^v[0-9]+\\.[0-9]+\\.[0-9]+$'" in text
+    assert "git merge-base --is-ancestor" in text and "origin/main" in text
+    assert "needs: tag" in text and "needs: build" in text
+
+
 def test_site_url_matches_release_tooling() -> None:
     assert bs.SITE_URL == build_claude_tree.SITE_URL == "https://rupakc.github.io/token-sparen/"

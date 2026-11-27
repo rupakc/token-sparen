@@ -34,12 +34,16 @@ jobs:
           if [ "$EVENT" = "push" ]; then
             tag="$PUSHED"
           else
-            tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+            tag="$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
           fi
-          case "$tag" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "no release tag found"; exit 1 ;;
-          esac
+          # exact release tags only: prereleases such as v1.0.0-rc1 are refused
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "not an exact release tag: $tag"; exit 1
+          fi
+          # and the tagged commit must be on main
+          if ! git merge-base --is-ancestor "refs/tags/$tag" origin/main; then
+            echo "$tag is not on main"; exit 1
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   build:

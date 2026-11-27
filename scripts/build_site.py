@@ -148,13 +148,34 @@ benchmark results (see <a href="benchmarks-methodology.html#evidence">Evidence</
 """
 
 
-def _md(text: str) -> tuple[str, str]:
+_COMMENT = re.compile(r"<!--.*?-->", re.S)
+_HREF = re.compile(r'(href|src)="([^"]*)"')
+_SAFE_SCHEME = re.compile(r"(https?|mailto):", re.I)
+
+
+def _strip_comments(text: str) -> str:
+    """Drop HTML comments outside fenced code (they are source notes, never page content)."""
+    parts = re.split(r"(^```.*?^```[^\n]*$)", text, flags=re.S | re.M)
+    return "".join(p if i % 2 else _COMMENT.sub("", p) for i, p in enumerate(parts))
+
+
+def _safe_url(m: re.Match[str]) -> str:
+    raw = html.unescape(m.group(2)).strip()
+    compact = re.sub(r"[\x00-\x20]", "", raw)
+    if re.match(r"[a-z][a-z0-9+.-]*:", compact, re.I) and not _SAFE_SCHEME.match(compact):
+        return f'{m.group(1)}="#"'
+    return m.group(0)
+
+
+def _md(text: str) -> str:
+    """Markdown to HTML with raw HTML escaped (never passed through) and unsafe URLs neutralised."""
     md = markdown.Markdown(
         extensions=["tables", "fenced_code", "toc"],
         extension_configs={"toc": {"slugify": slugify, "permalink": False}},
     )
-    body = md.convert(text)
-    return body, ""
+    md.preprocessors.deregister("html_block")
+    md.inlinePatterns.deregister("html")
+    return _HREF.sub(_safe_url, md.convert(_strip_comments(text)))
 
 
 def _rewrite_links(body: str) -> str:
@@ -252,11 +273,10 @@ def build_site(
         shutil.rmtree(out)
     out.mkdir(parents=True)
     evidence_md = render_evidence(evidence)
-    evidence_html, _ = _md(evidence_md)
     written: list[Path] = []
     for page in pages:
         text = (src / page["path"]).read_text(encoding="utf-8")
-        body, _ = _md(EVIDENCE_BLOCK.sub(lambda _m: "\n" + evidence_md + "\n", text))
+        body = _md(EVIDENCE_BLOCK.sub(lambda _m: "\n" + evidence_md + "\n", text))
         body = _rewrite_links(_fix_repo_links(body, src / page["path"], src))
         if page["path"] == "index.md":
             body = LANDING.replace("{demos}", _demo_html(build_demos())) + body
