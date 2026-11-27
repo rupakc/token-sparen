@@ -313,12 +313,12 @@ def fold(
     params: Mapping[str, Any] | None = None,
     now: float | None = None,
     lock_timeout: float | None = None,
-    in_hook: bool = False,
+    prune_apply: bool = False,
 ) -> FoldReport:
     """Fold one session (see the module docstring). Raises only ``jsonstore.StoreBusy`` (a lock
     could not be taken; nothing is lost, retry later); every other failure is logged.
-    ``in_hook``: folded inside a latency-capped hook, so no new deny rule is written (tool
-    pruning leaves it ``pending`` for a detached apply)."""
+    ``prune_apply``: the detached SessionEnd fold of this session, the only fold that writes new
+    deny rules (tool pruning); any other fold leaves them ``pending``."""
     env = {"TOKEN_SPAREN_HOME": str(home)}
     rep = FoldReport(session_id)
     try:
@@ -329,7 +329,7 @@ def fold(
             params,
             time.time() if now is None else now,
             lock_timeout,
-            in_hook,
+            prune_apply,
         )
     except jsonstore.StoreBusy:
         raise
@@ -416,7 +416,7 @@ def _fold(
     params: Mapping[str, Any] | None,
     now: float,
     timeout: float | None,
-    in_hook: bool = False,
+    prune_apply: bool = False,
 ) -> None:
     env = {"TOKEN_SPAREN_HOME": str(home)}
     ov = session.session_path(home, key, rep.session_id)
@@ -446,7 +446,9 @@ def _fold(
         _pretrim(rep, fid, outcomes, pdir, params, now, env, timeout)
         mined = _mine_facts(rep.session_id, fid, staged, pdir, now, env, timeout, params)
         rep.facts = max(0, mined)
-        rep.pruned = _prune(fid, staged, home, key, params, env, timeout, apply=not in_hook)
+        rep.pruned = _prune(
+            fid, staged, home, key, params, env, timeout, apply=prune_apply, sid=rep.session_id
+        )
         rep.backfilled = _backfill(staged.get("outcomes"), pdir, params, env)
 
         # Clear and un-index under one overlay lock: a hook that adds evidence either ran
@@ -576,7 +578,8 @@ def _prune(
     env: Mapping[str, str],
     timeout: float | None,
     *,
-    apply: bool = True,
+    apply: bool = False,
+    sid: str = "",
 ) -> list[str]:
     """Step 5a': opt-in tool pruning (``mechanisms.prune``); never raises but StoreBusy."""
     try:
@@ -589,6 +592,7 @@ def _prune(
             env=env,
             timeout=timeout,
             apply=apply,
+            session_id=sid,
             transcript_key=TRANSCRIPT_KEY,
             project_dir_key=PROJECT_DIR_KEY,
         )
@@ -1039,14 +1043,7 @@ def fold_pending(
                 break  # the rest waits for the next SessionStart
             try:
                 out.append(
-                    fold(
-                        sid,
-                        project_key,
-                        home,
-                        params=params,
-                        lock_timeout=INPROCESS_LOCK_S,
-                        in_hook=True,
-                    )
+                    fold(sid, project_key, home, params=params, lock_timeout=INPROCESS_LOCK_S)
                 )
             except jsonstore.StoreBusy:
                 spawn_fold(spawn_args, env)

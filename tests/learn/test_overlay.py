@@ -581,7 +581,9 @@ def test_session_end_spawns_detached_fold(tmp_path: Path, popen: type[_Popen]) -
     assert act.is_noop()
     ((args, kw),) = popen.calls
     assert args[1] == "-I" and args[2].endswith(os.path.join("hooks", "run_cli.py"))
-    assert args[3:] == ["fold", "--session", SID, "--project", str(tmp_path / "proj")]
+    project = str(tmp_path / "proj")
+    # the SessionEnd fold is the only one that may write tool-pruning deny rules
+    assert args[3:] == ["fold", "--session", SID, "--project", project, "--prune-apply"]
     assert kw["stdin"] is subprocess.DEVNULL and kw["stdout"] is subprocess.DEVNULL
     assert kw["stderr"] is subprocess.DEVNULL
     assert kw["env"]["TOKEN_SPAREN_HOME"] == str(_home(tmp_path))

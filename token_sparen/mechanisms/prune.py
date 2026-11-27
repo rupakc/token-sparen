@@ -34,22 +34,26 @@ with ``>= min_sessions`` sessions spanning ``>= min_prompts`` prompts **and** th
 
 **Checkouts.** Sibling clones and worktrees share the project key but each has its own settings
 file: owned rules, created containers and the user's own rules are recorded per settings-file
-real path (``files``). Hooks and the fold act on the current checkout's file only; ``restore
---all``, ``disable`` and the ``allow = false`` revert act on every recorded file.
+real path in the user-level registry ``~/.token-sparen/prune_rules.json`` (``files``, each with
+the project key it was written under), never only under the project key: a changed git remote
+never orphans a rule, since a checkout always sees its own record. Hooks and the fold act on the
+current checkout's file only; ``restore --all`` and ``disable`` act on every record of the
+project and the current checkout's; the ``allow = false`` revert on the records of its own key.
 
-**When.** Rules change the tool list, which invalidates the prompt cache, so they are written
-only when the project has been idle ``>= idle_minutes`` (``tracking.last_active``: session
-starts, prompts and tool calls of any session, throttled), and only by a detached process (the
-fold, or ``prune apply``), never inside a latency-capped hook: a fold that finds the project
-busy, or runs inside a hook, leaves the rules ``pending``; the next session start after an idle
-gap (measured before that session counts as active) spawns ``prune apply --idle-checked``.
-Restores never wait.
+**When.** Rules change the tool list, which invalidates the prompt cache, so new ones are written
+only by the detached SessionEnd fold of a session (``fold --prune-apply``; effective from the
+next session) and only when no other session of the project that has not ended was active in
+the last ``idle_minutes`` (``tracking.others_active``); otherwise they stay ``pending`` for a
+later session end. No hook and no other fold writes a new rule; git is asked before the store
+locks are taken, so a hook restore never waits on it. Restores never wait. A settings file is
+written only when git confirms it is untracked and ignored.
 
-**Crash safety.** Before a settings write the rules are journaled in the file's record
-(``pending_add``, written under the store lock); after it they move to ``owned``. Every read of
-the store reconciles a leftover journal (the process was killed in between): a journaled rule
-present in the settings file is ours (``owned``), an absent one is dropped. A journaled rule is
-never classified as the user's (``foreign``). Only rules absent from the file are journaled.
+**Crash safety.** Just before a settings write the rules and the containers it will create are
+journaled in the file's record (``pending_add``, ``pending_created``, under the locks); after it
+they move to ``owned`` / ``created``. Every read reconciles a leftover journal (the process was
+killed in between): a journaled rule present in the settings file is ours (``owned``, with the
+journaled containers), an absent one is dropped. A journaled rule is never classified as the
+user's (``foreign``). Only rules absent from the file are journaled.
 
 **Lease.** A pruned tool is not in the model's list, so "unused" while pruned is produced by the
 intervention itself: pruned rules accrue no evidence. Each prune is a lease of
@@ -72,7 +76,7 @@ import hashlib
 import os
 import re
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -87,6 +91,7 @@ from token_sparen.store import jsonstore, paths
 from token_sparen.transcript import ToolInventory, tool_inventory
 
 PRUNE_FILE = "prune.json"
+REGISTRY_FILE = "prune_rules.json"  # at the state root, beside the statusline install record
 VERSION = 2
 PRIOR = Beta(1.0, 1.0)
 CAP = 1000.0  # posterior mass cap (mean-preserving rescale)
@@ -147,12 +152,19 @@ class DenyWriter(Protocol):
     def settings_file(self, project_dir: Path) -> Path: ...
 
     def exposure(self, project_dir: Path) -> str | None:
-        """``"tracked"`` / ``"unknown"`` (never write), ``"unignored"`` (warn) or None."""
+        """None only when the settings file is confirmed untracked and ignored; otherwise why
+        it is exposed (``"tracked"``, ``"unignored"``, ``"unknown"``): never written."""
         ...
 
     def add(
-        self, project_dir: Path, rules: Sequence[str], fresh_backup: bool = False
-    ) -> WriteResult: ...
+        self,
+        project_dir: Path,
+        rules: Sequence[str],
+        fresh_backup: bool = False,
+        journal: Callable[[list[str], dict[str, bool]], None] | None = None,
+    ) -> WriteResult:
+        """``journal(new rules, containers about to be created)`` runs right before the write."""
+        ...
 
     def remove(
         self,
@@ -543,11 +555,99 @@ def store_path(home: Path, project_key: str) -> Path:
     return paths.project_dir_for(home, project_key) / PRUNE_FILE
 
 
+def registry_path(home: Path) -> Path:
+    """User-level record of the deny rules we own, per settings-file real path (``files``),
+    independent of the project key: a changed git remote never orphans a rule."""
+    return home / REGISTRY_FILE
+
+
+def _reg_files(reg: dict[str, Any]) -> dict[str, Any]:
+    raw = reg.get("files")
+    if not isinstance(raw, dict):
+        raw = reg["files"] = {}
+    return raw
+
+
+def attach(doc: dict[str, Any], reg: dict[str, Any], key: str, fkey: str | None) -> None:
+    """Point ``doc["files"]`` at the registry records of project ``key`` (shared dicts, so
+    changes reach ``reg``). Records still inside ``doc`` (older layout) move to ``reg``; the
+    record of this checkout's settings file (``fkey``) is included whatever key it was written
+    under (a changed git remote): hooks, notices, ``restore`` and ``disable`` see it."""
+    files = _reg_files(reg)
+    legacy = doc.get("files")
+    if isinstance(legacy, dict):
+        for fk, entry in legacy.items():
+            if isinstance(fk, str) and isinstance(entry, dict) and fk not in files:
+                files[fk] = {**entry, "key": key}
+    view: dict[str, Any] = {}
+    for fk, entry in files.items():
+        if not isinstance(entry, dict):
+            continue
+        if fk == fkey or entry.get("key") == key:
+            view[fk] = entry
+    doc["files"] = view
+
+
+@dataclass
+class _Store:
+    path: Path
+    reg_path: Path
+    key: str
+    doc: dict[str, Any]
+    reg: dict[str, Any]
+
+    def save(self) -> None:
+        """Registry first (ownership and the journal), then the evidence store."""
+        files = _reg_files(self.reg)
+        for fk, entry in _files(self.doc).items():
+            if isinstance(entry, dict):
+                entry.setdefault("key", self.key)
+                files[fk] = entry
+        self.reg["version"] = 1
+        jsonstore.write_locked(self.reg_path, self.reg)
+        jsonstore.write_locked(self.path, {k: v for k, v in self.doc.items() if k != "files"})
+
+
+@contextlib.contextmanager
+def _open(
+    home: Path,
+    project_key: str,
+    fkey: str | None,
+    env: Mapping[str, str],
+    timeout: float | None,
+) -> Iterator[_Store]:
+    """Both stores under their locks (project store first, then the registry)."""
+    path, reg_path = store_path(home, project_key), registry_path(home)
+    with jsonstore.locked(path, timeout), jsonstore.locked(reg_path, timeout):
+        doc = _fresh(jsonstore.read_locked(path, {}, env))
+        reg = jsonstore.read_locked(reg_path, {}, env)
+        attach(doc, reg, project_key, fkey)
+        yield _Store(path, reg_path, project_key, doc, reg)
+
+
+def _read(home: Path, project_key: str, fkey: str | None, env: Mapping[str, str]) -> dict[str, Any]:
+    """Lock-free view: the evidence store with this project's records attached."""
+    path, reg_path = store_path(home, project_key), registry_path(home)
+    doc = jsonstore.read(path, {}, env) if path.is_file() else {}
+    reg = jsonstore.read(reg_path, {}, env) if reg_path.is_file() else {}
+    attach(doc, reg, project_key, fkey)
+    return doc
+
+
+def _registered(home: Path, fkey: str, env: Mapping[str, str]) -> bool:
+    reg_path = registry_path(home)
+    if not reg_path.is_file():
+        return False
+    entry = _reg_files(jsonstore.read(reg_path, {}, env)).get(fkey)
+    return isinstance(entry, dict) and bool(
+        _strs(entry.get("owned")) or _strs(entry.get("pending_add")) or entry.get("notices")
+    )
+
+
 def _fresh(doc: dict[str, Any]) -> dict[str, Any]:
     if not doc:
         doc.update({"version": VERSION, "enabled": False, "tools": {}})
     doc["version"] = VERSION
-    doc.setdefault("files", {})
     doc.setdefault("kept", {})
     doc.setdefault("pending", False)
     return doc
@@ -581,7 +681,15 @@ def reconcile(doc: dict[str, Any], writer: DenyWriter | None) -> bool:
         lease = _lease(entry)
         for rule in new:
             lease[rule] = 0
+        if new:  # the containers that write created, as journaled just before it
+            raw = entry.get("pending_created")
+            journaled = {k: v is True for k, v in raw.items()} if isinstance(raw, dict) else {}
+            old = _created(entry)
+            entry["created"] = {
+                k: old.get(k, False) or journaled.get(k, False) for k in {*old, *journaled}
+            }
         entry.pop("pending_add", None)
+        entry.pop("pending_created", None)
         changed = True
     return changed
 
@@ -593,9 +701,10 @@ def _lease(entry: dict[str, Any]) -> dict[str, Any]:
     return raw
 
 
-def _idle(home: Path, project_key: str, s: Settings) -> bool:
-    _, fresh = tracking.last_active(home, project_key, s.idle_s)
-    return not fresh
+def _idle(home: Path, project_key: str, s: Settings, session_id: str) -> bool:
+    """No other session of the project (not ended, not ``session_id``, the one being folded)
+    was active in the last ``idle_minutes``: a changed tool list breaks no live prompt cache."""
+    return not tracking.others_active(home, project_key, session_id, s.idle_s)
 
 
 def _restore_file(
@@ -638,6 +747,25 @@ def _regret(doc: dict[str, Any], rule: str, reason: str) -> None:
     doc["kept"] = {**_kept(doc), rule: reason}
 
 
+def _revert_policy(
+    doc: dict[str, Any], key: str, writer: DenyWriter, env: Mapping[str, str]
+) -> list[str]:
+    """Pruning is off for project ``key``: remove the rules recorded under it (a record written
+    under another key, e.g. before a remote change, follows that key's switch, not this one)."""
+    done: set[str] = set()
+    for fkey, entry in list(_files(doc).items()):
+        if isinstance(entry, dict) and entry.get("key", key) == key:
+            done.update(_restore_file(doc, fkey, None, None, writer, env))
+    return sorted(done)
+
+
+def _owned_under(doc: Mapping[str, Any], key: str) -> bool:
+    return any(
+        isinstance(e, dict) and e.get("key", key) == key and _strs(e.get("owned"))
+        for e in _files(doc).values()
+    )
+
+
 def _restore_all(
     doc: dict[str, Any], reason: str | None, writer: DenyWriter, env: Mapping[str, str]
 ) -> list[str]:
@@ -648,31 +776,21 @@ def _restore_all(
 
 
 def _apply(
-    doc: dict[str, Any],
-    path: Path,
+    st: _Store,
     project_dir: Path,
     rules: Sequence[str],
+    exposure: str | None,
     writer: DenyWriter,
     env: Mapping[str, str],
 ) -> list[str]:
-    """Write ``rules`` (the caller holds the store lock on ``path``): journal, write, record."""
+    """Write ``rules`` (``st`` holds both locks; ``exposure`` was checked before they were
+    taken): journal, write, record."""
+    doc = st.doc
     doc["pending"] = False
     target = writer.settings_file(project_dir)
     entry = _file(doc, file_key(target), project_dir)
-    exposure = writer.exposure(project_dir)
-    if exposure == "tracked":
-        _notice(
-            entry,
-            f"token-sparen: {target} is tracked by git, so tool pruning did not write it "
-            f"(its rules would be committed); untrack it or run `{CLI} prune disable`.",
-        )
-        return []
-    if exposure == "unknown":
-        _notice(
-            entry,
-            f"token-sparen: git could not tell whether {target} is tracked (git missing or too "
-            "slow), so tool pruning did not write it; it tries again at a later fold.",
-        )
+    if exposure is not None:
+        _notice(entry, _exposure_notice(exposure, target))
         return []
     mine = _strs(entry.get("owned"))
     present = writer.present(project_dir) or set()
@@ -682,10 +800,15 @@ def _apply(
         entry["foreign"] = sorted(set(_strs(entry.get("foreign"))) | set(already))
     if not todo:
         return []
-    entry["pending_add"] = todo
-    jsonstore.write_locked(path, doc)  # the intent is on disk before the settings write
-    res = writer.add(project_dir, todo, fresh_backup=not mine)
+
+    def journal(new: list[str], created: dict[str, bool]) -> None:
+        entry["pending_add"] = list(new)
+        entry["pending_created"] = dict(created)
+        st.save()  # the intent is on disk before the settings write
+
+    res = writer.add(project_dir, todo, fresh_backup=not mine, journal=journal)
     entry.pop("pending_add", None)
+    entry.pop("pending_created", None)
     if not res.ok:
         log_error(env, "prune", f"apply: {res.message}")
         if entry.get("refused") != res.message:
@@ -712,13 +835,24 @@ def _apply(
             f"token-sparen pruned unused tools: {', '.join(res.changed)} (deny rules in "
             f"{target}); `{CLI} prune restore <tool>` or `{CLI} prune disable` undoes it.",
         )
-    if exposure == "unignored":
-        _notice(
-            entry,
-            f"token-sparen: {target} is not covered by .gitignore; add it there so the deny "
-            "rules token-sparen writes are never committed.",
-        )
     return res.changed
+
+
+def _exposure_notice(exposure: str, target: Path) -> str:
+    if exposure == "tracked":
+        return (
+            f"token-sparen: {target} is tracked by git, so tool pruning did not write it "
+            f"(its rules would be committed); untrack it or run `{CLI} prune disable`."
+        )
+    if exposure == "unignored":
+        return (
+            f"token-sparen: {target} is not covered by .gitignore, so tool pruning did not "
+            "write it (its rules could be committed); add it to .gitignore to allow it."
+        )
+    return (
+        f"token-sparen: git could not confirm that {target} is untracked and ignored (not a "
+        "git work tree, or git missing, failing or too slow), so tool pruning did not write it."
+    )
 
 
 def _end_leases(
@@ -785,39 +919,42 @@ def fold_session(
     timeout: float | None = None,
     transcript_key: str = "transcript",
     project_dir_key: str = "project_dir",
-    apply: bool = True,
+    apply: bool = False,
+    session_id: str = "",
 ) -> list[str]:
     """Fold step: history seeding (once), evidence from the session transcript, restores for
     attempted uses, lease ends, then the idle-gated apply for this checkout. Returns the rules
-    added. ``apply`` False (folded inside a hook): no settings write but restores; new rules stay
-    ``pending``. Raises only ``jsonstore.StoreBusy``."""
+    added. Only the session-end fold (``apply``, folding ``session_id``) writes new rules or ends
+    leases; any other fold leaves them ``pending``. git is asked before the locks are taken.
+    Raises only ``jsonstore.StoreBusy``."""
     s = settings_for(params, env)
     path = store_path(home, project_key)
     raw_dir = staged.get(project_dir_key)
     writer = WRITER
-    if not path.is_file() and not s.enabled:
-        return []  # never opted in here: no work, nothing written
     if not isinstance(raw_dir, str) or not raw_dir or writer is None:
         return []
     project_dir = Path(raw_dir)
-    doc = jsonstore.read(path, {}, env)
-    if not active(doc, s):
-        if all_owned(doc):
-            with jsonstore.locked(path, timeout):
-                doc = _fresh(jsonstore.read_locked(path, {}, env))
-                reconcile(doc, writer)
-                _restore_all(doc, None, writer, env)
-                jsonstore.write_locked(path, doc)
+    fkey = file_key(writer.settings_file(project_dir))
+    if not path.is_file() and not s.enabled and not _registered(home, fkey, env):
+        return []  # never opted in here: no work, nothing written
+    view = _read(home, project_key, fkey, env)
+    if not active(view, s):
+        if _owned_under(view, project_key) or _strs(_files(view).get(fkey, {}).get("pending_add")):
+            with _open(home, project_key, fkey, env, timeout) as st:
+                reconcile(st.doc, writer)
+                _revert_policy(st.doc, project_key, writer, env)
+                st.save()
         return []
     raw_tr = staged.get(transcript_key)
     transcript = Path(raw_tr) if isinstance(raw_tr, str) and raw_tr else None
     inv = scan(transcript, env) if transcript is not None else None
-    fkey = file_key(writer.settings_file(project_dir))
-    with jsonstore.locked(path, timeout):
-        doc = _fresh(jsonstore.read_locked(path, {}, env))
+    # git may be slow: never while holding the locks a hook restore waits 0.1 s for
+    exposure = writer.exposure(project_dir) if apply else None
+    with _open(home, project_key, fkey, env, timeout) as st:
+        doc = st.doc
         if fold_id in _applied(doc):
             if reconcile(doc, writer):
-                jsonstore.write_locked(path, doc)
+                st.save()
             return []
         reconcile(doc, writer)
         if transcript is not None and doc.get("seeded") is not True:
@@ -834,46 +971,12 @@ def fold_session(
         added: list[str] = []
         todo = plan(doc, s, fkey)
         if todo:
-            if apply and _idle(home, project_key, s):
-                added = _apply(doc, path, project_dir, todo, writer, env)
+            if apply and _idle(home, project_key, s, session_id):
+                added = _apply(st, project_dir, todo, exposure, writer, env)
             else:
                 doc["pending"] = True
         doc["applied"] = [*_applied(doc), fold_id][-APPLIED_MAX:]
-        jsonstore.write_locked(path, doc)
-    return added
-
-
-def apply_pending(
-    home: Path,
-    project_key: str,
-    project_dir: Path,
-    *,
-    params: Mapping[str, Any] | None,
-    env: Mapping[str, str],
-    idle_checked: bool = False,
-    timeout: float | None = None,
-) -> list[str]:
-    """``prune apply`` (detached, spawned by SessionStart): write the ``pending`` rules of this
-    checkout when the project is idle (``idle_checked``: the spawning hook measured it before its
-    session counted as active). Returns the rules added."""
-    s = settings_for(params, env)
-    path = store_path(home, project_key)
-    writer = WRITER
-    if writer is None or not path.is_file():
-        return []
-    added: list[str] = []
-    with jsonstore.locked(path, timeout):
-        doc = _fresh(jsonstore.read_locked(path, {}, env))
-        changed = reconcile(doc, writer)
-        due = active(doc, s) and doc.get("pending") is True
-        if due and (idle_checked or _idle(home, project_key, s)):
-            todo = plan(doc, s, file_key(writer.settings_file(project_dir)))
-            if todo:
-                added = _apply(doc, path, project_dir, todo, writer, env)
-            doc["pending"] = False
-            changed = True
-        if changed:
-            jsonstore.write_locked(path, doc)
+        st.save()
     return added
 
 
@@ -895,21 +998,31 @@ def enable(home: Path, project_key: str, project_dir: Path, env: Mapping[str, st
     return count[0]
 
 
-def disable(home: Path, project_key: str, env: Mapping[str, str]) -> list[str]:
-    """Opt out and remove our rules from every recorded checkout (no regret)."""
+def _fkey_of(checkout: Path | None) -> str | None:
+    writer = WRITER
+    if checkout is None or writer is None:
+        return None
+    return file_key(writer.settings_file(checkout))
+
+
+def _any_state(home: Path, project_key: str) -> bool:
+    return store_path(home, project_key).is_file() or registry_path(home).is_file()
+
+
+def disable(
+    home: Path, project_key: str, env: Mapping[str, str], checkout: Path | None = None
+) -> list[str]:
+    """Opt out and remove our rules from every recorded checkout (no regret); ``checkout``'s
+    record is included even when it was written under another project key."""
     writer = WRITER
     done: list[str] = []
-
-    def fn(doc: dict[str, Any]) -> dict[str, Any]:
-        doc = _fresh(doc)
-        doc["enabled"] = False
-        doc["pending"] = False
+    with _open(home, project_key, _fkey_of(checkout), env, None) as st:
+        st.doc["enabled"] = False
+        st.doc["pending"] = False
         if writer is not None:
-            reconcile(doc, writer)
-            done.extend(_restore_all(doc, None, writer, env))
-        return doc
-
-    jsonstore.update(store_path(home, project_key), fn, {}, env)
+            reconcile(st.doc, writer)
+            done.extend(_restore_all(st.doc, None, writer, env))
+        st.save()
     return done
 
 
@@ -922,15 +1035,17 @@ def restore(
     *,
     reason: str | None = "restored by the user",
     timeout: float | None = None,
+    checkout: Path | None = None,
 ) -> list[str]:
     """Remove our ``rules`` now from ``project_dir``'s settings file, or with ``project_dir``
-    None from every recorded checkout; ``rules`` None: all of them. Returns the rules removed."""
-    path = store_path(home, project_key)
+    None from every recorded checkout (``checkout``'s own record included); ``rules`` None: all
+    of them. Returns the rules removed."""
     writer = WRITER
-    if writer is None or not path.is_file():
+    if writer is None or not _any_state(home, project_key):
         return []
-    with jsonstore.locked(path, timeout):
-        doc = _fresh(jsonstore.read_locked(path, {}, env))
+    here = _fkey_of(project_dir if project_dir is not None else checkout)
+    with _open(home, project_key, here, env, timeout) as st:
+        doc = st.doc
         reconciled = reconcile(doc, writer)
         if project_dir is None:
             done: list[str] = []
@@ -938,10 +1053,9 @@ def restore(
                 done += _restore_file(doc, fkey, rules, reason, writer, env)
             done = sorted(set(done))
         else:
-            fkey = file_key(writer.settings_file(project_dir))
-            done = _restore_file(doc, fkey, rules, reason, writer, env)
+            done = _restore_file(doc, str(here), rules, reason, writer, env)
         if done or reconciled:
-            jsonstore.write_locked(path, doc)
+            st.save()
     return done
 
 
@@ -955,20 +1069,18 @@ def restore_everywhere(
 ) -> dict[str, list[str]]:
     """Remove our ``rules`` from every recorded checkout that holds them: {settings file:
     rules removed there}."""
-    path = store_path(home, project_key)
     writer = WRITER
     out: dict[str, list[str]] = {}
-    if writer is None or not path.is_file():
+    if writer is None or not _any_state(home, project_key):
         return out
-    with jsonstore.locked(path):
-        doc = _fresh(jsonstore.read_locked(path, {}, env))
-        reconciled = reconcile(doc, writer)
-        for fkey in list(_files(doc)):
-            done = _restore_file(doc, fkey, rules, reason, writer, env)
+    with _open(home, project_key, None, env, None) as st:
+        reconciled = reconcile(st.doc, writer)
+        for fkey in list(_files(st.doc)):
+            done = _restore_file(st.doc, fkey, rules, reason, writer, env)
             if done:
                 out[fkey] = done
         if out or reconciled:
-            jsonstore.write_locked(path, doc)
+            st.save()
     return out
 
 
@@ -982,9 +1094,12 @@ def holders(doc: Mapping[str, Any], tool: str) -> dict[str, list[str]]:
     return out
 
 
-def read_doc(home: Path, project_key: str, env: Mapping[str, str]) -> dict[str, Any]:
-    """The store as of now, a killed apply's journal reconciled in memory."""
-    doc = jsonstore.read(store_path(home, project_key), {}, env)
+def read_doc(
+    home: Path, project_key: str, env: Mapping[str, str], checkout: Path | None = None
+) -> dict[str, Any]:
+    """The store as of now with this project's records (and ``checkout``'s), a killed apply's
+    journal reconciled in memory."""
+    doc = _read(home, project_key, _fkey_of(checkout), env)
     reconcile(doc, WRITER)
     return doc
 
@@ -993,14 +1108,14 @@ def pruned_count(
     home: Path, project_key: str, env: Mapping[str, str], settings_file: Path | None = None
 ) -> int:
     """Rules of ours in ``settings_file`` (None: in any recorded checkout)."""
-    path = store_path(home, project_key)
-    if not path.is_file():
+    if not _any_state(home, project_key):
         return 0
-    doc = jsonstore.read(path, {}, env)
+    fkey = None if settings_file is None else file_key(settings_file)
+    doc = _read(home, project_key, fkey, env)
     reconcile(doc, WRITER)
-    if settings_file is None:
+    if fkey is None:
         return len(all_owned(doc))
-    return len(owned_in(doc, file_key(settings_file)))
+    return len(owned_in(doc, fkey))
 
 
 def render(text: str, env: Mapping[str, str]) -> str:
@@ -1065,16 +1180,17 @@ def status_lines(
 
 
 # --------------------------------------------------------------------------- hooks
-def _hook_doc(event: Event, env: Mapping[str, str]) -> tuple[Path, dict[str, Any], str] | None:
-    """(store path, doc, this checkout's file key) when this project has a prune store."""
-    path = store_path(state_home(env), event.project_key)
+def _hook_doc(event: Event, env: Mapping[str, str]) -> tuple[dict[str, Any], str] | None:
+    """(doc, this checkout's file key) when this project has a prune store or the registry
+    has records (also a record written under another project key for this checkout)."""
+    home = state_home(env)
     writer = WRITER
-    if writer is None or not path.is_file():
+    if writer is None or not _any_state(home, event.project_key):
         return None
     fkey = file_key(writer.settings_file(event.project_dir))
-    doc = jsonstore.read(path, {}, env)
-    reconcile(doc, writer)  # in memory; a restore settles it on disk under the lock
-    return path, doc, fkey
+    doc = _read(home, event.project_key, fkey, env)
+    reconcile(doc, writer)  # in memory; a restore settles it on disk under the locks
+    return doc, fkey
 
 
 def _restore_now(
@@ -1118,7 +1234,7 @@ def on_tool(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Action:
     found = _hook_doc(event, env)
     if found is None or event.tool is None:
         return Action()
-    mine = owned_in(found[1], found[2])
+    mine = owned_in(found[0], found[1])
     if not mine:
         return Action()
     rules = tool_rule(event.tool.name, mine)
@@ -1141,7 +1257,7 @@ def on_tool_search(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Acti
     if found is None:
         return Action()
     query = event.tool.input.get("query")
-    hits = mentions(query if isinstance(query, str) else None, owned_in(found[1], found[2]))
+    hits = mentions(query if isinstance(query, str) else None, owned_in(found[0], found[1]))
     done = _restore_now(event, hits, "attempted use", env)
     if not done:
         return Action()
@@ -1155,7 +1271,7 @@ def on_prompt(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Action:
     found = _hook_doc(event, env)
     if found is None:
         return Action()
-    hits = mentions(event.prompt, owned_in(found[1], found[2]))
+    hits = mentions(event.prompt, owned_in(found[0], found[1]))
     done = _restore_now(event, hits, "user mention", env)
     if not done:
         return Action()
@@ -1180,49 +1296,34 @@ def notice_line(rules: Sequence[str], env: Mapping[str, str] | None = None) -> s
     return line
 
 
-def on_session_start(
-    event: Event,
-    cfg: Config,
-    *,
-    env: Mapping[str, str],
-    spawn: Callable[[list[str]], object] | None = None,
-) -> Action:
-    """Never writes a deny rule (latency-capped hook): a policy revert (a restore), and, after
-    an idle gap measured before ``tracking`` records this session as active, ``spawn`` of the
-    detached ``prune apply --idle-checked`` for ``pending`` rules; then the one-line notice and
-    any stored notices."""
+def on_session_start(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Action:
+    """Never writes a deny rule (latency-capped hook; new rules come from the session-end fold
+    only): a policy revert (a restore), then the one-line notice and any stored notices."""
     found = _hook_doc(event, env)
     if found is None:
         return Action()
-    path, doc, fkey = found
+    doc, fkey = found
     s = settings_for(cfg.data, env)
     writer = WRITER
     home = state_home(env)
-    want_apply = active(doc, s) and doc.get("pending") is True
-    want_revert = not active(doc, s) and bool(all_owned(doc))
-    if writer is not None and want_revert:
+    if writer is not None and not active(doc, s) and _owned_under(doc, event.project_key):
         try:
-            with jsonstore.locked(path, HOOK_LOCK_S):
-                doc = _fresh(jsonstore.read_locked(path, {}, env))
-                reconcile(doc, writer)
-                _restore_all(doc, None, writer, env)
-                jsonstore.write_locked(path, doc)
+            with _open(home, event.project_key, fkey, env, HOOK_LOCK_S) as st:
+                reconcile(st.doc, writer)
+                _revert_policy(st.doc, event.project_key, writer, env)
+                st.save()
+                doc = st.doc
         except (jsonstore.StoreBusy, OSError) as exc:
             log_error(env, "prune", f"session start: {type(exc).__name__}: {exc}")
-    elif want_apply and spawn is not None and _idle(home, event.project_key, s):
-        spawn(["prune", "apply", "--project", str(event.project_dir), "--idle-checked"])
     entry = _files(doc).get(fkey)
     notes = [render(n, env) for n in _strs(entry.get("notices"))] if isinstance(entry, dict) else []
     if notes:
-
-        def clear(doc: dict[str, Any]) -> dict[str, Any]:
-            own = _files(doc).get(fkey)
-            if isinstance(own, dict):
-                own.pop("notices", None)
-            return doc
-
         with contextlib.suppress(jsonstore.StoreBusy, OSError):
-            jsonstore.update(path, clear, {}, env, timeout=HOOK_LOCK_S)
+            with _open(home, event.project_key, fkey, env, HOOK_LOCK_S) as st:
+                own = _files(st.doc).get(fkey)
+                if isinstance(own, dict):
+                    own.pop("notices", None)
+                st.save()
     mine = owned_in(doc, fkey)
     line = notice_line(mine, env) if mine else None
     context: str | None = None

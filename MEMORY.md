@@ -1414,3 +1414,11 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   then a no-regret restore and a `fresh` gate (min_sessions / min_prompts un-pruned).
 - git missing/timeout -> exposure "unknown" -> never write. Backup refreshed when we own no rule
   in the file. Restore message makes no mid-session availability claim.
+- Fix round 1 (2026-11-27, review I1-I3): no `prune apply`; only the SessionEnd fold
+  (`--prune-apply`) writes rules, idle gate = no other un-ended session active within
+  idle_minutes (tracking keeps per-session stamps, SessionEnd removes them). git exposure only
+  positive (untracked + ignored); non-git and unignored checkouts are never written. Ownership
+  in `~/.token-sparen/prune_rules.json` per settings realpath (records keep their project key;
+  the current checkout's record is always visible). Journal records the containers the write
+  creates (`pending_created`), so a recovered restore is exact. Review m1 (user re-adds a
+  journaled rule before reconcile), m4 (statusline backup on settings.local.json) still open.

@@ -24,7 +24,7 @@ import secrets
 import shlex
 import shutil
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -394,18 +394,29 @@ def uninstall_statusline(
 # rules as the statusline write: strict JSON object or refuse, one pristine backup
 # (``settings.local.json.token-sparen.bak``), atomic replace after a stamp re-check (one re-read
 # and retry), symlinks followed. Only ``permissions.deny`` entries are added or removed; every
-# other key keeps its value and order. A file tracked by git is never written, nor one whose
-# git status cannot be checked (git missing or timing out).
+# other key keeps its value and order. The file is written only when git positively confirms it
+# is untracked and ignored; any other answer (tracked, not ignored, not a work tree, git missing,
+# failing, slow or pointed elsewhere by GIT_DIR-style variables) means "exposed": never written.
 LOCAL_SETTINGS = Path(".claude") / "settings.local.json"
 GIT_TIMEOUT_S = 2.0
+# variables that point git at another repository or index: its answer would not be about ours
+GIT_LOCATION_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+)
 
 
 def local_settings_path(project_dir: Path) -> Path:
     return project_dir / LOCAL_SETTINGS
 
 
-def _git(project_dir: Path, *args: str) -> int | None:
-    """Return code of a git command in ``project_dir``; None when git is unavailable."""
+def _git(project_dir: Path, *args: str) -> tuple[int, bytes] | None:
+    """(return code, stdout) of a git command in ``project_dir``; None when git is unavailable
+    or too slow."""
     import subprocess
 
     try:
@@ -417,28 +428,27 @@ def _git(project_dir: Path, *args: str) -> int | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return proc.returncode
+    return proc.returncode, proc.stdout
 
 
 def git_exposure(project_dir: Path) -> str | None:
-    """``"tracked"``, ``"unignored"`` (in a git work tree, untracked, not ignored), ``"unknown"``
-    (git missing or timed out: treated as exposed, never written) or None (not a work tree, or
-    ignored)."""
+    """None only on positive confirmation (``ls-files`` exits 0 with no output and
+    ``check-ignore`` exits 0); else ``"tracked"``, ``"unignored"`` (untracked, check-ignore exit
+    1) or ``"unknown"`` (anything else). Only None may be written."""
+    if any(os.environ.get(k) for k in GIT_LOCATION_VARS):
+        return "unknown"
     rel = LOCAL_SETTINGS.as_posix()
-    inside = _git(project_dir, "rev-parse", "--is-inside-work-tree")
-    if inside is None:
+    listed = _git(project_dir, "ls-files", "-z", "--", rel)
+    if listed is None or listed[0] != 0:
         return "unknown"
-    if inside != 0:
-        return None
-    tracked = _git(project_dir, "ls-files", "--error-unmatch", "--", rel)
-    if tracked is None:
-        return "unknown"
-    if tracked == 0:
+    if listed[1].strip(b"\0\r\n "):
         return "tracked"
     ignored = _git(project_dir, "check-ignore", "-q", "--", rel)
     if ignored is None:
         return "unknown"
-    return "unignored" if ignored == 1 else None
+    if ignored[0] == 0:
+        return None
+    return "unignored" if ignored[0] == 1 else "unknown"
 
 
 def _deny_list(data: dict[str, Any]) -> list[Any]:
@@ -457,10 +467,16 @@ def _prune_failure(exc: BaseException) -> WriteResult:
     return WriteResult(False, message=f"{type(exc).__name__}: {exc}")
 
 
-def add_deny_rules(path: Path, rules: Sequence[str], fresh_backup: bool = False) -> WriteResult:
+def add_deny_rules(
+    path: Path,
+    rules: Sequence[str],
+    fresh_backup: bool = False,
+    journal: Callable[[list[str], dict[str, bool]], None] | None = None,
+) -> WriteResult:
     """Append the bare ``rules`` not yet in ``permissions.deny`` (a ``prune.WriteResult``).
     ``fresh_backup`` (no rule of ours is in the file): the backup is replaced by the file as it
-    is now, so a backup left by an earlier cycle never holds an older state than the user's."""
+    is now, so a backup left by an earlier cycle never holds an older state than the user's.
+    ``journal(new, created)`` runs just before the write (the caller records its intent)."""
     target = _target(path)
     for attempt in (0, 1):
         try:
@@ -480,6 +496,8 @@ def add_deny_rules(path: Path, rules: Sequence[str], fresh_backup: bool = False)
             or "deny" not in data["permissions"],
         }
         try:
+            if journal is not None:
+                journal(new, created)
             backup = target.with_name(target.name + BACKUP_SUFFIX)
             if fresh_backup and not existed:
                 with contextlib.suppress(FileNotFoundError):
@@ -580,9 +598,13 @@ class ClaudeDenyWriter:
         return git_exposure(project_dir)
 
     def add(
-        self, project_dir: Path, rules: Sequence[str], fresh_backup: bool = False
+        self,
+        project_dir: Path,
+        rules: Sequence[str],
+        fresh_backup: bool = False,
+        journal: Callable[[list[str], dict[str, bool]], None] | None = None,
     ) -> WriteResult:
-        return add_deny_rules(local_settings_path(project_dir), list(rules), fresh_backup)
+        return add_deny_rules(local_settings_path(project_dir), list(rules), fresh_backup, journal)
 
     def remove(
         self, project_dir: Path, rules: Sequence[str], created: Mapping[str, bool], cleanup: bool

@@ -84,14 +84,20 @@ everything else. No savings figures are claimed for them yet.
 - Tool pruning: a process killed between the settings write and its own record no longer
   leaves a deny rule nothing owns. The rules are journaled in `prune.json` before the write and
   reconciled on every read, so hooks, `restore --all` and `prune disable` still remove them.
-- Tool pruning writes new deny rules only from a background process (the fold or a spawned
-  `prune apply`), never inside the latency-capped SessionStart hook.
+- Tool pruning writes new deny rules only from the background fold that runs at session end
+  (effective from the next session), never at a session start; git is asked before the state
+  locks are taken, so an in-session restore never waits on git.
+- Tool pruning writes `.claude/settings.local.json` only when git confirms it is untracked and
+  ignored; any other git answer (exit 128 such as "dubious ownership", a corrupt index,
+  `GIT_DIR`/`GIT_INDEX_FILE` set, not a work tree) counts as exposed.
+- Ownership of tool-pruning deny rules is kept per settings file in `~/.token-sparen/
+  prune_rules.json`, so a changed git remote (new project key) never orphans a rule; older
+  per-project records are migrated on read.
 - Tool pruning no longer grows confident from its own intervention: a pruned server collects no
   evidence, and each prune is a lease (`[prune] lease_sessions`, default 15; a project may only
   lower it) after which the server is restored and pruned again only on fresh evidence.
-- Tool pruning does not write `.claude/settings.local.json` when git is missing or times out
-  (tracked status unknown), and refreshes its backup when it starts with no rule of its own in
-  the file.
+- Tool pruning refreshes its backup when it starts with no rule of its own in the file, and a
+  restore after an interrupted write also removes the containers that write created.
 - The prune restore message no longer claims the tool is available mid-session.
 
 #### Security

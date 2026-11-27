@@ -32,14 +32,36 @@ BUILTINS = ["Read", "Edit", "Write", "Bash", "Grep", "Glob", "WebFetch", "WebSea
 
 
 # --------------------------------------------------------------------------- helpers
+def _git_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """git without the user's global config or excludes file."""
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    for k in list(os.environ):
+        if k.startswith("GIT_"):
+            monkeypatch.delenv(k)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "userhome"))
+
+
+def _git_checkout(root: Path, ignored: bool = True) -> Path:
+    """A git work tree; with ``ignored`` its ``.gitignore`` covers the settings file (pruning
+    writes a settings file only once git confirms it is untracked and ignored)."""
+    root.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    if ignored:
+        (root / ".gitignore").write_text(".claude/settings.local.json\n", encoding="utf-8")
+    return root
+
+
 @pytest.fixture
 def proj(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for k in list(os.environ):
         if k.startswith(("TOKEN_SPAREN_", "CLAUDE_")):
             monkeypatch.delenv(k)
-    root = tmp_path / "proj"
-    root.mkdir()
-    return root
+    _git_env(tmp_path, monkeypatch)
+    return _git_checkout(tmp_path / "proj")
 
 
 @pytest.fixture
@@ -139,7 +161,8 @@ def _fold(
     doc = {"evidence": {}, "transcript": str(tr), "project_dir": str(proj)}
     ov.write_text(json.dumps(doc), encoding="utf-8")
     params = load_config(proj, env).data
-    return overlay.fold(sid, key, _home(env), params=params)
+    # what the SessionEnd-spawned fold runs: the only fold that writes new deny rules
+    return overlay.fold(sid, key, _home(env), params=params, prune_apply=True)
 
 
 def _enable(env: dict[str, str], proj: Path) -> None:
@@ -158,7 +181,15 @@ def _deny(proj: Path) -> list[str]:
 
 
 def _doc(env: dict[str, str], proj: Path) -> dict[str, Any]:
+    """``prune.json`` with this project's per-checkout records from the user-level registry."""
     path = _pdir(env, proj) / prune.PRUNE_FILE
+    doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    prune.attach(doc, _reg(env), _key(env, proj), None)
+    return doc
+
+
+def _reg(env: dict[str, str]) -> dict[str, Any]:
+    path = prune.registry_path(_home(env))
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
@@ -202,15 +233,6 @@ def spawned(monkeypatch: pytest.MonkeyPatch) -> type[_Spawned]:
     _Spawned.calls = []
     monkeypatch.setattr(overlay, "POPEN", _Spawned)
     return _Spawned
-
-
-def _run_spawned_apply(spawned: type[_Spawned]) -> list[str]:
-    """Run the detached ``prune apply`` SessionStart started, in-process."""
-    calls = [c for c in spawned.calls if "prune" in c and "apply" in c]
-    assert len(calls) == 1, spawned.calls
-    args = calls[0][calls[0].index("prune") :]
-    assert main(args) == 0
-    return args
 
 
 # --------------------------------------------------------------------------- the brief's seven
@@ -276,15 +298,18 @@ def test_requires_evidence(env: dict[str, str], proj: Path) -> None:
 
 def test_idle_gate_defers(env: dict[str, str], proj: Path, spawned: type[_Spawned]) -> None:
     _enable(env, proj)
-    _make_busy(env, proj)
+    _make_busy(env, proj)  # another session of the project was active < 60 min ago
     _three(env, proj)
-    assert not _local(proj).exists()  # a session was active < 60 min ago: deferred
+    assert not _local(proj).exists()  # deferred
     assert _doc(env, proj)["pending"] is True
-    # the next session starts after the project was idle >= 60 min: it spawns the detached
-    # apply (never written inside the hook), before the session's first request
+    # a session start never writes rules and spawns no writer, idle gap or not
     _make_idle(env, proj)
-    _hook(env, "SessionStart", {"source": "startup"})
-    _run_spawned_apply(spawned)
+    out = _hook(env, "SessionStart", {"source": "startup"})
+    assert not _local(proj).exists() and "Pruned" not in json.dumps(out)
+    assert not [c for c in spawned.calls if "prune" in c]
+    _hook(env, "SessionEnd", {"reason": "exit"})
+    # the next session-end fold (no other session active) writes them: effective next session
+    _fold(env, proj, "s4")
     assert _deny(proj) == ["WebFetch", "WebSearch"]
     out = _hook(env, "SessionStart", {"source": "startup"})
     ctx = out["hookSpecificOutput"]["additionalContext"]
@@ -500,20 +525,19 @@ def plain_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "userhome"))
 
 
-@pytest.mark.usefixtures("plain_git")
-def test_gitignore_warning_and_tracked_refusal(env: dict[str, str], proj: Path) -> None:
+def test_unignored_and_tracked_files_are_refused(env: dict[str, str], proj: Path) -> None:
     def git(*args: str) -> None:
         subprocess.run(["git", "-C", str(proj), *args], check=True, capture_output=True)
 
-    git("init", "-q")
+    (proj / ".gitignore").unlink()
     _enable(env, proj)
     _three(env, proj)
-    assert _deny(proj) == ["WebFetch", "WebSearch"]
+    assert not _local(proj).exists()  # not covered by .gitignore: never written
     out = _hook(env, "SessionStart", {"source": "startup"})
-    assert ".gitignore" in out["systemMessage"]
-    assert not (proj / ".gitignore").exists()  # we warn, we never edit it
+    assert ".gitignore" in out["systemMessage"] and "did not write" in out["systemMessage"]
+    assert not (proj / ".gitignore").exists()  # we tell, we never edit it
     # a tracked settings.local.json is never written (our rules would be committed)
-    assert main(["prune", "restore", "--all", "--project", str(proj)]) == 0
+    (proj / ".gitignore").write_text(".claude/settings.local.json\n", encoding="utf-8")
     _local(proj).parent.mkdir(exist_ok=True)
     _local(proj).write_text("{}\n", encoding="utf-8")
     git("add", "-f", ".claude/settings.local.json")
@@ -961,6 +985,7 @@ def test_notices_are_shown_in_their_own_checkout(env: dict[str, str], tmp_path: 
             ["git", "-C", str(d), "remote", "add", "origin", "https://example.invalid/r.git"],
             check=True,
         )
+        (d / ".gitignore").write_text(".claude/settings.local.json\n", encoding="utf-8")
     assert _key(env, a) == _key(env, b)
     _enable(env, a)
     for i in range(3):
@@ -1028,7 +1053,7 @@ def test_b1_kill_after_settings_write_hooks_and_restore_all(
     out = _hook(env, "UserPromptSubmit", {"prompt": "do a web search"})
     assert "WebSearch" in out["systemMessage"] and _deny(proj) == ["WebFetch"]
     assert main(["prune", "restore", "--all", "--project", str(proj)]) == 0
-    assert "WebFetch" not in _deny(proj)
+    assert not _local(proj).exists()  # created by that write: removed again (journaled)
     assert prune.all_owned(_doc(env, proj)) == []
 
 
@@ -1037,7 +1062,7 @@ def test_b1_kill_after_settings_write_then_disable(
 ) -> None:
     _killed_mid_apply(env, proj, monkeypatch)
     assert main(["prune", "disable", "--project", str(proj)]) == 0
-    assert _deny(proj) == []
+    assert not _local(proj).exists()
     assert prune.all_owned(_doc(env, proj)) == []
 
 
@@ -1059,7 +1084,7 @@ def test_b1_a_rule_already_present_is_never_journaled(
     assert _deny(proj) == ["WebSearch"]  # the user's rule stays
 
 
-def test_b1_session_start_never_writes_rules_it_spawns_the_apply(
+def test_session_start_never_writes_rules_nor_spawns_a_writer(
     env: dict[str, str], proj: Path, spawned: type[_Spawned]
 ) -> None:
     _enable(env, proj)
@@ -1067,37 +1092,15 @@ def test_b1_session_start_never_writes_rules_it_spawns_the_apply(
     _three(env, proj)
     assert _doc(env, proj)["pending"] is True
     _make_idle(env, proj)
-    out = _hook(env, "SessionStart", {"source": "startup"})
-    assert not _local(proj).exists()  # nothing written under the SessionStart watchdog
-    assert "Pruned" not in json.dumps(out)
-    args = _run_spawned_apply(spawned)
-    assert "--idle-checked" in args  # idleness was measured before this session counted
-    assert _deny(proj) == ["WebFetch", "WebSearch"]
-    assert _doc(env, proj)["pending"] is False
+    for source in ("startup", "resume", "clear"):
+        out = _hook(env, "SessionStart", {"source": source})
+        assert not _local(proj).exists()
+        assert "Pruned" not in json.dumps(out)
+    assert not [c for c in spawned.calls if "prune" in c or "--prune-apply" in c]
+    assert main(["prune", "apply", "--project", str(proj)]) == 2  # no such command
 
 
-def test_b1_busy_session_start_spawns_nothing(
-    env: dict[str, str], proj: Path, spawned: type[_Spawned]
-) -> None:
-    _enable(env, proj)
-    _make_busy(env, proj)
-    _three(env, proj)
-    _hook(env, "SessionStart", {"source": "startup"})
-    assert not [c for c in spawned.calls if "apply" in c]
-
-
-def test_b1_apply_cli_without_idle_check_waits_for_idle(env: dict[str, str], proj: Path) -> None:
-    _enable(env, proj)
-    _make_busy(env, proj)
-    _three(env, proj)
-    assert main(["prune", "apply", "--project", str(proj)]) == 0
-    assert not _local(proj).exists()
-    _make_idle(env, proj)
-    assert main(["prune", "apply", "--project", str(proj)]) == 0
-    assert _deny(proj) == ["WebFetch", "WebSearch"]
-
-
-def test_b1_in_hook_fold_never_applies(env: dict[str, str], proj: Path) -> None:
+def test_only_the_session_end_fold_applies(env: dict[str, str], proj: Path) -> None:
     _enable(env, proj)
     _fold(env, proj, "s1")
     _fold(env, proj, "s2")
@@ -1107,9 +1110,65 @@ def test_b1_in_hook_fold_never_applies(env: dict[str, str], proj: Path) -> None:
     ov.write_text(
         json.dumps({"evidence": {}, "transcript": str(tr), "project_dir": str(proj)}), "utf-8"
     )
-    overlay.fold("s3", key, _home(env), params=load_config(proj, env).data, in_hook=True)
+    # a left-over fold (SessionStart's in-process or `fold --all`) never writes rules
+    overlay.fold("s3", key, _home(env), params=load_config(proj, env).data)
     assert not _local(proj).exists()
     assert _doc(env, proj)["pending"] is True
+    _fold(env, proj, "s4")  # the session-end fold
+    assert _deny(proj) == ["WebFetch", "WebSearch"]
+
+
+def test_session_end_spawns_the_applying_fold(
+    env: dict[str, str], proj: Path, spawned: type[_Spawned]
+) -> None:
+    _hook(env, "SessionEnd", {"reason": "exit"})
+    folds = [c[c.index("fold") :] for c in spawned.calls if "fold" in c]
+    assert folds and folds[0][:3] == ["fold", "--session", "live"] and "--prune-apply" in folds[0]
+
+
+def test_idle_excludes_the_session_being_folded(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _fold(env, proj, "s1")
+    _fold(env, proj, "s2")
+    # s3 itself was active a moment ago and has ended: the project is idle for its fold
+    _hook(env, "SessionStart", {"source": "startup", "session_id": "s3"})
+    _hook(env, "SessionEnd", {"reason": "exit", "session_id": "s3"})
+    _fold(env, proj, "s3")
+    assert _deny(proj) == ["WebFetch", "WebSearch"]
+
+
+def test_another_live_session_defers_until_its_end(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _fold(env, proj, "s1")
+    _fold(env, proj, "s2")
+    _hook(env, "SessionStart", {"source": "startup", "session_id": "other"})  # still running
+    _fold(env, proj, "s3")
+    assert not _local(proj).exists() and _doc(env, proj)["pending"] is True
+    _hook(env, "SessionEnd", {"reason": "exit", "session_id": "other"})
+    _fold(env, proj, "s4")
+    assert _deny(proj) == ["WebFetch", "WebSearch"]
+
+
+def test_hook_restore_never_waits_on_git_during_a_fold(
+    env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable(env, proj)
+    _fold(env, proj, "s1")
+    _fold(env, proj, "s2")
+    real = settings._git
+    free: list[bool] = []
+
+    def slow_git(project_dir: Path, *args: str) -> Any:
+        # a hook restore at this moment takes both locks within its 0.1 s budget
+        for path in (_pdir(env, proj) / prune.PRUNE_FILE, prune.registry_path(_home(env))):
+            with prune.jsonstore.locked(path, prune.HOOK_LOCK_S):
+                pass
+        free.append(True)
+        return real(project_dir, *args)
+
+    monkeypatch.setattr(settings, "_git", slow_git)
+    _fold(env, proj, "s3")
+    assert free and _deny(proj) == ["WebFetch", "WebSearch"]
 
 
 # M6: pruned rules accrue no evidence; each prune is a lease
@@ -1168,7 +1227,7 @@ def test_m6_project_may_only_lower_the_lease(env: dict[str, str], proj: Path) ->
     assert load_config(proj, env).get("prune.lease_sessions") == 15
 
 
-# minor 3: git missing or timing out counts as exposed
+# I2: a settings file is written only on positive git confirmation (untracked and ignored)
 def test_git_unavailable_means_never_write(
     env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1178,7 +1237,7 @@ def test_git_unavailable_means_never_write(
     _three(env, proj)
     assert not _local(proj).exists()
     msg = _hook(env, "SessionStart", {"source": "startup"})["systemMessage"]
-    assert "git" in msg and "did not write" in msg
+    assert "git could not confirm" in msg and "did not write" in msg
 
 
 def test_git_timeout_means_unknown(proj: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1187,6 +1246,68 @@ def test_git_timeout_means_unknown(proj: Path, monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(subprocess, "run", slow)
     assert settings.git_exposure(proj) == "unknown"
+
+
+@pytest.mark.parametrize("rc", [1, 2, 128, 129, -9])
+def test_any_unexpected_git_exit_means_unknown(
+    proj: Path, monkeypatch: pytest.MonkeyPatch, rc: int
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake(project_dir: Path, *args: str) -> tuple[int, bytes]:
+        calls.append(args)
+        return (rc, b"") if args[0] == "ls-files" else (0, b"")
+
+    monkeypatch.setattr(settings, "_git", fake)
+    assert settings.git_exposure(proj) == "unknown"  # e.g. dubious ownership (128)
+
+    def fake_ignore(project_dir: Path, *args: str) -> tuple[int, bytes]:
+        return (0, b"") if args[0] == "ls-files" else (rc, b"")
+
+    monkeypatch.setattr(settings, "_git", fake_ignore)
+    assert settings.git_exposure(proj) == ("unignored" if rc == 1 else "unknown")
+
+
+def test_git_exposure_probes(proj: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert settings.git_exposure(proj) is None  # untracked and ignored: the only "write"
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    assert settings.git_exposure(loose) == "unknown"  # not a git work tree
+    bare = _git_checkout(tmp_path / "bare", ignored=False)
+    assert settings.git_exposure(bare) == "unignored"
+    tracked = _git_checkout(tmp_path / "tracked")
+    _local(tracked).parent.mkdir()
+    _local(tracked).write_text("{}\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(tracked), "add", "-f", ".claude/settings.local.json"], check=True
+    )
+    assert settings.git_exposure(tracked) == "tracked"
+    (tracked / ".git" / "index").write_bytes(b"corrupt")  # ls-files exits 128
+    assert settings.git_exposure(tracked) == "unknown"
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nonexistent"))
+    assert settings.git_exposure(proj) == "unknown"
+    monkeypatch.delenv("GIT_DIR")
+    monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "nonexistent" / "x"))
+    assert settings.git_exposure(proj) == "unknown"  # git would read an empty index
+    monkeypatch.delenv("GIT_INDEX_FILE")
+    assert settings.git_exposure(proj) is None
+
+
+def test_unignored_or_non_git_checkout_is_never_written(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    for name, ignored in (("plain", False), ("nogit", None)):
+        root = tmp_path / name
+        if ignored is None:
+            root.mkdir()
+        else:
+            _git_checkout(root, ignored=False)
+        e = {**env, "CLAUDE_PROJECT_DIR": str(root)}
+        assert main(["prune", "enable", "--project", str(root)]) == 0
+        _three(e, root)
+        assert not _local(root).exists(), name
+        msg = _hook(e, "SessionStart", {"source": "startup"})["systemMessage"]
+        assert "did not write" in msg, name
 
 
 # minor 4: the backup is refreshed at the start of a cycle in which we own no rule there
@@ -1217,3 +1338,76 @@ def test_restore_message_makes_no_mid_session_claim(env: dict[str, str], proj: P
     assert "available again from the next request" not in msg
     assert f"`WebFetch` is no longer denied in {_local(proj)}" in msg
     assert "Claude Code may need a new session to show it again." in msg
+
+
+# I3: ownership lives in a user-level registry keyed by the settings file's real path
+def test_remote_change_never_orphans_a_rule(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _three(env, proj)
+    old_key = _key(env, proj)
+    assert _deny(proj) == ["WebFetch", "WebSearch"]
+    reg = _reg(env)["files"][prune.file_key(_local(proj))]
+    assert reg["owned"] == ["WebFetch", "WebSearch"] and reg["key"] == old_key
+    assert "files" not in json.loads((_pdir(env, proj) / prune.PRUNE_FILE).read_text("utf-8"))
+    subprocess.run(
+        ["git", "-C", str(proj), "remote", "add", "origin", "https://example.invalid/t/r.git"],
+        check=True,
+    )
+    assert _key(env, proj) != old_key  # a new project key: its store has no record
+    out = _hook(env, "SessionStart", {"source": "startup"})
+    assert "WebFetch, WebSearch" in out["hookSpecificOutput"]["additionalContext"]
+    out = _hook(env, "PreToolUse", {"tool_name": "WebFetch", "tool_input": {}})
+    assert "WebFetch" in out["systemMessage"] and _deny(proj) == ["WebSearch"]
+    assert main(["prune", "restore", "--all", "--project", str(proj)]) == 0
+    assert not _local(proj).exists()
+
+
+def test_remote_change_then_disable(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _three(env, proj)
+    subprocess.run(
+        ["git", "-C", str(proj), "remote", "add", "origin", "https://example.invalid/t/r.git"],
+        check=True,
+    )
+    assert main(["prune", "disable", "--project", str(proj)]) == 0
+    assert not _local(proj).exists()
+
+
+def test_legacy_per_project_records_are_migrated(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _three(env, proj)
+    # rewrite the state as an older version kept it: the records inside prune.json
+    path = _pdir(env, proj) / prune.PRUNE_FILE
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    files = _reg(env)["files"]
+    for e in files.values():
+        e.pop("key", None)
+    doc["files"] = files
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    prune.registry_path(_home(env)).unlink()
+    assert prune.pruned_count(_home(env), _key(env, proj), env) == 2  # read: migrated in memory
+    out = _hook(env, "PreToolUse", {"tool_name": "WebSearch", "tool_input": {}})
+    assert "WebSearch" in out["systemMessage"] and _deny(proj) == ["WebFetch"]
+    assert "files" not in json.loads(path.read_text(encoding="utf-8"))  # a locked write moved it
+    assert _reg(env)["files"][prune.file_key(_local(proj))]["owned"] == ["WebFetch"]
+
+
+# concern 1: a journal-recovered restore also removes the containers we created
+def test_recovered_restore_removes_created_containers(
+    env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _killed_mid_apply(env, proj, monkeypatch)  # the file did not exist before
+    created = _doc(env, proj)["files"][prune.file_key(_local(proj))]["pending_created"]
+    assert created == {"dir": True, "file": True, "permissions": True, "deny": True}
+    assert main(["prune", "restore", "--all", "--project", str(proj)]) == 0
+    assert not _local(proj).exists() and not (proj / ".claude").exists()
+
+
+def test_recovered_restore_keeps_the_users_file(
+    env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _local(proj).parent.mkdir()
+    _local(proj).write_text('{"env": {"A": "1"}}', encoding="utf-8")
+    _killed_mid_apply(env, proj, monkeypatch)
+    assert main(["prune", "restore", "--all", "--project", str(proj)]) == 0
+    assert json.loads(_local(proj).read_text(encoding="utf-8")) == {"env": {"A": "1"}}

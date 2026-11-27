@@ -433,3 +433,41 @@ def test_same_size_edit_with_restored_mtime_is_detected(
     with pytest.raises(settings._Changed):
         settings._write(path, {"a": "x"}, stamp)
     assert _read(path) == {"a": "2"}
+
+
+# --------------------------------------------------------------------------- tool pruning writer
+def test_deny_journal_runs_before_the_write_with_created_flags(tmp_path: Path) -> None:
+    path = tmp_path / "p" / ".claude" / "settings.local.json"
+    seen: list[tuple[list[str], dict[str, bool], bool]] = []
+
+    def journal(new: list[str], created: dict[str, bool]) -> None:
+        seen.append((new, created, path.exists()))
+
+    res = settings.add_deny_rules(path, ["mcp__a", "mcp__a"], journal=journal)
+    assert res.ok and res.changed == ["mcp__a"]
+    assert seen == [(["mcp__a"], res.created, False)]  # recorded before the file existed
+    assert res.created == {"dir": True, "file": True, "permissions": True, "deny": True}
+    seen.clear()
+    assert settings.add_deny_rules(path, ["mcp__a"], journal=journal).changed == []
+    assert seen == []  # nothing to write: nothing journaled
+
+
+def test_journal_failure_means_no_write(tmp_path: Path) -> None:
+    path = tmp_path / "p" / ".claude" / "settings.local.json"
+
+    def broken(new: list[str], created: dict[str, bool]) -> None:
+        raise OSError("disk full")
+
+    res = settings.add_deny_rules(path, ["mcp__a"], journal=broken)
+    assert not res.ok and not path.exists()
+
+
+def test_git_exposure_refuses_location_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "_git", lambda *a: (0, b""))  # git would say "ignored"
+    assert settings.git_exposure(tmp_path) is None
+    for var in settings.GIT_LOCATION_VARS:
+        monkeypatch.setenv(var, str(tmp_path / "elsewhere"))
+        assert settings.git_exposure(tmp_path) == "unknown", var
+        monkeypatch.delenv(var)

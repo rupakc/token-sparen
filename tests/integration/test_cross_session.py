@@ -12,6 +12,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -22,7 +24,6 @@ from token_sparen.adapters.claude import entry
 from token_sparen.cli import main as cli
 from token_sparen.facts import inject, miners
 from token_sparen.learn import engine as engine_mod
-from token_sparen.learn import overlay
 from token_sparen.learn.engine import pending_path
 from token_sparen.mechanisms import loopguard, prune, tracking
 from token_sparen.store import keycache, session
@@ -66,6 +67,18 @@ def proj(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             monkeypatch.delenv(k)
     root = (tmp_path / "proj").resolve()
     root.mkdir()
+    if shutil.which("git") is None:
+        pytest.skip("git not installed")
+    for k in list(os.environ):
+        if k.startswith("GIT_"):
+            monkeypatch.delenv(k)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # a git checkout whose .gitignore covers .claude/settings.local.json: the only kind of
+    # checkout tool pruning writes to
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    (root / ".gitignore").write_text(".claude/settings.local.json\n", encoding="utf-8")
     return root
 
 
@@ -114,7 +127,7 @@ def context(doc: dict[str, Any]) -> str | None:
 
 def fold(proj: Path, sid: str) -> None:
     """What the detached SessionEnd spawn runs."""
-    assert cli(["fold", "--session", sid, "--project", str(proj)]) == 0
+    assert cli(["fold", "--session", sid, "--project", str(proj), "--prune-apply"]) == 0
 
 
 def alias_session(env: dict[str, str], proj: Path, tmp_path: Path, sid: str) -> None:
@@ -214,28 +227,21 @@ def deny(proj: Path) -> list[str]:
 
 
 def prune_cycle(env: dict[str, str], proj: Path, tmp_path: Path) -> None:
-    """Opt in, three sessions of evidence, idle, fold: ``mcp__alpha`` is denied."""
+    """Opt in, three sessions of evidence, each folded at its end: ``mcp__alpha`` is denied by a
+    session-end fold once no other session is live, effective from the next session."""
     assert cli(["prune", "enable", "--project", str(proj)]) == 0
+    hook(env, "SessionStart", "other", source="startup")  # another session stays open
     for sid in ("p1", "p2", "p3"):
         prune_session(env, proj, tmp_path, sid)
         fold(proj, sid)
-    assert not settings_file(proj).exists()  # the sessions were live just now: deferred
+    assert not settings_file(proj).exists()  # "other" is live: deferred
     doc = json.loads((_pdir(env, proj) / prune.PRUNE_FILE).read_text(encoding="utf-8"))
     assert doc["pending"] is True
-    make_idle(env, proj)
-    # the next session starts after an idle gap: it spawns the detached `prune apply` (rules
-    # are never written inside the latency-capped hook), before its first request
-    spawned: list[list[str]] = []
-    real = overlay.POPEN
-    overlay.POPEN = lambda args, **kw: spawned.append(list(args))  # type: ignore[assignment]
-    try:
-        hook(env, "SessionStart", "p4", source="startup")
-    finally:
-        overlay.POPEN = real
+    hook(env, "SessionEnd", "other", reason="exit")
+    # no session start writes rules; the next session-end fold does
+    prune_session(env, proj, tmp_path, "p4")
     assert not settings_file(proj).exists()
-    apply = [a[a.index("prune") :] for a in spawned if "prune" in a and "apply" in a]
-    assert apply == [["prune", "apply", "--project", str(proj), "--idle-checked"]]
-    assert cli(apply[0]) == 0
+    fold(proj, "p4")
     assert deny(proj) == ["mcp__alpha"]
 
 
@@ -249,7 +255,7 @@ def test_prune_cycle_end_to_end(env: dict[str, str], proj: Path, tmp_path: Path)
     assert not (_pdir(env, proj) / prune.PRUNE_FILE).exists()
 
     prune_cycle(env, proj, tmp_path)
-    doc = json.loads((_pdir(env, proj) / prune.PRUNE_FILE).read_text(encoding="utf-8"))
+    doc = prune.read_doc(_home(env), keycache.cached_project_key(proj, env), env)
     assert prune.owned_in(doc, prune.file_key(settings_file(proj))) == ["mcp__alpha"]
     assert "mcp__beta" not in json.dumps(deny(proj))  # used: never a candidate
     # the next session is told which tools were pruned and how to restore them
@@ -260,7 +266,7 @@ def test_prune_cycle_end_to_end(env: dict[str, str], proj: Path, tmp_path: Path)
     assert "mcp__alpha" in out["systemMessage"] and "restored" in out["systemMessage"]
     assert "permissionDecision" not in json.dumps(out)  # the call itself is never blocked
     assert not settings_file(proj).exists()  # exact revert: the file we created is gone
-    doc = json.loads((_pdir(env, proj) / prune.PRUNE_FILE).read_text(encoding="utf-8"))
+    doc = prune.read_doc(_home(env), keycache.cached_project_key(proj, env), env)
     assert prune.owned_in(doc, prune.file_key(settings_file(proj))) == []
     assert not prune.is_candidate("mcp__alpha", doc)
 

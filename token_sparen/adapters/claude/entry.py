@@ -216,9 +216,12 @@ def _on_fold_pending(event: Event, cfg: Config) -> Action:
 
 
 def _on_fold_spawn(event: Event, cfg: Config) -> Action:
-    """SessionEnd: fold this session in a detached process (never waits for it)."""
+    """SessionEnd: fold this session in a detached process (never waits for it); the only fold
+    that writes new tool-pruning deny rules (effective from the next session)."""
+    env = HOOK_ENV.get()
+    tracking.record_end(event, env=env)  # no longer live for the pruning idle gate
     args = ["fold", "--session", event.session_id, "--project", str(event.project_dir)]
-    overlay.spawn_fold(args, HOOK_ENV.get())
+    overlay.spawn_fold([*args, "--prune-apply"], env)
     return Action()
 
 
@@ -229,12 +232,8 @@ def _on_session_active(event: Event, cfg: Config) -> Action:
 
 
 def _on_prune_start(event: Event, cfg: Config) -> Action:
-    """Notice + revert; after an idle gap (measured before this session counts as active) the
-    pending rules are written by a detached ``prune apply``, never inside this hook."""
-    env = HOOK_ENV.get()
-    return prune.on_session_start(
-        event, cfg, env=env, spawn=lambda args: overlay.spawn_fold(args, env)
-    )
+    """Notice + policy revert; never writes a new deny rule (the session-end fold does)."""
+    return prune.on_session_start(event, cfg, env=HOOK_ENV.get())
 
 
 def _on_prune_prompt(event: Event, cfg: Config) -> Action:

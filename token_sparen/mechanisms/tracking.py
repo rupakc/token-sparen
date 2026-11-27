@@ -152,12 +152,67 @@ def record_active(event: Event, *, env: Mapping[str, str] | None = None) -> None
     path = last_active_path(state_home(env), event.project_key)
 
     def apply(state: dict[str, Any]) -> dict[str, Any]:
-        return {"session_id": event.session_id, "ts": time.time()}
+        now = time.time()
+        sessions = _sessions(state)
+        sessions[event.session_id] = now
+        newest = sorted(sessions.items(), key=lambda kv: -kv[1])[:MAX_SESSIONS]
+        return {"session_id": event.session_id, "ts": now, "sessions": dict(newest)}
 
     try:
         jsonstore.update(path, apply, {})
     except (jsonstore.StoreBusy, OSError) as exc:  # best effort
         log_error(env, "tracking", f"last_active: {type(exc).__name__}: {exc}")
+
+
+MAX_SESSIONS = 50
+
+
+def _sessions(state: Mapping[str, Any]) -> dict[str, float]:
+    raw = state.get("sessions")
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        k: float(v)
+        for k, v in raw.items()
+        if isinstance(k, str) and isinstance(v, int | float) and not isinstance(v, bool)
+    }
+
+
+def record_end(event: Event, *, env: Mapping[str, str] | None = None) -> None:
+    """SessionEnd: the session no longer counts as live for the pruning idle gate."""
+    if event.session_id == "unknown":
+        return
+    env = os.environ if env is None else env
+    path = last_active_path(state_home(env), event.project_key)
+    if not path.is_file():
+        return
+
+    def apply(state: dict[str, Any]) -> dict[str, Any]:
+        sessions = _sessions(state)
+        if event.session_id not in sessions:
+            return state
+        sessions.pop(event.session_id)
+        return {**state, "sessions": sessions}
+
+    try:
+        jsonstore.update(path, apply, {})
+    except (jsonstore.StoreBusy, OSError) as exc:  # best effort
+        log_error(env, "tracking", f"last_active: {type(exc).__name__}: {exc}")
+
+
+def others_active(home: Path, project_key: str, exclude: str, max_age_s: float) -> bool:
+    """Whether a session other than ``exclude`` that has not ended was active in the last
+    ``max_age_s`` (a record without the per-session map: its last session)."""
+    state = jsonstore.read(last_active_path(home, project_key), {})
+    now = time.time()
+    if isinstance(state.get("sessions"), dict):
+        return any(
+            sid != exclude and 0 <= now - ts < max_age_s for sid, ts in _sessions(state).items()
+        )
+    sid, ts = state.get("session_id"), state.get("ts")
+    if not isinstance(sid, str) or not sid or sid == exclude:
+        return False
+    return isinstance(ts, int | float) and 0 <= now - float(ts) < max_age_s
 
 
 ACTIVE_REFRESH_S = 60.0
@@ -170,7 +225,7 @@ def touch_active(event: Event, *, env: Mapping[str, str] | None = None) -> None:
         return
     env = os.environ if env is None else env
     state = jsonstore.read(last_active_path(state_home(env), event.project_key), {}, env)
-    ts = state.get("ts")
+    ts = _sessions(state).get(event.session_id) if "sessions" in state else state.get("ts")
     if isinstance(ts, int | float) and 0 <= time.time() - float(ts) < ACTIVE_REFRESH_S:
         return
     record_active(event, env=env)

@@ -215,7 +215,11 @@ Everything stays on your machine, but some of it is plain text you should know a
     your settings file's path and original `statusLine`), `statusline.sh` (launcher copy),
     `windows.json` (context window per session), `project_keys.json` (index from project to hash
     key), `config_safety_warned.json` (which ignored project-config values were already reported:
-    a short hash of the project path, the key and the value);
+    a short hash of the project path, the key and the value), `prune_rules.json` (only with
+    [tool pruning](#tool-pruning-opt-in): per checkout the **path of its settings file and of the
+    checkout**, its project key, the deny rules token-sparen wrote there and what it created,
+    rules about to be written, and pending notices; kept here, beside the statusline record, so a
+    changed git remote never loses track of a rule);
   - `logs/errors.jsonl` and sampled `logs/latency.jsonl`;
   - small `<file>.lock` files next to the JSON files above, used for file locking;
   - `projects/<key>/`: `decisions.jsonl` (per-decision log; keeps the first 500 characters of Bash
@@ -229,7 +233,8 @@ Everything stays on your machine, but some of it is plain text you should know a
     **only as hashes** (not plain text) and up to 32 **file paths** it mentions, used to notice when
     a trim hurt), `sessions/pending/<id>.json` (the learner's decisions awaiting their reward: ids,
     bucket labels, arms, times), `last_active.json`
-    (the project's most recent session id and when it was last active), `savings_scale.json` (numbers only: recent savings
+    (the project's most recent session id and when it was last active, plus up to 50 recent
+    session ids with their last activity, removed when a session ends), `savings_scale.json` (numbers only: recent savings
     sizes per bucket), `floor_warned.json`, `posteriors.json` and `breaker.json` (numbers only:
     learned evidence per bucket and recent regret values per decision point), `pending.json`
     (ids of sessions waiting to be folded) and `pretrim.json`
@@ -258,8 +263,7 @@ Everything stays on your machine, but some of it is plain text you should know a
     in your own config): whether pruning is enabled here, **tool names** (built-in and MCP)
     the project's sessions (and, once at enable, its transcripts of the last 60 days) listed and
     used, per candidate counts of sessions and prompts and a learned regret posterior (numbers),
-    per checkout the **path of its settings file and of the checkout**, the deny rules
-    token-sparen wrote there and what it created, tools restored once, and pending notices.
+    and tools restored once (the per-checkout records live in `prune_rules.json`).
 - Claude Code `settings.json`: **only** if you run `token-sparen statusline install` (see below),
   with a backup and exact restore.
 - `<project>/.claude/settings.local.json`: **only** if you opt in to
@@ -473,10 +477,10 @@ strict regret bound clears (about 300 unused prompts with the defaults). Never p
 `Edit`, `Write`, `Bash`, `Grep`, `Glob`, `Agent`/`Task*`, `TodoWrite`, `AskUserQuestion`,
 `Skill`, `ToolSearch`, plan mode, `SendMessage`, and any tool ever used in the project. Pruning
 adds a bare `permissions.deny` entry such as `"mcp__server"`, which removes the server's tools
-from the model's context. Because that changes the prompt, rules are written only when the
-project has been idle for at least 60 minutes (no session start, prompt or tool call in any
-session), never mid-session, and only by a background process: the fold, or a `prune apply` that
-the next session start launches after such an idle gap (before you send its first prompt). A
+from the model's context. Because that changes the prompt, new rules are written only by the
+background fold that runs when a session ends, and only when no other session of the project
+(one that has not ended) was active in the last 60 minutes; otherwise they wait for a later
+session end. They take effect from the next session; a session start never writes them. A
 pruned server collects no evidence while it is pruned (its "unused" would be caused by the
 pruning itself), so each prune is a **lease**: after 15 sessions (`[prune] lease_sessions`; a
 project may only lower it) token-sparen restores it for at least one session to see whether it
@@ -485,13 +489,14 @@ is used, and prunes it again only after fresh unused sessions.
 What it writes: only those deny entries, appended to `permissions.deny`; every other key and
 every rule you wrote stays as it is, and a rule you already had is never claimed. Before the
 first change the file is copied once to `settings.local.json.token-sparen.bak`; writes are atomic
-and re-check the file just before replacing it. A file that is not a strict JSON object (comments,
-duplicate keys), that is tracked by git, or whose git status cannot be checked (git missing or
-too slow) is never written, and you are told why. The backup is refreshed when token-sparen
-starts a new round of rules in a file where it owns none, so it never predates your own edits. If
-`.claude/settings.local.json` is not covered by your `.gitignore`, you are told once
-(token-sparen does not edit `.gitignore`). Sibling clones and worktrees of one repository share
-what was learned, but each checkout's file and rules are tracked separately.
+and re-check the file just before replacing it. The file is written only when git confirms it is
+untracked and covered by `.gitignore`; a file that is tracked, not ignored, outside a git work
+tree, or whose status git cannot report (git missing, failing or too slow, or `GIT_DIR`-style
+variables pointing elsewhere) is never written, nor one that is not a strict JSON object
+(comments, duplicate keys); you are told why (token-sparen does not edit `.gitignore`). The
+backup is refreshed when token-sparen starts a new round of rules in a file where it owns none,
+so it never predates your own edits. Sibling clones and worktrees of one repository share what
+was learned, but each checkout's file and rules are tracked separately.
 
 Recovery: each session start shows one line, `Pruned (unused here): A, B — run \`... prune
 restore <tool>\` if needed.`, to you and to the model (with the plugin's own launcher path when

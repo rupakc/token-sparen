@@ -89,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--older-than", type=float, default=0.0, help="--all: only sessions idle this many seconds"
     )
     fold.add_argument("--max", type=int, default=0, help="--all: at most this many (0 = no limit)")
+    fold.add_argument(
+        "--prune-apply",
+        action="store_true",
+        help="the SessionEnd fold: may write pending tool-pruning deny rules",
+    )
     _project_opt(fold)
     rep = sub.add_parser(
         "replay", help="E1: replay transcripts offline; private aggregate report (--out)"
@@ -127,13 +132,6 @@ def build_parser() -> argparse.ArgumentParser:
     _project_opt(pr_sub.add_parser("status", help="state, pruned tools and candidates"))
     _project_opt(pr_sub.add_parser("enable", help="opt this project in (user action)"))
     _project_opt(pr_sub.add_parser("disable", help="opt out and restore every pruned tool"))
-    ap = pr_sub.add_parser("apply", help="write pending deny rules now if the project is idle")
-    ap.add_argument(
-        "--idle-checked",
-        action="store_true",
-        help="the caller (SessionStart) already found the project idle",
-    )
-    _project_opt(ap)
     rs = pr_sub.add_parser("restore", help="restore <tool> now, or --all (exact revert)")
     rs.add_argument("tool", nargs="?")
     rs.add_argument("--all", action="store_true", help="remove every deny rule we wrote")
@@ -767,12 +765,14 @@ def _extensions(args: argparse.Namespace) -> int:
     return handlers[args.action](args)
 
 
-def _fold_one(sid: str, key: str, home: Path, params: Mapping[str, Any]) -> Any:
+def _fold_one(
+    sid: str, key: str, home: Path, params: Mapping[str, Any], prune_apply: bool = False
+) -> Any:
     from token_sparen.learn import overlay
 
     for attempt in range(_FOLD_TRIES):
         try:
-            return overlay.fold(sid, key, home, params=params)
+            return overlay.fold(sid, key, home, params=params, prune_apply=prune_apply)
         except jsonstore.StoreBusy:
             if attempt == _FOLD_TRIES - 1:
                 raise CliError(f"fold {sid}: state is busy, try again later", 1) from None
@@ -808,7 +808,7 @@ def _fold_cmd(args: argparse.Namespace) -> int:
     sid = args.session or env.get("CLAUDE_SESSION_ID")
     if not sid:
         raise CliError("fold needs --session ID (or $CLAUDE_SESSION_ID) or --all")
-    print(_fold_one(sid, key, home, params).line())
+    print(_fold_one(sid, key, home, params, prune_apply=args.prune_apply).line())
     return 0
 
 
@@ -1093,7 +1093,7 @@ def _prune_cmd(args: argparse.Namespace) -> int:
     target = settings.local_settings_path(project)
     s = prune.settings_for(load_config(project, env).data, env)
     if args.action == "status":
-        doc = prune.read_doc(home, key, env)
+        doc = prune.read_doc(home, key, env, checkout=project)
         print("\n".join(prune.status_lines(doc, s, target, env)))
         return 0
     if args.action == "enable":
@@ -1117,22 +1117,16 @@ def _prune_cmd(args: argparse.Namespace) -> int:
                 )
         if not s.allow:
             print("note: this project's token-sparen.toml sets [prune] allow = false")
-        if settings.git_exposure(project) == "unignored":
-            print(f"warning: {target} is not covered by .gitignore; add it there.")
-        return 0
-    if args.action == "apply":
-        added = prune.apply_pending(
-            home,
-            key,
-            project,
-            params=load_config(project, env).data,
-            env=env,
-            idle_checked=args.idle_checked,
-        )
-        print("token-sparen prune: " + (f"pruned {', '.join(added)}" if added else "nothing to do"))
+        exposure = settings.git_exposure(project)
+        if exposure is not None:
+            why = {
+                "tracked": "it is tracked by git",
+                "unignored": "it is not covered by .gitignore",
+            }.get(exposure, "git cannot confirm it is untracked and ignored")
+            print(f"warning: nothing will be written to {target} while {why}.")
         return 0
     if args.action == "disable":
-        done = prune.disable(home, key, env)
+        done = prune.disable(home, key, env, checkout=project)
         print(
             "token-sparen prune: disabled for this project"
             + (f"; restored {', '.join(done)}" if done else "")
@@ -1142,9 +1136,9 @@ def _prune_cmd(args: argparse.Namespace) -> int:
         return 0
     if args.all == (args.tool is not None):
         raise CliError("prune restore needs a tool name or --all")
-    doc = prune.read_doc(home, key, env)
+    doc = prune.read_doc(home, key, env, checkout=project)
     if args.all:
-        every = prune.restore(home, key, None, None, env)  # every recorded checkout
+        every = prune.restore(home, key, None, None, env, checkout=project)  # every checkout
         print(f"token-sparen prune: restored {', '.join(every)}" if every else "nothing is pruned")
         return 0
     where = prune.holders(doc, args.tool)  # a tool of a pruned server maps to the server

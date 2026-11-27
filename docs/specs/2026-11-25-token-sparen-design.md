@@ -257,6 +257,17 @@ un-pruned sessions spanning `min_prompts` prompts). A project may only lower `le
 `.token-sparen.bak` backup is refreshed at the start of each apply in which token-sparen owns no
 rule in that file. (6) The restore message no longer claims mid-session availability:
 "`X` is no longer denied in <file>; Claude Code may need a new session to show it again."
+Fix round 1: (2) is replaced: new rules are written only by the detached SessionEnd fold
+(`fold --session <id> --prune-apply`), effective from the next session; the idle gate excludes
+the session being folded and sessions that ended (per-session activity in `last_active.json`);
+SessionStart writes nothing new and spawns no writer; git is asked before the store locks are
+taken. (4) is tightened: the settings file is written only on positive git confirmation
+(`ls-files` exit 0 with no output and `check-ignore` exit 0); any other outcome, including a
+not-ignored file, a non-git checkout, exit 128 and `GIT_DIR`-style variables, means exposed.
+Ownership records (owned rules, created containers, the journal with the containers the write
+will create, leases, notices) move from `prune.json` to a user-level `prune_rules.json` keyed by
+settings-file real path, so a project-key change never orphans a rule; a checkout's own record is
+used whatever key it was written under (a policy revert only touches records of its own key).
 
 ---
 
