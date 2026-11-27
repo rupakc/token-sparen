@@ -177,6 +177,9 @@ class RunMetrics:
     api_error_status: int | None = None
     error_text: str | None = None  # final result's error fields only
     assistant_errors: list[str] = field(default_factory=list)  # counters, never classified
+    # the last API-related event was an `api_retry` ("api", "rate" on 429) or a `rejected`
+    # rate-limit event ("rate") with no successful assistant turn after it (round-2 ruling)
+    pending_api_failure: Literal["api", "rate"] | None = None
     total_cost_usd: float | None = None
     tokens: Tokens = Tokens()
     model_usage: dict[str, ModelUsage] = field(default_factory=dict)
@@ -306,6 +309,7 @@ class _Parser:
         self.rates: list[RateLimit] = []
         self.retries: list[ApiRetry] = []
         self.assistant_errors: list[str] = []
+        self.pending: Literal["api", "rate"] | None = None
         self.assistant: dict[str, Tokens] = {}
         self.result: dict[str, Any] | None = None
         self.malformed = 0
@@ -329,16 +333,18 @@ class _Parser:
         elif kind == "system" and sub == "hook_response":
             self.hook(e)
         elif kind == "system" and sub == "api_retry":
-            self.retries.append(
-                ApiRetry(
-                    _int(e.get("attempt")), _int(e.get("max_retries")), _int(e.get("error_status"))
-                )
+            retry = ApiRetry(
+                _int(e.get("attempt")), _int(e.get("max_retries")), _int(e.get("error_status"))
             )
+            self.retries.append(retry)
+            self.pending = "rate" if retry.error_status == 429 else "api"
         elif kind == "rate_limit_event":
             info = e.get("rate_limit_info")
             if not isinstance(info, dict):
                 raise _Malformed
             resets = _resets_at(info.get("resetsAt"))
+            if info.get("status") == "rejected":
+                self.pending = "rate"
             self.rates.append(
                 RateLimit(
                     status=str(info.get("status") or "unknown"),
@@ -393,6 +399,8 @@ class _Parser:
             self.assistant_errors.append(error)
         if msg.get("model") == SYNTHETIC_MODEL:
             return
+        if error is None:
+            self.pending = None  # a successful assistant turn after any retry/rejection
         mid = _str(msg.get("id")) or f"#{len(self.assistant)}"
         usage = _usage_tokens(_dict(msg.get("usage")))
         self.assistant[mid] = _max_tokens(self.assistant.get(mid, Tokens()), usage)
@@ -428,6 +436,7 @@ class _Parser:
             api_error_status=status,
             error_text=text,
             assistant_errors=self.assistant_errors,
+            pending_api_failure=self.pending,
             total_cost_usd=_num(res.get("total_cost_usd")),
             tokens=tokens,
             model_usage=model_usage,

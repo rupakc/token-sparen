@@ -110,6 +110,39 @@ def test_infra_heuristics_never_read_tool_output() -> None:
     assert stray.error_text is None and stray.api_error_status is None
 
 
+def _ev(kind: str, **fields: Any) -> str:
+    if kind == "retry":
+        return json.dumps({"type": "system", "subtype": "api_retry", "attempt": 3,
+                           "max_retries": 10, **fields})  # fmt: skip
+    if kind == "rate":
+        return json.dumps({"type": "rate_limit_event", "rate_limit_info": fields})
+    return json.dumps({"type": "assistant", "message": {"id": fields["id"], "model": "m",
+                       "content": [], "usage": {"output_tokens": 1}}})  # fmt: skip
+
+
+INIT_LINE = json.dumps({"type": "system", "subtype": "init", "session_id": "s"})
+
+
+@pytest.mark.parametrize(
+    ("events", "want"),
+    [
+        # killed while Claude Code was still retrying the API: infrastructure
+        ([_ev("turn", id="a"), _ev("retry", error_status=529)], ("infra_fail", "api")),
+        ([_ev("turn", id="a"), _ev("retry", error_status=429)], ("infra_fail", "rate")),
+        ([_ev("rate", status="rejected"), _ev("retry", error_status=None)], ("infra_fail", "api")),
+        ([_ev("turn", id="a"), _ev("rate", status="rejected")], ("infra_fail", "rate")),
+        # a successful assistant turn after the retry/rejection: the agent's own timeout
+        ([_ev("retry", error_status=529), _ev("turn", id="b")], ("agent_fail", "timeout")),
+        ([_ev("rate", status="rejected"), _ev("turn", id="b")], ("agent_fail", "timeout")),
+        ([_ev("rate", status="allowed"), _ev("turn", id="b")], ("agent_fail", "timeout")),
+        ([_ev("turn", id="a"), _ev("rate", status="allowed_warning")], ("agent_fail", "timeout")),
+    ],
+)
+def test_timeout_during_api_retry_is_infra(events: list[str], want: tuple[str, str]) -> None:
+    m = sj.parse_stream([INIT_LINE, *events], observed_at=NOW)
+    assert cl.classify(m, **{**CLEAN, "killed_for_timeout": True, "exit_code": 124}) == want
+
+
 def test_status_mapping_edges() -> None:
     clean = dict(CLEAN)
     # a refused connection outside a wrapper arm is not a proxy failure

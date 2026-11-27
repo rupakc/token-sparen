@@ -12,7 +12,8 @@ only (ruling I2).
 | token leak in the run's outputs                                           | infra_fail/leak      |
 | docker exit 125/126/127 (daemon unreachable) or host backstop kill        | infra_fail/docker    |
 | container OOM-killed                                                      | infra_fail/docker    |
-| in-container ``timeout`` fired (I1: wins; the patch is graded)            | agent_fail/timeout   |
+| timeout fired while the last API event was a retry / rejection (round 2)  | infra_fail/api, rate |
+| in-container ``timeout`` fired otherwise (I1: wins; the patch is graded)  | agent_fail/timeout   |
 | final result failed with API status 401/403 or auth/login text            | infra_fail/auth      |
 | … with 429, "hit your … limit", a ``rejected`` event or retries on 429    | infra_fail/rate      |
 | … with status ≥ 500 (incl. 529), overloaded, or API retries exhausted     | infra_fail/api       |
@@ -127,6 +128,10 @@ def classify(
     if exit_code in DOCKER_EXITS or backstop_killed or oom_killed:
         return ("infra_fail", "docker")
     if killed_for_timeout:
+        # round-2 ruling: killed while still in API retry/backoff or after a rejection (no
+        # successful assistant turn since) is infrastructure, not the agent's timeout
+        if m is not None and m.pending_api_failure is not None:
+            return ("infra_fail", m.pending_api_failure)
         return ("agent_fail", "timeout")
     infra = _infra_from_result(m, wrapper) if m is not None else None
     if infra is not None:
