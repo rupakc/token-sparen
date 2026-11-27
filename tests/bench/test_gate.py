@@ -16,9 +16,9 @@ from typing import Any
 
 import pytest
 
+from bench import anchors, stages
 from bench import gate as g
 from bench import grade as gr
-from bench import stages
 from bench.grade import grades_path
 from bench.ledger import (
     CHAIN_FIELD,
@@ -167,10 +167,17 @@ def persist(
             price_confirmed_on=PRICED,
         )
         led.append({"kind": "plan", "plan": doc, "plan_sha256": stages._canonical_sha256(doc)})
+    if stage == "confirmation":
+        anchors.record_anchor(led)  # what the scheduler does after each graded task
     return led
 
 
 Store = Callable[..., Ledger]
+
+
+def _gate(*, ledger: Ledger, **kw: Any) -> g.GateResult:
+    """The gate with the anchors published from this ledger's ``anchors.jsonl``."""
+    return g.gate(ledger=ledger, anchors=anchors.anchors_to_publish(ledger), **kw)
 
 
 def patch_sha(key: str) -> str:
@@ -224,7 +231,7 @@ def _drop(s: Summary, tasks: set[str], arms: tuple[str, ...] = stages.CORE_ARMS)
 
 
 def test_gate_passes_on_noninferior_valid_run(store: Store) -> None:
-    res = g.gate(ledger=store(_confirm()), **KW)
+    res = _gate(ledger=store(_confirm()), **KW)
     assert res.verdict == "passed", res.reasons
     assert res.check is not None and res.check.passed and res.check.estimate.n == 100
     assert res.reasons == []
@@ -241,22 +248,22 @@ def test_gate_passes_on_noninferior_valid_run(store: Store) -> None:
     assert (res.plugin_version, res.price_confirmed_on) == (PLUGIN_VERSION, PRICED)
     assert res.plan_sha256 is not None and len(res.plan_sha256) == 64
     # inferior → failed; cost never enters the gate
-    bad = g.gate(ledger=store(_confirm(harmed=10)), **KW)
+    bad = _gate(ledger=store(_confirm(harmed=10)), **KW)
     assert bad.verdict == "failed" and "lower_bound_not_above_margin" in bad.reasons
     dear = replace(_confirm(), runs=tuple(replace(r, cost=9.0) for r in _confirm().runs))
-    assert g.gate(ledger=store(dear), **KW).verdict == "passed"
+    assert _gate(ledger=store(dear), **KW).verdict == "passed"
     # E2 must hold
-    e2 = g.gate(ledger=store(_confirm()), **(KW | {"e2_ok": False}))
+    e2 = _gate(ledger=store(_confirm()), **(KW | {"e2_ok": False}))
     assert e2.verdict == "failed" and e2.reasons == ["e2_failed"]
     # every token-sparen run live
-    dead = g.gate(ledger=store(_swap(_confirm(), 1, live=None)), **KW)
+    dead = _gate(ledger=store(_swap(_confirm(), 1, live=None)), **KW)
     assert dead.verdict == "failed" and dead.reasons == ["treatment_not_live"]
     # exclusions after retries are complete: task-level ones are dropped, not refused
     ex = replace(
         _drop(_confirm(), {"r__r-1"}),
         exclusions=tuple(Exclusion("r__r-1", "unrunnable", a, 0, "api") for a in stages.CORE_ARMS),
     )
-    res = g.gate(ledger=store(ex), **KW)
+    res = _gate(ledger=store(ex), **KW)
     assert res.verdict == "passed" and res.check is not None and res.check.estimate.n == 99
 
 
@@ -271,70 +278,70 @@ def test_gate_refuses_incomplete_campaign(store: Store) -> None:
         ),
     )
     with pytest.raises(g.GateRefused, match="5 planned"):
-        g.gate(ledger=store(both), **KW)
+        _gate(ledger=store(both), **KW)
     with pytest.raises(g.GateRefused, match="planned"):
-        g.gate(ledger=store(_drop(_confirm(), tail), plan_tasks=_tasks(100)), **KW)
+        _gate(ledger=store(_drop(_confirm(), tail), plan_tasks=_tasks(100)), **KW)
     with pytest.raises(g.GateRefused):  # one arm missing one task
-        g.gate(ledger=store(_drop(_confirm(), {"r__r-7"}, ("token-sparen",))), **KW)
+        _gate(ledger=store(_drop(_confirm(), {"r__r-7"}, ("token-sparen",))), **KW)
     ungraded = replace(
         _drop(_confirm(), {"r__r-7"}, ("baseline",)),
         exclusions=(Exclusion("r__r-7", "ungraded", "baseline", 0, "no_grade"),),
     )
     with pytest.raises(g.GateRefused):  # not graded yet
-        g.gate(ledger=store(ungraded), **KW)
+        _gate(ledger=store(ungraded), **KW)
 
 
 def test_gate_fails_on_hash_mismatch(store: Store) -> None:
-    other = g.gate(ledger=store(_swap(_confirm(), 3, plugin_hash="b" * 64)), **KW)
+    other = _gate(ledger=store(_swap(_confirm(), 3, plugin_hash="b" * 64)), **KW)
     assert other.verdict == "failed" and other.reasons == ["plugin_hash_mismatch"]
-    missing = g.gate(ledger=store(_swap(_confirm(), 3, plugin_hash=None)), **KW)
+    missing = _gate(ledger=store(_swap(_confirm(), 3, plugin_hash=None)), **KW)
     assert missing.verdict == "failed"
-    assert g.gate(ledger=store(_swap(_confirm(), 0, plugin_hash="c" * 64)), **KW).verdict == (
+    assert _gate(ledger=store(_swap(_confirm(), 0, plugin_hash="c" * 64)), **KW).verdict == (
         "failed"
     )
     # the plan's frozen plugin is not the release
-    rel = g.gate(ledger=store(_confirm()), **(KW | {"release_hash": "d" * 64}))
+    rel = _gate(ledger=store(_confirm()), **(KW | {"release_hash": "d" * 64}))
     assert rel.verdict == "failed" and rel.reasons == ["plan_hash_not_release"]
     with pytest.raises(ValueError, match="release_hash"):
-        g.gate(ledger=store(_confirm()), **(KW | {"release_hash": ""}))
+        _gate(ledger=store(_confirm()), **(KW | {"release_hash": ""}))
     with pytest.raises(ValueError, match="release_hash"):
-        g.gate(ledger=store(_confirm()), **(KW | {"release_hash": "A" * 64}))
+        _gate(ledger=store(_confirm()), **(KW | {"release_hash": "A" * 64}))
 
 
 def test_gate_fails_on_mixed_model_or_version(store: Store) -> None:
-    model = g.gate(ledger=store(_swap(_confirm(), 0, model="claude-y")), **KW)
+    model = _gate(ledger=store(_swap(_confirm(), 0, model="claude-y")), **KW)
     assert model.verdict == "failed" and model.reasons == ["model_mismatch"]
-    version = g.gate(ledger=store(_swap(_confirm(), 5, claude_code_version="2.1.1")), **KW)
+    version = _gate(ledger=store(_swap(_confirm(), 5, claude_code_version="2.1.1")), **KW)
     assert version.verdict == "failed" and version.reasons == ["claude_code_version_mismatch"]
-    unknown = g.gate(ledger=store(_swap(_confirm(), 5, model=None)), **KW)
+    unknown = _gate(ledger=store(_swap(_confirm(), 5, model=None)), **KW)
     assert unknown.verdict == "failed"
     # review I3(b): consistent but not the plan's pinned model / version
-    wrong = g.gate(ledger=store(_confirm(model="claude-haiku-x")), **KW)
+    wrong = _gate(ledger=store(_confirm(model="claude-haiku-x")), **KW)
     assert wrong.verdict == "failed" and any("claude-haiku-x" in d for d in wrong.details)
-    wrong_v = g.gate(ledger=store(_confirm(claude_code_version="9.9.9")), **KW)
+    wrong_v = _gate(ledger=store(_confirm(claude_code_version="9.9.9")), **KW)
     assert wrong_v.verdict == "failed"
 
 
 def test_gate_refuses_runs_outside_the_plan(store: Store) -> None:
     """Review I3(a)/N1: a run on a task outside the plan refuses the gate."""
     with pytest.raises(g.GateRefused, match="outside the plan"):
-        g.gate(ledger=store(_confirm(100), plan_tasks=_tasks(100)[:80]), **KW)
+        _gate(ledger=store(_confirm(100), plan_tasks=_tasks(100)[:80]), **KW)
 
 
 def test_plan_appended_after_runs_cannot_cherry_pick(store: Store) -> None:
     """Review N1 probe: runs of 100 tasks with 12 harmed, then a plan listing tasks [24:]
     appended directly (bypassing `write_plan`) turned `failed` into `passed`."""
     harmed = _confirm(harmed=12)
-    assert g.gate(ledger=store(harmed), **KW).verdict == "failed"
+    assert _gate(ledger=store(harmed), **KW).verdict == "failed"
     late = store(harmed, plan_tasks=_tasks(100)[24:], plan_after_runs=True)
     with pytest.raises(stages.PlanError, match="after"):
         stages.read_plan(late)
     with pytest.raises(g.GateRefused, match="after"):
-        g.gate(ledger=late, **KW)
+        _gate(ledger=late, **KW)
     # runs carrying another plan's hash
     foreign = store(_confirm(), run_plan_sha="f" * 64)
     with pytest.raises(g.GateRefused, match="plan hash"):
-        g.gate(ledger=foreign, **KW)
+        _gate(ledger=foreign, **KW)
 
 
 def test_gate_reads_only_the_ledger() -> None:
@@ -342,25 +349,25 @@ def test_gate_reads_only_the_ledger() -> None:
     with pytest.raises(TypeError):
         g.gate(_confirm(), **KW)  # type: ignore[misc]
     with pytest.raises(TypeError):
-        g.gate(ledger=None, verdict="underpowered", **KW)  # type: ignore[call-arg, arg-type]
+        g.gate(ledger=None, anchors=[], verdict="underpowered", **KW)  # type: ignore[call-arg, arg-type]
 
 
 def test_gate_underpowered_is_not_failed(store: Store) -> None:
     weak = _confirm(harmed=4)  # inconclusive: would fail a powered gate
-    assert g.gate(ledger=store(weak), **KW).verdict == "failed"
-    res = g.gate(ledger=store(weak, verdict="underpowered"), **KW)
+    assert _gate(ledger=store(weak), **KW).verdict == "failed"
+    res = _gate(ledger=store(weak, verdict="underpowered"), **KW)
     assert res.verdict == "underpowered", res.reasons
     assert res.reasons[0] == "underpowered_owner_decides"
     assert "lower_bound_not_above_margin" in res.reasons
     assert any("gate-decision.toml" in d for d in res.details)
     # invalid evidence is never an owner decision: a hash mismatch still fails
-    bad = g.gate(ledger=store(_swap(weak, 3, plugin_hash="b" * 64), verdict="underpowered"), **KW)
+    bad = _gate(ledger=store(_swap(weak, 3, plugin_hash="b" * 64), verdict="underpowered"), **KW)
     assert bad.verdict == "failed"
 
 
 def test_gate_clearly_inferior_fails_even_if_underpowered(store: Store) -> None:
     """Ruling M1: point < −5 pp and upper 95 % bound < 0 → failed, never an owner decision."""
-    res = g.gate(ledger=store(_confirm(harmed=30), verdict="underpowered"), **KW)
+    res = _gate(ledger=store(_confirm(harmed=30), verdict="underpowered"), **KW)
     assert res.verdict == "failed" and res.reasons[0] == "clearly_inferior"
 
 
@@ -371,11 +378,11 @@ def test_gate_refuses_pending_reruns_and_wrong_stage(store: Store) -> None:
         exclusions=(Exclusion("r__r-0", "incomplete", "token-sparen", 0, None),),
     )
     with pytest.raises(g.GateRefused, match="re-run"):
-        g.gate(ledger=store(pending), **KW)
+        _gate(ledger=store(pending), **KW)
     with pytest.raises(g.GateRefused, match="confirmation"):
-        g.gate(ledger=store(replace(s, stage="screening")), **KW)
+        _gate(ledger=store(replace(s, stage="screening")), **KW)
     with pytest.raises(g.GateRefused, match="plan"):
-        g.gate(ledger=store(s, write_plan=False), **KW)
+        _gate(ledger=store(s, write_plan=False), **KW)
 
 
 def test_gate_scope_text() -> None:
@@ -388,8 +395,8 @@ def test_reasons_are_codes(store: Store) -> None:
 
     assert set(g.REASON_CODES) <= set(e4.GATE_REASON_CODES)
     cases = [
-        g.gate(ledger=store(_confirm(harmed=30), verdict="underpowered"), **KW),
-        g.gate(ledger=store(_swap(_confirm(harmed=4), 1, live=False)), **(KW | {"e2_ok": False})),
+        _gate(ledger=store(_confirm(harmed=30), verdict="underpowered"), **KW),
+        _gate(ledger=store(_swap(_confirm(harmed=4), 1, live=False)), **(KW | {"e2_ok": False})),
     ]
     for res in cases:
         assert res.reasons and set(res.reasons) <= set(g.REASON_CODES)
@@ -426,7 +433,7 @@ def test_graded_runs_cannot_be_rerolled(store: Store) -> None:
     turned `failed` into `passed`."""
     keys = [f"c/confirmation/token-sparen/0/r__r-{i}" for i in range(0, 24, 2)]
     led = store(_confirm(harmed=12))
-    assert g.gate(ledger=led, **KW).verdict == "failed"
+    assert _gate(ledger=led, **KW).verdict == "failed"
     # the ledger API refuses up front, by key and by time range
     with pytest.raises(LedgerError, match="graded"):
         led.invalidate(RunKey.from_id(keys[0]), reason="infra")
@@ -434,18 +441,18 @@ def test_graded_runs_cannot_be_rerolled(store: Store) -> None:
         led.invalidate(None, reason="infra", start=0.0, end=1e12)
     # appended directly, the re-roll is refused by the gate
     with pytest.raises(g.GateRefused, match="graded"):
-        g.gate(ledger=_reroll(led, keys), **KW)
+        _gate(ledger=_reroll(led, keys), **KW)
     # a range invalidation appended directly, too
     led2 = store(_confirm(harmed=12))
     led2.append({"kind": "invalidate", "from": 0.0, "to": 1e12, "reason": "infra"})
     with pytest.raises(g.GateRefused, match="graded"):
-        g.gate(ledger=_reroll(led2, keys, append_invalidate=False), **KW)
+        _gate(ledger=_reroll(led2, keys, append_invalidate=False), **KW)
     # a retry record reopening a graded key, too
     led3 = store(_confirm(harmed=12))
     for k in keys:
         led3.append({"kind": "retry", "key": k, "reason": "one_sided"})
     with pytest.raises(g.GateRefused, match="graded"):
-        g.gate(ledger=_reroll(led3, keys, append_invalidate=False), **KW)
+        _gate(ledger=_reroll(led3, keys, append_invalidate=False), **KW)
     # screening invalidations stay an operator tool
     scr = store(replace(_confirm(), stage="screening"))
     scr.invalidate(RunKey.from_id("c/screening/token-sparen/0/r__r-0"), reason="operator")
@@ -463,7 +470,7 @@ def test_infra_only_key_may_be_retried(store: Store) -> None:
     end = {"kind": "end", "key": k, "attempt": 1, "status": "infra_fail", "sub": "docker"}
     led.append(end | {"plan_sha256": plan.sha256})
     led.invalidate(RunKey.from_id(k), reason="operator: docker restarted")
-    res = g.gate(ledger=_reroll(led, [k], append_invalidate=False), **KW)
+    res = _gate(ledger=_reroll(led, [k], append_invalidate=False), **KW)
     assert res.verdict == "passed", res.details
 
 
@@ -487,7 +494,7 @@ def test_second_graded_run_without_invalidate_is_refused(store: Store) -> None:
     """Review N4(a): a second start/end appended for a graded key (no invalidate record),
     regraded resolved, turned `failed` into `passed`."""
     led = store(_confirm(harmed=12))
-    assert g.gate(ledger=led, **KW).verdict == "failed"
+    assert _gate(ledger=led, **KW).verdict == "failed"
     with pytest.raises(LedgerError, match="graded"):  # the API refuses the second start
         led.append({"kind": "start", "key": HARMED[0], "attempt": 2})
     _rerun_raw(led, HARMED)
@@ -500,13 +507,13 @@ def test_second_graded_run_without_invalidate_is_refused(store: Store) -> None:
         ],
     )  # fmt: skip
     with pytest.raises(g.GateRefused, match="after its graded run"):
-        g.gate(ledger=Ledger(led.path), **KW)
+        _gate(ledger=Ledger(led.path), **KW)
     # a second graded end alone (no start) too
     led2 = store(_confirm(harmed=12))
     end = next(r for r in led2.records() if r["kind"] == "end" and r["key"] == HARMED[0])
     raw_append(led2, {k: v for k, v in end.items() if k != CHAIN_FIELD} | {"at": 9e9})
     with pytest.raises(g.GateRefused, match="more than one graded run"):
-        g.gate(ledger=Ledger(led2.path), **KW)
+        _gate(ledger=Ledger(led2.path), **KW)
 
 
 def test_second_grade_is_refused(store: Store) -> None:
@@ -522,7 +529,7 @@ def test_second_grade_is_refused(store: Store) -> None:
         ],
     )  # fmt: skip
     with pytest.raises(g.GateRefused, match="more than one grade"):
-        g.gate(ledger=led, **KW)
+        _gate(ledger=led, **KW)
 
 
 def test_grade_must_match_the_final_patch(store: Store) -> None:
@@ -531,22 +538,24 @@ def test_grade_must_match_the_final_patch(store: Store) -> None:
               "resolved": True, "patch_sha256": patch_sha("x")}]  # fmt: skip
     gr._append(grades_path(led), other)
     with pytest.raises(g.GateRefused, match="grade"):
-        g.gate(ledger=led, **KW)
+        _gate(ledger=led, **KW)
     led2 = store(_confirm())
     path = grades_path(led2)
     lines = path.read_text(encoding="utf-8").splitlines()
     first = json.loads(lines[0])
     path.write_text("", encoding="utf-8")
     gr._append(path, [first | {"patch_sha256": "0" * 64}] + [json.loads(x) for x in lines[1:]])
+    anchors.anchors_path(led2).unlink()  # anchored after the rewrite: the patch check decides
+    anchors.record_anchor(led2)
     with pytest.raises(g.GateRefused, match="patch"):
-        g.gate(ledger=led2, **KW)
+        _gate(ledger=led2, **KW)
 
 
 def test_ledger_and_grades_are_hash_chained(store: Store) -> None:
     """Ruling N4(b): every confirmation record carries the sha256 of the previous one; the gate
     verifies both chains and returns their heads for e4.json."""
     led = store(_confirm())
-    res = g.gate(ledger=led, **KW)
+    res = _gate(ledger=led, **KW)
     assert res.ledger_chain_head == led.chain_head()
     assert res.grades_chain_head == gr.grades_chain_head(grades_path(led))
     assert res.as_e4()["ledger_chain_head"] == res.ledger_chain_head
@@ -560,16 +569,100 @@ def test_ledger_and_grades_are_hash_chained(store: Store) -> None:
     lines[i] = lines[i].replace('"run_cost": 0.8', '"run_cost": 0.7')
     led.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(g.GateRefused, match="chain"):
-        g.gate(ledger=Ledger(led.path), **KW)
+        _gate(ledger=Ledger(led.path), **KW)
     # a deleted grade line breaks the grades chain
     led2 = store(_confirm())
     path = grades_path(led2)
     lines = path.read_text(encoding="utf-8").splitlines()
     path.write_text("\n".join(lines[:3] + lines[4:]) + "\n", encoding="utf-8")
     with pytest.raises(g.GateRefused, match="chain"):
-        g.gate(ledger=led2, **KW)
+        _gate(ledger=led2, **KW)
     # an unchained record appended straight into the ledger
     led3 = store(_confirm())
     raw_append(led3, {"kind": "pause", "reason": "weekly"}, chain=False)
     with pytest.raises(g.GateRefused, match="chain"):
-        g.gate(ledger=Ledger(led3.path), **KW)
+        _gate(ledger=Ledger(led3.path), **KW)
+
+
+def _harmed_last(n: int = 100, harmed: int = 12) -> Summary:
+    """`_confirm(harmed=...)` with the harmed token-sparen runs written last."""
+    s = _confirm(n, harmed=harmed)
+    bad = {f"r__r-{i}" for i in range(0, 2 * harmed, 2)}
+    late = [r for r in s.runs if r.arm == "token-sparen" and r.instance_id in bad]
+    return replace(s, runs=tuple([r for r in s.runs if r not in late] + late))
+
+
+def _truncate_and_rerun(led: Ledger, keys: list[str]) -> Ledger:
+    """The reviewer's N5 probe: cut both files back before the harmed runs, re-run them as
+    attempt 1 through the API and grade them resolved; both chains stay valid."""
+    lines = led.path.read_text(encoding="utf-8").splitlines()
+    led.path.write_text("\n".join(lines[: -2 * len(keys)]) + "\n", encoding="utf-8")
+    gpath = grades_path(led)
+    glines = gpath.read_text(encoding="utf-8").splitlines()
+    gpath.write_text("\n".join(glines[: -len(keys)]) + "\n", encoding="utf-8")
+    led = Ledger(led.path)
+    plan = stages.read_plan(led)
+    pins = {"plugin_hash": plan.plugin_hash, "plan_sha256": plan.sha256}
+    for k in keys:
+        led.append({"kind": "start", "key": k, "attempt": 1} | pins)
+        led.append(
+            {"kind": "end", "key": k, "attempt": 1, "status": "ok", "sub": "success",
+             "run_cost": 0.8, "repo": "r/r", "model": MODEL, "claude_code_version": VERSION,
+             "live": True, "patch_sha256": sha256_text(f"re-roll {k}")} | pins
+        )  # fmt: skip
+    gr._append(
+        gpath,
+        [
+            {"kind": "grade", "stage": "confirmation", "key": k, "resolved": True,
+             "patch_sha256": sha256_text(f"re-roll {k}")}
+            for k in keys
+        ],
+    )  # fmt: skip
+    return Ledger(led.path)
+
+
+def test_truncate_both_and_rerun_is_refused_by_anchors(store: Store) -> None:
+    """Review N5 probe: with the harmed token-sparen runs written last, truncating the ledger
+    and grades.jsonl before them and re-running turned `failed` into `passed` with valid
+    chains. An anchor published before the truncation refuses it."""
+    led = store(_harmed_last())
+    assert _gate(ledger=led, **KW).verdict == "failed"
+    published = anchors.anchors_to_publish(led)  # pushed before the truncation
+    assert len(published) == 1 and published[0]["ledger_count"] == len(led.records())
+    rerun = _truncate_and_rerun(led, HARMED)
+    with pytest.raises(g.GateRefused, match="anchor"):
+        g.gate(ledger=rerun, anchors=published, **KW)
+    # no published anchor at all → refused
+    with pytest.raises(g.GateRefused, match="no published anchor"):
+        g.gate(ledger=rerun, anchors=[], **KW)
+
+
+def test_anchors_are_chained_and_prefix_checked(store: Store) -> None:
+    led = store(_confirm())
+    first = anchors.anchors_to_publish(led)
+    led.append({"kind": "pause", "reason": "weekly"})
+    anchors.record_anchor(led)
+    both = anchors.anchors_to_publish(led)
+    assert both[0] == first[0] and both[1][CHAIN_FIELD] == record_sha256(first[0])
+    assert anchors.verify_anchors(led, both) == []
+    assert _gate(ledger=led, **KW).verdict == "passed"
+    # an edited published anchor, an anchor of another campaign, a broken anchors chain
+    forged = [first[0] | {"ledger_head": "e" * 64}]
+    assert any("differs" in p for p in anchors.verify_anchors(led, forged))
+    assert any("campaign" in p for p in anchors.verify_anchors(led, [first[0] | {"campaign": "x"}]))
+    assert any("anchors" in p for p in anchors.verify_anchors(led, [both[1]]))
+    with pytest.raises(LedgerError, match="chain"):  # the local anchors file is chained too
+        path = anchors.anchors_path(led)
+        lines = path.read_text(encoding="utf-8").splitlines()
+        path.write_text(lines[1] + "\n", encoding="utf-8")
+        anchors.anchors_to_publish(led)
+    # screening ledgers are not anchored
+    with pytest.raises(LedgerError):
+        anchors.record_anchor(store(replace(_confirm(), stage="screening")))
+
+
+def test_residual_window_is_disclosed() -> None:
+    """Rewriting records written since the last published anchor stays possible: disclosed."""
+    from bench import e4
+
+    assert "anchor_window_operator_trust" in e4.DISCLOSURE_CODES

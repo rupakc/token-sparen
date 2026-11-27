@@ -1021,6 +1021,11 @@ def test_confirmation_runs_carry_the_plan_hash(tmp_path: Path) -> None:
     runs = [r for r in led.records() if r["kind"] in ("start", "end")]
     assert len(runs) == 16 and all(r["plan_sha256"] == recorded.sha256 for r in runs)
     assert stages.read_plan(led) == recorded
+    # one external anchor per graded task, each on the final chain
+    from bench import anchors
+
+    published = anchors.anchors_to_publish(led)
+    assert len(published) == len(TASKS) and anchors.verify_anchors(led, published) == []
     outside = [replace(keys[0], arm="c")]
     with pytest.raises(stages.PlanError, match="not in the recorded"):
         _run(tmp_path, ScriptBackend(), outside, led, account=acct)

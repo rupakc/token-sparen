@@ -35,9 +35,11 @@ measurement.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from bench.anchors import verify_anchors
 from bench.e4 import GATE_REASON_CODES
 from bench.grade import grades_chain_head, grades_path
 from bench.ledger import GRADED, Ledger, LedgerError, read_jsonl
@@ -218,6 +220,7 @@ def _rerun_problems(ledger: Ledger, grades: list[dict[str, Any]]) -> list[str]:
 def gate(
     *,
     ledger: Ledger,
+    anchors: Sequence[Mapping[str, Any]],
     release_hash: str,
     e2_ok: bool,
     n_boot: int = 10000,
@@ -226,7 +229,9 @@ def gate(
     """Release gate on the confirmation ``ledger``: its recorded plan gives the planned tasks,
     the seed, the pins and the power verdict, and the summary is built from it
     (`summarise_ledger`: its runs, exclusions after retries and grades; ruling N2), never
-    supplied by the caller. ``n_boot`` and ``seed`` go to `Summary.gate`."""
+    supplied by the caller. ``anchors`` = the chain heads published during the campaign
+    (``bench-anchors`` branch; `bench.anchors`): each must lie on the final chains.
+    ``n_boot`` and ``seed`` go to `Summary.gate`."""
     if not _HASH.match(release_hash):
         raise ValueError(f"release_hash must be 64 lowercase hex characters, got {release_hash!r}")
     if ledger.header.get("stage") != "confirmation":
@@ -243,6 +248,12 @@ def gate(
         grades = read_jsonl(grades_path(ledger))
     except LedgerError as exc:
         raise GateRefused(f"tamper check: {exc} (ledger or grades hash chain)") from exc
+    anchored = verify_anchors(ledger, anchors)
+    if anchored:
+        raise GateRefused(
+            f"published anchor check: {anchored[0]} ({len(anchored)} problem(s)); every "
+            "published chain head must lie on the final ledger and grades chains"
+        )
     rerun = _rerun_problems(ledger, grades)
     if rerun:
         raise GateRefused(

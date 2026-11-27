@@ -410,6 +410,10 @@ class _Campaign:
             self.ledger.append(
                 {"kind": "graded", "at": self.clock(), "stage": self.stage, "instance_id": iid}
             )
+            if self.ledger.chained:  # M5 Task 10: heads for external anchoring
+                from bench.anchors import record_anchor  # anchors imports grade
+
+                record_anchor(self.ledger, at=self.clock())
 
     def _retry_one_sided(self, iid: str) -> bool:
         """A fresh round of attempts for each unrunnable key of the block whose other arms

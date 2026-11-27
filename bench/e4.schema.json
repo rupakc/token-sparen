@@ -176,7 +176,8 @@
         "tokeneconomizer_headless",
         "caveman_inert",
         "headroom_proxy",
-        "platform"
+        "platform",
+        "anchor_window_operator_trust"
       ]
     },
     "result": {
