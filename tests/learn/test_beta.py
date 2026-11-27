@@ -9,7 +9,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from token_sparen.learn.beta import Beta
+from token_sparen.learn.beta import Beta, beta_cdf
 
 PRIOR = Beta(1.0, 1.0, 0.0)
 unit = st.floats(min_value=0.0, max_value=1.0)
@@ -108,6 +108,39 @@ def test_lcb_ucb_sides() -> None:
 def test_quantile_ordering(b: Beta, q: float) -> None:
     lo, hi = b.quantile(q / 2), b.quantile((1 + q) / 2)
     assert 0.0 <= lo <= hi <= 1.0
+
+
+def _check_inverse(b: Beta, p: float, x: float) -> None:
+    """``I_x(a, b) == p`` to a tolerance relative in log space (the quantile may sit near 0)."""
+    assert 0.0 <= x <= 1.0
+    if x == 0.0:  # underflow: the small-x asymptote x^a / (a B(a, b)) puts the root below 1e-308
+        log_b = math.lgamma(b.a) + math.lgamma(b.b) - math.lgamma(b.a + b.b)
+        assert (math.log(p) + math.log(b.a) + log_b) / b.a < math.log(1e-300)
+        return
+    cdf = beta_cdf(x, b.a, b.b)
+    assert math.log(cdf) == pytest.approx(math.log(p), rel=1e-9, abs=1e-9)
+
+
+def test_quantile_tiny_alpha_regression() -> None:
+    """Hypothesis case: both quantiles sat near 1e-11 (I_x = 0.5 for each) and were inverted."""
+    b, q = Beta(0.03362326622875097, 32.0, 0.0), 0.03515625
+    lo, hi = b.quantile(q / 2), b.quantile((1 + q) / 2)
+    assert 0.0 <= lo < hi <= 1.0
+    _check_inverse(b, q / 2, lo)
+    _check_inverse(b, (1 + q) / 2, hi)
+
+
+@pytest.mark.parametrize("a", [1e-3, 0.01, 0.03, 0.1])
+@pytest.mark.parametrize("bb", [1.0, 32.0, 1000.0])
+def test_quantile_tiny_alpha_sweep(a: float, bb: float) -> None:
+    b = Beta(a, bb)
+    ps = [1e-3, 0.01, 0.025, 0.05, 0.2, 0.5, 0.8, 0.95, 0.975, 0.99, 0.999]
+    xs = [b.quantile(p) for p in ps]
+    assert xs == sorted(xs)
+    for p, x in zip(ps, xs, strict=True):
+        _check_inverse(b, p, x)
+    for q in (0.001, 0.03515625, 0.5, 0.9):
+        assert b.lcb(q / 2) <= b.quantile((1 + q) / 2)
 
 
 @given(betas, unit)

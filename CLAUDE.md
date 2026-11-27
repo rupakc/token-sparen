@@ -15,7 +15,7 @@ Plans: `docs/plans/` (M0-M3, M4). Decisions: `MEMORY.md`.
 
 ## Layout
 - `token_sparen/` core (stdlib only): `cli.py events.py config.py estimate.py transcript.py emit.py recovery.py extensions.py`
-  (`deferred.py`: work that runs only after a hook's response reached the host)
+  (`deferred.py`: work that runs only after a hook's response was written to stdout)
   - `store/` JSON+JSONL state, `compress/` compressors, `mechanisms/` decision-point mechanisms
     (compression, guards, read_dedupe, governor, boundary, subagent, tracking, prune, loopguard)
   - `learn/` policy, decision log, engine, regret, session fold (`overlay`), circuit `breaker`,

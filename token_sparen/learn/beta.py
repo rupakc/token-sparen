@@ -11,8 +11,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 _MIN_PARAM = 1e-6
-_TOL = 1e-10
-_MAX_ITER = 60
+_MAX_ITER = 100
+_UTOL = 1e-15  # relative tolerance in x (absolute in log x)
+_U_UNDERFLOW = math.log(5e-324)  # below the smallest positive float
 _CF_ITER = 300
 _CF_EPS = 1e-14
 _TINY = 1e-300
@@ -50,20 +51,6 @@ def _betacf(x: float, a: float, b: float) -> float:
     return h
 
 
-def _log_front(x: float, a: float, b: float) -> float:
-    return (
-        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x)
-    )
-
-
-def _betainc(x: float, a: float, b: float) -> float:
-    """Regularized incomplete beta I_x(a, b) for 0 < x < 1."""
-    front = math.exp(_log_front(x, a, b))
-    if x < (a + 1.0) / (a + b + 2.0):
-        return front * _betacf(x, a, b) / a
-    return 1.0 - front * _betacf(1.0 - x, b, a) / b
-
-
 def beta_cdf(x: float, a: float, b: float, *, xc: float | None = None) -> float:
     """Beta(a, b) CDF at ``x``; ``xc`` is ``1 - x`` computed precisely by the caller (keeps the
     upper tail exact when ``x`` is within rounding of 1)."""
@@ -78,30 +65,64 @@ def beta_cdf(x: float, a: float, b: float, *, xc: float | None = None) -> float:
 
 
 def _log_front2(x: float, c: float, a: float, b: float) -> float:
-    """``_log_front`` with the complement ``c = 1 - x`` given."""
+    """Log of ``x^a (1 - x)^b / B(a, b)`` with the complement ``c = 1 - x`` given."""
     return math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log(c)
 
 
-def _beta_quantile(q: float, a: float, b: float) -> float:
-    """Exact Beta(a, b) quantile: safeguarded Newton on I_x, bisection fallback."""
-    lo, hi = 0.0, 1.0
-    x = a / (a + b)
+def _lower_logcdf(u: float, a: float, b: float, log_beta: float) -> tuple[float, float]:
+    """``log I_x(a, b)`` at ``x = exp(u)`` below the continued fraction's switch point, and its
+    slope in ``u``. Exact in log space: no underflow however small ``x`` (or ``exp(u)``) is."""
+    c = -math.expm1(u)  # 1 - x, precise
+    cf = max(_betacf(math.exp(u), a, b), _TINY)
+    log_cdf = a * u + b * math.log(c) - log_beta + math.log(cf) - math.log(a)
+    return log_cdf, a / (cf * c)  # d/du: x * pdf / I = a / (cf * (1 - x))
+
+
+def _lower_quantile(p: float, a: float, b: float) -> float:
+    """Root ``x`` of ``I_x(a, b) = p`` known to lie at or below the switch point
+    ``(a + 1) / (a + b + 2)``, solved for ``u = log x`` (relative tolerance in ``x``).
+
+    Safeguarded Newton on ``log I`` (nearly linear in ``u`` for small ``x``, slope ~ ``a``),
+    started at the small-x asymptote ``I ~ x^a / (a B(a, b))``; every evaluation narrows a
+    bracket, a step leaving it bisects (or, with no lower end yet, steps geometrically down).
+    A root below the smallest positive float returns 0.0."""
+    log_beta = math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
+    target = math.log(p)
+    lo, hi = -math.inf, math.log((a + 1.0) / (a + b + 2.0))
+    u = min(hi, (target + math.log(a) + log_beta) / a)
     for _ in range(_MAX_ITER):
-        if not (lo < x < hi):
-            x = 0.5 * (lo + hi)
-        err = _betainc(x, a, b) - q
-        if err > 0:
-            hi = x
+        log_cdf, slope = _lower_logcdf(u, a, b, log_beta)
+        err = log_cdf - target
+        if err == 0.0:
+            return math.exp(u)
+        if err > 0.0:
+            hi = u
         else:
-            lo = x
-        if hi - lo < _TOL:
+            lo = u
+        if hi < _U_UNDERFLOW:
+            return 0.0
+        if hi - lo <= _UTOL * max(1.0, abs(hi)):
             break
-        pdf = math.exp(_log_front(x, a, b)) / (x * (1.0 - x))
-        nxt = x - err / pdf if pdf > 0.0 else 0.5 * (lo + hi)
-        if abs(nxt - x) < _TOL and lo < nxt < hi:
-            return nxt
-        x = nxt
-    return min(1.0, max(0.0, 0.5 * (lo + hi) if hi - lo < _TOL else x))
+        nxt = u - err / slope
+        if not (lo < nxt < hi):
+            nxt = 0.5 * (lo + hi) if lo > -math.inf else hi - 2.0 * max(1.0, abs(hi))
+        if abs(nxt - u) <= _UTOL * max(1.0, abs(u)):
+            return math.exp(nxt)
+        u = nxt
+    return math.exp(0.5 * (lo + hi) if lo > -math.inf else hi)
+
+
+def _beta_quantile(q: float, a: float, b: float) -> float:
+    """Exact Beta(a, b) quantile, monotone in ``q`` and in [0, 1].
+
+    The root is on the lower side of the switch point ``x0 = (a + 1) / (a + b + 2)`` iff
+    ``I_x0(a, b) >= q``; there it is solved in log space. Otherwise, by ``I_x(a, b) =
+    1 - I_{1-x}(b, a)``, ``1 - x`` is the lower-side root of the mirrored problem (``x0``
+    mirrors to the mirrored switch point), so both tails keep relative precision."""
+    x0 = (a + 1.0) / (a + b + 2.0)
+    if beta_cdf(x0, a, b, xc=(b + 1.0) / (a + b + 2.0)) >= q:
+        return min(1.0, max(0.0, _lower_quantile(q, a, b)))
+    return min(1.0, max(0.0, 1.0 - _lower_quantile(1.0 - q, b, a)))
 
 
 def _real(v: object) -> float:

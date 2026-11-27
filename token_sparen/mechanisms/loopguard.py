@@ -46,7 +46,7 @@ agents, at most ``MAX_FINGERPRINTS`` fingerprints and as many files in total acr
 ``MAX_PAIRS`` edit pairs per file; hashes only, about 15 KB at worst); each event costs at most
 one overlay read and one or two updates, independent of the session length. The redirect's
 state (``nudge``, ``watch``, the injected-tokens cost), the decision record and ``on_loop`` are
-written after the hook's response reached the host (``deferred.after_emit``; one more update):
+stored once the hook's response was written to stdout (``deferred.after_emit``; one more update):
 a response the watchdog replaced with the no-op leaves no record of a redirect.
 """
 
@@ -549,7 +549,7 @@ def _evaluate(ag: dict[str, Any], hit: _Hit, cfg: Config, step: _Step, lg: dict[
     detection (counted on events after the redirect) becomes the user notice. The redirect is
     reserved here (``RESERVED``, in-lock: any later trigger of the agent's turn sees it as sent,
     so parallel hooks never redirect twice); ``_deliver`` turns the reservation into ``nudge``
-    and ``watch`` once the hook's response reached the host. A reservation never turned (the
+    and ``watch`` once the hook's response was written to stdout. A reservation never turned (the
     hook overran or the write failed) stays: never re-sent, never logged, forgotten at
     settlement."""
     dec = ag.get("decision")
@@ -913,8 +913,9 @@ def _close(event: Event, policy: object, cfg: Config, env: Mapping[str, str], pr
 def on_prompt(
     event: Event, policy: Policy, cfg: Config, *, env: Mapping[str, str] | None = None
 ) -> Action:
-    """UserPromptSubmit (after the turn is counted): settle the previous turn's decisions
-    (savings of open windows, regret from the user's words) and start the new turn empty."""
+    """UserPromptSubmit (runs first in the always-run prompt chain, before the turn is counted):
+    settle the previous turn's decisions (savings of open windows, regret from the user's words)
+    and start the new turn empty."""
     _close(event, policy, cfg, os.environ if env is None else env, prompt=True)
     return Action()
 

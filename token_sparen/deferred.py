@@ -1,4 +1,4 @@
-"""Work that must happen only after a hook's response reached the host.
+"""Work that must happen only after a hook's response was written to stdout.
 
 A mechanism whose state records a delivery (the loop guard's redirect) passes that write to
 ``after_emit``. Inside a hook (``collecting``) it is queued and the host adapter runs the queue

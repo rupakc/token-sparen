@@ -530,7 +530,7 @@ def main(
         dog.arm(DEFAULT_BUDGET_MS)
         with deferred.collecting() as later:
             text, cfg, outcome = _respond(event_name, stdin, env, dog)
-        if out.write(text):  # the host got this response, not the watchdog's no-op
+        if out.write(text):  # this response was written to stdout, not the no-op
             deferred.run(later, functools.partial(_log_deferred, env, event_name))
     except BaseException as exc:  # noqa: BLE001 - fail open, whatever happened
         out.write(NOOP)

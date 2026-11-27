@@ -788,7 +788,7 @@ attribute reward to it. Tier governs exploration (§7.6).
   reserved in the session overlay under the overlay lock before the response, so a parallel
   trigger of the same agent and turn only reaches the user notice (still one redirect per agent
   and turn); the redirect's state (nudge, savings watch, injected-tokens cost), the decision
-  record and the `on_loop` call are written only after the hook's response reached the host
+  record and the `on_loop` call are written only after the hook's response was written to stdout
   (`token_sparen/deferred.py`). A reservation never confirmed (the watchdog answered with the
   no-op, or the write failed) counts as sent: never re-sent, never logged, forgotten at
   settlement.
