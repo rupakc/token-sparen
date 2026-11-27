@@ -38,11 +38,14 @@ import time: a missing name is looked up once as the module ``token_sparen.repla
 (or ``params["module"]``), which registers itself on import; a lane registered at run time in
 the parent exists only for ``jobs=1``. ``params`` may hold ``overlay`` (config keys applied over
 the loaded config), ``seed`` and ``label`` (the report key, default the name). A lane's
-``report()`` maps a split to a mergeable dict; reports of different groups are combined by
-``merge_reports``. The default merge adds numbers exactly (floats summed as fractions, so a
-run's figures depend neither on scheduling nor on resumes), ORs booleans and merges dicts key by
-key. A lane may register its own merge in ``MERGERS``; that one runs on plain floats, so its
-parallel results may differ from serial ones at rounding level.
+``report()`` maps a split to a mergeable dict. A lane with a ``feed_record(record, session)``
+method is also shown every parsed record of the session (system and attachment records too)
+before the runner registers its ids, so ``session.run_ids`` still tells copied history apart;
+it must not raise (an exception fails the session for every lane). Reports of different groups
+are combined by ``merge_reports``. The default merge adds numbers exactly (floats summed as
+fractions, so a run's figures depend neither on scheduling nor on resumes), ORs booleans and
+merges dicts key by key. A lane may register its own merge in ``MERGERS``; that one runs on
+plain floats, so its parallel results may differ from serial ones at rounding level.
 
 **Failures.** A group whose lanes raise contributes nothing and is recorded by exception type
 only. A worker process that dies (``BrokenProcessPool``, e.g. killed for memory) fails every
@@ -599,10 +602,24 @@ def _abort(lanes: Iterable[Lane], info: SessionInfo) -> None:
             pass
 
 
+def _tap(
+    records: Iterable[dict[str, Any]], taps: Sequence[Any], info: SessionInfo
+) -> Iterator[dict[str, Any]]:
+    """Records unchanged; each is first shown to the lanes with ``feed_record``."""
+    for rec in records:
+        for lane in taps:
+            lane.feed_record(rec, info)
+        yield rec
+
+
 def _replay_session(
     sc: _Scan, info: SessionInfo, fed: Sequence[Lane], ids: replay.RunIds, stats: Stats
 ) -> None:
-    records = _with_uuids(iter_records(sc.path, stats, sc.size), ids)
+    raw: Iterable[dict[str, Any]] = iter_records(sc.path, stats, sc.size)
+    taps = [lane for lane in fed if callable(getattr(lane, "feed_record", None))]
+    if taps:
+        raw = _tap(raw, taps, info)
+    records = _with_uuids(raw, ids)
     for ev in events_from_records(records, is_new_id=ids.add):
         if isinstance(ev, ToolResultRecord):
             ev.duplicate = not ids.add(f"t:{ev.tool_use_id}")

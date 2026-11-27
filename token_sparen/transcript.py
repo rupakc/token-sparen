@@ -428,35 +428,41 @@ def _names(raw: Any) -> list[str]:
     return out
 
 
+def add_inventory_record(inv: ToolInventory, rec: dict[str, Any]) -> None:
+    """Fold one parsed transcript record into ``inv`` (what ``tool_inventory`` does per line;
+    the E1 pruning lane feeds it the records the replay runner reads)."""
+    kind = rec.get("type")
+    if kind == "system" and rec.get("subtype") == "init" and "tools" in rec:
+        names = set(_names(rec.get("tools")))
+        inv.listed = (inv.listed or set()) | names
+        inv.always = (inv.always or set()) | names
+        return
+    att = rec.get("attachment")
+    if kind == "attachment" and isinstance(att, dict):
+        if att.get("type") == "deferred_tools_delta":
+            listed = (inv.listed or set()) | set(_names(att.get("addedNames")))
+            inv.listed = listed - set(_names(att.get("removedNames")))
+        return
+    content = _message(rec).get("content")
+    if kind == "assistant":
+        for block in _blocks(content):
+            name = block.get("name")
+            if block.get("type") == "tool_use" and isinstance(name, str) and name:
+                inv.used.add(name)
+    elif kind == "user":
+        if is_prompt(rec):
+            inv.prompts += 1
+            return
+        for block in _blocks(content):
+            if block.get("type") == "tool_result" and block.get("is_error") is True:
+                inv.unknown.update(_NO_SUCH_TOOL.findall(_result_text(block.get("content"))))
+
+
 def tool_inventory(
     path: Path, *, max_bytes: int | None = None, on_limit: Callable[[], None] | None = None
 ) -> ToolInventory:
     """Stream ``path`` once into a ``ToolInventory`` (never raises; bounded like ``_records``)."""
     inv = ToolInventory()
     for rec in _records(path, max_bytes, on_limit):
-        kind = rec.get("type")
-        if kind == "system" and rec.get("subtype") == "init" and "tools" in rec:
-            names = set(_names(rec.get("tools")))
-            inv.listed = (inv.listed or set()) | names
-            inv.always = (inv.always or set()) | names
-            continue
-        att = rec.get("attachment")
-        if kind == "attachment" and isinstance(att, dict):
-            if att.get("type") == "deferred_tools_delta":
-                listed = (inv.listed or set()) | set(_names(att.get("addedNames")))
-                inv.listed = listed - set(_names(att.get("removedNames")))
-            continue
-        content = _message(rec).get("content")
-        if kind == "assistant":
-            for block in _blocks(content):
-                name = block.get("name")
-                if block.get("type") == "tool_use" and isinstance(name, str) and name:
-                    inv.used.add(name)
-        elif kind == "user":
-            if is_prompt(rec):
-                inv.prompts += 1
-                continue
-            for block in _blocks(content):
-                if block.get("type") == "tool_result" and block.get("is_error") is True:
-                    inv.unknown.update(_NO_SUCH_TOOL.findall(_result_text(block.get("content"))))
+        add_inventory_record(inv, rec)
     return inv

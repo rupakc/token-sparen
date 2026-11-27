@@ -49,6 +49,14 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   triggers followed within 5 calls by a success of the same command head or file (converging
   loops); every-loop counts are kept as diagnostics. `loopguard.reversals`, `recurs_within` and `tool_target` are now public pure
   helpers that the live guard calls (behaviour unchanged).
+- `replay --lanes prune`: simulates opt-in MCP tool pruning per project over past sessions in
+  memory only (the production `observe_session` / `plan` gates and lease; no settings writer, git
+  or store): per split the servers seen, simulated prunes, sessions run with a prune, needs while
+  pruned (tool call, user mention or ToolSearch, by kind), lease restores, the tool-name listing
+  tokens saved and sessions without a tool listing (`unobservable_sessions`, never guessed);
+  rules pruned in dev and needed in test are reported under `*_cross_split` keys. The runner
+  shows raw records to lanes with `feed_record`; `transcript.add_inventory_record` is the
+  per-record fold of `tool_inventory` (behaviour unchanged).
 
 ### M4 triage (quality-relevant fixes before tuning)
 
