@@ -657,6 +657,59 @@ def test_doctor_round_trip_does_not_depend_on_learning(
     assert seen["learn"]["enabled"] is False
 
 
+_SLOW_RUN_PY = """\
+import runpy, sys, time
+sys.path.insert(0, {root!r})
+from token_sparen.mechanisms import compression
+_pick = compression.pick_candidate
+def slow(*args, **kwargs):
+    time.sleep(0.4)  # a slow host: cold Windows start, on-access virus scan, loaded CI runner
+    return _pick(*args, **kwargs)
+compression.pick_candidate = slow
+runpy.run_path({run!r}, run_name="__main__")
+"""
+
+
+def test_doctor_round_trip_tolerates_a_slow_windows_host(
+    env: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The round trip checks that the pipeline works, not that it meets the hot-path deadlines:
+    on a slow host (seen on Windows CI) a hook past ``compression.save_deadline_ms`` (250 ms)
+    returns the no-op, which made `doctor` report a working install as broken."""
+    from token_sparen import cli
+
+    monkeypatch.setattr(cli, "_host_platform", lambda: "win32")
+    monkeypatch.setenv("PATH", str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"])
+    root = tmp_path / "plug"
+    (root / "hooks").mkdir(parents=True)
+    (root / "hooks" / "run.py").write_text(
+        _SLOW_RUN_PY.format(root=str(ROOT), run=str(ROOT / "hooks" / "run.py")), encoding="utf-8"
+    )
+    good, detail = cli._round_trip(root)
+    assert good, detail
+
+
+def test_doctor_round_trip_failure_names_the_logged_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A no-op answer is reported with the hook's own logged reason, not just ``'{}'``."""
+    from token_sparen import cli
+
+    def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        logs = Path(env["TOKEN_SPAREN_HOME"]) / "logs"
+        logs.mkdir()
+        rec = {"ts": 0, "where": "claude.entry", "error": "PostToolUse: boom"}
+        (logs / "errors.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, "{}\n", "")
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/python3")
+    good, detail = cli._round_trip(tmp_path)
+    assert not good and "claude.entry: PostToolUse: boom" in detail
+
+
 @posix_only
 def test_doctor_reports_hook_interpreter(
     env: dict[str, str],

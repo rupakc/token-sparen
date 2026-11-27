@@ -43,23 +43,43 @@ def _knob(key: str, level: Level, ctx: CompressContext) -> int:
 # ------------------------------------------------------------------ JSON
 
 
-def _survey(root: Any) -> tuple[set[int], dict[int, int]]:
-    """One bottom-up pass: ids of containers holding an error string, and pretty line counts."""
+def _survey(root: Any, colons: int | None) -> tuple[set[int], dict[int, int]]:
+    """One bottom-up pass: ids of containers holding an error string, and pretty line counts.
+
+    Given ``colons``, the ``:`` count of a text without escaped ``\\u003a``, it also proves that
+    no object of the text repeated a key (the parsed dict kept only the last value), raising
+    ValueError otherwise; None skips the proof. Each pair in the text has exactly one ``:``
+    outside strings and a repeated key loses a pair, so the parse folded nothing iff the colons
+    outside strings equal the parsed pairs; the colons inside strings are those of the parsed
+    strings. Far cheaper than a per-object ``object_pairs_hook`` (+65 % on a 2 MB parse).
+    """
     order: list[Any] = []
     stack = [root]
+    pairs = 0
     while stack:
         node = stack.pop()
         if isinstance(node, dict):
             order.append(node)
+            pairs += len(node)
             stack.extend(node.values())
         elif isinstance(node, list):
             order.append(node)
             stack.extend(node)
+    if colons is not None and colons != pairs:  # equal: no ':' in any string, nothing folded
+        if colons - _colons_in_strings(order) != pairs:
+            raise ValueError("duplicate object key")
     errs: set[int] = set()
     lines: dict[int, int] = {}
+    bad_keys: dict[tuple[str, ...], bool] = {}  # records repeat their keys: check them once
     for node in reversed(order):
-        children = node.values() if isinstance(node, dict) else node
-        bad = isinstance(node, dict) and any(is_error_line(k) for k in node)
+        if isinstance(node, dict):
+            children: Any = node.values()
+            keys = tuple(node)
+            bad = bad_keys.get(keys)
+            if bad is None:
+                bad = bad_keys[keys] = any(is_error_line(k) for k in keys)
+        else:
+            children, bad = node, False
         count = 0
         for ch in children:
             if isinstance(ch, dict | list):
@@ -72,6 +92,21 @@ def _survey(root: Any) -> tuple[set[int], dict[int, int]]:
         if bad:
             errs.add(id(node))
     return errs, lines
+
+
+def _colons_in_strings(containers: list[Any]) -> int:
+    """``:`` count over every key and string value of ``containers`` (joined in bulk: about
+    half the cost of a strict ``object_pairs_hook`` parse)."""
+    keys: list[str] = []
+    values: list[Any] = []
+    for node in containers:
+        if isinstance(node, dict):
+            keys.extend(node)
+            values.extend(node.values())
+        else:
+            values.extend(node)
+    strings = [v for v in values if isinstance(v, str)]
+    return "".join(keys).count(":") + "".join(strings).count(":")
 
 
 class _RawNum(float):
@@ -96,7 +131,17 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _parse_json(text: str) -> Any:
-    return json.loads(text, parse_float=_RawNum, object_pairs_hook=_unique_object)
+    """Exact number text kept (``_RawNum``); repeated keys are left to ``_survey``."""
+    return json.loads(text, parse_float=_RawNum)
+
+
+def _colons(text: str) -> int | None:
+    """The ``:`` count ``_survey`` checks repeated keys with; None when an escaped ``:`` would
+    hide from it, after a strict parse proved there are none (it raises otherwise)."""
+    if "\\u003a" in text or "\\u003A" in text:  # rare: an exact count needs a tokenizer
+        json.loads(text, object_pairs_hook=_unique_object)
+        return None
+    return text.count(":")
 
 
 class _JsonRender:
@@ -210,7 +255,7 @@ class JsonCompressor:
             doc = _parse_json(text)
             if not isinstance(doc, dict | list):
                 return _TEXT.compress(text, level, ctx)
-            errs, lines = _survey(doc)
+            errs, lines = _survey(doc, _colons(text))  # repeated keys raise: read as text
             render = _JsonRender(_knob("items", level, ctx), errs, lines)
             render.emit(doc, 0, "", "")
         except (ValueError, RecursionError, MemoryError):
