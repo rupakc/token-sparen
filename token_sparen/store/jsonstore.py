@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from token_sparen.config import log_error, private_mkdir
+from token_sparen.store import schema
 
 LOCK_TIMEOUT_S = 2.0
 _POLL_S = 0.001  # first lock retry; doubles per retry up to _POLL_MAX_S
@@ -31,6 +32,11 @@ _REPLACE_TRIES = 5
 
 class StoreBusy(RuntimeError):
     """The lock could not be taken within LOCK_TIMEOUT_S."""
+
+
+class NewerSchema(OSError):
+    """The document was written by a newer token-sparen (a newer schema version): this code
+    must not rewrite it. An OSError, so callers that skip unwritable state skip it too."""
 
 
 def _try_lock(fh: IO[bytes]) -> bool:
@@ -164,11 +170,25 @@ def read_locked(
     path: Path, default: dict[str, Any], env: Mapping[str, str] | None = None
 ) -> dict[str, Any]:
     """Read for a read-modify-write; call only while holding ``locked(path)``. Corrupt content
-    is quarantined (moved aside) and ``default`` returned."""
+    is quarantined (moved aside) and ``default`` returned. A document written by a newer
+    token-sparen (``schema.newer_version``) is refused with ``NewerSchema``: never rewritten."""
     data, bad = _load(path)
     if bad is not None:
         _quarantine(path, bad, env)
+    refuse_newer(path, data, env)
     return copy.deepcopy(default) if data is None else data
+
+
+def refuse_newer(path: Path, doc: Any, env: Mapping[str, str] | None = None) -> None:
+    """Raise ``NewerSchema`` (logged) when ``doc``, read from ``path``, has a newer version."""
+    version = schema.newer_version(path.name, doc)
+    if version is not None:
+        exc = NewerSchema(
+            f"{path}: version {version} is newer than this token-sparen knows "
+            f"({schema.KNOWN_VERSIONS[path.name]}); left untouched"
+        )
+        log_error(os.environ if env is None else env, "jsonstore", str(exc))
+        raise exc
 
 
 def write_locked(path: Path, data: dict[str, Any]) -> None:

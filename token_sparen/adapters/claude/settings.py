@@ -351,6 +351,7 @@ def uninstall_statusline(
         try:
             data, _, stamp = _load_stamped(target)
             meta = jsonstore.read(_meta_path(env), {}, env)
+            jsonstore.refuse_newer(_meta_path(env), meta, env)  # a newer install's record
         except _Invalid as exc:
             return InstallResult(False, "error", str(exc))
         except OSError as exc:

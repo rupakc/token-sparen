@@ -623,6 +623,58 @@ def _python3_version() -> tuple[int, int] | None:
         return None
 
 
+def plugin_version(root: Path) -> str | None:
+    """``version`` of ``<root>/.claude-plugin/plugin.json`` (the plugin's hooks run this
+    version), or None when there is no readable manifest (e.g. a pip-only install)."""
+    try:
+        data = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    return version if isinstance(version, str) and version else None
+
+
+_VERSION_OUT = re.compile(r"^token-sparen (\S+)\s*$")
+
+
+def path_cli_version(
+    which: Callable[[str], str | None] | None = None,
+) -> tuple[str | None, str | None]:
+    """(version, path) of the ``token-sparen`` on PATH (``--version``), or (None, None)."""
+    exe = (shutil.which if which is None else which)("token-sparen")
+    if exe is None:
+        return None, None
+    try:
+        out = subprocess.run(  # noqa: S603
+            [exe, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=20,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    m = _VERSION_OUT.match(out.strip())
+    return (m.group(1), exe) if m else (None, None)
+
+
+def version_skew(
+    plugin: str | None, path_cli: str | None, path_exe: str | None
+) -> list[tuple[str, str, str]]:
+    """Doctor rows: the plugin version, the PATH CLI version and a warning when they differ
+    (the skill and the hooks use the plugin's bundled CLI; the PATH one is for terminals)."""
+    rows = [(_OK, "plugin version", plugin or "unknown (not run from a Claude Code plugin)")]
+    if path_cli is None:
+        rows.append((_OK, "CLI on PATH", "none (the skill uses the plugin's bundled CLI)"))
+        return rows
+    rows.append((_OK, "CLI on PATH", f"{path_cli} ({path_exe})"))
+    if plugin is not None and path_cli != plugin:
+        detail = f"CLI {path_cli} differs from plugin {plugin}; the plugin's hooks use {plugin}"
+        rows.append((_WARN, "version skew", detail))
+    return rows
+
+
 def _doctor(args: argparse.Namespace) -> int:
     env = os.environ
     results: list[tuple[str, str, str]] = []
@@ -662,6 +714,8 @@ def _doctor(args: argparse.Namespace) -> int:
     else:
         good, detail = _check_hooks_json(root)
         add(_OK if good else _BAD, "plugin", detail)
+    for row in version_skew(plugin_version(root), *path_cli_version()):
+        add(*row)
     if good:
         good, detail = _round_trip(root)
         add(_OK if good else _BAD, "hook round-trip", detail)

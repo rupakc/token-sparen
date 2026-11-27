@@ -1,0 +1,2 @@
+[adapter]
+latency_budget_ms = 5000

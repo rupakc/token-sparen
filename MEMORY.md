@@ -1696,3 +1696,24 @@ and the two new issues they found.
   three full rounds from fresh state (`tests/perfutil.best_p95`), stopping at the first under
   budget. The budget (50 ms x `TOKEN_SPAREN_PERF_FACTOR`) and the invariant are unchanged:
   one whole round must meet it, and a real regression fails every round.
+
+## 2026-11-27 M6 Task 4: upgrade path, 0.x state, CLI/plugin version skew
+- Schema versions of the versioned JSON documents are listed by file name in
+  `store/schema.py` (`KNOWN_VERSIONS`; the owning modules keep their constants, a test checks
+  they match). `jsonstore.read_locked` (every read-modify-write) raises `NewerSchema` (an
+  OSError, logged) for a document newer than this code knows, so it is never rewritten: an
+  older CLI cannot downgrade a newer plugin's state. Lock-free reads still return it (readers
+  validate versions themselves). Files without a version get none (absent = version 1).
+  Older versions keep the existing compat (v1 posteriors logged and started afresh, the v1
+  prune `files` table moved to `prune_rules.json`, corrupt files quarantined).
+- Fixtures: `scripts/make_state_fixtures.py` exports each milestone tag (`git archive`), drives
+  its own hooks and CLI with an isolated home, a git project with a fixed synthetic remote
+  (stable project key) and a Claude config dir, and stores the trees with placeholders
+  (`<project>`, `<home>`, ...) in `tests/fixtures/state/<tag>/`; `legacy/` holds hand-written
+  shapes of intermediate commits. `tests/store/test_upgrade.py` replays them on this code.
+- `doctor`: plugin version from `<plugin root>/.claude-plugin/plugin.json`, PATH CLI from
+  `token-sparen --version`; a mismatch is a warning (`!`), not a failure. The skill runs the
+  bundled CLI first, `token-sparen` only as a fallback, and with neither replies "token-sparen
+  works in Claude Code only".
+- Open: 0.x recovery outputs are not in the recovery id registry, so `show` refuses them after
+  an upgrade (files remain readable by path). Adopting them safely needs a ruling (sec-open-3).

@@ -1,0 +1,3 @@
+{"ts": 1795807838.2559848, "event": "SessionStart", "ms": 23.873, "outcome": "noop"}
+{"ts": 1795807838.6934688, "event": "PostToolUse", "ms": 5.599, "outcome": "noop"}
+{"ts": 1795807844.405362, "event": "SessionEnd", "ms": 8.829, "outcome": "noop"}
