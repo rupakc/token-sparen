@@ -6,13 +6,13 @@ after copying the file once to `settings.json.token-sparen.bak` and recording yo
 `statusLine` in `~/.token-sparen/statusline_install.json`. If you already have a statusline command,
 ours is appended after it. Only `statusLine` is touched; a settings file that is not valid JSON is
 refused. `token-sparen statusline uninstall` restores your original `statusLine` exactly (or removes
-the key) and leaves every other setting alone. Not supported on Windows yet.
+the key) and leaves every other setting alone. If you changed the `statusLine` yourself after installing, uninstall leaves it as it is and says so; edit it by hand (restore your own command from `settings.json.token-sparen.bak`, or delete the key). Not supported on Windows yet.
 
-Illustrative example (the numbers are made up; colours on a terminal, `NO_COLOR` or
+Illustrative example (`<...>` marks a value; colours on a terminal, `NO_COLOR` or
 `statusline.ascii = true` simplify it):
 
 ```
-⛁ ts 42% ctx │ burn 48M/500M 10% │ +2.4k/turn │ saved 31.2k (≈$0.84) │ ✂ 12 ↺ 1 │ learn: cold
+⛁ ts <p>% ctx │ burn <used>/<budget> <p>% │ +<n>k/turn │ saved <n>k (≈$<cost>) │ ✂ <n> ↺ <n> │ learn: <state>
 ```
 
 | Segment | Meaning |
