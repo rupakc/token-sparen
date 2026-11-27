@@ -119,7 +119,6 @@ _SUMMARY = re.compile(
     r"|^(?:FAIL|ok|PASS)(?:\t.*)?$",
     re.IGNORECASE,
 )
-MAX_TEST_IDS = 20
 _EXC = re.compile(r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)\b")
 _EXC_MSG = re.compile(r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)\s*:\s*\S")
 _DETAIL = re.compile(r"^E\s{2,}\S")  # pytest's assertion detail
@@ -200,8 +199,9 @@ def fingerprint(text: str, *, tool: str = "", target: str = "") -> str | None:
     lines is skipped).
 
     A pytest / jest / go test / cargo test report (``compress.reports.failing_tests``) is keyed
-    by the sorted set of failing test ids (first ``MAX_TEST_IDS``) plus the first failure's error
-    line, so fixing a suite one test at a time changes the fingerprint. Anything else is keyed by
+    by the number of failing test ids and a hash of their whole sorted set (within the scanned
+    text) plus the first failure's error line, so fixing a suite one test at a time changes the
+    fingerprint. Anything else is keyed by
     the last exception type named and the most specific error line. Both also mix in the tool
     name and its ``target`` (Bash: ``command_head``; file tools: the path) and are normalised by
     ``_normalise``. Only the first ``SCAN_HEAD`` and last ``SCAN_TAIL`` characters are read.
@@ -214,7 +214,8 @@ def fingerprint(text: str, *, tool: str = "", target: str = "") -> str | None:
         ids, block = report
         body = _informative(block[1:]) or _informative(block[:1])
         err = _error_line(body) or ""
-        key = ",".join(sorted(set(ids))[:MAX_TEST_IDS])
+        unique = sorted(set(ids))
+        key = f"{len(unique)}:{_sha(chr(10).join(unique))}"  # every id counts, none is stored
         return _sha(f"{tool}|{target}|tests|{key}|{_last_exception(body)}|{_normalise(err)}")
     lines = _informative(raw)
     line = _error_line(lines)

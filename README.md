@@ -150,7 +150,7 @@ All of this is on by default. Nothing is sent anywhere.
   `pytest`, `git diff`) or file, and the same error line once directories, line:column, hex
   ids, durations and long numbers are ignored; names, quoted values and literals still count, so
   `No module named 'foo'` and `'bar'`, or `assert 3 == 5` and `assert 4 == 5`, are different
-  errors. For test runs (pytest, jest, go test, cargo test) it is the set of failing tests plus
+  errors. For test runs (pytest, jest, go test, cargo test) it is the whole set of failing tests (count and hash) plus
   the first failure's error, so fixing a suite one test at a time never looks like a loop. A
   failure with no error line (a bare `Exit code 1` from `grep`, `test` or `diff`, or only a
   "3 failed, 2 passed" summary) is never counted. The same edit made and undone twice on one file (A -> B -> A -> B; adding and

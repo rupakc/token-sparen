@@ -311,9 +311,28 @@ def test_same_failing_set_with_a_different_first_error_differs() -> None:
     assert _fp(a) != _fp(a.replace("assert 3 == 0", "assert 4 == 0"))
 
 
-def test_failing_ids_are_capped() -> None:
+def test_every_failing_id_counts() -> None:
+    """Review R2: the whole failing set is hashed, not just the first 20 ids."""
     many = list(range(100, 140))
-    assert _fp(_pytest(many, total=50)) == _fp(_pytest([*many, 140], total=50))  # first 20 only
+    assert _fp(_pytest(many, total=50)) != _fp(_pytest([*many, 140], total=50))
+
+
+@pytest.mark.parametrize("arm", ["eager", "standard"])
+def test_large_suite_shrinking_from_the_end_never_nudges(tmp_path: Path, arm: str) -> None:
+    pol = Rec(arm)
+    _prompt(tmp_path, pol)
+    for last in (95, 94, 93, 92):  # 26 failures; the fixed ones sort after the first 20
+        ev = _event(tmp_path, "post_tool_failure", text=_pytest(list(range(70, last + 1)), 99))
+        assert _tool(tmp_path, pol, ev).is_noop()
+    assert pol.decisions == []
+
+
+def test_large_identical_failing_set_nudges(tmp_path: Path) -> None:
+    pol = Rec("standard")
+    _prompt(tmp_path, pol)
+    text = _pytest(list(range(1, 26)), 30)
+    acts = [_tool(tmp_path, pol, _event(tmp_path, "post_tool_failure", text=text)) for _ in "abc"]
+    assert [a.inject_context is not None for a in acts] == [False, False, True]
 
 
 @pytest.mark.parametrize(

@@ -1372,3 +1372,8 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   watched files across all agents of the turn (a new file evicts the agent's own oldest, or is
   not tracked), `MAX_PAIRS` 8 -> 4, post-redirect counts capped at 10 per agent: about 15 KB at
   worst instead of ~400 KB. Perf test covers 16 agents.
+
+## 2026-11-27 Loop guard fix round 3 (Task 28 re-review R2; controller ruling)
+- A test report's fingerprint uses the number of distinct failing ids and a hash of the **whole**
+  sorted set (the first-20 cap made fixing tests that sort after the 20th invisible). Nothing is
+  stored but the hash; parse work stays bounded by the 8000 + 4000 character scan.

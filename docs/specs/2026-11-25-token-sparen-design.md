@@ -236,6 +236,8 @@ without the error, else 0.
 Fix round 2: test-runner reports are fingerprinted by the sorted failing-test ids plus the first
 failure's error line; summary lines are never error lines. The 50-entry caps are turn-wide
 across agents.
+Fix round 3: the failing-test key is the id count plus a hash of the whole sorted id set (no
+first-20 cap).
 
 ---
 
