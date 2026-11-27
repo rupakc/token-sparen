@@ -7,11 +7,17 @@ SWE-bench image, one container at a time (4 GB / 4 CPU / 4096 pids caps on the 8
   ``/opt/plugin/token-sparen`` (read-only, `bench.freeze.verify` re-checked before every run),
   the arm's config template ``/opt/template`` (read-only), the stream's carried state
   ``/state-in`` (read-only), `entry.sh` and `patch.py` (read-only) and the run directory
-  ``/run-out`` (the only writable mount);
-* environment: built from an explicit base (`fixed_env`, the arm's allow-listed ``env``, the
-  ``TSB_*`` run inputs and the OAuth token), never from ``os.environ``; every variable is
-  passed by name only (``-e NAME``), the values live in the docker client's own explicit
-  environment, so no value (the token included) ever appears in an argv;
+  ``/run-out`` (the only writable mount); ``--cap-drop ALL`` plus `CAP_ADD`,
+  ``no-new-privileges`` and a per-arm ``--network`` (default ``bridge``);
+* environment: built from an explicit base (`fixed_env`, the arm's allow-listed ``env`` and the
+  ``TSB_*`` run inputs), never from ``os.environ``; every variable is passed by name only
+  (``-e NAME``), the values live in the docker client's own explicit environment;
+* the OAuth token is never an environment variable of the container: it is a 0400 file in a
+  per-run host temp dir (outside the run dir, removed after the run) mounted read-only at
+  `SECRET_MOUNT`; `entry.sh` sets it only in the agent command's environment, so it is in no
+  argv, no ``docker inspect`` output and not in PID 1's environment (same-uid processes in the
+  container can still read the agent's environment: the dedicated revocable token is the
+  mitigation, the subprocess scrub is not a barrier);
 * `entry.sh` builds a container-local ``HOME=/home/bench`` from template + state, runs the
   agent under coreutils ``timeout --signal=TERM --kill-after=30 <timeout_s>`` (ruling M5-N1:
   the agent timeout is enforced inside the container), then always extracts the patch and copies
@@ -26,7 +32,10 @@ SWE-bench image, one container at a time (4 GB / 4 CPU / 4096 pids caps on the 8
 `FakeBackend` keeps the same contract with no Docker and no ``claude``: it runs the fake agent
 (`bench/fixtures/fake/agent.py`) on the fake task repository with an isolated ``HOME`` and does
 `entry.sh`'s bookkeeping in Python. `collect_outcome` is shared: leak scan first (a hit
-quarantines the run), then stream metrics, load verification, liveness and `classify`.
+quarantines the run), then `audit_run_dir` (``/run-out`` is agent-writable: any link, special
+file or oversized output makes the run ``infra_fail/load`` and nothing is read; reads use
+``O_NOFOLLOW`` and per-file caps), then stream metrics, load verification, liveness and
+`classify`. Known limit (disclosed): the agent can rewrite its own ``stream.jsonl``.
 """
 
 from __future__ import annotations
@@ -69,6 +78,20 @@ TRANSCRIPTS = ".claude/projects"
 DISK_PROBE_IMAGE = "busybox:1.36.1"
 DOCKER_TIMEOUT_S = 300.0
 PULL_TIMEOUT_S = 3600.0
+PATCH_TIMEOUT_S = 60  # in-container limit of the patch extraction (fits inside the backstop)
+SECRET_MOUNT = "/run/tsb-secret"  # read-only dir holding the 0400 token file `token`
+DEFAULT_NETWORK = "bridge"  # per-arm override (egress allow-lists, Task 13)
+# root in the container keeps only what copying a host-owned template into a root-owned HOME
+# and ordinary package installs need (calibrated in Task 13)
+CAP_ADD = ("CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID")
+RUN_OUT_MAX_BYTES = 4 * 1024**3
+OUTPUT_CAPS: dict[str, int] = {
+    "stream.jsonl": 512 * 1024**2,
+    "patch.diff": 64 * 1024**2,
+    "exit.json": 64 * 1024,
+}
+# kill-after 30 s + patch time limit (+ its 5 s kill-after) + copy-out must fit in the backstop
+assert BACKSTOP_S > 30 + PATCH_TIMEOUT_S + 5 + 10
 # the docker client's own environment: these keys of the host environment, nothing else
 CLIENT_ENV_KEYS = (
     "PATH",
@@ -203,8 +226,10 @@ def state_paths_out(arm: Arm) -> tuple[str, ...]:
     return tuple(dict.fromkeys(paths))
 
 
-def container_env(req: RunRequest, token: str) -> dict[str, str]:
-    """Every variable the container gets (passed by name; values only in the client env)."""
+def container_env(req: RunRequest) -> dict[str, str]:
+    """Every variable the container gets (passed by name; values only in the client env).
+    Never the OAuth token: it reaches the container only as a read-only file (`SECRET_MOUNT`),
+    so it is in no container config (``docker inspect``) and in no PID 1 environment."""
     arm = req.arm
     env = fixed_env(req.max_turns)
     env.update(arm.env)
@@ -214,10 +239,9 @@ def container_env(req: RunRequest, token: str) -> dict[str, str]:
             "TSB_BASE_COMMIT": req.task.base_commit,
             "TSB_PATCH_EXCLUDES": "\n".join(arm.patch_excludes),
             "TSB_STATE_PATHS": "\n".join(state_paths_out(arm)),
+            "TSB_PATCH_TIMEOUT_S": str(PATCH_TIMEOUT_S),
         }
     )
-    if token:
-        env[TOKEN_ENV] = token
     clash = set(env) & set(CLIENT_ENV_KEYS)
     if clash:  # pragma: no cover - arms.py refuses these keys already
         raise BackendError(f"container variables clash with the client env: {sorted(clash)}")
@@ -253,21 +277,75 @@ def _missing_plugin(req: RunRequest) -> RunOutcome | None:
     return None
 
 
-def _read_json(path: Path) -> dict[str, Any] | None:
+class _UnsafeOutput(Exception):
+    """A run output is a link, a special file or over its size cap: nothing is read."""
+
+
+def audit_run_dir(run_dir: Path) -> list[str]:
+    """Problems that forbid reading ``run_dir`` on the host (fix round 1, I1): any entry under
+    it (``lstat``, never followed) that is not a regular file or a directory, the directory
+    itself being a link, or more than `RUN_OUT_MAX_BYTES` in total. The agent can write
+    ``/run-out`` (it can also rewrite its own ``stream.jsonl``: a disclosed limit)."""
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        if not stat.S_ISDIR(run_dir.lstat().st_mode):
+            return ["run directory is not a plain directory"]
+    except OSError as exc:
+        return [f"run directory unreadable: {exc.__class__.__name__}"]
+    problems: list[str] = []
+    total = 0
+    stack = [run_dir]
+    while stack:
+        here = stack.pop()
+        try:
+            entries = list(os.scandir(here))
+        except OSError:
+            problems.append(f"unlistable output dir: {here.relative_to(run_dir).as_posix()}")
+            continue
+        for entry in entries:
+            rel = Path(entry.path).relative_to(run_dir).as_posix()
+            try:
+                st = entry.stat(follow_symlinks=False)
+            except OSError:
+                problems.append(f"unreadable output: {rel}")
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                stack.append(Path(entry.path))
+            elif stat.S_ISREG(st.st_mode):
+                total += st.st_size
+            else:
+                problems.append(f"output is a link or special file: {rel}")
+    if total > RUN_OUT_MAX_BYTES:
+        problems.append(f"run outputs exceed {RUN_OUT_MAX_BYTES} bytes")
+    return sorted(problems)
+
+
+def _read_capped(run_dir: Path, name: str) -> bytes | None:
+    """A top-level output of ``run_dir`` (None when absent); `_UnsafeOutput` when it is not a
+    regular file or is over its cap. Opened with ``O_NOFOLLOW`` where the OS has it."""
+    path = run_dir / name
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise _UnsafeOutput(f"{name} cannot be opened safely") from exc
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        cap = OUTPUT_CAPS[name]
+        if not stat.S_ISREG(st.st_mode) or st.st_size > cap:
+            raise _UnsafeOutput(f"{name} is not a regular file of at most {cap} bytes")
+        return fh.read(cap + 1)[:cap]
+
+
+def _json_object(data: bytes | None) -> dict[str, Any] | None:
+    if data is None:
+        return None
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
         return None
     return doc if isinstance(doc, dict) else None
-
-
-def _links(root: Path) -> list[Path]:
-    out = []
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        for name in [*dirnames, *filenames]:
-            if (Path(dirpath) / name).is_symlink():
-                out.append(Path(dirpath) / name)
-    return out
 
 
 def collect_outcome(
@@ -281,7 +359,9 @@ def collect_outcome(
     token: str,
     problems: list[str] | None = None,
 ) -> RunOutcome:
-    """Turn a finished run directory into a `RunOutcome` (shared by both backends)."""
+    """Turn a finished run directory into a `RunOutcome` (shared by both backends): leak scan
+    first (a hit quarantines), then `audit_run_dir` (an unsafe output: ``infra_fail/load``,
+    nothing read), then the capped reads, metrics, load checks, liveness and `classify`."""
     run_dir, arm = req.run_dir, req.arm
     notes = list(problems or [])
     hits = scan_for_token([run_dir], token)
@@ -289,20 +369,30 @@ def collect_outcome(
         quarantine(run_dir, hits, token)
         notes.append("OAuth token found in the run outputs: run quarantined")
         return RunOutcome(("infra_fail", "leak"), None, "", None, wall_s, notes)
-    stream = run_dir / "stream.jsonl"
+    if backstop_killed:
+        notes.append(f"host backstop kill at timeout_s + {BACKSTOP_S} s")
+    unsafe = audit_run_dir(run_dir)
+    try:
+        if unsafe:
+            raise _UnsafeOutput("; ".join(unsafe))
+        stream_data = _read_capped(run_dir, "stream.jsonl")
+        exit_doc = _json_object(_read_capped(run_dir, "exit.json"))
+        patch_data = _read_capped(run_dir, "patch.diff")
+    except _UnsafeOutput as exc:
+        bad: RunStatus = ("infra_fail", "docker" if backstop_killed or oom_killed else "load")
+        notes.append(f"unsafe run outputs, nothing read: {exc}")
+        return RunOutcome(bad, None, "", None, wall_s, notes)
     m: RunMetrics | None = None
-    if stream.is_file():
-        with stream.open(encoding="utf-8", errors="replace") as fh:
-            m = parse_stream(fh, observed_at=started)
+    if stream_data is not None:
+        lines = stream_data.decode("utf-8", "replace").splitlines()
+        m = parse_stream(lines, observed_at=started)
     state_dir = run_dir / "state-out"
-    exit_doc = _read_json(run_dir / "exit.json")
     finished = exit_doc is not None and state_dir.is_dir()
-    links = _links(state_dir) if state_dir.is_dir() else []
-    if m is not None and finished and not links and (state_dir / ".claude").is_dir():
+    if m is not None and finished and (state_dir / ".claude").is_dir():
         m = with_overhead(m, state_dir / ".claude", started)
     frozen_hash = req.frozen.plugin_hash if req.frozen is not None else None
     load_problems = verify_load(m, arm, frozen_hash) if m is not None else []
-    live = m is not None and finished and not links and is_live(m, arm, state_dir)
+    live = m is not None and finished and is_live(m, arm, state_dir)
     timed_out = bool(exit_doc and exit_doc.get("timed_out") is True)
     status = classify(
         m,
@@ -317,23 +407,18 @@ def collect_outcome(
         wrapper=arm.kind == "wrapper",
     )
     notes += load_problems
-    if backstop_killed:
-        notes.append(f"host backstop kill at timeout_s + {BACKSTOP_S} s")
     if oom_killed:
         notes.append("container OOM-killed")
     if status != ("infra_fail", "docker"):
         if not finished:
             status = ("infra_fail", "unknown")
             notes.append("run did not finish its bookkeeping (no exit.json or state-out)")
-        elif links:
-            status = ("infra_fail", "load")
-            notes.append(f"symbolic link in copied-out state: {links[0].name}")
         elif exit_doc is not None and exit_doc.get("patch_exit") != 0:
             status = ("infra_fail", "unknown")
-            notes.append("patch extraction failed")
+            notes.append("patch extraction failed or overran its time limit")
     patch = ""
-    if not backstop_killed and (run_dir / "patch.diff").is_file():
-        patch = (run_dir / "patch.diff").read_bytes().decode("utf-8", "surrogateescape")
+    if not backstop_killed and patch_data is not None:
+        patch = patch_data.decode("utf-8", "surrogateescape")
     graded = status[0] in ("ok", "agent_fail")
     return RunOutcome(status, m, patch, state_dir if graded else None, wall_s, notes)
 
@@ -498,6 +583,25 @@ def _volume(src: Path, dst: str, *, read_only: bool) -> list[str]:
     return ["-v", f"{text}:{dst}" + (":ro" if read_only else "")]
 
 
+def _write_secret(root: Path | None, token: str) -> Path:
+    """A fresh 0700 directory holding the token as a 0400 file ``token`` (mounted read-only at
+    `SECRET_MOUNT`, removed by the caller after the run; never inside the run directory)."""
+    directory = Path(tempfile.mkdtemp(prefix="tsb-secret-", dir=root))
+    fd = os.open(directory / "token", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(token)
+    return directory
+
+
+def _remove_secret(directory: Path) -> None:
+    for path in (directory / "token", directory):
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
+    shutil.rmtree(directory, ignore_errors=True)
+
+
 class DockerBackend:
     """Runs each request in its task's arm64 image (module docstring)."""
 
@@ -512,6 +616,8 @@ class DockerBackend:
         environ: Mapping[str, str] | None = None,
         probe_image: str = DISK_PROBE_IMAGE,
         disk_path: Path | None = None,
+        networks: Mapping[str, str] | None = None,
+        secret_root: Path | None = None,
     ) -> None:
         self.toolchain, self.templates = toolchain, templates
         self.memory, self.cpus = memory, cpus
@@ -519,6 +625,8 @@ class DockerBackend:
         self._environ = dict(os.environ if environ is None else environ)
         self.probe_image = probe_image
         self.disk_path = disk_path or templates
+        self.networks = dict(networks or {})  # arm name -> docker network (default bridge)
+        self.secret_root = secret_root  # where the per-run token dir is made (system temp)
 
     def _client_env(self, container: Mapping[str, str] | None = None) -> dict[str, str]:
         env = {k: self._environ[k] for k in CLIENT_ENV_KEYS if k in self._environ}
@@ -531,7 +639,12 @@ class DockerBackend:
         return self._runner(["docker", *args], self._client_env(), timeout)
 
     def _ids(self, *args: str) -> list[str]:
-        return [line for line in self._docker(*args).stdout.split() if line]
+        """Container ids a ``docker ps`` lists; `BackendError` when docker fails (fail closed:
+        an unreadable daemon never passes the orphan or one-container checks)."""
+        proc = self._docker(*args)
+        if proc.returncode != 0:
+            raise BackendError(f"docker {' '.join(args[:2])} failed ({proc.returncode})")
+        return [line for line in proc.stdout.split() if line]
 
     # images and disk (ruling M5-N2) --------------------------------------------------------
 
@@ -569,18 +682,31 @@ class DockerBackend:
         return len(ids)
 
     def _remove_orphans(self, key_id: str, name: str) -> None:
+        """Remove every container of this key and of this attempt's name, then confirm none is
+        left (`BackendError` otherwise: never two containers of one key)."""
         ids = self._ids("ps", "-aq", "--filter", f"label=tsb.key={key_id}")
         if ids:
             self._docker("rm", "-f", *ids)
         self._docker("rm", "-f", name)
+        left = self._ids("ps", "-aq", "--filter", f"label=tsb.key={key_id}")
+        left += self._ids("ps", "-aq", "--filter", f"name=^/?{name}$")
+        if left:
+            raise BackendError(f"orphan containers of {name} survived removal")
 
-    def run_argv(self, req: RunRequest, name: str, env: Mapping[str, str]) -> list[str]:
+    def run_argv(
+        self, req: RunRequest, name: str, env: Mapping[str, str], secret: Path | None = None
+    ) -> list[str]:
         arm = req.arm
         argv = ["docker", "run", "--name", name]
         argv += ["--label", f"tsb.campaign={req.campaign}", "--label", f"tsb.key={req.key_id}"]
         argv += ["--platform", PLATFORM, "--pull", "never"]
         argv += ["--memory", self.memory, "--memory-swap", self.memory]
         argv += ["--cpus", str(self.cpus), "--pids-limit", str(PIDS_LIMIT)]
+        argv += ["--network", self.networks.get(arm.name, DEFAULT_NETWORK)]
+        argv += ["--cap-drop", "ALL"]
+        for cap in CAP_ADD:
+            argv += ["--cap-add", cap]
+        argv += ["--security-opt", "no-new-privileges"]
         argv += ["--entrypoint", "/bin/sh", "--workdir", "/testbed"]
         argv += _volume(self.toolchain, "/opt/bench", read_only=True)
         argv += _volume(self.templates / arm.name, "/opt/template", read_only=True)
@@ -590,6 +716,8 @@ class DockerBackend:
         argv += _volume(req.run_dir, "/run-out", read_only=False)
         argv += _volume(ENTRY_SCRIPT, ENTRY_MOUNT, read_only=True)
         argv += _volume(PATCH_SCRIPT, PATCH_MOUNT, read_only=True)
+        if secret is not None:
+            argv += _volume(secret, SECRET_MOUNT, read_only=True)
         for key in sorted(env):
             argv += ["-e", key]  # by name only: the value stays in the client's environment
         argv += [req.task.image, ENTRY_MOUNT]
@@ -607,19 +735,24 @@ class DockerBackend:
             raise BackendError("another bench container is running (one container at a time)")
         _prepare_run_dir(req.run_dir)
         token = token_from_env(self._environ)
-        env = container_env(req, token)
-        argv = self.run_argv(req, name, env)
-        started = time.time()
-        backstop, problems = False, []
+        env = container_env(req)
+        secret = _write_secret(self.secret_root, token) if token else None
         try:
-            proc = self._runner(argv, self._client_env(env), req.timeout_s + BACKSTOP_S)
-            docker_exit = proc.returncode
-        except subprocess.TimeoutExpired:
-            backstop, docker_exit = True, -9
-            self._docker("kill", name)  # the container, not only the client
-        inspect = self._docker("inspect", "--format", "{{.State.OOMKilled}}", name)
-        oom = inspect.stdout.strip() == "true"
-        self._docker("rm", "-f", name)
+            argv = self.run_argv(req, name, env, secret)
+            started = time.time()
+            backstop, problems = False, []
+            try:
+                proc = self._runner(argv, self._client_env(env), req.timeout_s + BACKSTOP_S)
+                docker_exit = proc.returncode
+            except subprocess.TimeoutExpired:
+                backstop, docker_exit = True, -9
+                self._docker("kill", name)  # the container, not only the client
+            inspect = self._docker("inspect", "--format", "{{.State.OOMKilled}}", name)
+            oom = inspect.stdout.strip() == "true"
+            self._docker("rm", "-f", name)
+        finally:
+            if secret is not None:
+                _remove_secret(secret)
         if docker_exit not in (0, -9):
             problems.append(f"docker run exited {docker_exit}")
         return collect_outcome(

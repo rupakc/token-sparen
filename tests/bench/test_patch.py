@@ -139,6 +139,76 @@ def test_patch_cli_fails_on_bad_base(repo: tuple[Path, str], tmp_path: Path) -> 
     assert pt.main(["--repo", str(root), "--base", "0" * 40, "--out", str(out)], environ={}) == 1
 
 
+POSIX = pytest.mark.skipif(os.name != "posix", reason="shell hooks and symlinks")
+
+
+@POSIX
+def test_patch_ignores_hostile_repo_config_and_attributes(
+    repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    root, base = repo
+    marks = {n: tmp_path / f"pwned-{n}" for n in ("fsmonitor", "hook", "external", "filter")}
+    hooks = root / ".git" / "evil-hooks"
+    hooks.mkdir()
+    for name in ("pre-commit", "post-index-change", "reference-transaction"):
+        (hooks / name).write_text(f"#!/bin/sh\ntouch '{marks['hook']}'\n", encoding="utf-8")
+        (hooks / name).chmod(0o755)
+    with (root / ".git" / "config").open("a", encoding="utf-8") as fh:
+        fh.write(
+            "[core]\n"
+            f"\tfsmonitor = touch '{marks['fsmonitor']}'; echo\n"
+            f"\thooksPath = {hooks.as_posix()}\n"
+            "[diff]\n"
+            "\tnoprefix = true\n"
+            "\tmnemonicPrefix = true\n"
+            f"\texternal = touch '{marks['external']}'; echo\n"
+            "[color]\n\tui = always\n\tdiff = always\n"
+            f"[filter \"evil\"]\n\tclean = touch '{marks['filter']}'; cat\n\trequired = true\n"
+            '[diff "evil"]\n\ttextconv = echo HIJACKED\n'
+        )
+    _write(root, ".gitattributes", "* filter=evil diff=evil\n")
+    _write(root, "src.py", "x = 9\n")
+    patch = pt.extract_patch(str(root), base, ("CLAUDE.md",), run=pt.git_runner())
+    assert not [n for n, m in marks.items() if m.exists()]
+    assert "\x1b[" not in patch and "HIJACKED" not in patch
+    assert "diff --git a/src.py b/src.py" in patch
+    assert _files(patch) == {"src.py", ".gitattributes"}
+    # the agent's repository is not modified by the extraction (its index untouched)
+    assert _git(root, "diff", "--cached", "--name-only") == ""
+    check = root.parent / "check"
+    subprocess.run([*GIT, "clone", "-q", str(root), str(check)], check=True, capture_output=True)
+    _git(check, "checkout", "-q", base)
+    (root.parent / "p.diff").write_text(patch, encoding="utf-8", newline="\n")
+    _git(check, "apply", "--check", str(root.parent / "p.diff"))
+
+
+@POSIX
+def test_patch_cli_writes_atomically_over_a_planted_link(
+    repo: tuple[Path, str], tmp_path: Path
+) -> None:
+    root, base = repo
+    _write(root, "src.py", "x = 5\n")
+    target = tmp_path / "host-secret"
+    target.write_text("secret\n", encoding="utf-8")
+    out = tmp_path / "patch.diff"
+    out.symlink_to(target)
+    assert pt.main(["--repo", str(root), "--base", base, "--out", str(out)], environ={}) == 0
+    assert not out.is_symlink() and target.read_text(encoding="utf-8") == "secret\n"
+    assert "src.py" in out.read_text(encoding="utf-8")
+
+
+def test_patch_cli_unwritable_out_fails_cleanly(repo: tuple[Path, str], tmp_path: Path) -> None:
+    root, base = repo
+    out = tmp_path / "missing-dir" / "patch.diff"
+    assert pt.main(["--repo", str(root), "--base", base, "--out", str(out)], environ={}) == 1
+
+
+def test_git_runner_times_out(repo: tuple[Path, str]) -> None:
+    root, base = repo
+    with pytest.raises(pt.PatchError):
+        pt.extract_patch(str(root), base, (), run=pt.git_runner(timeout=0.0001))
+
+
 def test_git_runner_env_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GIT_DIR", "/nowhere")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "secret")

@@ -258,10 +258,23 @@ def test_token_never_in_argv_or_files(tmp_path: Path, frozen: fz.FrozenPlugin) -
     assert not any(SECRET in a for a in argv)
     names = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
     assert names and all("=" not in n for n in names)
-    assert "CLAUDE_CODE_OAUTH_TOKEN" in names and env["CLAUDE_CODE_OAUTH_TOKEN"] == SECRET
+    # never `-e`: the token is in no container config (docker inspect, PID 1's environ)
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in names and "CLAUDE_CODE_OAUTH_TOKEN" not in env
     assert "ANTHROPIC_API_KEY" not in names and "ANTHROPIC_API_KEY" not in env
     assert set(names) <= set(env)  # every name has its value in the client's explicit env
+    for call_argv, call_env, _ in docker.calls:  # run, inspect, rm, ps …
+        assert not any(SECRET in a for a in call_argv)
+        assert SECRET not in call_env.values()
+    # a read-only 0400 file outside the run dir, removed after the run
+    secret_src = dict(_mounts(argv))[bk.SECRET_MOUNT]
+    assert secret_src.endswith(":ro")
+    secret_dir = Path(secret_src.removesuffix(":ro"))
+    assert not secret_dir.is_relative_to(dreq.run_dir)
+    assert docker.secret_seen == (SECRET, 0o400 if os.name == "posix" else docker.secret_seen[1])
+    assert not secret_dir.exists()
     assert lk.scan_for_token([dreq.run_dir], SECRET) == []
+    entry = bk.ENTRY_SCRIPT.read_text(encoding="utf-8")
+    assert "export CLAUDE_CODE_OAUTH_TOKEN" not in entry
 
 
 # --- docker backend (mocked CLI) ---------------------------------------------------------
@@ -287,12 +300,16 @@ class FakeDocker:
         run_rc: int = 0,
         busy: str = "",
         image_present: bool = True,
+        ps_rc: int = 0,
+        sticky: bool = False,
         df: str = "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
         "overlay 100000000 1000 62500000 1% /\n",
     ) -> None:
         self.calls: list[tuple[list[str], dict[str, str], float | None]] = []
         self.container, self.key_ids, self.oom, self.hang = container, key_ids, oom, hang
         self.run_rc, self.busy, self.image_present, self.df = run_rc, busy, image_present, df
+        self.ps_rc, self.sticky = ps_rc, sticky  # sticky: `rm -f` does not remove orphans
+        self.secret_seen: tuple[str, int] | None = None
 
     def __call__(
         self, argv: list[str], env: Mapping[str, str], timeout: float | None
@@ -301,11 +318,19 @@ class FakeDocker:
         assert argv[0] == "docker"
         if argv[1] == "ps":
             label = argv[argv.index("--filter") + 1]
-            return _cp(argv, self.key_ids if label.startswith("label=tsb.key=") else self.busy)
+            if label.startswith("label=tsb.key="):
+                return _cp(argv, self.key_ids, self.ps_rc)
+            return _cp(argv, "" if label.startswith("name=") else self.busy, self.ps_rc)
+        if argv[1:3] == ["rm", "-f"] and not self.sticky:
+            self.key_ids = "\n".join(i for i in self.key_ids.split() if i not in argv[3:])
         if argv[1] == "run" and "--rm" not in argv:
+            mounts = dict(_mounts(argv))
+            if bk.SECRET_MOUNT in mounts:
+                token_file = Path(mounts[bk.SECRET_MOUNT].removesuffix(":ro")) / "token"
+                mode = token_file.stat().st_mode & 0o777
+                self.secret_seen = (token_file.read_text(encoding="utf-8"), mode)
             if self.hang:
                 raise subprocess.TimeoutExpired(argv, timeout or 0)
-            mounts = dict(_mounts(argv))
             if self.container is not None:
                 self.container(Path(mounts["/run-out"]), env)
             return _cp(argv, rc=self.run_rc)
@@ -465,6 +490,71 @@ def test_docker_command_limits_and_mounts(tmp_path: Path, frozen: fz.FrozenPlugi
     assert docker.index("docker", "inspect") < removals[-1]
 
 
+def test_docker_hardening_and_per_arm_network(tmp_path: Path) -> None:
+    docker = FakeDocker(container=_container_success)
+    backend = _docker(tmp_path, docker, networks={"baseline": "tsb-egress"})
+    backend.run(_req(tmp_path))
+    argv, _, _ = docker.run_call()
+    flags = {argv[i]: argv[i + 1] for i in range(len(argv) - 1) if argv[i].startswith("--")}
+    assert flags["--network"] == "tsb-egress"
+    assert flags["--cap-drop"] == "ALL"
+    assert flags["--security-opt"] == "no-new-privileges"
+    added = {argv[i + 1] for i, a in enumerate(argv) if a == "--cap-add"}
+    assert added == set(bk.CAP_ADD)
+    other = FakeDocker(container=_container_success)
+    _docker(tmp_path, other).run(_req(tmp_path, tag="n2"))
+    argv2, _, _ = other.run_call()
+    assert argv2[argv2.index("--network") + 1] == bk.DEFAULT_NETWORK
+
+
+def _planted_link(out: Path, env: Mapping[str, str]) -> None:
+    _container_success(out, env)
+    secret = out.parent / "host-private.txt"
+    secret.write_text("HOST PRIVATE CONTENT", encoding="utf-8")
+    (out / "patch.diff").unlink()
+    (out / "patch.diff").symlink_to(secret)
+
+
+@POSIX
+def test_planted_link_in_run_out_is_never_read(tmp_path: Path) -> None:
+    out = _docker(tmp_path, FakeDocker(container=_planted_link)).run(_req(tmp_path))
+    assert out.status == ("infra_fail", "load")
+    assert out.patch == "" and out.metrics is None and out.state_out is None
+    assert "HOST PRIVATE CONTENT" not in repr(out)
+    assert any("patch.diff" in p for p in out.problems)
+
+
+def test_oversized_run_output_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bk, "RUN_OUT_MAX_BYTES", 100)
+    out = _docker(tmp_path, FakeDocker(container=_container_success)).run(_req(tmp_path))
+    assert out.status == ("infra_fail", "load") and out.patch == ""
+    assert any("exceed" in p for p in out.problems)
+
+
+def test_oversized_single_output_is_not_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(bk.OUTPUT_CAPS, "patch.diff", 10)
+    out = _docker(tmp_path, FakeDocker(container=_container_success)).run(_req(tmp_path))
+    assert out.status == ("infra_fail", "load") and out.patch == ""
+
+
+def test_docker_ps_failure_fails_closed(tmp_path: Path) -> None:
+    docker = FakeDocker(container=_container_success, ps_rc=1)
+    with pytest.raises(bk.BackendError):
+        _docker(tmp_path, docker).run(_req(tmp_path))
+    assert not [c for c in docker.calls if c[0][1] == "run"]
+    with pytest.raises(bk.BackendError):
+        _docker(tmp_path, FakeDocker(ps_rc=1)).reap("c1")
+
+
+def test_orphan_that_survives_removal_blocks_the_run(tmp_path: Path) -> None:
+    docker = FakeDocker(container=_container_success, key_ids="dead1\n", sticky=True)
+    with pytest.raises(bk.BackendError):
+        _docker(tmp_path, docker).run(_req(tmp_path))
+    assert not [c for c in docker.calls if c[0][1] == "run"]
+
+
 def test_docker_oom_is_infra(tmp_path: Path) -> None:
     docker = FakeDocker(container=_container_success, oom=True)
     out = _docker(tmp_path, docker).run(_req(tmp_path))
@@ -573,18 +663,30 @@ def _entry_env(tmp_path: Path, scenario: str, timeout_rc: int) -> tuple[dict[str
     tk.make_fake_repo(testbed)
     bindir = root / "bin"
     bindir.mkdir()
-    # fake coreutils `timeout`: runs the command (dropping the 3 timeout args), then
-    # reports `timeout_rc` the way GNU timeout does when the limit fired
+    # fake coreutils `timeout`: drops its options and duration, runs the command, and for
+    # the agent (`claude`) reports `timeout_rc` the way GNU timeout does when the limit fired
     fake_timeout = bindir / "timeout"
     fake_timeout.write_text(
-        f'#!/bin/sh\nshift 3\n"$@"\nrc=$?\n[ {timeout_rc} -ne 0 ] && exit {timeout_rc}\nexit $rc\n',
+        "#!/bin/sh\n"
+        'while case "$1" in --*) true ;; *) false ;; esac; do shift; done\n'
+        "shift\n"
+        'agent=$1\n"$@"\nrc=$?\n'
+        f'if [ "$agent" = claude ] && [ {timeout_rc} -ne 0 ]; then exit {timeout_rc}; fi\n'
+        "exit $rc\n",
         encoding="utf-8",
     )
+    # the fake claude records whether the token reached its own environment
     fake_claude = bindir / "claude"
+    seen = root / "agent-token-seen"
     fake_claude.write_text(
-        f'#!/bin/sh\nexec "{sys.executable}" -I "{tk.FAKE_DIR / "agent.py"}" "$@"\n',
+        f'#!/bin/sh\nprintf %s "${{CLAUDE_CODE_OAUTH_TOKEN:+set}}" > "{seen}"\n'
+        f'exec "{sys.executable}" -I "{tk.FAKE_DIR / "agent.py"}" "$@"\n',
         encoding="utf-8",
     )
+    secret_dir = root / "secret"
+    secret_dir.mkdir()
+    (secret_dir / "token").write_text(SECRET, encoding="utf-8")
+    (secret_dir / "token").chmod(0o400)
     for f in (fake_timeout, fake_claude):
         f.chmod(0o755)
     env = {
@@ -602,7 +704,7 @@ def _entry_env(tmp_path: Path, scenario: str, timeout_rc: int) -> tuple[dict[str
         "TSB_PATCH_EXCLUDES": "\n".join(ARMS["token-sparen"].patch_excludes),
         "TSB_STATE_PATHS": ".token-sparen\n.claude/projects\n.headroom/logs\n../escape\n",
         "TSB_FAKE_SCENARIO": scenario,
-        "CLAUDE_CODE_OAUTH_TOKEN": SECRET,
+        "TSB_TOKEN_FILE": str(secret_dir / "token"),
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
     }
@@ -636,6 +738,37 @@ def test_entry_script_timeout_keeps_patch_and_state(tmp_path: Path) -> None:
     home = tmp_path / "ctr" / "home"
     assert not (home / "escape").exists()
     assert json.loads((home / "mcp.json").read_text(encoding="utf-8")) == {"mcpServers": {}}
+    # the token reached the agent's own environment only (entry.sh never exports it)
+    assert (tmp_path / "ctr" / "agent-token-seen").read_text(encoding="utf-8") == "set"
+    assert "TSB_PATCH_TIMEOUT_S" in bk.ENTRY_SCRIPT.read_text(encoding="utf-8")
+
+
+@POSIX
+def test_entry_script_copy_in_failure_aborts_before_the_agent(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root reads unreadable files")
+    env, out = _entry_env(tmp_path, "success", 0)
+    bad = Path(env["TSB_TEMPLATE"]) / ".claude" / "unreadable.json"
+    bad.write_text("{}", encoding="utf-8")
+    bad.chmod(0)
+    try:
+        assert _entry(env, "claude", "-p", "fix", "--model", MODEL) != 0
+    finally:
+        bad.chmod(0o600)
+    assert not (out / "exit.json").exists() and not (out / "stream.jsonl").exists()
+    assert not (tmp_path / "ctr" / "agent-token-seen").exists()
+
+
+@POSIX
+def test_entry_script_replaces_state_out_planted_by_the_agent(tmp_path: Path) -> None:
+    env, out = _entry_env(tmp_path, "success", 0)
+    planted = out / "state-out" / ".token-sparen"
+    planted.mkdir(parents=True)
+    (planted / "planted.txt").write_text("x", encoding="utf-8")
+    assert _entry(env, "claude", "-p", "fix", "--model", MODEL) == 0
+    state = out / "state-out" / ".token-sparen"
+    assert (state / "global" / "carried.json").is_file()
+    assert not (state / ".token-sparen").exists() and not (state / "planted.txt").exists()
 
 
 @POSIX
