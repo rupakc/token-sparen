@@ -22,6 +22,8 @@ _TMP_RE = re.compile(r"^[0-9a-f]{12}\.txt\.tmp-\d+-[0-9a-f]+$")
 _TMP_STALE_S = 3600.0
 _DAY_S = 86400.0
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_NAME_SURROGATE = 0x20000000  # reparse-tag bit: the entry names another path (link, junction)
 
 
 @dataclass(frozen=True)
@@ -41,19 +43,53 @@ def _encode(text: str) -> bytes:
         return text.encode("utf-8", errors="surrogatepass")
 
 
+def _is_link(st: os.stat_result) -> bool:
+    """``st`` (from ``lstat``) is a link of any kind: a symbolic link, or on Windows a junction
+    or any other name-surrogate reparse point (``lstat`` there reports a junction as a plain
+    directory and ``is_symlink`` is false). A reparse point without a tag is refused too; a
+    non-surrogate tag (e.g. a cloud placeholder) is a real file and is allowed."""
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    if not getattr(st, "st_file_attributes", 0) & _REPARSE_POINT:
+        return False
+    tag = getattr(st, "st_reparse_tag", None)
+    return not tag or bool(tag & _NAME_SURROGATE)
+
+
 def _refuse_links(*dirs: Path) -> None:
     """A repository can commit ``.token-sparen`` (or ``outputs``) as a symbolic link: writing,
     reading or pruning through it would touch files outside the project, so it is refused."""
     for d in dirs:
-        if d.is_symlink():
-            raise OSError(f"{d} is a symbolic link; recovery files are not used through it")
+        try:
+            st = os.lstat(d)
+        except FileNotFoundError:
+            continue
+        if _is_link(st):
+            raise OSError(f"{d} is a link; recovery files are not used through it")
 
 
 def _real_dirs(*dirs: Path) -> None:
     """Each of ``dirs`` exists and is a real directory (lstat: never a link); else OSError."""
     for d in dirs:
-        if not stat.S_ISDIR(os.lstat(d).st_mode):
-            raise OSError(f"{d} is not a directory (or is a symbolic link)")
+        st = os.lstat(d)
+        if not stat.S_ISDIR(st.st_mode) or _is_link(st):
+            raise OSError(f"{d} is not a directory (or is a link)")
+
+
+def _create_once(path: Path, data: str) -> None:
+    """Create ``path`` with ``data`` unless any entry (a dangling link included) is there.
+    Windows has no ``O_NOFOLLOW`` and ``O_EXCL`` there creates a dangling link's target, so an
+    existing entry is checked with ``lstat`` first (a committed link is static; on POSIX
+    ``O_EXCL | O_NOFOLLOW`` also closes the race)."""
+    try:
+        os.lstat(path)
+        return
+    except FileNotFoundError:
+        pass
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data.encode("utf-8"))
 
 
 def registry_dir(project_dir: Path, env: Mapping[str, str]) -> Path:
@@ -113,17 +149,15 @@ def save_full(project_dir: Path, text: str, env: Mapping[str, str] | None = None
     private_mkdir(root)
     private_mkdir(out)
     _real_dirs(root, out)  # re-checked: a link may have been planted meanwhile
-    gitignore = root / ".gitignore"
-    with contextlib.suppress(OSError):  # "x": O_EXCL never follows a (dangling) link
-        with gitignore.open("x", encoding="utf-8") as fh:
-            fh.write("*\n")
+    with contextlib.suppress(OSError):
+        _create_once(root / ".gitignore", "*\n")
     name = f"{rid}.txt"
     path = out / name
     try:
         st: os.stat_result | None = os.lstat(path)
     except FileNotFoundError:
         st = None
-    if st is not None and not stat.S_ISREG(st.st_mode):
+    if st is not None and (not stat.S_ISREG(st.st_mode) or _is_link(st)):
         raise OSError(f"{path} is not a regular file (a link?); nothing was saved")
     if st is not None and _registered(project_dir, rid, env):
         if os.utime in os.supports_follow_symlinks:
@@ -148,7 +182,13 @@ def read_full(project_dir: Path, rid: str, env: Mapping[str, str] | None = None)
         _real_dirs(root, out)
         if not _registered(project_dir, rid, env):
             return None
-        fd = os.open(out / f"{rid}.txt", os.O_RDONLY | _NOFOLLOW | getattr(os, "O_BINARY", 0))
+        path = out / f"{rid}.txt"
+        # Windows has no O_NOFOLLOW: the open below would follow a link, so lstat first (the
+        # threat is a link committed by the repository, which is there before we look).
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or _is_link(st):
+            return None
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW | getattr(os, "O_BINARY", 0))
         with os.fdopen(fd, "rb") as fh:
             if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
                 return None
@@ -189,7 +229,7 @@ def prune_outputs(
                 st = p.lstat()
             except OSError:
                 continue
-            if not stat.S_ISREG(st.st_mode):
+            if not stat.S_ISREG(st.st_mode) or _is_link(st):
                 continue  # a link or anything else: never followed
             if tmp:
                 if st.st_mtime < now - _TMP_STALE_S:

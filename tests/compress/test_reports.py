@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 import pytest
-from perfutil import best_of, perf_factor
+from perfutil import best_within, perf_factor
 
 from token_sparen.compress import CompressContext, Level, TextCompressor, is_error_line, registry
 from token_sparen.compress.reports import (
@@ -406,9 +406,9 @@ def _big(unit: str, size: int = 1024 * 1024) -> str:
 )
 def test_one_megabyte_under_100ms(cls: type, unit: str) -> None:
     text = "=== test session starts ===\n" + _big(unit) + "\n=== 1 failed, 5 passed in 1s ===\n"
-    best, res = best_of(lambda: cls().compress(text, STANDARD, NO_CTX), 3)
-    assert isinstance(res.text, str)
     budget = 0.1 * perf_factor()
+    best, res = best_within(lambda: cls().compress(text, STANDARD, NO_CTX), budget, 3)
+    assert isinstance(res.text, str)
     assert best < budget, f"{cls.__name__}: {best * 1000:.0f} ms (budget {budget * 1000:.0f})"
 
 

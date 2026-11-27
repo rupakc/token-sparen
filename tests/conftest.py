@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import perfutil  # noqa: F401  (reads TOKEN_SPAREN_PERF_FACTOR before any fixture deletes it)
 import pytest
 
 
