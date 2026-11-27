@@ -358,7 +358,10 @@ def test_pypi_skip_existing_and_hash_check(wf: dict[str, Any]) -> None:
     fin = _runs(jobs["finalize"])
     assert "https://pypi.org/pypi/token-sparen/$VERSION/json" in fin
     assert ".digests.sha256" in fin and "dist/SHA256SUMS" in fin
-    assert 'gh release edit "$TAG" --draft=false --latest' in fin
+    assert 'gh release edit "$TAG" --draft=false "$latest"' in fin
+    # `latest` only when this tag is the highest vX.Y.Z release (a patch on an older line is not)
+    assert "sort -V | tail -n 1" in fin and "--exclude-drafts" in fin
+    assert "then latest=--latest; else latest=--latest=false; fi" in fin
     assert fin.index("SHA256SUMS") < fin.index("--draft=false")
 
 
@@ -385,7 +388,7 @@ def test_verify_tag_checks_signer_and_main_ancestry(wf: dict[str, Any]) -> None:
         'gh api "repos/$REPO/git/tags/$tag_sha"',
         ".verification.verified == true",
         '.verification.reason == "valid"',
-        ".tagger.email == $tagger",
+        "(.tagger.email | ascii_downcase) == ($tagger | ascii_downcase)",
         '"$commit" = "$GITHUB_SHA"',
         # the owner's key is the only trusted key; the tag must verify against it
         'scripts/release_trust.py trust --email "$RELEASE_TAGGER" --key-env RELEASE_SIGNING_KEY',
@@ -438,7 +441,7 @@ def test_build_checks_and_artifact(wf: dict[str, Any]) -> None:
     run = _runs(build)
     order = [
         'python scripts/release_check.py --mode tag --tag "$TAG"',
-        "python -m build --outdir dist",
+        "python -m build --no-isolation --outdir dist",
         "twine check --strict",
         "python scripts/check_wheel.py",
         "python scripts/build_claude_tree.py --out dist/tree",
@@ -449,6 +452,17 @@ def test_build_checks_and_artifact(wf: dict[str, Any]) -> None:
     positions = [run.index(needle) for needle in order]
     assert positions == sorted(positions)
     assert "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct HEAD)" in run
+    # no pip cache and hash-pinned build tools in the job whose output is attested and published
+    (setup,) = _uses(build, "actions/setup-python@")
+    assert "cache" not in setup["with"]
+    installs = [s["run"] for s in build["steps"] if "pip install" in str(s.get("run", ""))]
+    assert installs == [
+        "pip install --no-cache-dir --require-hashes --no-deps -r requirements/release.txt"
+    ]
+    pins = (ROOT / "requirements" / "release.txt").read_text(encoding="utf-8")
+    reqs = re.findall(r"^([A-Za-z0-9_.-]+)==\S+ \\$", pins, re.M)
+    assert {"build", "twine", "setuptools"} <= {r.lower() for r in reqs}
+    assert pins.count("--hash=sha256:") >= len(reqs) > 0
     (deny,) = [s for s in build["steps"] if "check_denylist" in str(s.get("run", ""))]
     assert deny["env"] == {"TOKEN_SPAREN_DENYLIST": "${{ secrets.TOKEN_SPAREN_DENYLIST }}"}
     (upload,) = _uses(build, "actions/upload-artifact@")

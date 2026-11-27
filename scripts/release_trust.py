@@ -10,8 +10,9 @@ job additionally trusts ONLY the public key the owner stored in the repository v
 * ``trust``: read the key from an environment variable (never argv). An SSH public key line
   (``ssh-ed25519 AAAA... [comment]``) becomes the only entry of an allowed-signers file and git's
   ``gpg.ssh.allowedSignersFile``; an ASCII-armoured OpenPGP public key (exactly one primary key)
-  is imported into a keyring that must be empty and given ultimate owner trust, with
-  ``gpg.minTrustLevel = fully``. Empty or malformed input fails closed.
+  whose user ids include the tagger email is imported into a keyring that must be empty and
+  given ultimate owner trust, with ``gpg.minTrustLevel = fully``. Empty or malformed input
+  fails closed.
 * ``verify-tag TAG``: ``git verify-tag`` must succeed AND name the trusted signer (SSH: a good
   signature *for* the tagger email; OpenPGP: a good, ultimately trusted signature).
 
@@ -93,8 +94,22 @@ def _gpg_fingerprints(colons: str) -> list[str]:
     return out
 
 
+def _gpg_uid_emails(colons: str) -> set[str]:
+    """Lower-cased emails of the ``uid`` records of a ``--with-colons`` listing."""
+    out: set[str] = set()
+    for line in colons.splitlines():
+        fields = line.split(":")
+        if fields[0] == "uid" and len(fields) > 9:
+            uid = fields[9].strip()
+            bracketed = re.search(r"<([^<>]+)>$", uid)
+            address = bracketed.group(1) if bracketed else uid
+            if EMAIL.fullmatch(address):
+                out.add(address.lower())
+    return out
+
+
 def _trust_pgp(email: str, key: str, run: Runner) -> str:
-    _email(email)
+    email = _email(email)
     listed = run(["gpg", "--batch", "--with-colons", "--list-keys"])
     if _gpg_fingerprints(listed.stdout):
         raise TrustError("the gpg keyring is not empty: refusing to trust more than one key")
@@ -105,6 +120,8 @@ def _trust_pgp(email: str, key: str, run: Runner) -> str:
     fprs = _gpg_fingerprints(shown.stdout)
     if shown.returncode != 0 or len(fprs) != 1:
         raise TrustError("the OpenPGP signing key must hold exactly one primary public key")
+    if email.lower() not in _gpg_uid_emails(shown.stdout):
+        raise TrustError("the OpenPGP signing key has no user id with the RELEASE_TAGGER email")
     imported = run(["gpg", "--batch", "--import"], stdin=key)
     if imported.returncode != 0:
         raise TrustError(f"gpg --import failed: {imported.stderr.strip()}")

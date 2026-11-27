@@ -69,6 +69,7 @@ PGP = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBF...\n-----END PGP PUBLIC KE
 FPR = "A" * 40
 ONE_KEY = (
     f"pub:-:255:22:K:1::::::scESC:\nfpr:::::::::{FPR}:\n"
+    "uid:-::::1::H::Owner <Owner@Example.com>::::::::::0:\n"
     f"sub:-:255:18:S:1:::::e:\nfpr:::::::::{'B' * 40}:\n"
 )
 
@@ -90,6 +91,8 @@ def test_pgp_refuses_a_non_empty_keyring_or_several_keys(tmp_path: Path) -> None
         rt.trust(EMAIL, PGP, tmp_path / "s", run=FakeRun({"key": ONE_KEY + ONE_KEY}))
     with pytest.raises(rt.TrustError, match="exactly one"):
         rt.trust(EMAIL, PGP, tmp_path / "s", run=FakeRun({"key": ONE_KEY}, rc=2))
+    with pytest.raises(rt.TrustError, match="no user id"):
+        rt.trust("someone@example.com", PGP, tmp_path / "s", run=FakeRun({"key": ONE_KEY}))
 
 
 def test_verify_tag_needs_success_and_the_trusted_signer() -> None:
