@@ -1,0 +1,18 @@
+{
+  "mode": "swebench5-arm64",
+  "swebench_version": "5.0.2",
+  "decided": "2026-11-27",
+  "ruling": "M5-N3",
+  "decided_before_any_agent_run": true,
+  "spike": {
+    "instances": ["django__django-12774", "sphinx-doc__sphinx-8265"],
+    "images": "swebench/sweb.eval.arm64.<instance id with __ replaced by _1776_>:latest",
+    "dataset": "SWE-bench/SWE-bench_Verified rows (pool verified_revision) with image rewritten by write_arm64_dataset",
+    "command": "swebench eval <dataset.jsonl> -p <preds.jsonl> --run-id <id> -i <id> ... -j 1 -t 1800 --report-dir <dir>",
+    "gold_resolved": {"django__django-12774": true, "sphinx-doc__sphinx-8265": true},
+    "noop_patch_resolved": {"django__django-12774": false},
+    "preflight_two_gold_passes": {"django__django-12774": "ok"},
+    "fallbacks_needed": false
+  },
+  "notes": "swebench 5.0.2 on the arm64 images resolved both gold patches with no failing FAIL_TO_PASS or PASS_TO_PASS test, and a no-op patch stayed unresolved; neither a pinned 4.x release nor amd64 emulation is needed. The sphinx eval script installs the package with pip, so grading needs network access."
+}

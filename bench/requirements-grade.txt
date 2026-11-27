@@ -1,0 +1,2 @@
+# Grader venv only (never the repo venv); the version follows bench/data/grade_mode.json.
+swebench==5.0.2
