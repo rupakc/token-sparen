@@ -124,4 +124,19 @@ confirmation.
 
 ## Outcome
 
-To be filled after the campaign, as a qualitative verdict only.
+Qualitative verdict only; the private report stays private.
+
+- The dev-split search over the pre-declared grids produced an empty joint proposal. Learning
+  related coordinates lacked enough evidence (below the minimum project groups and trims), and no
+  compression value passed the dev admissibility rules (non-inferior proxy regret, a significant
+  net-savings gain, and the E2 and inline-rate gates).
+- Because the proposal was empty, the one-shot test-split confirmation was deliberately not used.
+  It remains available for a future campaign with more data. Parameters are unchanged: the shipped
+  defaults are frozen as they are for the M4 tag.
+- The M3 lane results (facts, loop guard, pruning) were below their pre-declared evidence
+  minimums, so no M3 default was changed.
+- Off-policy evaluation on the dogfooding decision logs had no evaluable decision points and is
+  recorded as insufficient.
+- Main limitation: Claude Code keeps local transcripts for about thirty days by default, so the
+  available history is short. The method is designed to say "not enough evidence" rather than tune
+  on noise. Future campaigns can rerun the same harness as history accumulates.

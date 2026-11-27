@@ -7,6 +7,12 @@ Status: APPROVED 2026-11-25 (with §6.12 live statusline added at approval) · D
 
 ## Revision log
 
+**2026-11-27 (M4 outcome).** The M4 campaign ended with an empty joint proposal on the dev split
+(insufficient evidence; no admissible compression value), so the one-shot test look (§10.6) was not
+used and all defaults stay unchanged. M3 lanes were below minimum evidence and E3 had no evaluable
+decision points. Short local transcript retention is the main limitation. See
+`docs/reports/m4-method.md`.
+
 **2026-11-27 (M4).** §7.9: refit priors and tuned values carry provenance "selected on maintainer
 E1 dev split, private report <id>" (first twelve hex digits of the report hash) and no figures;
 this resolves the tension with §10.1 (numbers never committed, not even as aggregates): a grid

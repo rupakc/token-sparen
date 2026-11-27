@@ -10,6 +10,15 @@ Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones 
 and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`
 for M3); the package version stays `0.1.0.dev0` until v1.0.
 
+### M4 campaign outcome (defaults unchanged)
+
+- The dev-split search produced an empty joint proposal (insufficient evidence for learning
+  coordinates; no compression value passed the admissibility rules), so the one-shot test-split
+  confirmation was not used and remains available for a future campaign. Shipped defaults are
+  unchanged for `v0.4.0-m4`; M3 lanes were below their evidence minimums (no M3 default changed)
+  and off-policy evaluation had no evaluable decision points (insufficient). Package version stays
+  `0.1.0.dev0` until v1.0. See `docs/reports/m4-method.md`.
+
 ### M4 hill-climbing harness
 
 - `evals/hillclimb/run.py`: searches the grids pre-declared in `evals/hillclimb/space.toml` on

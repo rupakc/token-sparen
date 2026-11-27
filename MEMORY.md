@@ -1629,3 +1629,13 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   (re-run and >= 2 tokens in assistant text are 1.0), so "regret per trim <= tau" leans toward
   rejection (method doc); only compression is simulated, so pre-trim / read-dedupe keys go to
   static lanes and Task 11's sim check says "compression"; LinTS has no breaker, floor or ladder.
+
+## 2026-11-27 M4 campaign outcome: defaults unchanged
+- **Outcome**: the dev-split search over the pre-declared grids gave an empty joint proposal (learning
+  coordinates lacked evidence; no compression value passed the dev admissibility rules). M3 lanes
+  were below their evidence minimums; off-policy evaluation had no evaluable decision points
+  (insufficient).
+- **One-shot test look unused**: not spent because the proposal was empty; kept for a future campaign.
+- **Defaults unchanged**: shipped defaults frozen as-is for v0.4.0-m4.
+- **Reason**: local transcripts are kept about thirty days, so history is short; the method says
+  "not enough evidence" rather than tuning on noise. Rerun the same harness as history accumulates.
