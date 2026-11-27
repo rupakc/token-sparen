@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -94,3 +96,63 @@ def test_scan_does_not_follow_links(tmp_path: Path) -> None:
     assert leak.scan_for_token([run], TOKEN) == []
     leak.quarantine(run, [])
     assert outside.exists()  # quarantine never deletes through a link
+
+
+PLAIN = "plainSecretValue_" + "x7Y-" * 6  # a token value without the sk-ant-oat prefix
+
+
+@pytest.mark.parametrize("token", [TOKEN, PLAIN])
+@pytest.mark.parametrize("lead", [b"", b"u", b"us"])  # all three base64 alignments
+@pytest.mark.parametrize("encode", [base64.b64encode, base64.urlsafe_b64encode])
+def test_scan_finds_base64_forms(
+    tmp_path: Path, token: str, lead: bytes, encode: Callable[[bytes], bytes]
+) -> None:
+    blob = encode(lead + b"Authorization: " + token.encode() + b"\n")
+    (tmp_path / "creds").write_bytes(b"header " + blob + b" tail")
+    assert leak.scan_for_token([tmp_path], token) == [tmp_path / "creds"]
+
+
+def test_scan_finds_url_encoded_and_prefix_only_base64(tmp_path: Path) -> None:
+    pct = "".join(f"%{b:02X}" for b in PLAIN.encode())
+    (tmp_path / "a.log").write_text(f"GET /?t={pct}", encoding="utf-8")
+    (tmp_path / "b.log").write_text(f"GET /?t={pct.lower()}", encoding="utf-8")
+    assert leak.scan_for_token([tmp_path], PLAIN) == [tmp_path / "a.log", tmp_path / "b.log"]
+    # an sk-ant-oat token that is not the bench's, base64-encoded
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "c.bin").write_bytes(base64.b64encode(b"x" + OTHER.encode()))
+    assert leak.scan_for_token([other], PLAIN) == [other / "c.bin"]
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="permission bits are not enforced",
+)
+def test_scan_fails_closed_on_unreadable_paths(tmp_path: Path) -> None:
+    run = _run_dir(tmp_path)
+    locked = run / "state-out" / "locked"
+    locked.mkdir()
+    (locked / "inside.txt").write_text(TOKEN, encoding="utf-8")
+    locked.chmod(0)
+    unreadable = run / "secret.txt"
+    unreadable.write_text("x", encoding="utf-8")
+    unreadable.chmod(0)
+    try:
+        hits = leak.scan_for_token([run], TOKEN)
+        assert locked in hits and unreadable in hits
+        marker = leak.quarantine(run, hits)  # deletes through the unreadable directory too
+        assert sorted(p.name for p in run.iterdir()) == [leak.QUARANTINE_MARKER]
+        assert TOKEN not in marker.read_text(encoding="utf-8")
+    finally:
+        if locked.exists():
+            locked.chmod(0o700)
+
+
+def test_scan_never_prints_the_token(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / f"{TOKEN}.txt").write_text(TOKEN, encoding="utf-8")
+    hits = leak.scan_for_token([tmp_path], TOKEN)
+    leak.quarantine(tmp_path, hits, TOKEN)
+    out = capsys.readouterr()
+    assert TOKEN not in out.out + out.err
+    record = (tmp_path / leak.QUARANTINE_MARKER).read_text(encoding="utf-8")
+    assert TOKEN not in record and "[REDACTED]" in record

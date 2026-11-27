@@ -12,8 +12,15 @@ on init, ``command`` on hook events, ``api_error_status`` on result) are calibra
 streams in Task 13. `parse_stream` never raises: a line that is not a JSON object, or whose
 fields have the wrong types, is counted in ``malformed_lines``.
 
+Error text (ruling I1 of the Task 5 review) comes **only** from the final ``result`` record's
+error fields (``result`` text when ``is_error``, ``errors``, ``api_error_status``): never from
+tool output, assistant text or stray lines, which the agent's own tests can fill with
+"401 Unauthorized" or "500 Internal Server Error". Assistant ``error`` kinds, retries and
+rate-limit events are kept as counters (`classify` lets the final result decide, ruling I2).
+
 Cost per run (§10.5) = ``total_cost_usd`` of the main session + the plugin's side-call sessions
-found in the run's config dir (`overhead_from_config_dir`), list price, cache-aware.
+found in the run's config dir (`overhead_from_config_dir`), list price per token class from
+`PRICE_TABLE` (cache-aware: 5-minute writes 1.25x input, 1-hour writes 2x, reads per model).
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ import os
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -31,22 +38,69 @@ from token_sparen.estimate import Prices
 
 FIVE_HOURS_S = 5 * 3600.0
 MAX_ERROR_TEXT = 2000
-# USD per input token by model family (list price; the other classes follow
-# `token_sparen.estimate.Prices` ratios). First matching key (substring of the model id) wins;
-# an unknown model is priced at the highest rate (never understates a side call). Rates measured
-# from the run's own ``modelUsage`` take precedence (`usd_rates`); Task 13 checks this table.
-USD_PER_INPUT_TOKEN: Mapping[str, float] = {
-    "opus-4-1": 15e-6,
-    "opus-4-2025": 15e-6,
-    "opus-3": 15e-6,
-    "opus": 5e-6,
-    "sonnet": 3e-6,
-    "haiku-3-5": 0.8e-6,
-    "haiku-3": 0.25e-6,
-    "haiku": 1e-6,
-}
 _API_ERROR = re.compile(r"API Error: (\d{3})\b")
 SYNTHETIC_MODEL = "<synthetic>"
+
+
+@dataclass(frozen=True)
+class ModelPrice:
+    """List price in USD per million tokens. Cache writes are derived from ``input``
+    (5-minute 1.25x, 1-hour 2x). Above ``long_threshold`` prompt tokens a request is billed at
+    the ``long_*`` rates."""
+
+    input: float
+    output: float
+    cache_read: float
+    long_threshold: int | None = None
+    long_input: float = 0.0
+    long_output: float = 0.0
+    long_cache_read: float = 0.0
+
+
+PRICE_TABLE_VERSION = (
+    "claude-api skill model table (cached 2026-11-03); confirm in Task 13 against the live "
+    "pricing page before any public cost claim"
+)
+# keyed by model id prefix; the longest matching prefix wins (date and `[1m]` suffixes match)
+PRICE_TABLE: Mapping[str, ModelPrice] = {
+    "claude-fable-5-2": ModelPrice(8.0, 40.0, 0.20),
+    "claude-mythos-5-2": ModelPrice(8.0, 40.0, 0.20),
+    "claude-fable-5-1": ModelPrice(10.0, 50.0, 0.25),
+    "claude-mythos-5-1": ModelPrice(10.0, 50.0, 0.25),
+    "claude-fable-5": ModelPrice(10.0, 50.0, 1.00),
+    "claude-mythos-5": ModelPrice(10.0, 50.0, 1.00),
+    "claude-opus-5-5": ModelPrice(4.0, 20.0, 0.20),
+    "claude-opus-5": ModelPrice(5.0, 25.0, 0.50),
+    "claude-opus-4-8": ModelPrice(5.0, 25.0, 0.50),
+    "claude-opus-4-7": ModelPrice(5.0, 25.0, 0.50),
+    "claude-opus-4-6": ModelPrice(5.0, 25.0, 0.50),
+    "claude-opus-4-5": ModelPrice(5.0, 25.0, 0.50),
+    "claude-opus-4-1": ModelPrice(15.0, 75.0, 1.50),
+    "claude-opus-4": ModelPrice(15.0, 75.0, 1.50),  # claude-opus-4-YYYYMMDD
+    "claude-3-opus": ModelPrice(15.0, 75.0, 1.50),
+    "claude-sonnet-5-5": ModelPrice(2.0, 10.0, 0.10),
+    "claude-sonnet-5": ModelPrice(2.0, 10.0, 0.20),
+    "claude-sonnet-4": ModelPrice(3.0, 15.0, 0.30),  # 4, 4.5, 4.6
+    "claude-3-7-sonnet": ModelPrice(3.0, 15.0, 0.30),
+    # Haiku 5.5: cache read assumed 0.1x of input in both tiers (not in the skill table)
+    "claude-haiku-5-5": ModelPrice(0.10, 0.50, 0.01, 100_000, 0.50, 2.50, 0.05),
+    "claude-haiku-4-5": ModelPrice(1.0, 5.0, 0.10),
+    "claude-3-5-haiku": ModelPrice(0.80, 4.0, 0.08),
+    "claude-3-haiku": ModelPrice(0.25, 1.25, 0.03),
+}
+CACHE_WRITE_5M = 1.25
+CACHE_WRITE_1H = 2.0
+
+
+class UnpricedModel(ValueError):
+    """A model id with no entry in `PRICE_TABLE` (add it before costing a run)."""
+
+
+def price_for(model: str) -> ModelPrice:
+    best = max((k for k in PRICE_TABLE if model.startswith(k)), key=len, default=None)
+    if best is None:
+        raise UnpricedModel(f"no list price for model {model!r} ({PRICE_TABLE_VERSION})")
+    return PRICE_TABLE[best]
 
 
 @dataclass(frozen=True)
@@ -121,7 +175,8 @@ class RunMetrics:
     subtype: str | None = None
     is_error: bool = False
     api_error_status: int | None = None
-    error_text: str | None = None
+    error_text: str | None = None  # final result's error fields only
+    assistant_errors: list[str] = field(default_factory=list)  # counters, never classified
     total_cost_usd: float | None = None
     tokens: Tokens = Tokens()
     model_usage: dict[str, ModelUsage] = field(default_factory=dict)
@@ -233,6 +288,16 @@ def _rate_kind(
     return "weekly" if resets_at - observed_at > FIVE_HOURS_S else "five_hour"
 
 
+def _max_tokens(a: Tokens, b: Tokens) -> Tokens:
+    """Per-class maximum: records of one streamed message may carry partial usage."""
+    return Tokens(
+        max(a.input, b.input),
+        max(a.output, b.output),
+        max(a.cache_creation, b.cache_creation),
+        max(a.cache_read, b.cache_read),
+    )
+
+
 class _Parser:
     def __init__(self, observed_at: float) -> None:
         self.observed_at = observed_at
@@ -240,8 +305,7 @@ class _Parser:
         self.hooks: list[HookEvent] = []
         self.rates: list[RateLimit] = []
         self.retries: list[ApiRetry] = []
-        self.errors: list[str] = []
-        self.stray: list[str] = []
+        self.assistant_errors: list[str] = []
         self.assistant: dict[str, Tokens] = {}
         self.result: dict[str, Any] | None = None
         self.malformed = 0
@@ -256,8 +320,7 @@ class _Parser:
                 raise _Malformed
             self.event(event)
         except (ValueError, TypeError, AttributeError, KeyError, _Malformed):
-            self.malformed += 1
-            self.stray = [*self.stray[-4:], text[:300]]
+            self.malformed += 1  # counted only: stray text is never error text (ruling I1)
 
     def event(self, e: dict[str, Any]) -> None:
         kind, sub = e.get("type"), e.get("subtype")
@@ -326,14 +389,13 @@ class _Parser:
         if not isinstance(msg, dict):
             raise _Malformed
         error = _str(e.get("error"))
-        if error is not None or msg.get("model") == SYNTHETIC_MODEL:
-            self.errors.extend(_texts(msg.get("content")))
-            if error is not None:
-                self.errors.append(f"assistant error: {error}")
+        if error is not None:
+            self.assistant_errors.append(error)
         if msg.get("model") == SYNTHETIC_MODEL:
             return
         mid = _str(msg.get("id")) or f"#{len(self.assistant)}"
-        self.assistant[mid] = _usage_tokens(_dict(msg.get("usage")))
+        usage = _usage_tokens(_dict(msg.get("usage")))
+        self.assistant[mid] = _max_tokens(self.assistant.get(mid, Tokens()), usage)
 
     def metrics(self) -> RunMetrics:
         res = self.result or {}
@@ -349,12 +411,10 @@ class _Parser:
         else:
             tokens = sum(self.assistant.values(), Tokens())
         is_error = res.get("is_error") is True
-        errors = list(self.errors)
-        if is_error:
+        errors: list[str] = []
+        if is_error:  # only the final result's error fields (ruling I1)
             errors.extend(_texts(res.get("result")))
             errors.extend(str(x) for x in _list(res.get("errors")))
-        if self.result is None:
-            errors.extend(self.stray)
         text = " | ".join(t for t in errors if t)[:MAX_ERROR_TEXT] or None
         status = _int(res.get("api_error_status"))
         if status is None and text is not None:
@@ -367,6 +427,7 @@ class _Parser:
             is_error=is_error,
             api_error_status=status,
             error_text=text,
+            assistant_errors=self.assistant_errors,
             total_cost_usd=_num(res.get("total_cost_usd")),
             tokens=tokens,
             model_usage=model_usage,
@@ -395,34 +456,53 @@ def run_cost(m: RunMetrics) -> float | None:
     return m.total_cost_usd + m.overhead_cost_usd
 
 
-def usd_rates(m: RunMetrics, prices: Prices | None = None) -> dict[str, float]:
-    """USD per input-token equivalent per model, measured from the run's ``modelUsage``."""
-    p = prices or Prices()
-    out: dict[str, float] = {}
-    for name, usage in m.model_usage.items():
-        weighted = usage.tokens.weighted(p)
-        if usage.cost_usd is not None and weighted > 0:
-            out[name] = usage.cost_usd / weighted
+def message_cost_usd(model: str, usage: Mapping[str, Any]) -> float:
+    """List cost of one API response's ``usage`` (Messages API field names). Cache writes are
+    split by TTL when ``usage.cache_creation`` reports it (else all 5-minute). `UnpricedModel`
+    for a model not in `PRICE_TABLE`."""
+    p = price_for(model)
+    inp = _count(usage.get("input_tokens"))
+    out = _count(usage.get("output_tokens"))
+    read = _count(usage.get("cache_read_input_tokens"))
+    write = _count(usage.get("cache_creation_input_tokens"))
+    split = _dict(usage.get("cache_creation"))
+    w1h = _count(split.get("ephemeral_1h_input_tokens"))
+    w5m = _count(split.get("ephemeral_5m_input_tokens")) if split else write
+    if split and w5m + w1h < write:
+        w5m = write - w1h
+    rate_in, rate_out, rate_read = p.input, p.output, p.cache_read
+    if p.long_threshold is not None and inp + read + write > p.long_threshold:
+        rate_in, rate_out, rate_read = p.long_input, p.long_output, p.long_cache_read
+    return (
+        inp * rate_in
+        + out * rate_out
+        + read * rate_read
+        + w5m * rate_in * CACHE_WRITE_5M
+        + w1h * rate_in * CACHE_WRITE_1H
+    ) / 1e6
+
+
+def unpriced_models(m: RunMetrics) -> list[str]:
+    """Models the run used (``modelUsage``) that `PRICE_TABLE` cannot price."""
+    out = []
+    for name in sorted(m.model_usage):
+        try:
+            price_for(name)
+        except UnpricedModel:
+            out.append(name)
     return out
-
-
-def rate_for(model: str, measured: Mapping[str, float]) -> float:
-    if model in measured:
-        return measured[model]
-    low = model.lower()
-    for key, rate in USD_PER_INPUT_TOKEN.items():
-        if key in low:
-            return rate
-    return max(USD_PER_INPUT_TOKEN.values())
 
 
 def _timestamp(value: object) -> float | None:
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value).timestamp()
+        at = datetime.fromisoformat(value)
     except ValueError:
         return None
+    if at.tzinfo is None:  # Claude Code writes UTC; never read a naive stamp as host-local
+        at = at.replace(tzinfo=UTC)
+    return at.timestamp()
 
 
 def _transcripts(root: Path) -> Iterator[Path]:
@@ -436,30 +516,22 @@ def _transcripts(root: Path) -> Iterator[Path]:
 
 
 def overhead_from_config_dir(
-    config_dir: Path,
-    main_session: str,
-    since: float,
-    *,
-    prices: Prices | None = None,
-    usd_per_input: Mapping[str, float] | None = None,
+    config_dir: Path, main_session: str, since: float
 ) -> tuple[Tokens, float]:
     """Assistant usage of every session other than ``main_session`` in the run's transcripts
-    (``<config_dir>/projects/**/*.jsonl``) timestamped at or after ``since``, and its list
-    cost: tokens weighted by ``prices`` (default `Prices()`) times the model's USD rate
-    (``usd_per_input`` measured rates, else `USD_PER_INPUT_TOKEN`). A message repeated per
-    content block counts once; records without a parseable timestamp, synthetic messages and
-    links are skipped. Carried-in transcripts (e.g. a stream arm's ``.claude/projects``) are
-    excluded by ``since``."""
-    p = prices or Prices()
-    measured = usd_per_input or {}
-    seen: set[tuple[str, str]] = set()
-    total, cost = Tokens(), 0.0
+    (``<config_dir>/projects/**/*.jsonl``) timestamped at or after ``since`` (naive stamps read
+    as UTC), and its list cost (`message_cost_usd`, `PRICE_TABLE`). Records of one message
+    (same session and message id) count once, with the per-class maximum (streamed records may
+    carry partial usage). Records without a parseable timestamp, synthetic messages and links
+    are skipped; carried-in transcripts (a stream arm's ``.claude/projects``) are excluded by
+    ``since``. `UnpricedModel` when a side call used a model the table does not price."""
+    messages: dict[tuple[str, str], tuple[str, dict[str, Any], Tokens]] = {}
     for path in _transcripts(config_dir / "projects"):
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
-        for raw in lines:
+        for n, raw in enumerate(lines):
             try:
                 rec = json.loads(raw)
             except ValueError:
@@ -476,20 +548,34 @@ def overhead_from_config_dir(
             model = _str(msg.get("model")) or ""
             if model == SYNTHETIC_MODEL:
                 continue
-            mid = _str(msg.get("id")) or _str(rec.get("uuid")) or f"{path}:{len(seen)}"
-            if (session, mid) in seen:
-                continue
-            seen.add((session, mid))
-            tokens = _usage_tokens(_dict(msg.get("usage")))
-            total = total + tokens
-            cost += tokens.weighted(p) * rate_for(model, measured)
+            mid = _str(msg.get("id")) or _str(rec.get("uuid")) or f"{path}:{n}"
+            usage = _dict(msg.get("usage"))
+            tokens = _usage_tokens(usage)
+            prev = messages.get((session, mid))
+            if prev is not None and prev[2].total >= tokens.total:
+                tokens = _max_tokens(prev[2], tokens)
+                usage = {**prev[1], **_usage_fields(tokens)}
+            elif prev is not None:
+                tokens = _max_tokens(prev[2], tokens)
+                usage = {**usage, **_usage_fields(tokens)}
+            messages[(session, mid)] = (model, usage, tokens)
+    total, cost = Tokens(), 0.0
+    for model, usage, tokens in messages.values():
+        total = total + tokens
+        cost += message_cost_usd(model, usage)
     return total, cost
 
 
+def _usage_fields(t: Tokens) -> dict[str, int]:
+    return {
+        "input_tokens": t.input,
+        "output_tokens": t.output,
+        "cache_creation_input_tokens": t.cache_creation,
+        "cache_read_input_tokens": t.cache_read,
+    }
+
+
 def with_overhead(m: RunMetrics, config_dir: Path, since: float) -> RunMetrics:
-    """``m`` with its side-call overhead from ``config_dir`` (priced at the run's own measured
-    per-model rates where available)."""
-    tokens, cost = overhead_from_config_dir(
-        config_dir, m.session_id or "", since, usd_per_input=usd_rates(m)
-    )
+    """``m`` with its side-call overhead from ``config_dir``."""
+    tokens, cost = overhead_from_config_dir(config_dir, m.session_id or "", since)
     return replace(m, overhead=tokens, overhead_cost_usd=cost)

@@ -43,11 +43,19 @@ ROWS: list[tuple[str, str | None, dict[str, Any], tuple[str, str]]] = [
     ("backstop kill", "stream_success", {"backstop_killed": True}, ("infra_fail", "docker")),
     ("oom", "status_max_turns", {"oom_killed": True, "exit_code": 137},
      ("infra_fail", "docker")),
+    # ruling I1: the in-container timeout marker wins (patch graded), even if not live
+    ("in-container timeout", "status_max_turns", {"killed_for_timeout": True, "exit_code": 124},
+     ("agent_fail", "timeout")),
+    ("timeout cut inside infra-looking tool output", "status_timeout_truncated",
+     {"killed_for_timeout": True, "exit_code": 124, "live": False}, ("agent_fail", "timeout")),
     ("api 401", "status_auth_401", {"exit_code": 1}, ("infra_fail", "auth")),
+    ("auth beats not live", "status_auth_401", {"exit_code": 1, "live": False},
+     ("infra_fail", "auth")),
     ("auth text", "status_auth_text", {"exit_code": 1}, ("infra_fail", "auth")),
     ("rate rejected event", "status_rate_rejected", {"exit_code": 1}, ("infra_fail", "rate")),
     ("api 429", "status_rate_429", {"exit_code": 1}, ("infra_fail", "rate")),
     ("hit your limit text", "status_rate_text", {"exit_code": 1}, ("infra_fail", "rate")),
+    ("retries exhausted on 429", "status_retry_429", {"exit_code": 1}, ("infra_fail", "rate")),
     ("api 529", "status_api_529", {"exit_code": 1}, ("infra_fail", "api")),
     ("api retry exhausted", "status_api_retry", {"exit_code": 1}, ("infra_fail", "api")),
     ("wrapper proxy refused", "status_proxy", {"exit_code": 1, "wrapper": True},
@@ -58,12 +66,17 @@ ROWS: list[tuple[str, str | None, dict[str, Any], tuple[str, str]]] = [
      ("infra_fail", "load")),
     ("not live", "stream_success", {"live": False}, ("infra_fail", "load")),
     ("disk below floor", "stream_success", {"disk_low": True}, ("infra_fail", "disk")),
-    ("in-container timeout", "status_max_turns", {"killed_for_timeout": True, "exit_code": 124},
-     ("agent_fail", "timeout")),
+    # ruling I2: the final result decides; earlier retries/rejections are counters only
+    ("success", "stream_success", {}, ("ok", "success")),
+    ("success after retries and a rejection", "status_success_after_retries", {},
+     ("ok", "success")),
+    # ruling I3: context overflow is the agent's (graded)
+    ("prompt is too long", "status_context", {"exit_code": 1}, ("agent_fail", "context")),
     ("max turns", "status_max_turns", {"exit_code": 1}, ("agent_fail", "max_turns")),
     ("execution error", "status_execution", {"exit_code": 1}, ("agent_fail", "execution")),
-    ("success", "stream_success", {}, ("ok", "success")),
     ("anything else", "status_unknown", {"exit_code": 1}, ("infra_fail", "unknown")),
+    ("stream cut without a timeout marker", "status_timeout_truncated", {"exit_code": 1},
+     ("infra_fail", "unknown")),
 ]  # fmt: skip
 
 
@@ -76,16 +89,31 @@ def test_status_mapping_table(
     assert cl.classify(m, **{**CLEAN, **kwargs}) == want
 
 
+def test_infra_heuristics_never_read_tool_output() -> None:
+    m = _m("status_timeout_truncated")
+    assert m.error_text is None and m.api_error_status is None  # tool text is not error text
+    assert m.malformed_lines == 1
+    # an assistant message quoting an API error is not the final result
+    quoted = sj.parse_stream(
+        [
+            json.dumps({"type": "system", "subtype": "init", "session_id": "s"}),
+            json.dumps({"type": "assistant", "message": {"id": "m", "model": "x", "content": [
+                {"type": "text", "text": "The log says API Error: 401 Unauthorized"}]}}),
+            json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True}),
+        ],
+        observed_at=NOW,
+    )  # fmt: skip
+    assert quoted.api_error_status is None
+    assert cl.classify(quoted, **CLEAN) == ("agent_fail", "max_turns")
+    # stray stderr text without a result never makes an infra status by itself
+    stray = sj.parse_stream(["Invalid API key", "API Error: 500"], observed_at=NOW)
+    assert stray.error_text is None and stray.api_error_status is None
+
+
 def test_status_mapping_edges() -> None:
     clean = dict(CLEAN)
     # a refused connection outside a wrapper arm is not a proxy failure
-    assert cl.classify(_m("status_proxy"), **clean)[0] == "infra_fail"
-    assert cl.classify(_m("status_proxy"), **clean) != ("infra_fail", "proxy")
-    # daemon unreachable reported as text (no metrics, no docker exit code)
-    daemon = sj.parse_stream(
-        ["Cannot connect to the Docker daemon at unix:///var/run/docker.sock."], observed_at=NOW
-    )
-    assert cl.classify(daemon, **clean) == ("infra_fail", "docker")
+    assert cl.classify(_m("status_proxy"), **clean) == ("infra_fail", "unknown")
     # execution error with an API status that no infra row claims is not an agent failure
     m = replace(_m("status_execution"), api_error_status=400)
     assert cl.classify(m, **clean) == ("infra_fail", "unknown")
@@ -94,8 +122,10 @@ def test_status_mapping_edges() -> None:
         "infra_fail",
         "unknown",
     )
-    # an allowed rate-limit event is not a rate failure
-    assert cl.classify(_m("stream_success"), **clean) == ("ok", "success")
+    # retries and rejections are still recorded as counters
+    ok = _m("status_success_after_retries")
+    assert len(ok.api_retries) == 2 and ok.api_retry_exhausted
+    assert [r.status for r in ok.rate_limits] == ["rejected"]
     # infra statuses are never agent failures
     for row in ROWS:
         status, sub = row[3]
@@ -158,3 +188,42 @@ def test_verify_load_flags_plugin_errors_and_missing_mcp() -> None:
     hr = _init(mcp_servers=[{"name": "headroom", "status": "connected"}])
     assert cl.verify_load(hr, _arm("headroom"), None) == []
     assert cl.verify_load(bare, _arm("headroom"), None)
+
+
+def _hook(command: str, event: str = "PreToolUse") -> dict[str, Any]:
+    return {
+        "type": "system",
+        "subtype": "hook_response",
+        "hook_event": event,
+        "command": command,
+        "exit_code": 0,
+        "outcome": "success",
+    }
+
+
+def test_verify_load_flags_foreign_tools_hash_and_unpriced_models() -> None:
+    ts = _m("stream_success")
+    # stage hash compare (review M3)
+    assert cl.verify_load(ts, _arm("token-sparen"), "ab" * 32, stage_hash="ab" * 32) == []
+    mismatch = cl.verify_load(ts, _arm("token-sparen"), "ab" * 32, stage_hash="cd" * 32)
+    assert any("hash" in p for p in mismatch)
+    # a string-form plugin entry has no path: the frozen mount cannot be confirmed
+    no_path = replace(ts, plugins={"token-sparen": ""})
+    assert any("frozen" in p for p in cl.verify_load(no_path, _arm("token-sparen"), "ab" * 32))
+    # another arm's hook (rtk installs a settings hook, not a plugin) or MCP server (review M2)
+    base_init = {"type": "system", "subtype": "init", "session_id": "s", "plugins": []}
+    rtk_in_baseline = sj.parse_stream(
+        [json.dumps(base_init), json.dumps(_hook("rtk hook claude"))], observed_at=NOW
+    )
+    assert any("rtk" in p for p in cl.verify_load(rtk_in_baseline, _arm("baseline"), None))
+    assert cl.verify_load(rtk_in_baseline, _arm("rtk"), None) == []
+    cm_server = replace(rtk_in_baseline, hook_events=[], mcp_servers={"context-mode": "connected"})
+    assert any("context-mode" in p for p in cl.verify_load(cm_server, _arm("baseline"), None))
+    ts_hook = sj.parse_stream(
+        [json.dumps(base_init), json.dumps(_hook('python3 -I "/opt/plugin/token-sparen/x"'))],
+        observed_at=NOW,
+    )
+    assert any("token-sparen" in p for p in cl.verify_load(ts_hook, _arm("baseline"), None))
+    # a model the price table does not know fails the load check (review I4)
+    odd = replace(ts, model_usage={"claude-mystery-9": ts.model_usage["claude-sonnet-4-6"]})
+    assert any("price" in p for p in cl.verify_load(odd, _arm("token-sparen"), "ab" * 32))
