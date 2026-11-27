@@ -1,0 +1,119 @@
+# E4 arms registry (M5 Task 4). Loaded and validated by bench/arms.py.
+#
+# Every run starts from its arm's config template: a fresh CLAUDE_CONFIG_DIR and HOME inside the
+# bench workspace, never the owner's real ~/.claude (bench/isolation.py). Only the state_paths of
+# a `state = "stream"` arm carry over between the tasks of one (stage, arm, seed, repo) stream.
+#
+# Competitors run in their documented default configuration. `install` lines run once, at
+# template preparation (Task 13), inside the toolchain container with HOME=<template> and
+# CLAUDE_CONFIG_DIR=<template>/.claude. `pin` is the release tag and its commit (resolved
+# 2026-11-27); the toolchain build fetches exactly that version from `source` and records its
+# sha256 in pins.json. Plugins are added from a clone checked out at the pinned commit under
+# /opt/bench/src/ (read-only toolchain mount), which installs the same plugin as the
+# documented `<owner>/<repo>` marketplace shorthand while fixing its version. The token-sparen
+# arms carry no pin here: they run the stage's frozen plugin (tag and plugin_hash per run).
+
+[common]
+# tool artefacts dropped from the graded patch, applied only to paths untracked at base_commit
+patch_excludes = [
+  ".token-sparen/",
+  ".claude/",
+  "CLAUDE.md",
+  "RTK.md",
+  ".rtk/",
+  ".context-mode/",
+  ".tokeneconomizer/",
+  ".headroom/",
+]
+
+[arms.baseline]
+kind = "baseline"
+liveness = "none"
+
+[arms.concise]
+# exactly token_sparen.mechanisms.outputstyle.DIRECTIVES["concise"] (tested), so ts-style vs
+# concise differs only by the channel and the plugin
+kind = "prompt"
+liveness = "none"
+append_system_prompt = "Be concise in prose. Never shorten code, commands, file paths, error messages or quoted tool output."
+
+[arms.token-sparen]
+kind = "plugin"
+uses_frozen_plugin = true
+state = "stream"
+state_paths = [".token-sparen"]
+liveness = "token_sparen"
+env = { TOKEN_SPAREN_PYTHON = "/opt/bench/bin/python3.12" }
+
+[arms.ts-style]
+kind = "plugin"
+uses_frozen_plugin = true
+state = "stream"
+state_paths = [".token-sparen"]
+liveness = "token_sparen"
+env = { TOKEN_SPAREN_PYTHON = "/opt/bench/bin/python3.12" }
+# written to the template's ~/.token-sparen/config.toml (a user-level file may widen)
+ts_config = { output_style = { enabled = true } }
+
+[arms.ts-cold]
+# cold-start ablation (screening only): token-sparen with no state carried between tasks
+kind = "plugin"
+uses_frozen_plugin = true
+state = "none"
+liveness = "token_sparen"
+env = { TOKEN_SPAREN_PYTHON = "/opt/bench/bin/python3.12" }
+
+[arms.rtk]
+# Apache-only build `rtk-oss`, release asset rtk-oss-aarch64-unknown-linux-gnu.tar.gz on the
+# toolchain PATH; `rtk init -g` writes its PreToolUse hook and RTK.md into the config dir
+kind = "hook"
+liveness = "rtk"
+install = ["rtk init -g"]
+source = "https://github.com/rtk-ai/rtk"
+pin = "rtk-oss v1.2.1 (d0f0399a5ff8cd1d81325a033f0b2d8864d665f6)"
+
+[arms.headroom]
+# `headroom-ai[all]` in its own toolchain venv on PATH; `headroom wrap` starts the local proxy,
+# registers its MCP retrieve tool and hook at run time (logs under ~/.headroom/logs)
+kind = "wrapper"
+liveness = "headroom"
+wrapper = ["headroom", "wrap", "claude", "--"]
+source = "https://pypi.org/project/headroom-ai/0.45.0/"
+pin = "headroom-ai[all]==0.45.0 (v0.45.0, ce0460cfa8598dc939243dbc7aec4b2d35f4e44a)"
+
+[arms.caveman]
+# the Claude Code plugin only (skills + session hooks); its CLI proxy is not used. Its docs say
+# scripted `claude -p` runs start with caveman off unless CAVEMAN_DEFAULT_MODE is set: whether
+# that counts as the documented default under -p is settled in Task 13 (liveness probe).
+kind = "plugin"
+liveness = "caveman"
+install = [
+  "claude plugin marketplace add /opt/bench/src/caveman",
+  "claude plugin install caveman@caveman",
+]
+source = "https://github.com/JuliusBrussee/caveman"
+pin = "v4.2.0 (70f4f34e834893ea9af9f4fc6022266bd56d18b1)"
+
+[arms.context-mode]
+kind = "plugin"
+liveness = "context_mode"
+install = [
+  "claude plugin marketplace add /opt/bench/src/context-mode",
+  "claude plugin install context-mode@context-mode",
+]
+source = "https://github.com/mksglu/context-mode"
+pin = "v2.2.4 (cd8c0d231998b7742e15c8dea9113b6f4471f90f)"
+
+[arms.tokeneconomizer]
+# run as documented (owner): it does not learn from headless `claude -p` sessions; reported as
+# a limitation of the comparison. It reads past transcripts, so .claude/projects is its state.
+kind = "plugin"
+state = "stream"
+state_paths = [".tokeneconomizer", ".claude/projects"]
+liveness = "tokeneconomizer"
+install = [
+  "claude plugin marketplace add /opt/bench/src/TokenEconomizer",
+  "claude plugin install tokeneconomizer@tokeneconomizer",
+]
+source = "https://github.com/microsoft/TokenEconomizer"
+pin = "v0.1.0 (ec8ff5ec7ed5924520ee71b705a920ee64fe2918)"
