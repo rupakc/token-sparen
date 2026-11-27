@@ -10,8 +10,9 @@ statistic sees. Stdlib only; every resampling takes an explicit seed.
   of the paired differences, BCa 95 % CI.
 - Quality (confirmatory; ruling M5-T9 and its review rulings I1/I2): `gate_decision` on exactly
   one pre-specified seed per task (`GATE_SEED` = 0; other seeds never enter): lower bound =
-  min(task-cluster percentile bootstrap, Tango score) > −5 pp, plus the exclusion rule (balanced
-  within `BALANCE_TOLERANCE` tasks, or the worst-case imputation also passes).
+  min(task-cluster percentile bootstrap, Tango score) > −5 pp, after the exclusion rule
+  (task-level exclusions dropped; a net excess of token-sparen-only exclusions imputed as
+  token-sparen failures; see `gate_decision`).
 - Alongside, per seed: `mcnemar_conditional_exact` (Clopper–Pearson on the discordant pairs,
   mapped to the difference scale; labelled "conditional exact").
 
@@ -216,10 +217,10 @@ def resolved_diff(
 # confirmations pass (nominal 2.5 %), Tango 2.0 % (task-9 report).
 # Review ruling I1: exactly one pre-specified seed per task enters the gate (majority outcomes
 # over several seeds shrink the difference and broke the type-I guarantee); other seeds are
-# descriptive only. Review ruling I2: exclusions are attributed to an arm; see `gate_decision`.
+# descriptive only. Review ruling I2 and its re-review ruling: exclusions are attributed to an
+# arm; one-sided ones are re-run first, then only the arm's net excess is imputed (`gate_decision`).
 
 GATE_SEED = 0
-BALANCE_TOLERANCE = 2
 GATE_METHOD = "min(bootstrap-percentile-task-cluster, tango-score), seed 0"
 
 
@@ -380,22 +381,19 @@ def ni_gate(
 
 @dataclass(frozen=True)
 class GateCheck:
-    """Confirmatory decision. ``passed`` = primary lower bound > margin AND (the one-sided
-    exclusions are balanced within ``tolerance`` tasks OR the worst case also passes)."""
+    """Confirmatory decision (re-review ruling of M5 Task 9). ``passed`` = no one-sided
+    exclusion still pending re-runs AND the lower bound of ``estimate`` > margin."""
 
-    estimate: Estimate  # primary: tasks with the gate seed's outcome in both arms
-    worst_case: Estimate | None  # one-sided exclusions imputed against the arm; None if none
-    excluded_arm: int  # tasks excluded for the arm only (gate seed)
+    estimate: Estimate  # decisive: observed pairs + the imputed net excess
+    observed: Estimate  # observed pairs only (descriptive)
+    excluded_arm: int  # tasks excluded for the arm only (gate seed, after retries)
     excluded_ref: int  # tasks excluded for the reference only
-    excluded_both: int
-    tolerance: int
+    excluded_both: int  # task-level exclusions (dropped)
+    imputed: tuple[str, ...]  # arm-only tasks imputed as arm failures (the net excess)
+    pending: int  # one-sided exclusions not yet re-run to their retry limit
     min_tasks: int
     passed: bool
     reasons: tuple[str, ...]
-
-    @property
-    def balanced(self) -> bool:
-        return abs(self.excluded_arm - self.excluded_ref) <= self.tolerance
 
 
 def gate_decision(
@@ -404,61 +402,55 @@ def gate_decision(
     *,
     arm_excluded: Collection[str] = (),
     base_excluded: Collection[str] = (),
+    pending: int = 0,
     gate_seed: int = GATE_SEED,
     margin: float = MARGIN,
-    tolerance: int = BALANCE_TOLERANCE,
     n_boot: int = 10000,
     alpha: float = 0.05,
     seed: int = 0,
 ) -> GateCheck:
-    """Review ruling I2. ``*_excluded`` = tasks whose gate-seed key of that arm has no graded
-    final outcome. Worst case: an arm-only exclusion counts as an arm failure, a reference-only
-    exclusion as a reference success (each where the other arm's gate-seed outcome exists);
-    tasks excluded in both arms stay out."""
+    """Exclusion rule (re-review ruling, replaces the balance tolerance). ``*_excluded`` = tasks
+    whose gate-seed key of that arm has no graded final outcome after the scheduler's re-runs.
+    Task-level exclusions (both arms) are dropped. Of the one-sided ones, only the net excess of
+    the arm is penalised: k = max(0, arm-only − reference-only) arm-only tasks count as arm
+    failures, chosen where the reference resolved first (then where it did not: a concordant
+    failure); every other one-sided exclusion is dropped (a reference excess is never rewarded).
+    No tolerance. ``pending`` > 0 (one-sided exclusions still to re-run) blocks a pass."""
     arm_x, base_x = set(arm_excluded), set(base_excluded)
     arm_only, base_only = arm_x - base_x, base_x - arm_x
     a_out = {t: v for t, v in _gate_outcomes(arm, gate_seed).items() if t not in arm_x}
     b_out = {t: v for t, v in _gate_outcomes(base, gate_seed).items() if t not in base_x}
     kw: dict[str, Any] = {"gate_seed": gate_seed, "n_boot": n_boot, "alpha": alpha, "seed": seed}
-    primary = ni_gate(
-        {t: {gate_seed: v} for t, v in a_out.items()},
-        {t: {gate_seed: v} for t, v in b_out.items()},
-        **kw,
-    )
-    impute_arm = {t for t in arm_only if t in b_out}
-    impute_base = {t for t in base_only if t in a_out}
-    worst: Estimate | None = None
-    if impute_arm or impute_base:
-        worst_arm = {t: {gate_seed: v} for t, v in a_out.items()}
-        worst_arm.update({t: {gate_seed: False} for t in impute_arm})
-        worst_base = {t: {gate_seed: v} for t, v in b_out.items()}
-        worst_base.update({t: {gate_seed: True} for t in impute_base})
-        worst = ni_gate(worst_arm, worst_base, **kw)
+    arm_runs = {t: {gate_seed: v} for t, v in a_out.items()}
+    base_runs = {t: {gate_seed: v} for t, v in b_out.items()}
+    observed = ni_gate(arm_runs, base_runs, **kw)
+    excess = max(0, len(arm_only) - len(base_only))
+    candidates = sorted((t for t in arm_only if t in b_out), key=lambda t: (not b_out[t], t))
+    imputed = tuple(sorted(candidates[:excess]))
+    estimate = observed
+    if imputed:
+        arm_runs.update({t: {gate_seed: False} for t in imputed})
+        estimate = ni_gate(arm_runs, base_runs, **kw)
     min_tasks = gate_min_tasks(margin, alpha)
-    balanced = abs(len(arm_only) - len(base_only)) <= tolerance
-    primary_ok = non_inferior(primary, margin)
-    worst_ok = worst is not None and non_inferior(worst, margin)
     reasons: list[str] = []
-    if primary.n < min_tasks:
-        reasons.append(f"{primary.n} paired tasks < {min_tasks}: the gate cannot pass")
-    if not primary_ok:
-        reasons.append(f"lower bound {primary.lo:.4f} <= margin {margin}")
-    if not balanced:
-        lo = "n/a" if worst is None else f"{worst.lo:.4f}"
-        verdict = "passes" if worst_ok else f"fails ({lo} <= margin {margin})"
-        reasons.append(
-            f"exclusions unbalanced ({len(arm_only)} vs {len(base_only)}, tolerance "
-            f"{tolerance}); worst case {verdict}"
-        )
+    if pending:
+        reasons.append(f"{pending} one-sided exclusion(s) still to re-run")
+    if estimate.n < min_tasks:
+        reasons.append(f"{estimate.n} paired tasks < {min_tasks}: the gate cannot pass")
+    if not non_inferior(estimate, margin):
+        reasons.append(f"lower bound {estimate.lo:.4f} <= margin {margin}")
+    if imputed:
+        reasons.append(f"net excess of {len(imputed)} arm-only exclusion(s) imputed as failures")
     return GateCheck(
-        estimate=primary,
-        worst_case=worst,
+        estimate=estimate,
+        observed=observed,
         excluded_arm=len(arm_only),
         excluded_ref=len(base_only),
         excluded_both=len(arm_x & base_x),
-        tolerance=tolerance,
+        imputed=imputed,
+        pending=pending,
         min_tasks=min_tasks,
-        passed=primary_ok and (balanced or worst_ok),
+        passed=not pending and non_inferior(estimate, margin),
         reasons=tuple(reasons),
     )
 
@@ -570,13 +562,15 @@ class Summary:
         **kw: Any,
     ) -> GateCheck:
         """The confirmatory decision (`gate_decision`) on seed ``gate_seed`` with this stage's
-        exclusions of the two arms at that seed."""
+        exclusions of the two arms at that seed; one-sided ``incomplete`` keys are pending."""
         ref = vs or self.reference
+        pending, _ = self.one_sided(arm, vs, seed=gate_seed)
         return gate_decision(
             self.resolved(arm),
             self.resolved(ref),
             arm_excluded=self.excluded(arm, seed=gate_seed),
             base_excluded=self.excluded(ref, seed=gate_seed),
+            pending=len(pending),
             gate_seed=gate_seed,
             **kw,
         )
@@ -584,13 +578,36 @@ class Summary:
     def cost_ratio(self, arm: str, vs: str | None = None, **kw: Any) -> Estimate:
         return median_cost_ratio(*self._pair(arm, vs, lambda r: r.cost), **kw)
 
-    def exclusion_rate(self, arm: str, vs: str | None = None, *, seed: int = GATE_SEED) -> float:
-        """Share of the tasks seen for ``arm`` or ``vs`` that are excluded for either at
-        ``seed`` (the power plan inflates its size by this)."""
+    def one_sided(
+        self, arm: str = "token-sparen", vs: str | None = None, *, seed: int = GATE_SEED
+    ) -> tuple[list[Exclusion], list[Exclusion]]:
+        """One-sided exclusions of the pair at ``seed`` (the other arm has no exclusion there):
+        (pending, final). Pending = ``incomplete`` keys the scheduler must still re-run; final =
+        ``unrunnable`` / ``ungraded`` after retries — what the gate's net-excess rule sees."""
         ref = vs or self.reference
-        out = self.excluded(arm, seed=seed) | self.excluded(ref, seed=seed)
-        seen = {r.instance_id for r in self.runs if r.arm in (arm, ref) and r.seed == seed} | out
-        return len(out) / len(seen) if seen else 0.0
+        a, b = self.excluded(arm, seed=seed), self.excluded(ref, seed=seed)
+        one = (a - b) | (b - a)
+        rows = sorted(
+            (e for e in self.exclusions if e.seed == seed and e.arm in (arm, ref)),
+            key=lambda e: (e.instance_id, e.arm),
+        )
+        pending = [e for e in rows if e.instance_id in one and e.reason == "incomplete"]
+        final = [e for e in rows if e.instance_id in one and e.reason != "incomplete"]
+        return pending, final
+
+    def exclusion_rates(
+        self, arm: str = "token-sparen", vs: str | None = None, *, seed: int = GATE_SEED
+    ) -> tuple[float, float]:
+        """(one-sided rate per arm, task-level rate) over the tasks seen for the pair at
+        ``seed`` — the power plan simulates exclusions at these rates."""
+        ref = vs or self.reference
+        a, b = self.excluded(arm, seed=seed), self.excluded(ref, seed=seed)
+        seen = {r.instance_id for r in self.runs if r.arm in (arm, ref) and r.seed == seed}
+        seen |= a | b
+        if not seen:
+            return 0.0, 0.0
+        one_sided = len((a - b) | (b - a)) / (2 * len(seen))
+        return one_sided, len(a & b) / len(seen)
 
     def discordance(
         self, arm: str, vs: str | None = None, *, seed: int | None = None

@@ -186,7 +186,8 @@ def test_summarise_pairs_counts_and_exclusions() -> None:
     }
     assert s.excluded_by_arm == {"baseline": 1, "token-sparen": 1}
     assert s.excluded("token-sparen") == {"astropy__astropy-4"}
-    assert s.exclusion_rate("token-sparen") == pytest.approx(2 / 4)
+    # astropy: token-sparen-only; sphinx: baseline-only → 2 one-sided of 4 tasks, per arm 2/8
+    assert s.exclusion_rates("token-sparen") == (pytest.approx(2 / 8), 0.0)
     assert s.arms == ("baseline", "token-sparen")
     assert s.seeds == (0,)
     assert s.counts["tasks"] == 2
@@ -338,54 +339,6 @@ def test_gate_min_tasks() -> None:
     assert stats.gate_decision(same73, same73, n_boot=200).passed
 
 
-def _gate_data(n: int, extra_arm_x: int, extra_base_x: int) -> tuple[Any, Any, set[str], set[str]]:
-    """n identical, all-resolved tasks in both arms, plus excluded tasks of either arm whose
-    other arm is resolved (arm-only) or unresolved (base-only)."""
-    arm = {f"t{i}": {0: True} for i in range(n)}
-    base = {f"t{i}": {0: True} for i in range(n)}
-    arm_x = {f"xa{i}" for i in range(extra_arm_x)}
-    base_x = {f"xb{i}" for i in range(extra_base_x)}
-    base.update({t: {0: True} for t in arm_x})  # baseline resolved where token-sparen excluded
-    arm.update({t: {0: False} for t in base_x})  # arm unresolved where baseline excluded
-    return arm, base, arm_x, base_x
-
-
-def test_exclusion_rule_balanced_within_two_passes() -> None:
-    """Review ruling I2: |arm-only − ref-only| ≤ 2 → the primary bound decides."""
-    arm, base, ax, bx = _gate_data(150, 6, 4)
-    g = stats.gate_decision(arm, base, arm_excluded=ax, base_excluded=bx, n_boot=300)
-    assert (g.excluded_arm, g.excluded_ref, g.excluded_both) == (6, 4, 0)
-    assert g.balanced
-    assert g.worst_case is not None
-    assert not stats.non_inferior(g.worst_case)  # 10 imputed failures of 160 → −6.25 pp
-    assert stats.non_inferior(g.estimate)
-    assert g.passed
-
-
-def test_exclusion_rule_unbalanced_needs_worst_case() -> None:
-    # 3 more arm-only than ref-only exclusions: unbalanced; worst case (−3/303) still passes
-    arm, base, ax, bx = _gate_data(300, 3, 0)
-    ok = stats.gate_decision(arm, base, arm_excluded=ax, base_excluded=bx, n_boot=300)
-    assert not ok.balanced
-    assert ok.worst_case is not None
-    assert ok.worst_case.point == pytest.approx(-3 / 303)
-    assert stats.non_inferior(ok.worst_case)
-    assert ok.passed
-    # 12 arm-only exclusions: the worst case fails → the gate fails although the primary passes
-    arm, base, ax, bx = _gate_data(300, 12, 0)
-    bad = stats.gate_decision(arm, base, arm_excluded=ax, base_excluded=bx, n_boot=300)
-    assert stats.non_inferior(bad.estimate)
-    assert bad.worst_case is not None
-    assert not stats.non_inferior(bad.worst_case)
-    assert not bad.passed
-    assert any("unbalanced" in r for r in bad.reasons)
-    # tasks excluded in both arms are neither imputed nor counted as one-sided
-    both = stats.gate_decision(arm, base, arm_excluded=ax, base_excluded=ax, n_boot=300)
-    assert (both.excluded_arm, both.excluded_ref, both.excluded_both) == (0, 0, 12)
-    assert both.worst_case is None
-    assert both.passed
-
-
 def test_summary_gate_uses_seed_zero_exclusions_per_arm() -> None:
     ledger: list[dict[str, Any]] = []
     grades: dict[str, bool | None] = {}
@@ -393,7 +346,7 @@ def test_summary_gate_uses_seed_zero_exclusions_per_arm() -> None:
         for arm in ("baseline", "token-sparen", "rtk"):
             ledger.append(_end(arm, 0, f"r__r-{i}"))
             grades[_key(arm, 0, f"r__r-{i}")] = True
-    # token-sparen unrunnable on 4 tasks at seed 0: unbalanced (4 vs 0); worst case 4/100 fails?
+    # token-sparen unrunnable (after retries) on 4 tasks at seed 0: net excess 4 → imputed
     for i in range(4):
         ledger.append({"kind": "invalidate", "key": _key("token-sparen", 0, f"r__r-{i}")})
         ledger.append({**_end("token-sparen", 0, f"r__r-{i}", status="infra_fail"), "sub": "api"})
@@ -401,11 +354,15 @@ def test_summary_gate_uses_seed_zero_exclusions_per_arm() -> None:
     for i in range(50, 60):
         ledger.append({"kind": "invalidate", "key": _key("rtk", 0, f"r__r-{i}")})
     s = stats.summarise(ledger, grades, stage="screening")
+    pending, final = s.one_sided()
+    assert pending == []
+    assert [e.cause for e in final] == ["api"] * 4
     g = s.gate(n_boot=300)
-    assert (g.excluded_arm, g.excluded_ref) == (4, 0)
-    assert g.estimate.n == 96
-    assert g.worst_case is not None
-    assert g.worst_case.point == pytest.approx(-4 / 100)
-    assert g.passed == stats.non_inferior(g.worst_case)
+    assert (g.excluded_arm, g.excluded_ref, g.excluded_both) == (4, 0, 0)
+    assert g.imputed == tuple(f"r__r-{i}" for i in range(4))
+    assert g.observed.n == 96
+    assert g.estimate.n == 100
+    assert g.estimate.point == pytest.approx(-4 / 100)
+    assert g.passed == stats.non_inferior(g.estimate)
     assert s.excluded_by_arm == {"rtk": 10, "token-sparen": 4}
     assert s.resolved_diff("token-sparen", n_boot=100).n == 96

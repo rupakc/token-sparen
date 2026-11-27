@@ -146,9 +146,11 @@ def test_flip_model_from_screening() -> None:
     assert m.q_hi == pytest.approx(stats.clopper_pearson(5, 40, alpha=0.4)[1])
     assert m.q_hi > m.q
     assert m.f_plan == pytest.approx(min(1.0, 2 * m.q_hi))
-    assert m.exclusion_rate == 0.0
+    assert (m.one_sided_rate, m.task_rate) == (0.0, 0.0)
     assert power.flip_model(_screen(20, 20, 40)).f == 1.0
-    assert power.flip_model(_screen(3, 2, 40, excluded=10)).exclusion_rate == pytest.approx(0.2)
+    leaky = power.flip_model(_screen(3, 2, 40, excluded=10))
+    assert leaky.one_sided_rate == pytest.approx(10 / (2 * 50))
+    assert leaky.task_rate == 0.0
 
 
 def test_plan_uses_e4_power_fields() -> None:
@@ -166,11 +168,13 @@ def test_plan_uses_e4_power_fields() -> None:
     assert 0.0 <= short.achieved_power < 0.8
 
 
-def test_plan_inflates_for_screening_exclusions() -> None:
-    model = power.FlipModel(f=0.0, q=0.0, n=40, q_hi=0.0, f_plan=0.0, exclusion_rate=0.2)
+def test_plan_with_exclusions_never_below_floor() -> None:
+    model = power.FlipModel(
+        f=0.0, q=0.0, n=40, q_hi=0.0, f_plan=0.0, one_sided_rate=0.0, task_rate=0.2
+    )
     p = power.plan(model, pool=200, **FAST)
-    assert p.expected_paired == 80
-    assert p.required_tasks == 100  # 80 / (1 − 0.2)
     assert p.verdict == "powered"
-    # the pool's expected post-exclusion size (99 · 0.8 = 79) is below the floor
-    assert power.plan(model, pool=99, **FAST).verdict == "underpowered"
+    assert p.required_tasks is not None
+    assert p.required_tasks > power.MIN_PLAN_TASKS  # ~20 % task-level drops need > 73 + margin
+    assert p.achieved_power >= 0.8
+    assert power.plan(model, pool=85, **FAST).verdict == "underpowered"

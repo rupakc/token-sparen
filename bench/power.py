@@ -8,9 +8,10 @@ Planning uses the conservative one-sided 80 % Clopper–Pearson upper bound of q
 `power` simulates the confirmatory gate actually applied (`bench.stats.gate_decision`: one
 pre-specified seed per task, min of the task-cluster percentile bootstrap and the Tango score
 lower bound > margin) under a true difference of 0 (or ``true_diff``). Review ruling I1: extra
-seeds never enter the gate, so confirmation plans with 1 seed. `plan` inflates the task count
-by the screening exclusion rate (review ruling I2). Field names of `PowerPlan.as_e4` are the
-``power`` object of ``bench/e4.schema.json``.
+seeds never enter the gate, so confirmation plans with 1 seed. `power` also simulates
+exclusions at the screening rates (one-sided per arm and task-level, separately) and the gate's
+net-excess rule (re-review ruling), so `plan` reports power under the rule actually applied.
+Field names of `PowerPlan.as_e4` are the ``power`` object of ``bench/e4.schema.json``.
 """
 
 from __future__ import annotations
@@ -52,7 +53,9 @@ class FlipModel:
     n: int  # screening pairs
     q_hi: float  # one-sided 80 % Clopper–Pearson upper bound of q
     f_plan: float  # min(1, 2 q_hi): the conservative f used for planning
-    exclusion_rate: float = 0.0  # screening share of tasks excluded for either arm (seed 0)
+    one_sided_rate: float = 0.0  # screening one-sided exclusion rate per arm (seed 0)
+    task_rate: float = 0.0  # screening task-level (both arms) exclusion rate
+    rate: float = 0.5  # screening baseline resolved rate on paired tasks (seed 0)
 
 
 def flip_model(
@@ -71,13 +74,18 @@ def flip_model(
     q = m / n
     # the upper limit of a two-sided (1 − 2(1 − c)) interval is the one-sided c upper bound
     q_hi = clopper_pearson(m, n, alpha=2 * (1 - confidence))[1]
+    one_sided, task_level = screen.exclusion_rates(arm, vs)
+    _, base = screen._pair(arm, vs, lambda r: r.resolved)
+    base0 = [v[GATE_SEED] for v in base.values() if GATE_SEED in v]
     return FlipModel(
         f=min(1.0, 2 * q),
         q=q,
         n=n,
         q_hi=q_hi,
         f_plan=min(1.0, 2 * q_hi),
-        exclusion_rate=screen.exclusion_rate(arm, vs),
+        one_sided_rate=one_sided,
+        task_rate=task_level,
+        rate=sum(base0) / len(base0) if base0 else 0.5,
     )
 
 
@@ -101,34 +109,67 @@ def power(
     n_boot: int = 1000,
     true_diff: float = 0.0,
     gate: Gate = "applied",
+    one_sided_rate: float = 0.0,
+    task_rate: float = 0.0,
+    rate: float = 0.5,
 ) -> float:
     """Share of simulated confirmations that pass the gate (lower bound > ``margin``).
 
     ``gate="applied"`` is `bench.stats.ni_gate`: min(task-cluster percentile bootstrap, Tango
     score) on the gate seed; ``"bootstrap"`` is the percentile component alone. Only the gate
     seed is simulated: ``seeds`` (≥ 1) is accepted for the interface, extra seeds are
-    descriptive and cannot change the result. Deterministic tasks are concordant pairs; their
-    outcome does not matter (both components use only the discordant cells and n). Resampling
+    descriptive and cannot change the result. Deterministic tasks are concordant pairs
+    (resolved in both arms with probability ``rate``). Exclusions: with ``task_rate`` a task is
+    dropped in both arms; otherwise each arm's key is excluded with ``one_sided_rate``
+    independently; then the rule of `bench.stats.gate_decision` (net excess of arm-only
+    exclusions imputed as arm failures, reference-resolved first; the rest dropped). Resampling
     is the same ``choices`` scheme as `bench.stats.percentile`."""
     if not 0 <= f <= 1 or n_tasks < MIN_TASKS or seeds < 1:
         raise ValueError(f"need 0 <= f <= 1, n_tasks >= 2, seeds >= 1 (f={f}, n={n_tasks})")
+    for name, r in (("one_sided_rate", one_sided_rate), ("task_rate", task_rate), ("rate", rate)):
+        if not 0 <= r <= 1:
+            raise ValueError(f"{name} must be in [0, 1], got {r}")
     p_arm = _arm_p(f, true_diff)
+    excluding = one_sided_rate > 0 or task_rate > 0
     rng = random.Random(seed)
     passed = 0
     for _ in range(n_sim):
-        values = [0] * n_tasks
-        for i in range(n_tasks):
+        values: list[int] = []
+        arm_only = base_only = arm_only_ref_resolved = 0
+        for _ in range(n_tasks):
             if rng.random() < f:
-                values[i] = (rng.random() < p_arm) - (rng.random() < 0.5)
+                x, y = rng.random() < p_arm, rng.random() < 0.5
+            else:
+                x = y = rng.random() < rate if excluding else False
+            if excluding:
+                if rng.random() < task_rate:
+                    continue
+                ax, bx = rng.random() < one_sided_rate, rng.random() < one_sided_rate
+                if ax and bx:
+                    continue
+                if ax:
+                    arm_only += 1
+                    arm_only_ref_resolved += y
+                    continue
+                if bx:
+                    base_only += 1
+                    continue
+            values.append(x - y)
+        excess = max(0, arm_only - base_only)
+        hit = min(excess, arm_only_ref_resolved)
+        values += [-1] * hit + [0] * (excess - hit)
+        n_eff = len(values)
+        if n_eff < MIN_TASKS:
+            continue
         if any(values):
-            boots = sorted(sum(rng.choices(values, k=n_tasks)) for _ in range(n_boot))
-            p_lo = quantile(boots, alpha / 2) / n_tasks
-            p_hi = quantile(boots, 1 - alpha / 2) / n_tasks
+            boots = sorted(sum(rng.choices(values, k=n_eff)) for _ in range(n_boot))
+            p_lo = quantile(boots, alpha / 2) / n_eff
+            p_hi = quantile(boots, 1 - alpha / 2) / n_eff
         else:
             p_lo = p_hi = 0.0
         if gate == "applied":
             n10, n01 = values.count(1), values.count(-1)
-            lo = gate_bound(p_lo, p_hi, (0, n10, n01, n_tasks - n10 - n01), alpha)[0]
+            lo = gate_bound(p_lo, p_hi, (0, n10, n01, n_eff - n10 - n01), alpha)[0]
         else:
             lo = p_lo
         passed += lo > margin
@@ -170,7 +211,8 @@ def required_tasks(
             cache[n] = power(f, n, seeds, **kw) >= target
         return cache[n]
 
-    guess = normal_approx_tasks(f, margin=margin, alpha=alpha, target=target)
+    kept = 1.0 - float(kw.get("task_rate", 0.0)) - 2.0 * float(kw.get("one_sided_rate", 0.0))
+    guess = normal_approx_tasks(f, margin=margin, alpha=alpha, target=target) / max(kept, 0.1)
     start = min(max(floor, math.ceil(guess)), pool)
     if reaches(start):
         hi = start
@@ -217,11 +259,10 @@ def required_size(
 
 @dataclass(frozen=True)
 class PowerPlan:
-    required_tasks: int | None  # tasks to schedule (inflated for the screening exclusion rate)
+    required_tasks: int | None  # tasks to schedule
     seeds: int
-    achieved_power: float  # at the expected paired n after exclusions
+    achieved_power: float  # simulated with exclusions at the screening rates and the gate rule
     verdict: PowerVerdict
-    expected_paired: int | None = None
 
     def as_e4(self) -> dict[str, Any]:
         """The ``power`` object of ``e4.json``."""
@@ -241,18 +282,17 @@ def plan(
     target: float = TARGET_POWER,
     **kw: Any,
 ) -> PowerPlan:
-    """Confirmation size from the conservative ``f_plan``: the paired n reaching ``target``
-    (≥ `MIN_PLAN_TASKS`) is found within the pool's expected post-exclusion size, then scheduled
-    as ceil(n / (1 − exclusion_rate)) tasks. ``underpowered`` when no such n fits (then the
-    power of the whole pool's expected paired n is reported). The quota check (6 weeks at the
-    60 % weekly stop) is Task 10's and may still downgrade the verdict."""
-    keep = 1.0 - model.exclusion_rate
-    usable = math.floor(pool * keep + 1e-9) if keep > 0 else 0
-    size = required_size(model.f_plan, pool=usable, max_seeds=max_seeds, target=target, **kw)
+    """Confirmation size from the conservative ``f_plan``, simulating exclusions at the
+    screening rates (``one_sided_rate``, ``task_rate``) under the gate's exclusion rule and the
+    screening baseline rate; ``underpowered`` when no size within the pool reaches ``target``
+    (then the power of the whole pool is reported). The quota check (6 weeks at the 60 % weekly
+    stop) is Task 10's and may still downgrade the verdict."""
+    kw.setdefault("one_sided_rate", model.one_sided_rate)
+    kw.setdefault("task_rate", model.task_rate)
+    kw.setdefault("rate", model.rate)
+    size = required_size(model.f_plan, pool=pool, max_seeds=max_seeds, target=target, **kw)
     if size is None:
-        achieved = power(model.f_plan, usable, 1, **kw) if usable >= MIN_TASKS else 0.0
-        return PowerPlan(None, 1, achieved, "underpowered", None)
-    paired, seeds = size
-    scheduled = min(pool, math.ceil(paired / keep - 1e-9))
-    achieved = power(model.f_plan, paired, seeds, **kw)
-    return PowerPlan(scheduled, seeds, achieved, "powered", paired)
+        achieved = power(model.f_plan, pool, 1, **kw) if pool >= MIN_TASKS else 0.0
+        return PowerPlan(None, 1, achieved, "underpowered")
+    tasks, seeds = size
+    return PowerPlan(tasks, seeds, power(model.f_plan, tasks, seeds, **kw), "powered")
