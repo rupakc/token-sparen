@@ -10,7 +10,7 @@ import stat
 import time
 import tomllib
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from importlib import resources
@@ -194,16 +194,42 @@ def _log_rejected(name: str, value: str) -> None:
 def state_home(env: Mapping[str, str]) -> Path:
     """``TOKEN_SPAREN_HOME`` if safe to honour (``env_path``), else ``~/.token-sparen``."""
     override = env_path(env, "TOKEN_SPAREN_HOME")
-    return override if override is not None else Path.home() / ".token-sparen"
+    root = override if override is not None else Path.home() / ".token-sparen"
+    _tighten_root(root)
+    return root
+
+
+def _posix() -> bool:
+    return os.name == "posix"
+
+
+def _tighten(st: os.stat_result, path: Path) -> None:
+    """Best effort: a directory of ours with group or other bits becomes 0700 (an install from
+    before directories were created private). Never fails."""
+    if _posix() and st.st_mode & 0o077:
+        with suppress(OSError):
+            os.chmod(path, 0o700)
+
+
+def _ours(path: Path, *, follow: bool) -> os.stat_result:
+    """The directory's stat; OSError unless it is a directory owned by the current user (POSIX;
+    with ``follow`` false, a symbolic link is refused too)."""
+    st = os.stat(path) if follow else os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode):
+        raise NotADirectoryError(f"{path} is not a directory")
+    if _posix() and st.st_uid != os.getuid():
+        raise PermissionError(f"{path} is not owned by this user; not used for token-sparen state")
+    return st
 
 
 def private_mkdir(directory: Path) -> None:
-    """``directory.mkdir(parents=True, exist_ok=True)``, except that every directory created
-    here gets mode 0700 (POSIX, whatever the umask): state and recovery files hold prompts,
-    commands and tool outputs that other local users must not read. Existing directories are
-    left as they are. Raises OSError like ``mkdir`` (e.g. a file in the way)."""
-    if directory.is_dir():
-        return
+    """``directory.mkdir(parents=True, exist_ok=True)`` for token-sparen's own files: state and
+    recovery files hold prompts, commands and tool outputs other local users must not read.
+
+    Every directory created here gets mode 0700 (POSIX, whatever the umask). A directory that
+    appears meanwhile (a race) must be a real directory owned by the user, never a link. An
+    existing ``directory`` must be owned by the user and is tightened to 0700 when it is looser
+    (best effort). Raises OSError (the hooks fail open) for anything else."""
     missing: list[Path] = []
     d = directory
     while not d.exists() and d.parent != d:
@@ -213,10 +239,33 @@ def private_mkdir(directory: Path) -> None:
         try:
             d.mkdir(mode=0o700)
         except FileExistsError:
-            continue  # created meanwhile by another process: not ours to change
-        if os.name == "posix":
+            _ours(d, follow=False)  # someone else's directory or link: never adopted
+            continue
+        if _posix():
             os.chmod(d, 0o700)
-    directory.mkdir(exist_ok=True)  # raises when something other than a directory is there
+    if not missing:
+        _tighten(_ours(directory, follow=True), directory)
+    elif not directory.is_dir():
+        raise NotADirectoryError(f"{directory} is not a directory")
+
+
+_TIGHTENED: set[str] = set()
+
+
+def _tighten_root(root: Path) -> None:
+    """Once per process: an existing state root of ours that is looser than 0700 is tightened
+    (best effort; a root that is missing, a link target or not ours is left alone)."""
+    key = str(root)
+    if key in _TIGHTENED:
+        return
+    _TIGHTENED.add(key)
+    try:
+        st = os.stat(root)
+    except OSError:
+        _TIGHTENED.discard(key)  # not created yet: check again after it is
+        return
+    if stat.S_ISDIR(st.st_mode) and (not _posix() or st.st_uid == os.getuid()):
+        _tighten(st, root)
 
 
 _REDACT: ContextVar[bool] = ContextVar("token_sparen_redact_logs", default=False)

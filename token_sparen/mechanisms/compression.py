@@ -435,7 +435,7 @@ def handle_post_tool(
     if time.monotonic() - t0 > deadline:
         log_error(env, "compression", "save deadline exceeded; output left untouched")
         return no_op()
-    ref = recovery.save_full(event.project_dir, full if full is not None else preview)
+    ref = recovery.save_full(event.project_dir, full if full is not None else preview, env)
     body = f"{chosen.text}\n{recovery.marker(chosen.kept_lines, picked.total_lines, ref)}"
     if len(body) > len(preview):  # hard invariant: never more than the model would have seen
         log_error(env, "compression", "replacement longer than preview; output left untouched")
@@ -445,6 +445,7 @@ def handle_post_tool(
         ttl_days=_num(cfg, "recovery.ttl_days", 14),
         max_files=int(_num(cfg, "recovery.max_files", 200)),
         max_bytes=int(_num(cfg, "recovery.max_bytes", 100_000_000)),
+        env=env,
     )
     after = estimate_tokens(body, est)
     _count_trim(overlay_file, before - after, env)

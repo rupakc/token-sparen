@@ -575,7 +575,7 @@ def test_state_home_env_inside_repo_ignored(tmp_path: Path) -> None:
         ("TOKEN_SPAREN_COMPRESSION__TRIM_FILE_CONTENTS", "compression.trim_file_contents", "true"),
         ("TOKEN_SPAREN_LEARN__OPTIN__SUBAGENT_BRIEF", "learn.optin.subagent_brief", "true"),
         ("TOKEN_SPAREN_PRUNE__ENABLED", "prune.enabled", "1"),
-        ("TOKEN_SPAREN_OUTPUT_STYLE__ENABLED", "output_style.enabled", "true"),  # unlisted key
+        ("TOKEN_SPAREN_OUTPUT_STYLE__ENABLED", "output_style.enabled", "true"),  # switch-off only
         ("TOKEN_SPAREN_LEARN__ENABLED", "learn.enabled", "false"),  # user-only
         ("TOKEN_SPAREN_GOVERNOR__HARD_STOP", "governor.hard_stop", "true"),  # blocks more
         ("TOKEN_SPAREN_COMPRESSION__ALLOW_CTYPES", "compression.allow_ctypes", "text"),
@@ -614,6 +614,7 @@ def test_env_cannot_widen(tmp_path: Path, var: str, key: str, raw: str) -> None:
         ("TOKEN_SPAREN_FACTS__ENABLED", "no", "facts.enabled", False),
         ("TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS", "50", "adapter.latency_budget_ms", 50),
         ("TOKEN_SPAREN_STATUSLINE__ASCII", "true", "statusline.ascii", True),  # free
+        ("TOKEN_SPAREN_OUTPUT_STYLE__ENABLED", "off", "output_style.enabled", False),
     ],
 )
 def test_env_may_narrow(tmp_path: Path, var: str, raw: str, key: str, want: Any) -> None:

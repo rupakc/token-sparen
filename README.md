@@ -92,8 +92,8 @@ All of this is on by default. Nothing is sent anywhere.
   `ssh`/`docker exec`/`kubectl exec` and similar wrappers, and any command whose stdin is
   redirected from a file). Nor does it trim plain text, tables or stack traces from any
   tool (Agent/Task and web results included). Those outputs are shown in full and never reach
-  the learner. To widen it, in your own `~/.token-sparen/config.toml`, env or `config set` (a
-  project file may only narrow it):
+  the learner. To widen it, in your own `~/.token-sparen/config.toml` or `config set` (a
+  project file or a `TOKEN_SPAREN_*` variable may only narrow it):
 
   ```toml
   [compression]
@@ -197,7 +197,7 @@ A trimmed result ends with a marker:
 | Read pointers only | `[learn.hold] read_dedupe = true` or `read_dedupe.enabled = false` |
 | Learned repository facts | `token-sparen facts disable` (this project; `facts enable` undoes it), `[facts] enabled = false` (everywhere; a project's `token-sparen.toml` may set it too), or `token-sparen facts forget <id>` for one fact (see [Learned repository facts](#learned-repository-facts)) |
 | Failure-loop guard | `[loopguard] enabled = false` (a project's `token-sparen.toml` may set it too). `[learn.hold] loopguard = true` does not switch it off, it only keeps the most patient setting |
-| Output-style directive | off unless you opted in (`[output_style] enabled = true` in your `config.toml`, or `token-sparen config set output_style.enabled true` for one session); `enabled = false` switches it off again (a project's `token-sparen.toml` may set that too) |
+| Output-style directive | off unless you opted in (`[output_style] enabled = true` in your `config.toml`, or `token-sparen config set output_style.enabled true` for one session); `enabled = false` switches it off again (a project's `token-sparen.toml` or a `TOKEN_SPAREN_*` variable may only set that) |
 | Tool pruning | off unless you opted in; `token-sparen prune disable` opts out and removes every rule token-sparen wrote, `prune restore <tool>` gives one tool back, and a project's `token-sparen.toml` may set `[prune] allow = false` (see [Tool pruning](#tool-pruning-opt-in)) |
 | Blocking, notices, other mechanisms | `guards.enabled`, `governor.enabled`, `boundary.enabled` or `subagent.enabled` set to `false` |
 | Uninstall | `claude plugin uninstall token-sparen@token-sparen`; run `token-sparen statusline uninstall` first if you installed the statusline |
@@ -215,11 +215,13 @@ Everything stays on your machine, but some of it is plain text you should know a
 
 - `<project>/.token-sparen/`: recovery files under `outputs/` (full tool outputs, so they can
   contain anything a command printed), plus a `.gitignore` containing `*` so the folder is never
-  committed. Created on the first compression in that project, owner-only (mode 0700 on POSIX);
-  a `.token-sparen` or `outputs` that is a symbolic link (e.g. committed by a repository) is
-  never written through, so nothing is saved and the output stays whole.
-- `~/.token-sparen/` (directories token-sparen creates here are owner-only, mode 0700 on POSIX;
-  override with `TOKEN_SPAREN_HOME`; an override inside the current project
+  committed. Created on the first compression in that project, owner-only (mode 0700 on POSIX;
+  an older, looser folder of yours is tightened on the next write). Nothing is written, read or
+  pruned through a symbolic link (a `.token-sparen`, `outputs` or `<id>.txt` link, e.g. committed
+  by a repository, means nothing is saved and the output stays whole), and `token-sparen show`
+  serves only outputs this install saved for this checkout.
+- `~/.token-sparen/` (owner-only, mode 0700 on POSIX: created so, and an older looser root of
+  yours is tightened; a directory not owned by you is never used; override with `TOKEN_SPAREN_HOME`; an override inside the current project
   or its git work tree (however it is spelled), or (POSIX) not owned by you, is ignored with one
   line in the default root's `logs/errors.jsonl`, because a repository's committed Claude Code
   settings can set environment variables; a not-yet-created path is accepted when its nearest
@@ -237,6 +239,9 @@ Everything stays on your machine, but some of it is plain text you should know a
     rules about to be written, and pending notices; kept here, beside the statusline record, so a
     changed git remote never loses track of a rule);
   - `logs/errors.jsonl` and sampled `logs/latency.jsonl`;
+  - `recovery/<hash>/<id>`: one empty file per recovery file this install saved, per checkout (the
+    folder name is a hash of the checkout path), so `show` never serves a file a repository
+    planted;
   - small `<file>.lock` files next to the JSON files above, used for file locking;
   - `projects/<key>/`: `decisions.jsonl` (per-decision log; keeps the first 500 characters of Bash
     commands, and for each trim an outcome line with its settled regret value and signal; it is
@@ -333,6 +338,10 @@ Later layers override earlier ones:
    settings can set environment variables, so a variable follows the same rules as a project file
    (see below): it may make token-sparen intervene less or keep more, never more; anything else
    is ignored and logged once. Widen in `~/.token-sparen/config.toml` or with `config set`.
+   User-only keys are ignored from the environment even when they would narrow; use
+   `TOKEN_SPAREN_DISABLE=1`, `TOKEN_SPAREN_GOVERNOR__ENABLED=false` or
+   `TOKEN_SPAREN_PRUNE__ALLOW=false` instead of `LEARN__ENABLED`, `GOVERNOR__HARD_STOP` or
+   `PRUNE__ENABLED`.
 5. this session only: `token-sparen config set <section.key> <value> [--session ID]`
    (e.g. `config set guards.enabled false`)
 
@@ -357,7 +366,7 @@ table, measured from your config and session overrides.
 | `compression.trim_file_contents`, `prune.allow` | only set `false` (`prune.allow = false`: never prune here, and token-sparen's rules are reverted) |
 | `read_dedupe.max_turn_gap`, `read_dedupe.max_entries`, `compression.save_deadline_ms`, `adapter.latency_budget_ms`, `facts.max_facts`, `facts.max_tokens`, `prune.lease_sessions` | only lower (`prune.lease_sessions`: pruned tools are restored sooner) |
 | `learn.tau.<tier>` lower; `learn.floor.<tier>`, `learn.ladder_obs` higher; `learn.hold.<point>` only `true`; `learn.breaker_min_obs`, `learn.breaker_every` lower; `learn.breaker_lcb_q`, `learn.breaker_sessions` higher | only make learning more careful |
-| everything else, including `learn.enabled` and all other `learn.*`, `compression.levels.*.{head,tail}` and `guards.pretrim_{lines,head}` (a larger head/tail displaces prompt-relevant lines), `governor.hard_stop`, `governor.session_budget_tokens`, `governor.windows`, `adapter.latency_sample_rate`, `adapter.latency_log_max_bytes`, `extensions.*`, the other `facts.*` keys, the other `prune.*` keys (including `prune.enabled`: pruning is opted in only with `prune enable` or your own `config.toml`), `loopguard.watch_calls`, `output_style.directive`, `ope.*`, and any key not listed | nothing (user config, env or `config set` only) |
+| everything else, including `learn.enabled` and all other `learn.*`, `compression.levels.*.{head,tail}` and `guards.pretrim_{lines,head}` (a larger head/tail displaces prompt-relevant lines), `governor.hard_stop`, `governor.session_budget_tokens`, `governor.windows`, `adapter.latency_sample_rate`, `adapter.latency_log_max_bytes`, `extensions.*`, the other `facts.*` keys, the other `prune.*` keys (including `prune.enabled`: pruning is opted in only with `prune enable` or your own `config.toml`), `loopguard.watch_calls`, `output_style.directive`, `ope.*`, and any key not listed | nothing (your `config.toml` or `config set` only; a `TOKEN_SPAREN_*` variable is ignored too) |
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -381,7 +390,7 @@ table, measured from your config and session overrides.
 | `loopguard.min_k` | 2 | fewest repeats of one error before the redirect (the learned setting is 2, 3 or 5) |
 | `learn.hold.loopguard` | false | `true` keeps the most patient setting (5 repeats); it does not switch the guard off |
 | `loopguard.watch_calls` | 5 | tool calls after the redirect that decide whether the loop broke (user only) |
-| `output_style.enabled` | false | one line at session start (startup, `/clear`, after compaction; never on resume) asking for concise prose while never shortening code, commands, file paths, error messages or quoted tool output; opt-in only: enabled only from your `config.toml` or a session override (`config set`); a project may only switch it off (spec 6.6) |
+| `output_style.enabled` | false | one line at session start (startup, `/clear`, after compaction; never on resume) asking for concise prose while never shortening code, commands, file paths, error messages or quoted tool output; opt-in only: enabled only from your `config.toml` or a session override (`config set`); a project or a `TOKEN_SPAREN_*` variable may only switch it off (spec 6.6) |
 | `output_style.directive` | `concise` | which directive; an unknown name means off and is logged once (user only) |
 | `prune.enabled` | false | tool pruning ([opt-in](#tool-pruning-opt-in)); read only from your own `config.toml` (or set per project by `token-sparen prune enable`) |
 | `prune.builtins` | false | also prune built-in tools an SDK `init` record listed as always loaded (your `config.toml` only) |
@@ -390,17 +399,17 @@ table, measured from your config and session overrides.
 | `prune.tau`, `prune.ucb_q` | 0.01, 0.95 | prune only when the regret bound `ucb(ucb_q) <= tau` (about 300 unused prompts; user only) |
 | `prune.idle_minutes` | 60 | new rules are written only if no other session of the project was active this long (user only) |
 | `prune.lease_sessions` | 15 | a pruned tool is restored after this many sessions to observe it again (a project may only lower it) |
-| `learn.enabled` | true | learn how strongly to trim; `false` uses the fixed defaults, which trim more than a cold learner (user config, env or `config set` only) |
+| `learn.enabled` | true | learn how strongly to trim; `false` uses the fixed defaults, which trim more than a cold learner (your `config.toml` or `config set` only) |
 | `learn.hold.compression` | false | `true` stops all trimming of tool output (see [Turning it off](#turning-it-off)) |
 | `learn.hold.read_dedupe` | false | `true` stops read pointers |
-| `learn.savings_reward` | `"scaled"` | savings reward of a trim: `scaled` (removed x resends / recent p95), `fraction`, `counterfactual` (vs the best arm on the same output; `learn.resend_horizon`, 20) or `cost` (cache-weighted); a tuning option (user config, env or `config set` only) |
+| `learn.savings_reward` | `"scaled"` | savings reward of a trim: `scaled` (removed x resends / recent p95), `fraction`, `counterfactual` (vs the best arm on the same output; `learn.resend_horizon`, 20) or `cost` (cache-weighted); a tuning option (your `config.toml` or `config set` only) |
 | `learn.ladder_retry_decisions` | 0 | `N > 0`: re-open a locked, harsher trimming level for one probing decision after N decisions of that bucket within one session (counted per session; user only) |
 | `guards.pretrim_bounded_keep_ratio` | unset | share of lines a learned pre-trim keeps; unset is the larger of the packaged and your configured `compression.levels.standard.keep_ratio` (raising the standard arm raises the pre-trim, lowering it never lowers the pre-trim), any number is used as is (a project may only raise it) |
 | `statusline.segments` | all six | which segments to show |
 | `statusline.ascii`, `statusline.color` | false, true | plain glyphs; colours |
 | `recovery.ttl_days`, `max_files`, `max_bytes` | 14, 200, 100 MB | recovery file retention |
 | `adapter.latency_budget_ms` | 400 | hook time cap before it becomes a no-op |
-| `extensions.allow_override` | false | let a trusted extension replace a built-in (user config or env only) |
+| `extensions.allow_override` | false | let a trusted extension replace a built-in (your `config.toml` only) |
 
 ## Extensions (opt-in, explicit trust)
 

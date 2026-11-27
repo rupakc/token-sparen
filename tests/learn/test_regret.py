@@ -281,7 +281,7 @@ def test_cli_show_records_recovery_read(tmp_path: Path, monkeypatch: pytest.Monk
     from token_sparen.store import keycache
 
     proj = _proj(tmp_path)
-    ref = recovery.save_full(proj, FULL)
+    ref = recovery.save_full(proj, FULL, _env(tmp_path))
     for k in ("CLAUDE_PROJECT_DIR", "CLAUDE_SESSION_ID"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("TOKEN_SPAREN_HOME", str(tmp_path / "home"))
@@ -321,7 +321,7 @@ def test_cli_show_without_session_is_fine(
     from token_sparen.cli import main
 
     proj = _proj(tmp_path)
-    ref = recovery.save_full(proj, "hello\n")
+    ref = recovery.save_full(proj, "hello\n", _env(tmp_path))
     monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
     monkeypatch.setenv("TOKEN_SPAREN_HOME", str(tmp_path / "home"))
     monkeypatch.chdir(proj)

@@ -16,9 +16,19 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   `token-sparen.toml` (a repository's committed Claude Code settings can set environment
   variables); an ignored value is logged once. Widen in `~/.token-sparen/config.toml` or with
   `token-sparen config set`. `learn.optin.*` and `extensions.allow_override` are read from
-  `~/.token-sparen/config.toml` only.
-- Directories created under `~/.token-sparen/` and `<project>/.token-sparen/` are owner-only
-  (0700 on POSIX); recovery files are never written or pruned through a symbolic link.
+  `~/.token-sparen/config.toml` only. Migration: user-only keys are ignored from the environment
+  even when they would narrow (`LEARN__ENABLED`, `GOVERNOR__HARD_STOP`, `PRUNE__ENABLED`,
+  `ADAPTER__LATENCY_SAMPLE_RATE`, ...); set them in `config.toml`, or use
+  `TOKEN_SPAREN_DISABLE=1`, `TOKEN_SPAREN_GOVERNOR__ENABLED=false` or
+  `TOKEN_SPAREN_PRUNE__ALLOW=false`.
+- Directories under `~/.token-sparen/` and `<project>/.token-sparen/` are owner-only (0700 on
+  POSIX): created so, and older looser ones of yours are tightened on the next write; a
+  directory owned by someone else (or a link that appeared while creating) is refused.
+- Recovery files are never written, read or pruned through a symbolic link (directories or the
+  `<id>.txt` file itself; new files are written `O_EXCL`/`O_NOFOLLOW` and renamed into place),
+  and `token-sparen show` serves only outputs this install saved for this checkout (one empty
+  marker file per id under `~/.token-sparen/recovery/<hash>/`); a file a repository planted at
+  an id is replaced by the real output.
 - Threat model in `docs/user/privacy-security.md`; `SECURITY.md` states supported versions and
   scope. CI: actions pinned by commit SHA, checkouts without a persisted token, a `supply-chain`
   job (pinning and least-privilege tests, advisory `pip-audit`), Dependabot, and a deny-list

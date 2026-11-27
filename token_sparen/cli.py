@@ -19,7 +19,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from token_sparen import __version__
+from token_sparen import __version__, recovery
 from token_sparen.config import Config, load_config, private_mkdir, state_home
 from token_sparen.events import ToolCall
 from token_sparen.store import jsonstore, keycache, paths, session
@@ -199,11 +199,11 @@ def _emit(text: str) -> None:
 def _show(args: argparse.Namespace) -> int:
     if not _ID_RE.fullmatch(args.id):
         raise CliError(f"invalid id {args.id!r}: expected 12 lowercase hex characters")
-    path = _project_dir(args) / ".token-sparen" / "outputs" / f"{args.id}.txt"
-    try:
-        data = path.read_bytes()
-    except OSError:
-        print(f"token-sparen: no saved output {args.id} in {path.parent}", file=sys.stderr)
+    project = _project_dir(args)
+    data = recovery.read_full(project, args.id, os.environ)
+    if data is None:  # missing, a link, or not written by this install for this checkout
+        where = project / ".token-sparen" / "outputs"
+        print(f"token-sparen: no saved output {args.id} in {where}", file=sys.stderr)
         return 1
     text = data.decode("utf-8", errors="surrogateescape")
     _record_recovery_read(args, text)
