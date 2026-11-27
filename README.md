@@ -197,6 +197,7 @@ A trimmed result ends with a marker:
 | Read pointers only | `[learn.hold] read_dedupe = true` or `read_dedupe.enabled = false` |
 | Learned repository facts | `token-sparen facts disable` (this project; `facts enable` undoes it), `[facts] enabled = false` (everywhere; a project's `token-sparen.toml` may set it too), or `token-sparen facts forget <id>` for one fact (see [Learned repository facts](#learned-repository-facts)) |
 | Failure-loop guard | `[loopguard] enabled = false` (a project's `token-sparen.toml` may set it too). `[learn.hold] loopguard = true` does not switch it off, it only keeps the most patient setting |
+| Output-style directive | off unless you opted in (`[output_style] enabled = true` in your `config.toml`, or `token-sparen config set output_style.enabled true` for one session); `enabled = false` switches it off again (a project's `token-sparen.toml` may set that too) |
 | Tool pruning | off unless you opted in; `token-sparen prune disable` opts out and removes every rule token-sparen wrote, `prune restore <tool>` gives one tool back, and a project's `token-sparen.toml` may set `[prune] allow = false` (see [Tool pruning](#tool-pruning-opt-in)) |
 | Blocking, notices, other mechanisms | `guards.enabled`, `governor.enabled`, `boundary.enabled` or `subagent.enabled` set to `false` |
 | Uninstall | `claude plugin uninstall token-sparen@token-sparen`; run `token-sparen statusline uninstall` first if you installed the statusline |
@@ -247,7 +248,7 @@ Everything stays on your machine, but some of it is plain text you should know a
     bucket labels, arms, times; with `learn.ladder_retry_decisions` on, per-bucket decision counts), `last_active.json`
     (the project's most recent session id and when it was last active, plus up to 50 recent
     session ids with their last activity, removed when a session ends), `savings_scale.json` (numbers only: recent savings
-    sizes per bucket), `floor_warned.json`, `posteriors.json` and `breaker.json` (numbers only:
+    sizes per bucket), `floor_warned.json`, `style_warned.json` (only a hash of an unknown `output_style.directive` already reported), `posteriors.json` and `breaker.json` (numbers only:
     learned evidence per bucket, the loop guard's natural break rate per bucket, and recent
     regret values per decision point), `pending.json`
     (ids of sessions waiting to be folded) and `pretrim.json`
@@ -341,7 +342,7 @@ session); anything else is ignored and logged once.
 | Settings | A project may |
 |---|---|
 | `statusline.{segments,ascii,color,parse_budget_ms}`, `pricing.*`, `boundary.{min_ctx_pct,min_overlap,min_turn,history,min_identifiers,cooldown_turns}`, `governor.{econ,ctx}_{notice,advise}` | set freely within bounds (display, advice) |
-| `guards.enabled`, `read_dedupe.enabled`, `governor.enabled`, `boundary.enabled`, `subagent.enabled`, `facts.enabled`, `loopguard.enabled` | only turn off |
+| `guards.enabled`, `read_dedupe.enabled`, `governor.enabled`, `boundary.enabled`, `subagent.enabled`, `facts.enabled`, `loopguard.enabled`, `output_style.enabled` | only turn off |
 | `compression.min_tokens`, `min_saving_ratio`, `levels.*.keep_ratio`, the per-type knobs (`json.items`, `diff.context`, `stacktrace.edge_frames`, `test_report.block_lines`, `search.per_file`, `pplx.results`, `log.tail`), `recovery.*`, `guards.max_read_bytes`, `guards.pretrim_bounded_keep_ratio`, `read_dedupe.min_tokens`, `loopguard.min_k` | only raise (keep more, intervene later) |
 | `compression.compiler.warnings.*` | only move from `count` to `keep` |
 | `compression.skip_tools` | only add tools |
@@ -349,7 +350,7 @@ session); anything else is ignored and logged once.
 | `compression.trim_file_contents`, `prune.allow` | only set `false` (`prune.allow = false`: never prune here, and token-sparen's rules are reverted) |
 | `read_dedupe.max_turn_gap`, `read_dedupe.max_entries`, `compression.save_deadline_ms`, `adapter.latency_budget_ms`, `facts.max_facts`, `facts.max_tokens`, `prune.lease_sessions` | only lower (`prune.lease_sessions`: pruned tools are restored sooner) |
 | `learn.tau.<tier>` lower; `learn.floor.<tier>`, `learn.ladder_obs` higher; `learn.hold.<point>` only `true`; `learn.breaker_min_obs`, `learn.breaker_every` lower; `learn.breaker_lcb_q`, `learn.breaker_sessions` higher | only make learning more careful |
-| everything else, including `learn.enabled` and all other `learn.*`, `compression.levels.*.{head,tail}` and `guards.pretrim_{lines,head}` (a larger head/tail displaces prompt-relevant lines), `governor.hard_stop`, `governor.session_budget_tokens`, `governor.windows`, `adapter.latency_sample_rate`, `adapter.latency_log_max_bytes`, `extensions.*`, the other `facts.*` keys, the other `prune.*` keys (including `prune.enabled`: pruning is opted in only with `prune enable` or your own `config.toml`), `loopguard.watch_calls`, `ope.*`, and any key not listed | nothing (user config, env or `config set` only) |
+| everything else, including `learn.enabled` and all other `learn.*`, `compression.levels.*.{head,tail}` and `guards.pretrim_{lines,head}` (a larger head/tail displaces prompt-relevant lines), `governor.hard_stop`, `governor.session_budget_tokens`, `governor.windows`, `adapter.latency_sample_rate`, `adapter.latency_log_max_bytes`, `extensions.*`, the other `facts.*` keys, the other `prune.*` keys (including `prune.enabled`: pruning is opted in only with `prune enable` or your own `config.toml`), `loopguard.watch_calls`, `output_style.directive`, `ope.*`, and any key not listed | nothing (user config, env or `config set` only) |
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -373,6 +374,8 @@ session); anything else is ignored and logged once.
 | `loopguard.min_k` | 2 | fewest repeats of one error before the redirect (the learned setting is 2, 3 or 5) |
 | `learn.hold.loopguard` | false | `true` keeps the most patient setting (5 repeats); it does not switch the guard off |
 | `loopguard.watch_calls` | 5 | tool calls after the redirect that decide whether the loop broke (user only) |
+| `output_style.enabled` | false | one line at session start (startup, `/clear`, after compaction; never on resume) asking for concise prose while never shortening code, commands, file paths, error messages or quoted tool output; opt-in only: enabled only from your `config.toml` or a session override (`config set`); a project may only switch it off (spec 6.6) |
+| `output_style.directive` | `concise` | which directive; an unknown name means off and is logged once (user only) |
 | `prune.enabled` | false | tool pruning ([opt-in](#tool-pruning-opt-in)); read only from your own `config.toml` (or set per project by `token-sparen prune enable`) |
 | `prune.builtins` | false | also prune built-in tools an SDK `init` record listed as always loaded (your `config.toml` only) |
 | `prune.allow` | true | `false`: never prune here and revert token-sparen's rules (a project may set it) |

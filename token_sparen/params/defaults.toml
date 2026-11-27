@@ -320,6 +320,14 @@ enabled = true
 min_k = 2          # floor on the arm's k (a project may only raise it)
 watch_calls = 5    # tool calls after the redirect that decide "loop broken" (savings 1)
 
+[output_style]
+# Output-style directive (spec 6.6, high tier): one short line at SessionStart (startup, clear,
+# compact; never resume) asking for concise prose, never shorter code. Off by default in v1.0;
+# enabled only from the user's config.toml or a session override. A project file may only switch
+# it off; the directive is user-only.
+enabled = false
+directive = "concise"   # a name from mechanisms/outputstyle.DIRECTIVES; unknown -> off
+
 [adapter]
 latency_budget_ms = 400  # hard cap per hook; on overrun the hook returns the host no-op
 latency_sample_rate = 0.1  # share of hooks whose duration goes to logs/latency.jsonl
