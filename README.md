@@ -15,7 +15,7 @@ shows a live token meter. Everything runs locally.
 
 ## Status
 
-Pre-release (`0.1.0.dev0`). The mechanisms below work today; how strongly to trim is learned per
+Pre-release (see `token-sparen --version`). The mechanisms below work today; how strongly to trim is learned per
 project from your own sessions (see [How it learns](#how-it-learns)), starting conservatively.
 There are **no published benchmark numbers yet**, so this README makes no savings claims; measure
 on your own sessions with `/token-sparen` or `token-sparen stats`. Both report **net** savings:
