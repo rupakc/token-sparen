@@ -79,6 +79,8 @@ everything else. No savings figures are claimed for them yet.
 #### Fixed
 - With `TOKEN_SPAREN_DISABLE=1` a hook no longer writes its sampled line to
   `logs/latency.jsonl`: the kill switch now writes nothing at all.
+- Settings writes now detect a concurrent same-size edit (within mtime resolution) by a content
+  digest in the pre-replace stamp, instead of overwriting it.
 
 #### Security
 - Tool pruning is the second settings write after the statusline: it needs an explicit opt-in

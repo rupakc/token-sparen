@@ -16,6 +16,7 @@ Only the ``statusLine`` key is ever changed; every other key keeps its value and
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -96,32 +97,61 @@ def _unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def _load(path: Path) -> tuple[dict[str, Any], bool]:
-    """(settings, existed); raises _Invalid for anything but a strict JSON object."""
+def _digest(raw: bytes) -> bytes:
+    return hashlib.blake2b(raw, digest_size=16).digest()
+
+
+def _stamp_of(st: os.stat_result, raw: bytes) -> Stamp:
+    return st.st_mtime_ns, st.st_size, st.st_ino, _digest(raw)
+
+
+def _read_stamped(path: Path) -> tuple[bytes, Stamp] | None:
+    """(bytes, stamp) from one stat plus one read, None if absent. The stat comes first so a
+    change in between shows up as a stamp mismatch (the digest covers the bytes actually read)."""
     try:
-        text = path.read_text(encoding="utf-8")
+        st = path.stat()
+        raw = path.read_bytes()
     except FileNotFoundError:
-        return {}, False
+        return None
+    return raw, _stamp_of(st, raw)
+
+
+def _load_stamped(path: Path) -> tuple[dict[str, Any], bool, Stamp]:
+    """(settings, existed, stamp of the exact bytes parsed); raises _Invalid for anything but a
+    strict JSON object."""
+    try:
+        read = _read_stamped(path)
+        text = None if read is None else read[0].decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise _Invalid(f"{path} cannot be read ({exc}); nothing was changed") from exc
+    if read is None or text is None:
+        return {}, False, None
     try:
         data = json.loads(text, parse_constant=_reject_constant, object_pairs_hook=_unique)
     except (ValueError, RecursionError) as exc:
         raise _Invalid(f"{path} is not valid JSON ({exc}); nothing was changed") from exc
     if not isinstance(data, dict):
         raise _Invalid(f"{path} is not valid JSON settings (not an object); nothing was changed")
-    return data, True
+    return data, True, read[1]
 
 
-Stamp = tuple[int, int, int] | None
+def _load(path: Path) -> tuple[dict[str, Any], bool]:
+    """(settings, existed); raises _Invalid for anything but a strict JSON object."""
+    data, existed, _ = _load_stamped(path)
+    return data, existed
+
+
+Stamp = tuple[int, int, int, bytes] | None
 
 
 def _stamp(path: Path) -> Stamp:
+    """Current stamp of ``path`` (mtime, size, inode and a content digest), None if absent.
+    The digest catches a same-size edit inside the filesystem's mtime resolution."""
     try:
-        st = path.stat()
-    except FileNotFoundError:
-        return None
-    return st.st_mtime_ns, st.st_size, st.st_ino
+        read = _read_stamped(path)
+    except OSError:
+        return (-1, -1, -1, b"")  # unreadable now: never equals a good stamp
+    return None if read is None else read[1]
 
 
 class _Changed(RuntimeError):
@@ -260,9 +290,8 @@ def install_statusline(
     target = _target(settings_file)
     slot = _slot(target)
     for attempt in (0, 1):
-        stamp = _stamp(target)
         try:
-            data, existed = _load(target)
+            data, existed, stamp = _load_stamped(target)
         except _Invalid as exc:
             return InstallResult(False, "error", str(exc))
         action, command, new_value = _plan_install(data, launcher)
@@ -319,9 +348,8 @@ def uninstall_statusline(
     target = _target(settings_file)
     slot = _slot(target)
     for attempt in (0, 1):
-        stamp = _stamp(target)
         try:
-            data, _ = _load(target)
+            data, _, stamp = _load_stamped(target)
             meta = jsonstore.read(_meta_path(env), {}, env)
         except _Invalid as exc:
             return InstallResult(False, "error", str(exc))
@@ -421,9 +449,8 @@ def add_deny_rules(path: Path, rules: Sequence[str]) -> WriteResult:
     """Append the bare ``rules`` not yet in ``permissions.deny`` (a ``prune.WriteResult``)."""
     target = _target(path)
     for attempt in (0, 1):
-        stamp = _stamp(target)
         try:
-            data, existed = _load(target)
+            data, existed, stamp = _load_stamped(target)
             deny = _deny_list(data)
         except _Invalid as exc:
             return WriteResult(False, message=str(exc))
@@ -464,9 +491,8 @@ def remove_deny_rules(
     are empty, and our backup when it equals the file it backs up."""
     target = _target(path)
     for attempt in (0, 1):
-        stamp = _stamp(target)
         try:
-            data, existed = _load(target)
+            data, existed, stamp = _load_stamped(target)
             deny = list(_deny_list(data))
         except _Invalid as exc:
             return WriteResult(False, message=str(exc))

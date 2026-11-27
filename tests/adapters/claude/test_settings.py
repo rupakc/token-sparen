@@ -410,3 +410,26 @@ def test_cli_launcher_write_failure_is_reported(
         os.chmod(state, 0o700)
     assert "cannot write the launcher" in capsys.readouterr().err
     assert _read(target) == {"a": 1}
+
+
+def test_same_size_edit_with_restored_mtime_is_detected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A same-length edit whose mtime is put back (coarse clocks) must not be clobbered."""
+    path = tmp_path / "settings.json"
+    path.write_text('{"a": "1"}\n', encoding="utf-8")
+    orig = path.stat().st_mtime_ns
+    calls = []
+
+    def sneaky(target: Path) -> None:
+        if calls:
+            return
+        calls.append(1)
+        target.write_text('{"a": "2"}\n', encoding="utf-8")  # same length, other content
+        os.utime(target, ns=(orig, orig))
+
+    monkeypatch.setattr(settings, "_before_replace", sneaky)
+    stamp = settings._load_stamped(path)[2]
+    with pytest.raises(settings._Changed):
+        settings._write(path, {"a": "x"}, stamp)
+    assert _read(path) == {"a": "2"}
