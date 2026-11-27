@@ -1,0 +1,8 @@
+# sdist: never ship dev-time or private trees (prunes last, so nothing above re-adds them)
+prune docs
+prune bench
+prune evals
+prune .superpowers
+prune .claude
+exclude MEMORY.md
+global-exclude *.py[co] __pycache__
