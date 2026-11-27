@@ -6,7 +6,7 @@ import random
 from collections.abc import Callable
 
 import pytest
-from perfutil import best_of, perf_factor
+from perfutil import best_of, best_within, perf_factor
 
 from token_sparen.compress import CompressContext, Level, TextCompressor
 
@@ -73,5 +73,7 @@ def test_huge_and_binary_output() -> None:
 def test_strict_budget_10mb(line: Callable[[int, str], str]) -> None:
     """200 ms is the dev-machine reference; CI sets TOKEN_SPAREN_PERF_FACTOR for slower runners."""
     factor = perf_factor()
-    best = _best(_build(10 * MB, line), 5)
+    text = _build(10 * MB, line)
+    best, res = best_within(lambda: TextCompressor().compress(text, STANDARD, CTX), 0.2 * factor, 5)
+    assert isinstance(res.text, str)
     assert best < 0.2 * factor, f"{line.__name__}: {best * 1000:.0f} ms (factor {factor})"
