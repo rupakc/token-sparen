@@ -47,7 +47,9 @@ are excluded whole with their subagent files (``runner``).
 
 **Runs.** ``run`` drives ``runner.run_parallel`` (groups by project directory, chronological
 order and id de-duplication per group, bounded reads, optional processes and checkpoint); this
-module's replay is the runner's ``compression`` lane (``CompressionLane``).
+module's replay is the runner's ``compression`` lane (``CompressionLane``). ``_Session`` has no-op
+hooks (``_trimmed``, ``_untrimmed``, ``_settled``) through which the ``sim`` lane feeds a live
+learner the savings and proxy regret of each trim; they change nothing here.
 """
 
 from __future__ import annotations
@@ -60,7 +62,7 @@ import random
 import re
 import uuid
 from collections import deque
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -607,6 +609,7 @@ class _Session:
 
     def _settle(self, span: _Span) -> None:
         """Pay a span's best value (it leaves the watch)."""
+        self._settled(span)
         if span.best <= 0:
             return
         kind = "proxy_regret_full" if span.best >= regret.FULL else "proxy_regret_partial"
@@ -617,6 +620,25 @@ class _Session:
             if span.path_hit:
                 acc.count(acc.signals, "path_mention")
             acc.count(acc.regret_turns, _turn_bucket(span.lag))
+
+    # hooks for an online learner fed by this replay (``sim_lane``); no-ops here -------------
+
+    def _trimmed(
+        self,
+        decision: Decision,
+        span: _Span | None,
+        removed: float,
+        before: float,
+        redo: Callable[[str], float | None],
+    ) -> None:
+        """A trim was made (``span``: its watched span, None when it is not watched; ``redo``:
+        the removal another arm would make on the same output, None if it would not trim)."""
+
+    def _untrimmed(self, decision: Decision) -> None:
+        """A trimming arm was chosen but found nothing worth trimming."""
+
+    def _settled(self, span: _Span) -> None:
+        """``span`` leaves the watch (expiry, eviction, full regret or the session end)."""
 
     def _full(self, matched: list[tuple[_Span, set[int]]], signal: str) -> None:
         if not matched:
@@ -767,7 +789,8 @@ class _Session:
             tuple(self.cats),
         )
         feats = features.for_point(COMPRESSION, event, sctx, ctype, tokens=before)
-        arm = self.policy.decide(COMPRESSION, feats, sctx).arm
+        decision = self.policy.decide(COMPRESSION, feats, sctx)
+        arm = decision.arm
         for acc in self.accs:
             acc.arms[arm] = acc.arms.get(arm, 0) + 1
         if arm == COMPRESSION.safe_arm:
@@ -775,18 +798,28 @@ class _Session:
         ctx = CompressContext(
             prompt=self.prompt or None, recent_paths=tuple(self.paths), config=self.cfg
         )
-        picked = compression.pick_candidate(
-            None,
-            text,
-            load_level(self.cfg, arm),
-            registry.for_type(ctype),
-            ctx,
-            self.cfg,
-            est,
-            before,
-            self.project_dir,
-        )
+        compressor = registry.for_type(ctype)
+
+        def pick(name: str) -> compression.Candidate | None:
+            return compression.pick_candidate(
+                None,
+                text,
+                load_level(self.cfg, name),
+                compressor,
+                ctx,
+                self.cfg,
+                est,
+                before,
+                self.project_dir,
+            )
+
+        def redo(name: str) -> float | None:
+            alt = pick(name)
+            return None if alt is None else float(before - alt.tokens_after)
+
+        picked = pick(arm)
         if picked is None:
+            self._untrimmed(decision)
             return False
         removed = before - picked.tokens_after
         self._add(ctype, "trimmed", 1, cat, fam)
@@ -812,10 +845,13 @@ class _Session:
                 d = regret.token_digest(v)
                 if d not in self.seen:
                     digests[d] = i
+        span: _Span | None = None
         if len(set(digests.values())) >= regret.MIN_TOKEN_HITS:
             self._add(ctype, "watched", 1, cat, fam)
             sig = self._signature(rec.tool_name, rec.input)
             span = _Span(digests, ctype, self.turn, sig, cat, frozenset(paths), fam, before)
+        self._trimmed(decision, span, removed, before, redo)
+        if span is not None:
             self.watched.append(span)
             while len(self.watched) > MAX_WATCHED:
                 self._settle(self.watched.popleft())

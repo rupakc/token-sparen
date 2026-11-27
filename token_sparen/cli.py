@@ -125,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--lanes",
         default="compression",
         help="comma-separated lanes: compression (always runs) plus any of "
-        "facts, loopguard, prune, sim once available",
+        "facts, loopguard, prune, sim",
     )
     rep.add_argument("--quiet", action="store_true", help=_QUIET_HELP)
     ope_p = sub.add_parser("ope", help="E3: off-policy evaluation of decision logs (--out)")

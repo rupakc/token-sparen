@@ -31,7 +31,8 @@ Decisions: `MEMORY.md`.
     labelled data block (`inject`)
 - `hooks/` plugin hooks (`hooks.json`, `run.py`, `run_cli.py`); `skills/token-sparen/` is the
   `/token-sparen` skill (there is no `commands/` directory)
-- `evals/e2/` fact-preservation suite (corpus, `needles.toml`, `run.py`)
+- `evals/e2/` fact-preservation suite (corpus, `needles.toml`, `run.py`); `evals/challengers/`
+  offline learners run through the replay's `sim` lane (LinTS; never imported by the package)
 - `tests/` mirrors the package; fixtures are synthetic only; `tests/perf/` is the perf marker
 - `scripts/` `check_denylist.py`, `check_wheel.py`; `.claude/agents/`, `.claude/skills/` dev-time
   agents and skills

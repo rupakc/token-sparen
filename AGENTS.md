@@ -21,7 +21,8 @@ decisions: `MEMORY.md`.
 testing/`; `learn/` holds policy, decision log, engine, regret, `overlay` (session fold), `breaker`
 and `ope`; `replay/` holds E1, its parallel lane runner and the private report writer), `token_sparen/params/defaults.toml`
 (all tunables), `hooks/`, `skills/token-sparen/` (the plugin's `/token-sparen` skill; no
-`commands/`), `evals/e2/` (fact-preservation suite), `tests/` (mirrors the package, synthetic
+`commands/`), `evals/e2/` (fact-preservation suite), `evals/challengers/` (offline learners for the replay's
+`sim` lane), `tests/` (mirrors the package, synthetic
 fixtures only), `scripts/`. `facts/` (M3) holds the repo-fact sanitiser, the fold-time miners (`facts.json`), the per-fact lifecycle bandit and SessionStart injection.
 
 ## Commands (use the repo `.venv`; all must pass before a commit)

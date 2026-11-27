@@ -10,6 +10,29 @@ Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones 
 and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`
 for M3); the package version stays `0.1.0.dev0` until v1.0.
 
+### M4 simulation lane and offline LinTS challenger
+
+- `replay --lanes sim`: runs the live learning engine chronologically over past sessions per
+  project group, in a temporary state root deleted afterwards (its own `HOME` and
+  `TOKEN_SPAREN_HOME`, passed explicitly; no fact miner, settings writer or git call): decide on
+  every output the compression point is offered, savings reward from the tokens the chosen arm
+  removes on that output (the hook's `[learn] savings_reward` mode), the replay's proxy regret
+  delivered once when it settles (also as a circuit-breaker outcome), and an engine-only session
+  fold (`mine_facts=False, prune=False`). A reference engine with the run's configuration minus
+  the lane's `overlay` runs in the same pass on the same outputs with the same random draws, so
+  proposals compare paired per project group. Per split and group: decisions, arm share and
+  proxy regret per trim by epoch (thirds), tokens removed, net savings (minus the compression
+  lane's recovery-read estimate), breaker trips; `sim_lane.summary` / `sim_lane.pairs` render
+  them. Same seed, same report; parallel equals serial.
+- `params["chooser_factory"]` (`"module:callable"`) swaps the candidate learner; the offline
+  constrained LinTS challenger (`evals/challengers/lints.py`, two Sherman-Morrison linear
+  posteriors per arm over a 32-wide one-hot context, the engine's regret constraint) runs
+  through it with `evals/challengers/lints_sim.py`. Never wired to hooks; the package never
+  imports `evals`.
+- The compression replay gained no-op learner hooks (`_trimmed`, `_untrimmed`, `_settled`); its
+  output is unchanged. A lane factory with `base_config = True` receives the run's config
+  without its overlay.
+
 ### M4 engine options (default off)
 
 - `[learn] savings_reward`: `"scaled"` (default, unchanged), `"fraction"` (removed / output
