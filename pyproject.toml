@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "token-sparen"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "Learned, recoverable token optimisation for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,6 +18,9 @@ dev = ["pytest", "pytest-cov", "hypothesis", "ruff", "mypy", "build"]
 
 [project.scripts]
 token-sparen = "token_sparen.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "token_sparen.__version__" }
 
 [tool.setuptools]
 packages = [
