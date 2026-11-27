@@ -57,7 +57,7 @@ import os
 import posixpath
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -92,6 +92,9 @@ __all__ = [
     "on_prompt",
     "on_session_end",
     "on_tool",
+    "recurs_within",
+    "reversals",
+    "tool_target",
 ]
 
 STATE_KEY = "loopguard"
@@ -289,17 +292,59 @@ def command_head(command: str) -> str:
     return head
 
 
-def _target(event: Event) -> str:
-    tool = event.tool
-    if tool is None:
-        return ""
-    if tool.name == "Bash":
-        cmd = tool.input.get("command")
+def tool_target(name: str, tool_input: Mapping[str, Any]) -> str:
+    """The ``target`` mixed into a failure's fingerprint: for Bash the ``command_head``, for
+    file tools the path, else ``""``."""
+    if name == "Bash":
+        cmd = tool_input.get("command")
         return command_head(cmd) if isinstance(cmd, str) else ""
-    if tool.name in FILE_TOOLS:
-        path = tool.input.get("file_path") or tool.input.get("notebook_path")
+    if name in FILE_TOOLS:
+        path = tool_input.get("file_path") or tool_input.get("notebook_path")
         return path if isinstance(path, str) else ""
     return ""
+
+
+def _target(event: Event) -> str:
+    tool = event.tool
+    return "" if tool is None else tool_target(tool.name, tool.input)
+
+
+def recurs_within(seq: Sequence[str | None], i: int, n: int = DEFAULT_WATCH) -> bool:
+    """Does ``seq[i]`` (a fingerprint; ``None`` never recurs) appear again among the next ``n``
+    entries of ``seq`` (one per tool call of the agent's turn; the turn ending first counts as
+    not recurring)? The savings and natural-rate windows of ``on_tool`` decide by it."""
+    fp = seq[i]
+    return fp is not None and fp in seq[i + 1 : i + 1 + n]
+
+
+def _pair_move(pairs: dict[str, Any], a: str, b: str) -> tuple[str, int]:
+    """Record the move ``a -> b`` (hashes) in one file's bounded pair table; ``(pair key,
+    reversals)``: a move that undoes the pair's previous direction counts one reversal."""
+    pk = "|".join(sorted((a, b)))
+    cur = pairs.pop(pk, None)
+    direction, count = (cur[0], _num(cur[1])) if isinstance(cur, list) else ("", 0)
+    if direction == f"{b}>{a}":
+        count += 1
+    pairs[pk] = [f"{a}>{b}", count]
+    while len(pairs) > MAX_PAIRS:
+        del pairs[next(iter(pairs))]
+    return pk, count
+
+
+def reversals(edits: Sequence[tuple[str, str, str]]) -> int:
+    """The most reversals of one file region's edit pair over ``(file, old, new)`` edits in
+    order (a Write: ``old`` is the file's previously written content, ``""`` for none), as the
+    oscillation signal of ``on_tool`` counts them: A -> B -> A -> B is two, a repeat in the same
+    direction none; each file keeps at most ``MAX_PAIRS`` pairs (the oldest is forgotten). The
+    turn's bound on tracked files (``MAX_FINGERPRINTS``) is not applied."""
+    files: dict[str, dict[str, Any]] = {}
+    best = 0
+    for path, old, new in edits:
+        if old == new:
+            continue
+        _, count = _pair_move(files.setdefault(path, {}), _sha(old), _sha(new))
+        best = max(best, count)
+    return best
 
 
 def is_stop(prompt: str | None) -> bool:
@@ -492,16 +537,9 @@ def _oscillation(
     entry["pairs"] = pairs
     best: tuple[str, int] | None = None
     for a, b in moves:
-        pk = "|".join(sorted((a, b)))
-        cur = pairs.pop(pk, None)
-        direction, reversals = (cur[0], _num(cur[1])) if isinstance(cur, list) else ("", 0)
-        if direction == f"{b}>{a}":
-            reversals += 1
-        pairs[pk] = [f"{a}>{b}", reversals]
-        while len(pairs) > MAX_PAIRS:
-            del pairs[next(iter(pairs))]
-        if reversals >= MIN_REVERSALS and (best is None or reversals > best[1]):
-            best = (_sha(f"revert|{path}|{pk}"), reversals)
+        pk, count = _pair_move(pairs, a, b)
+        if count >= MIN_REVERSALS and (best is None or count > best[1]):
+            best = (_sha(f"revert|{path}|{pk}"), count)
     return best
 
 
@@ -598,7 +636,7 @@ def _watch(ag: dict[str, Any], fp: str | None, step: _Step) -> None:
     if not isinstance(watch, dict) or not isinstance(dec, list) or not dec:
         return
     observe = bool(watch.get("observe"))
-    if fp is not None and fp == watch.get("fp"):
+    if recurs_within((watch.get("fp"), fp), 0, 1):
         if observe:
             step.payouts.append((str(dec[0]), 0.0, None))
         ag["watch"], ag["savings_paid"] = None, True
@@ -619,7 +657,7 @@ def _natural_watch(ag: dict[str, Any], fp: str | None, step: _Step) -> None:
     if not isinstance(nat, dict):
         return
     bucket = str(nat.get("b", ""))
-    if fp is not None and fp == nat.get("fp"):
+    if recurs_within((nat.get("fp"), fp), 0, 1):
         step.natural.append((bucket, 0.0))
         ag["natural"] = None
         return

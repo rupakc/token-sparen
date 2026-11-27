@@ -625,7 +625,11 @@ incomplete, the checkpoint is kept for `--resume`, and the command exits 1. `--l
 compression[,...]` picks the measurements (the compression replay always runs). `facts`
 measures, from the transcripts alone (it never reads the projects or runs git), how often each
 repository-fact kind would be mined, how often a later session contradicts it, the waste it
-targets (an upper bound in tokens) and what its injected line would cost. Failures are recorded by error type only. `--quiet` prints only
+targets (an upper bound in tokens) and what its injected line would cost. `loopguard`
+measures, per tool category and agent chain, how many error loops reach 2, 3 and 5 repeats, how
+often a loop ends on its own (natural break rate), an upper bound of the tokens a perfect
+redirect could save, and how often a trigger would fire on a loop that was already converging;
+it may only move loop-guard defaults toward less intervention. Failures are recorded by error type only. `--quiet` prints only
 `report: <path> id: <12 hex>` (the id is the first 12 hex digits of the report's sha256) and
 then `status: complete` or `status: incomplete`, so a run can be cited without printing any
 figure; `ope --quiet` prints the report line only.

@@ -1192,3 +1192,79 @@ def test_failed_reservation_write_sends_no_redirect(
     assert pol.forgotten == [pol.decisions[0].decision_id] and _lg_records(tmp_path) == []
     assert _tool(tmp_path, pol, _fail(tmp_path)).inject_context is not None
     assert len(_lg_records(tmp_path)) == 1
+
+
+# --- pure helpers shared with the E1 loop-guard lane (M4 Task 4) --------------------------------
+
+
+_RUNS = [
+    "FFF" + "o" * 5,  # five calls without it: broken
+    "FFFoF",  # recurs: not broken
+    "FFF" + "o" * 4 + "F",  # recurs on the fifth call: not broken
+    "FFF" + "o" * 5 + "F",  # the sixth call is outside the window: broken
+    "FFFo",  # the turn ends first: broken
+    "FFFF",
+]
+_EDITS = [
+    [("a", "b"), ("b", "a"), ("a", "b")],
+    [("a", "b"), ("b", "a"), ("b", "a"), ("a", "b")],  # a repeat is not a reversal
+    # four other pairs in between evict the region's pair (MAX_PAIRS): it starts over
+    [("a", "b"), ("b", "a"), ("c", "d"), ("e", "f"), ("g", "h"), ("i", "j"), ("a", "b")]
+    + [("b", "a"), ("a", "b")],
+    [("x", "y"), ("y", "x"), ("x", "y"), ("y", "x"), ("x", "y")],
+]
+
+
+@pytest.mark.parametrize("run", _RUNS)
+def test_helpers_match_production_behaviour(tmp_path: Path, run: str) -> None:
+    """``recurs_within`` predicts production's natural observation (patient arm, count 3)."""
+    pol = Rec("patient")
+    _prompt(tmp_path, pol)
+    seq: list[str | None] = []
+    fp = _fp(TRACE.format(d="a", n=12, q="x1"), target="pytest")
+    for ch in run:
+        _tool(tmp_path, pol, _fail(tmp_path) if ch == "F" else _ok(tmp_path))
+        seq.append(fp if ch == "F" else None)
+    _prompt(tmp_path, pol, "next")
+    third = [i for i, x in enumerate(seq) if x is not None][2]
+    nat = _natural(tmp_path)
+    assert nat is not None
+    assert nat[0] == pytest.approx(0.0 if loopguard.recurs_within(seq, third, 5) else 1.0)
+    assert nat[2] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("edits", _EDITS)
+def test_reversals_match_production_oscillation(tmp_path: Path, edits: list[Any]) -> None:
+    """``reversals`` of every prefix predicts production's first oscillation redirect and its
+    count (eager arm: two reversals)."""
+    pol = Rec("eager")
+    _prompt(tmp_path, pol)
+    for i, (old, new) in enumerate(edits):
+        act = _tool(tmp_path, pol, _edit(tmp_path, old, new))
+        n = loopguard.reversals([("src/a.py", o, w) for o, w in edits[: i + 1]])
+        earlier = loopguard.reversals([("src/a.py", o, w) for o, w in edits[:i]])
+        if earlier < 2 <= n:
+            assert act.inject_context is not None and f"undone {n}×" in act.inject_context
+        else:
+            assert act.inject_context is None
+
+
+def test_reversals_writes_and_files() -> None:
+    writes = [("f", "", "v1"), ("f", "v1", "v2"), ("f", "v2", "v1"), ("f", "v1", "v2")]
+    assert loopguard.reversals(writes) == 2
+    assert loopguard.reversals([("f", "a", "b"), ("g", "b", "a"), ("f", "a", "b")]) == 0
+    assert loopguard.reversals([("f", "a", "a")] * 4) == 0
+
+
+def test_recurs_within_bounds() -> None:
+    seq = ["x", None, None, "x", "y"]
+    assert loopguard.recurs_within(seq, 0, 3) and not loopguard.recurs_within(seq, 0, 2)
+    assert not loopguard.recurs_within(seq, 1) and not loopguard.recurs_within(seq, 3)
+
+
+def test_tool_target_matches_production() -> None:
+    assert loopguard.tool_target("Bash", {"command": "cd x && pytest -q a.py"}) == "pytest"
+    assert loopguard.tool_target("Edit", {"file_path": "src/a.py"}) == "src/a.py"
+    assert loopguard.tool_target("NotebookEdit", {"notebook_path": "n.ipynb"}) == "n.ipynb"
+    assert loopguard.tool_target("Grep", {"pattern": "x"}) == ""
+    assert loopguard.tool_target("Bash", {"command": 3}) == ""
