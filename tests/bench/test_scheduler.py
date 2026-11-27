@@ -985,3 +985,32 @@ def test_gold_ok_reaches_the_grader(tmp_path: Path) -> None:
     gold = frozenset({"fake__alpha-1", "fake__beta-1"})
     assert _run(tmp_path, ScriptBackend(), _keys(), grader=grades, gold_ok=gold) == "complete"
     assert grades.gold_ok == [gold] * 4
+
+
+def test_confirmation_runs_carry_the_plan_hash(tmp_path: Path) -> None:
+    """M5 Task 10 ruling N1: no confirmation run without a recorded plan; every confirmation
+    start and end carries its hash; a key outside the plan is refused."""
+    from bench import stages
+    from bench.power import FlipModel, PowerPlan
+
+    base = _ledger(tmp_path / "s")
+    acct = tmp_path / "s" / "account"
+    led = lg.Ledger(tmp_path / "ledger.jsonl", header=base.header | {"stage": "confirmation"})
+    keys = [replace(k, stage="confirmation") for k in _keys()]
+    with pytest.raises(stages.PlanError, match="no confirmation plan"):
+        _run(tmp_path, ScriptBackend(), keys, led, account=acct)
+    assert not [r for r in led.records() if r["kind"] == "start"]
+    spec = stages.StageSpec("confirmation", ("a", "b"), (), (0,), "sonnet", tuple(TASKS))
+    plan = stages.ConfirmationPlan(
+        spec, "powered", PowerPlan(4, 1, 0.9, "powered"), FlipModel(0.1, 0.05, 4, 0.1, 0.2), ()
+    )
+    recorded = stages.write_plan(led, plan, plugin_version="1.0.0", price_confirmed_on="2026-11-20")
+    assert _run(tmp_path, ScriptBackend(), keys, led, account=acct) == "complete"
+    runs = [r for r in led.records() if r["kind"] in ("start", "end")]
+    assert len(runs) == 16 and all(r["plan_sha256"] == recorded.sha256 for r in runs)
+    assert stages.read_plan(led) == recorded
+    outside = [replace(keys[0], arm="c")]
+    with pytest.raises(stages.PlanError, match="not in the recorded"):
+        _run(tmp_path, ScriptBackend(), outside, led, account=acct)
+    # screening records carry no plan hash
+    assert all("plan_sha256" not in r for r in base.records())

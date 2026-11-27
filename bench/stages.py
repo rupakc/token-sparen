@@ -21,6 +21,7 @@ defaults never change here.
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import math
@@ -33,7 +34,7 @@ from bench.arms import load_arms
 from bench.power import FlipModel, PowerPlan, PowerVerdict
 from bench.quota import QuotaPolicy
 from bench.scheduler import DISK_FLOOR_GB
-from bench.stats import GATE_SEED, MARGIN, Estimate, Exclusion, Summary
+from bench.stats import GATE_SEED, MARGIN, Estimate, Exclusion, Summary, summarise_ledger
 from bench.tasks import Task, extend, load_pool
 
 if TYPE_CHECKING:
@@ -363,6 +364,8 @@ class StagePlan:
     model: str
     claude_code_version: str
     plugin_hash: str
+    plugin_version: str
+    price_confirmed_on: str  # ISO date of the owner's live-pricing check
     verdict: PowerVerdict
     power: Mapping[str, Any]
     reasons: tuple[str, ...]
@@ -374,8 +377,22 @@ def _canonical_sha256(doc: Mapping[str, Any]) -> str:
     return hashlib.sha256(text.encode("ascii")).hexdigest()
 
 
-def _plan_doc(plan: ConfirmationPlan, header: Mapping[str, Any]) -> dict[str, Any]:
+def _plan_doc(
+    plan: ConfirmationPlan,
+    header: Mapping[str, Any],
+    *,
+    plugin_version: str,
+    price_confirmed_on: str,
+) -> dict[str, Any]:
     spec = plan.spec
+    if not plugin_version:
+        raise PlanError("the plan needs the frozen plugin's version")
+    try:
+        dt.date.fromisoformat(price_confirmed_on)
+    except (TypeError, ValueError) as exc:
+        raise PlanError(
+            f"price_confirmed_on must be an ISO date, got {price_confirmed_on!r}"
+        ) from exc
     if header.get("stage") != "confirmation" or spec.name != "confirmation":
         raise PlanError("a plan is recorded only in a confirmation ledger, for a confirmation spec")
     if spec.model != header.get("model"):
@@ -397,17 +414,25 @@ def _plan_doc(plan: ConfirmationPlan, header: Mapping[str, Any]) -> dict[str, An
         "model": spec.model,
         "claude_code_version": header["claude_code_version"],
         "plugin_hash": header["plugin_hash"],
+        "plugin_version": plugin_version,
+        "price_confirmed_on": price_confirmed_on,
         "verdict": plan.verdict,
         "power": plan.as_e4(),
         "reasons": list(plan.reasons),
     }
 
 
-def write_plan(ledger: Ledger, plan: ConfirmationPlan) -> StagePlan:
+def write_plan(
+    ledger: Ledger, plan: ConfirmationPlan, *, plugin_version: str, price_confirmed_on: str
+) -> StagePlan:
     """Record the confirmation plan before the stage's first run (model, Claude Code version and
-    plugin_hash from the ledger header, which pins them). Idempotent for the same plan; a
-    different plan, or any run already started, is refused."""
-    doc = _plan_doc(plan, ledger.header)
+    plugin_hash from the ledger header, which pins them; the frozen plugin's version and the
+    owner's live-pricing check date from the CLI). Idempotent for the same plan; a different
+    plan, or any run already started, is refused. The scheduler then writes the plan hash into
+    every confirmation start and end."""
+    doc = _plan_doc(
+        plan, ledger.header, plugin_version=plugin_version, price_confirmed_on=price_confirmed_on
+    )
     digest = _canonical_sha256(doc)
     records = ledger.records()
     if any(r.get("kind") == PLAN_KIND for r in records):
@@ -421,16 +446,37 @@ def write_plan(ledger: Ledger, plan: ConfirmationPlan) -> StagePlan:
     return read_plan(ledger)
 
 
+def _run_stage(rec: Mapping[str, Any]) -> str | None:
+    key = rec.get("key")
+    if rec.get("kind") not in ("start", "end") or not isinstance(key, str):
+        return None
+    parts = key.split("/")
+    return parts[1] if len(parts) == 5 else None
+
+
 def read_plan(ledger: Ledger) -> StagePlan:
-    """The one recorded plan, its content hash verified and its pins equal to the header's."""
-    recs = [r for r in ledger.records() if r.get("kind") == PLAN_KIND]
-    if not recs:
+    """The one recorded plan (ruling N1): its content hash verified, its pins equal to the
+    header's, recorded before any confirmation run, and every confirmation start/end carrying
+    its hash. A plan appended after runs (e.g. listing only the tasks that went well) is refused.
+
+    The hash detects a late or edited plan inside the ledger, not a rewrite of the whole file:
+    anchor ``sha256`` outside the ledger before the first run (rc1 freeze commit) and publish it
+    with e4.json."""
+    records = ledger.records()
+    at = [i for i, r in enumerate(records) if r.get("kind") == PLAN_KIND]
+    if not at:
         raise PlanError("no confirmation plan in the ledger")
-    if len(recs) > 1:
+    if len(at) > 1:
         raise PlanError("more than one confirmation plan in the ledger")
-    doc, digest = recs[0].get("plan"), recs[0].get("plan_sha256")
+    doc, digest = records[at[0]].get("plan"), records[at[0]].get("plan_sha256")
     if not isinstance(doc, Mapping) or _canonical_sha256(doc) != digest:
         raise PlanError("the recorded plan does not match its content hash")
+    runs = [(i, r) for i, r in enumerate(records) if _run_stage(r) == "confirmation"]
+    if any(i < at[0] for i, _ in runs):
+        raise PlanError("the plan was recorded after a confirmation run")
+    other = sum(1 for _, r in runs if r.get("plan_sha256") != digest)
+    if other:
+        raise PlanError(f"{other} confirmation run record(s) carry another or no plan hash")
     header = ledger.header
     for k in ("model", "claude_code_version", "plugin_hash"):
         if doc.get(k) != header.get(k):
@@ -447,6 +493,8 @@ def read_plan(ledger: Ledger) -> StagePlan:
             model=str(doc["model"]),
             claude_code_version=str(doc["claude_code_version"]),
             plugin_hash=str(doc["plugin_hash"]),
+            plugin_version=str(doc["plugin_version"]),
+            price_confirmed_on=str(doc["price_confirmed_on"]),
             verdict=verdict,
             power=dict(doc["power"]),
             reasons=tuple(str(r) for r in doc["reasons"]),
@@ -522,11 +570,10 @@ def invalid_as_exclusions(summary: Summary, arm: str, plugin_hash: str) -> Summa
 # --------------------------------------------------------------------------- output style
 
 
-def style_rule(
-    summary: Summary, *, ledger: Ledger, n_boot: int = 10000, seed: int = 0
-) -> StyleVerdict:
+def style_rule(*, ledger: Ledger, n_boot: int = 10000, seed: int = 0) -> StyleVerdict:
     """Output-style recommendation (§6.6). Confirmatory status comes from the ledger (review
-    ruling I2): its header stage and the summary must be ``confirmation`` and it must hold a
+    ruling I2) and the summary is built from it (`summarise_ledger`, its exclusions and grades;
+    ruling N2): its header stage must be ``confirmation`` and it must hold a
     valid plan listing ``ts-style``; never a caller flag. Only live ts-style runs on the plan's
     plugin_hash count (others are exclusions, imputed by the gate rule), on the planned tasks,
     and every planned task needs an outcome in ts-style, baseline and token-sparen.
@@ -535,9 +582,10 @@ def style_rule(
     (`Summary.gate`, seed 0) vs baseline AND vs token-sparen, and its median cost ratio vs
     token-sparen has an upper bound < 1. Otherwise ``keep_off`` (screening numbers are still
     published as descriptive); ``not_run`` without any ts-style run. Never changes a default."""
+    summary = summarise_ledger(ledger, stage=str(ledger.header.get("stage")))
     if not any(r.arm == STYLE_ARM for r in summary.runs):
         return "not_run"
-    if ledger.header.get("stage") != "confirmation" or summary.stage != "confirmation":
+    if summary.stage != "confirmation":
         return "keep_off"
     try:
         plan = read_plan(ledger)

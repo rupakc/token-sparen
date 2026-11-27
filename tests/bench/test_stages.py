@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -13,7 +14,7 @@ from bench import power, stages
 from bench.ledger import Ledger
 from bench.stats import Exclusion, RunRow, Summary
 from bench.tasks import Task, arm64_image, load_pool
-from tests.bench.test_gate import HASH, make_ledger
+from tests.bench.test_gate import HASH, Store, make_ledger, persist
 
 # small simulation budgets keep the suite fast (the controller-run power step uses the defaults)
 FAST: dict[str, Any] = {"n_sim": 60, "n_boot": 120}
@@ -238,33 +239,37 @@ def _power(n: int) -> power.PowerPlan:
     return power.PowerPlan(n, 1, 0.85, "powered")
 
 
-def test_style_needs_confirmation_evidence(tmp_path: Path) -> None:
+@pytest.fixture(name="store")
+def _store(tmp_path: Path) -> Store:
+    n = itertools.count()
+    return lambda s, **kw: persist(tmp_path / f"l{next(n)}", s, **kw)
+
+
+def test_style_needs_confirmation_evidence(store: Store) -> None:
     kw: dict[str, Any] = {"n_boot": 200}
-    led = make_ledger(tmp_path, _tasks(100), arms=(*stages.CORE_ARMS, "ts-style"))
-    screen_led = make_ledger(tmp_path / "s", _tasks(44), stage="screening", write_plan=False)
     # screening only: never recommended, even with excellent descriptive numbers
-    assert stages.style_rule(SCREEN, ledger=screen_led, **kw) == "keep_off"
+    assert stages.style_rule(ledger=store(SCREEN), **kw) == "keep_off"
     good = _confirm(ts_style=(0.6, 0))
-    assert stages.style_rule(good, ledger=led, **kw) == "recommend_opt_in"
-    # review I2: confirmatory status comes from the ledger's stage record, never the caller
-    assert stages.style_rule(good, ledger=screen_led, **kw) == "keep_off"
-    assert stages.style_rule(replace(good, stage="screening"), ledger=led, **kw) == "keep_off"
+    assert stages.style_rule(ledger=store(good), **kw) == "recommend_opt_in"
+    # review I2/N2: the stage comes from the ledger, the summary is built from it
+    assert stages.style_rule(ledger=store(good, stage="screening"), **kw) == "keep_off"
     with pytest.raises(TypeError):
-        stages.style_rule(good, confirmatory=True)  # type: ignore[call-arg]
+        stages.style_rule(good, confirmatory=True)  # type: ignore[call-arg, misc]
+    # a confirmation ledger without a valid plan → keep off
+    assert stages.style_rule(ledger=store(good, write_plan=False), **kw) == "keep_off"
     # not cheaper than token-sparen (upper bound ≥ 1) → keep off
-    assert stages.style_rule(_confirm(ts_style=(0.8, 0)), ledger=led, **kw) == "keep_off"
+    assert stages.style_rule(ledger=store(_confirm(ts_style=(0.8, 0))), **kw) == "keep_off"
     # inferior vs baseline and token-sparen → keep off
-    assert stages.style_rule(_confirm(ts_style=(0.6, 12)), ledger=led, **kw) == "keep_off"
+    assert stages.style_rule(ledger=store(_confirm(ts_style=(0.6, 12))), **kw) == "keep_off"
     # not run in this stage
-    assert stages.style_rule(_confirm(), ledger=led, **kw) == "not_run"
-    assert stages.style_rule(_confirm(), ledger=screen_led, **kw) == "not_run"
+    assert stages.style_rule(ledger=store(_confirm()), **kw) == "not_run"
+    assert stages.style_rule(ledger=store(_screen()), **kw) == "not_run"
 
 
-def test_style_counts_only_live_hash_verified_runs(tmp_path: Path) -> None:
+def test_style_counts_only_live_hash_verified_runs(store: Store) -> None:
     """Review I2: a non-live or unhashed ts-style run is excluded (imputed by the gate rule),
     never counted as evidence; planned tasks without a ts-style outcome keep it off."""
     kw: dict[str, Any] = {"n_boot": 200}
-    led = make_ledger(tmp_path, _tasks(100), arms=(*stages.CORE_ARMS, "ts-style"))
     good = _confirm(ts_style=(0.6, 0))
 
     def spoil(s: Summary, **changes: Any) -> Summary:
@@ -272,22 +277,28 @@ def test_style_counts_only_live_hash_verified_runs(tmp_path: Path) -> None:
             s, runs=tuple(replace(r, **changes) if r.arm == "ts-style" else r for r in s.runs)
         )
 
-    assert stages.style_rule(spoil(good, live=False), ledger=led, **kw) == "keep_off"
-    assert stages.style_rule(spoil(good, plugin_hash=None), ledger=led, **kw) == "keep_off"
-    assert stages.style_rule(spoil(good, plugin_hash="b" * 64), ledger=led, **kw) == "keep_off"
+    assert stages.style_rule(ledger=store(spoil(good, live=False)), **kw) == "keep_off"
+    assert stages.style_rule(ledger=store(spoil(good, plugin_hash=None)), **kw) == "keep_off"
+    assert stages.style_rule(ledger=store(spoil(good, plugin_hash="b" * 64)), **kw) == "keep_off"
     # a few spoiled runs on resolved tasks are imputed as ts-style failures
     runs = list(good.runs)
     spoiled = 0
     for i, r in enumerate(runs):
         if r.arm == "ts-style" and r.resolved and spoiled < 6:
             runs[i], spoiled = replace(r, live=False), spoiled + 1
-    assert stages.style_rule(replace(good, runs=tuple(runs)), ledger=led, **kw) == "keep_off"
+    assert stages.style_rule(ledger=store(replace(good, runs=tuple(runs))), **kw) == "keep_off"
     # incomplete ts-style evidence (a planned task without a run) → keep off
     short = replace(
         good,
         runs=tuple(r for r in good.runs if not (r.arm == "ts-style" and r.instance_id == "r__r-3")),
     )
-    assert stages.style_rule(short, ledger=led, **kw) == "keep_off"
+    assert stages.style_rule(ledger=store(short), **kw) == "keep_off"
+
+
+def _write(led: Ledger, plan: stages.ConfirmationPlan, **kw: str) -> stages.StagePlan:
+    return stages.write_plan(
+        led, plan, **({"plugin_version": "1.0.0", "price_confirmed_on": "2026-11-20"} | kw)
+    )
 
 
 def test_plan_persisted_with_content_hash(tmp_path: Path) -> None:
@@ -297,15 +308,18 @@ def test_plan_persisted_with_content_hash(tmp_path: Path) -> None:
     assert plan.tasks == tuple(_tasks(90)) and plan.seed == 0 and plan.verdict == "powered"
     assert plan.model == "claude-x" and plan.claude_code_version == "2.1.0"
     assert plan.plugin_hash == HASH and len(plan.sha256) == 64
+    assert plan.plugin_version == "1.0.0" and plan.price_confirmed_on == "2026-11-20"
     assert plan.arms == stages.CORE_ARMS and plan.power["required_tasks"] == 90
     # idempotent for the same plan, refused for a different one
     spec = stages.StageSpec(
         "confirmation", stages.CORE_ARMS, (), (0,), "claude-x", tuple(_tasks(90))
     )
     same = stages.ConfirmationPlan(spec, "powered", _power(90), FLIP, ())
-    assert stages.write_plan(led, same) == plan
+    assert _write(led, same) == plan
     with pytest.raises(stages.PlanError, match="different"):
-        stages.write_plan(led, replace(same, spec=replace(spec, tasks=tuple(_tasks(91)))))
+        _write(led, replace(same, spec=replace(spec, tasks=tuple(_tasks(91)))))
+    with pytest.raises(stages.PlanError, match="different"):
+        _write(led, same, price_confirmed_on="2026-11-21")
     # tampering is detected
     lines = led.path.read_text(encoding="utf-8").splitlines()
     lines[1] = lines[1].replace('"r__r-5"', '"r__r-500"')
@@ -320,16 +334,27 @@ def test_plan_refused_after_runs_or_on_mismatch(tmp_path: Path) -> None:
         "confirmation", stages.CORE_ARMS, (), (0,), "other-model", tuple(_tasks(90))
     )
     plan = stages.ConfirmationPlan(spec, "powered", _power(90), FLIP, ())
+    ok = replace(plan, spec=replace(spec, model="claude-x"))
     with pytest.raises(stages.PlanError, match="model"):
-        stages.write_plan(led, plan)
+        _write(led, plan)
+    with pytest.raises(stages.PlanError, match="ISO date"):
+        _write(led, ok, price_confirmed_on="soon")
+    with pytest.raises(stages.PlanError, match="version"):
+        _write(led, ok, plugin_version="")
     led.append({"kind": "start", "key": "c/confirmation/baseline/0/r__r-0", "attempt": 1})
     with pytest.raises(stages.PlanError, match="start"):
-        stages.write_plan(led, replace(plan, spec=replace(spec, model="claude-x")))
+        _write(led, ok)
     with pytest.raises(stages.PlanError, match="no confirmation plan"):
         stages.read_plan(led)
     screen = make_ledger(tmp_path / "s", _tasks(44), stage="screening", write_plan=False)
     with pytest.raises(stages.PlanError, match="confirmation"):
-        stages.write_plan(screen, replace(plan, spec=replace(spec, model="claude-x")))
+        _write(screen, ok)
+    # two plans (one appended directly) are refused
+    two = make_ledger(tmp_path / "t", _tasks(90))
+    rec = next(r for r in two.records() if r["kind"] == "plan")
+    two.append(rec)
+    with pytest.raises(stages.PlanError, match="more than one"):
+        stages.read_plan(two)
 
 
 def test_quota_retry_inflation_and_bound_reason() -> None:

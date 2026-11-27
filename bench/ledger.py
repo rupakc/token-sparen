@@ -35,7 +35,10 @@ Every later record has ``kind`` (one of `RECORD_KINDS`) and ``at`` (epoch second
   after its rounds (an audit record; the method computes the live list).
 * ``plan`` (confirmation only, before the first ``start``; `bench.stages.write_plan`):
   ``plan`` (planned tasks, arms, seed, model, Claude Code version, plugin_hash, power verdict)
-  and ``plan_sha256`` over its canonical JSON. The release gate reads it back.
+  and ``plan_sha256`` over its canonical JSON. Every confirmation ``start`` and ``end`` carries
+  that ``plan_sha256`` (the scheduler refuses a confirmation run without a valid plan or outside
+  it); `bench.stages.read_plan` refuses a plan recorded after a confirmation run or runs with
+  another hash.
 
 A key's final outcome is its last non-invalidated ``end`` with status ``ok`` or ``agent_fail``;
 ``infra_fail`` is never final. These shapes are what `bench.stats.summarise` (Task 9) reads.

@@ -2,8 +2,9 @@
 
 Inputs come from persisted state: the confirmation plan recorded in the ledger
 (`bench.stages.write_plan`: planned tasks, seed, model id, Claude Code version, plugin_hash,
-power verdict, with a content hash). Runs and exclusions on tasks outside the plan are ignored
-and flagged.
+power verdict, with a content hash, written before the first run; every run record carries
+that hash — `bench.stages.read_plan`). The summary is built from the ledger and its grades file,
+never passed in. Any run key outside the plan (task, arm or seed) refuses the gate.
 
 The gate refuses (`GateRefused`) on anything but a complete confirmation: every planned task
 needs, in baseline and token-sparen at the plan's seed, a graded final run or an exclusion that
@@ -41,7 +42,7 @@ from bench.stages import (
     read_plan,
     restrict,
 )
-from bench.stats import MARGIN, GateCheck, Summary
+from bench.stats import MARGIN, GateCheck, Summary, summarise_ledger
 
 TREATMENT = "token-sparen"
 REFERENCE = "baseline"
@@ -70,6 +71,12 @@ class GateResult:
     reasons: list[str]
     check: GateCheck | None = None
     plan_sha256: str | None = None
+    # pins of the persisted plan (what the report publishes; Task 11)
+    plugin_hash: str | None = None
+    plugin_version: str | None = None
+    model: str | None = None  # the exact model id every run recorded
+    claude_code_version: str | None = None
+    price_confirmed_on: str | None = None
 
     def as_e4(self) -> dict[str, Any]:
         """The ``gate`` object of ``e4.json``."""
@@ -105,8 +112,14 @@ def _validity(confirm: Summary, plan: StagePlan, release_hash: str, e2_ok: bool)
     return problems
 
 
+def _outside(key: str, plan: StagePlan) -> bool:
+    parts = key.split("/")
+    if len(parts) != 5 or parts[1] != "confirmation":
+        return False
+    return parts[2] not in plan.arms or parts[3] != str(plan.seed) or parts[4] not in plan.tasks
+
+
 def gate(
-    confirm: Summary,
     *,
     ledger: Ledger,
     release_hash: str,
@@ -114,21 +127,33 @@ def gate(
     n_boot: int = 10000,
     seed: int = 0,
 ) -> GateResult:
-    """Release gate on the confirmation ``confirm`` of ``ledger`` (whose recorded plan gives
-    the planned tasks, the seed, the pins and the power verdict); ``n_boot`` and ``seed`` go
-    to `Summary.gate`."""
+    """Release gate on the confirmation ``ledger``: its recorded plan gives the planned tasks,
+    the seed, the pins and the power verdict, and the summary is built from it
+    (`summarise_ledger`: its runs, exclusions after retries and grades; ruling N2), never
+    supplied by the caller. ``n_boot`` and ``seed`` go to `Summary.gate`."""
     if not _HASH.match(release_hash):
         raise ValueError(f"release_hash must be 64 lowercase hex characters, got {release_hash!r}")
-    if ledger.header.get("stage") != "confirmation" or confirm.stage != "confirmation":
+    if ledger.header.get("stage") != "confirmation":
         raise GateRefused(
-            f"the gate reads the confirmation stage (ledger {ledger.header.get('stage')!r}, "
-            f"summary {confirm.stage!r})"
+            f"the gate reads the confirmation stage, ledger is {ledger.header.get('stage')!r}"
         )
     try:
         plan = read_plan(ledger)
     except PlanError as exc:
         raise GateRefused(f"confirmation plan: {exc}") from exc
+    stray = sorted(
+        {
+            str(r["key"])
+            for r in ledger.records()
+            if r.get("kind") in ("start", "end") and _outside(str(r.get("key", "")), plan)
+        }
+    )
+    if stray:
+        raise GateRefused(f"{len(stray)} run key(s) outside the plan, e.g. {stray[0]}")
+    confirm = summarise_ledger(ledger, stage="confirmation")
     scoped, outside = restrict(confirm, plan.tasks)
+    if outside:
+        raise GateRefused(f"{outside} run(s)/exclusion(s) on tasks outside the plan")
     if not any(r.arm == TREATMENT for r in scoped.runs):
         raise GateRefused("no graded token-sparen run on the planned tasks")
     pending, _ = scoped.one_sided(TREATMENT, REFERENCE, seed=plan.seed)
@@ -142,13 +167,22 @@ def gate(
         )
     check = scoped.gate(TREATMENT, REFERENCE, gate_seed=plan.seed, n_boot=n_boot, seed=seed)
     est = check.estimate
-    notes = [f"{outside} run(s)/exclusion(s) on tasks outside the plan ignored"] if outside else []
     invalid = _validity(scoped, plan, release_hash, e2_ok)
     stat = list(check.reasons)
     bound = f"resolved-diff {est.point:+.4f}, 95 % bound [{est.lo:+.4f}, {est.hi:+.4f}], n {est.n}"
 
     def result(verdict: GateVerdict, reasons: list[str]) -> GateResult:
-        return GateResult(verdict, [*reasons, *notes, bound], check, plan.sha256)
+        return GateResult(
+            verdict,
+            [*reasons, bound],
+            check,
+            plan.sha256,
+            plugin_hash=plan.plugin_hash,
+            plugin_version=plan.plugin_version,
+            model=plan.model,
+            claude_code_version=plan.claude_code_version,
+            price_confirmed_on=plan.price_confirmed_on,
+        )
 
     if invalid:
         return result("failed", [*invalid, *stat])
