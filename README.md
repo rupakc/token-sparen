@@ -601,8 +601,24 @@ replays your past Claude Code transcripts through the same compression path the 
 an arm name replay every eligible output) and estimates tokens removed, projected re-sends until the next compaction,
 cache-aware cost-weighted savings and a proxy regret rate (the agent later used distinctive words
 that only the trimmed part contained). `--policy` takes a comma-separated list to compare several
-policies in one pass; `--split dev|test|all` and `--cutoff YYYY-MM-DD` split sessions by date;
-`--seed` fixes the engine policy's sampling.
+policies in one pass; `--split dev|test|all` and `--cutoff YYYY-MM-DD` split sessions by the
+date of their first record; `--seed` fixes the engine policy's sampling. Sessions with a
+token-sparen marker in a tool result (they ran with the plugin on) or from `--dogfood-start`
+on (default 2026-11-26, the maintainer's dogfooding start; set it to the day you installed the
+plugin) are left out whole and counted. Transcripts are grouped by their directory; within a group they are
+replayed oldest first and history a resumed session copies is counted once, before the split.
+Unreadable lines (not UTF-8, not JSON, over 8 MB) are skipped and counted, never fatal.
+
+`--jobs N` replays N groups at a time in separate processes (`0` = one per CPU; the default `1`
+stays in-process). While it runs, a checkpoint `<out>.checkpoint` (same privacy rules as the
+report: mode 0600, outside any git work tree, aggregates and hashed group keys only) is
+rewritten after each finished group and deleted when the report is written; `--resume` continues
+an interrupted run from it (a checkpoint of different options or of changed transcripts is
+refused). `--lanes compression[,...]` picks the measurements (the compression replay always
+runs; further lanes are added by later milestones). A failing group is recorded in the report
+by its error type only. `--quiet` prints a single line, `report: <path> id: <12 hex>` (the id is
+the first 12 hex digits of the report's sha256), so a run can be cited without printing any
+figure; `ope` takes `--quiet` too.
 
 `token-sparen ope --log <decisions.jsonl...> --target static|engine-snapshot --out <file>`
 estimates how another policy would have done on your logged decisions (IPS, self-normalised IPS,

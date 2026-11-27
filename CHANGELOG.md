@@ -10,6 +10,21 @@ Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones 
 and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`
 for M3); the package version stays `0.1.0.dev0` until v1.0.
 
+### M4 E1 at real-data scale
+
+- `token-sparen replay` runs in parallel and resumes: `--jobs N` (one project group per worker
+  process, `0` = one per CPU), a checkpoint next to the report rewritten after each finished
+  group and `--resume` to continue an interrupted run, `--lanes` (the compression replay is now
+  the `compression` lane; later lanes plug into `token_sparen/replay/runner.py`), and `--quiet`
+  (prints only `report: <path> id: <12 hex>`; `ope --quiet` too).
+- Contamination-safe splits: sessions are ordered by their first timestamp within a project
+  group and copied history (resumed sessions) is de-duplicated over the whole group before the
+  dev/test split; sessions from 2026-11-26 on or with a `[token-sparen:` marker in a tool result
+  are excluded whole and counted.
+- Malformed transcripts never stop a run: lines over 8 MB are skipped in bounded chunks, lines
+  that are not UTF-8, not JSON or not an object are skipped, and both are counted; an exception
+  in a group is recorded as its type name only.
+
 ### M4 triage (quality-relevant fixes before tuning)
 
 - Loop guard: a test report's fingerprint also carries its summary's failing total (`N failed`,

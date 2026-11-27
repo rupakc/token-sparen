@@ -41,11 +41,17 @@ evicted and paid, counted in ``evicted``). ``proxy_regrets`` is the sum of value
 recent tool categories and paths, and the watched spans' digests.
 
 **Split.** A session's date is its first record ``timestamp`` (else the file's mtime); dates
-before ``date_cutoff`` are ``dev``, the rest ``test``.
+before ``date_cutoff`` are ``dev``, the rest ``test``; sessions from ``DOGFOOD_START`` on, or with
+a ``[token-sparen:`` marker in a tool result, are excluded whole.
+
+**Runs.** ``run`` drives ``runner.run_parallel`` (groups by project directory, chronological
+order and id de-duplication per group, bounded reads, optional processes and checkpoint); this
+module's replay is the runner's ``compression`` lane (``CompressionLane``).
 """
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import math
 import os
@@ -54,15 +60,15 @@ import re
 import uuid
 from collections import deque
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from token_sparen.adapters.claude import translate
 from token_sparen.compress import CompressContext, detect, load_level, registry
 from token_sparen.compress.families import FAMILIES, command_family
-from token_sparen.config import Config, load_config, redacted_logs, state_home
+from token_sparen.config import Config, load_config, state_home
 from token_sparen.estimate import Prices, estimate_tokens
 from token_sparen.events import Event, SessionCtx, ToolCall
 from token_sparen.learn import features, regret
@@ -75,13 +81,16 @@ from token_sparen.transcript import (
     AssistantRecord,
     Compaction,
     Prompt,
+    SessionEvent,
     ToolResultRecord,
-    first_field,
-    iter_events,
 )
+
+if TYPE_CHECKING:
+    from token_sparen.replay.runner import RunResult, SessionInfo
 
 Split = Literal["dev", "test", "all"]
 DEFAULT_CUTOFF = date(2026, 11, 1)
+DOGFOOD_START = date(2026, 11, 26)  # sessions from here on ran with the plugin: excluded
 MAX_WATCHED = 200
 PROMPT_CHARS = 2000
 RECENT_PATHS = 20
@@ -317,6 +326,8 @@ class ReplayReport:
     totals: dict[str, Any]
     by_split: dict[str, dict[str, Any]]
     by_arm: dict[str, dict[str, Any]] = field(default_factory=dict)
+    lanes: dict[str, dict[str, Any]] = field(default_factory=dict)  # other lanes, by split
+    run: dict[str, Any] = field(default_factory=dict)  # runner counters (no paths)
 
     def __getattr__(self, name: str) -> Any:
         totals = self.__dict__.get("totals", {})
@@ -344,6 +355,8 @@ class ReplayReport:
             "totals": self.totals,
             "by_split": self.by_split,
             **({"by_arm": self.by_arm} if self.by_arm else {}),
+            **({"lanes": self.lanes} if self.lanes else {}),
+            **({"run": self.run} if self.run else {}),
         }
 
 
@@ -397,19 +410,6 @@ def iter_transcripts(paths: Iterable[Path]) -> Iterator[Path]:
             yield from sorted(f for f in p.rglob("*.jsonl") if f.is_file())
         elif p.is_file():
             yield p
-
-
-def session_date(path: Path) -> date:
-    ts = first_field(path, "timestamp")
-    if isinstance(ts, str) and ts:
-        try:
-            return datetime.fromisoformat(ts.replace("Z", "+00:00")).date()
-        except ValueError:
-            pass
-    try:
-        return datetime.fromtimestamp(path.stat().st_mtime, UTC).date()
-    except OSError:
-        return date.min
 
 
 class RunIds:
@@ -828,37 +828,6 @@ def _project_key(cwd: str, cache: dict[str, str]) -> str:
     return key
 
 
-def _replay_file(path: Path, lanes: Sequence[_Session], run_ids: RunIds | None) -> bool:
-    """Stream one transcript once into every lane (one per policy); True if it held any event
-    of its chain. Ids are de-duplicated once per run, before the lanes see the event."""
-    seen = False
-    is_new = run_ids.add if run_ids is not None else None
-    for ev in iter_events(path, is_new_id=is_new):
-        seen = True
-        if isinstance(ev, AssistantRecord):
-            for sess in lanes:
-                sess.on_assistant(ev)
-        elif isinstance(ev, ToolResultRecord):
-            dup = run_ids is not None and not run_ids.add(f"t:{ev.tool_use_id}")
-            for sess in lanes:
-                sess.on_result(ev, dup)
-        elif isinstance(ev, Prompt):
-            for sess in lanes:
-                sess.on_prompt(ev)
-        elif isinstance(ev, Compaction):
-            for sess in lanes:
-                sess.on_compaction()
-    for sess in lanes:
-        sess.finish()
-    return seen
-
-
-def _cwd(path: Path) -> str | None:
-    """The session's working directory (first ``cwd`` field): the engine snapshot's project."""
-    cwd = first_field(path, "cwd")
-    return cwd if isinstance(cwd, str) and cwd else None
-
-
 def resolve_policies(policy: Policy | str, cfg: Config, seed: int = 0) -> list[tuple[str, Policy]]:
     """One ``(name, policy)`` per lane: ``light,standard,aggressive`` (comma-separated) replays
     each in the same pass; anything else is a single lane (``resolve_policy``)."""
@@ -870,13 +839,131 @@ def resolve_policies(policy: Policy | str, cfg: Config, seed: int = 0) -> list[t
     return [resolve_policy(policy, cfg, seed)]
 
 
-@dataclass
-class _Lane:
-    name: str
-    policy: Policy
-    total: _Acc
-    parts: dict[str, _Acc]
-    gate: bool = False
+class CompressionLane:
+    """The E1 compression replay as a runner lane (``runner.LANES["compression"]``). Params:
+    ``policy`` (a name or comma-separated list; a ``Policy`` object only in-process), ``seed``,
+    ``prices`` (in-process). ``report()`` maps a split to ``{policy: accumulator state}``
+    (``acc_view`` renders one as the report's ``totals`` shape)."""
+
+    history = False
+
+    def __init__(self, cfg: Config, params: Mapping[str, Any]) -> None:
+        self.cfg = cfg
+        prices = params.get("prices")
+        self.prices = prices if isinstance(prices, Prices) else Prices.load(cfg)
+        seed = params.get("seed", 0)
+        self.policies = resolve_policies(
+            params.get("policy", "static"), cfg, seed if isinstance(seed, int) else 0
+        )
+        self.window = _window(cfg)
+        self.accs = {part: {name: _Acc() for name, _ in self.policies} for part in SPLITS}
+        self.needs_key = any(isinstance(pol, FrozenEngine) for _, pol in self.policies)
+        self.keys: dict[str, str] = {}
+        self.capped = False
+        self._current: SessionInfo | None = None
+        self._sessions: list[_Session] = []
+        self._failed = False
+
+    def _start(self, info: SessionInfo) -> None:
+        cwd = info.cwd
+        key = (_project_key(cwd, self.keys) if cwd else "replay") if self.needs_key else "replay"
+        self._sessions = []
+        for name, pol in self.policies:
+            accs = (self.accs[info.split][name],)
+            sess = _Session(
+                accs, pol, self.cfg, self.prices, self.window, None, cwd, name in GATED_POLICIES
+            )
+            sess.project_key = key
+            self._sessions.append(sess)
+        self._current = info
+        self._failed = False
+
+    def feed(self, event: SessionEvent, session: SessionInfo) -> None:
+        if session is not self._current:
+            self._start(session)
+        if self._failed:
+            return
+        try:
+            if isinstance(event, AssistantRecord):
+                for sess in self._sessions:
+                    sess.on_assistant(event)
+            elif isinstance(event, ToolResultRecord):
+                for sess in self._sessions:
+                    sess.on_result(event, event.duplicate)
+            elif isinstance(event, Prompt):
+                for sess in self._sessions:
+                    sess.on_prompt(event)
+            elif isinstance(event, Compaction):
+                for sess in self._sessions:
+                    sess.on_compaction()
+        except Exception:  # noqa: BLE001 - one bad session never stops the run (no details)
+            self._failed = True
+
+    def end_session(self, session: SessionInfo) -> None:
+        self.capped = self.capped or session.run_ids.capped
+        if session is not self._current:
+            return  # no event of its chain: not a session
+        if not self._failed:
+            try:
+                for sess in self._sessions:
+                    sess.finish()
+            except Exception:  # noqa: BLE001 - counted, never described
+                self._failed = True
+        for name, _ in self.policies:
+            acc = self.accs[session.split][name]
+            if self._failed:
+                acc.sessions_failed += 1
+            else:
+                acc.sessions += 1
+        self._current, self._sessions = None, []
+
+    def report(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for part, by_name in self.accs.items():
+            out[part] = {}
+            for name, acc in by_name.items():
+                acc.ids_capped = self.capped
+                out[part][name] = asdict(acc)
+        return out
+
+
+def acc_view(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """The report shape (``totals``) of one compression accumulator state."""
+    return _Acc(**copy.deepcopy(dict(raw))).to_dict()
+
+
+def build_report(
+    result: RunResult, names: Sequence[str], split: Split, cutoff: date
+) -> ReplayReport:
+    """A ``ReplayReport`` from a ``runner.RunResult`` (compression policies ``names``; the
+    first is ``totals``); every other lane's merged reports go to ``lanes``."""
+    parts = [s for s in SPLITS if split in ("all", s)]
+    empty = asdict(_Acc())
+
+    def view(part: str, name: str) -> dict[str, Any]:
+        lane = result.by_split.get(part, {}).get("compression", {})
+        return acc_view(lane.get(name, empty))
+
+    reports = {
+        name: {"totals": view("all", name), "by_split": {p: view(p, name) for p in parts}}
+        for name in names
+    }
+    lanes: dict[str, dict[str, Any]] = {}
+    for part in (*parts, "all"):
+        for label, rep in result.by_split.get(part, {}).items():
+            if label != "compression":
+                lanes.setdefault(label, {})[part] = rep
+    first = reports[names[0]]
+    return ReplayReport(
+        policy=",".join(names),
+        split=split,
+        cutoff=cutoff,
+        totals=first["totals"],
+        by_split=first["by_split"],
+        by_arm=reports if len(names) > 1 else {},
+        lanes=lanes,
+        run=result.counters(),
+    )
 
 
 def run(
@@ -888,72 +975,54 @@ def run(
     cfg: Config | None = None,
     prices: Prices | None = None,
     seed: int = 0,
+    jobs: int = 1,
+    lanes: Sequence[tuple[str, dict[str, Any]]] = (),
+    checkpoint: Path | None = None,
+    groups: set[str] | None = None,
+    dogfood_start: date = DOGFOOD_START,
 ) -> ReplayReport:
     """Replay ``transcripts`` (files or directories) under ``policy`` (or several, comma
-    separated, in one pass); aggregates only."""
+    separated, in one pass) with ``runner.run_parallel``: the compression lane plus any other
+    ``lanes``; aggregates only."""
     if split not in ("dev", "test", "all"):
         raise ValueError(f"unknown split {split!r}")
     cfg = cfg or load_config(Path.cwd(), os.environ)
-    prices = prices or Prices.load(cfg)
-    lanes = [
-        _Lane(
-            name,
-            pol,
-            _Acc(),
-            {s: _Acc() for s in SPLITS if split in ("all", s)},
-            name in GATED_POLICIES,
-        )
-        for name, pol in resolve_policies(policy, cfg, seed)
-    ]
-    window = _window(cfg)
-    keys: dict[str, str] = {}
-    run_ids = RunIds()
-    needs_key = any(isinstance(lane.policy, FrozenEngine) for lane in lanes)
-    with redacted_logs():
-        for path in iter_transcripts(transcripts):
-            part = "dev" if session_date(path) < date_cutoff else "test"
-            if part not in lanes[0].parts:
-                continue
-            cwd = _cwd(path)
-            key = (_project_key(cwd, keys) if cwd else "replay") if needs_key else "replay"
-            sessions = []
-            for lane in lanes:
-                accs = (lane.total, lane.parts[part])
-                sess = _Session(accs, lane.policy, cfg, prices, window, run_ids, cwd, lane.gate)
-                sess.project_key = key
-                sessions.append(sess)
-            try:
-                ok = _replay_file(path, sessions, run_ids)
-            except Exception:  # noqa: BLE001 - one bad session never stops the run (no details)
-                ok = None
-            for lane in lanes:
-                for acc in (lane.total, lane.parts[part]):
-                    if ok is None:
-                        acc.sessions_failed += 1
-                    elif ok:
-                        acc.sessions += 1
-    reports = {}
-    for lane in lanes:
-        for acc in (lane.total, *lane.parts.values()):
-            acc.ids_capped = run_ids.capped
-        reports[lane.name] = {
-            "totals": lane.total.to_dict(),
-            "by_split": {s: acc.to_dict() for s, acc in lane.parts.items()},
-        }
-    first = reports[lanes[0].name]
-    return ReplayReport(
-        policy=",".join(lane.name for lane in lanes),
-        split=split,
+    names = [name for name, _ in resolve_policies(policy, cfg, seed)]
+    if jobs != 1 and not isinstance(policy, str):
+        raise ValueError("a policy object replays only in-process (jobs=1)")
+    from token_sparen.replay import runner  # noqa: PLC0415 - runner imports this module
+
+    params: dict[str, Any] = {"policy": policy, "seed": seed}
+    if prices is not None:
+        params["prices"] = prices
+    result = runner.run_parallel(
+        list(transcripts),
+        [("compression", params), *lanes],
+        jobs=jobs,
         cutoff=date_cutoff,
-        totals=first["totals"],
-        by_split=first["by_split"],
-        by_arm=reports if len(lanes) > 1 else {},
+        dogfood_start=dogfood_start,
+        groups=groups,
+        checkpoint=checkpoint,
+        split=split,
+        cfg=cfg,
     )
+    return build_report(result, names, split, date_cutoff)
 
 
 def summary_lines(rep: ReplayReport) -> list[str]:
     """Aggregate numbers for stdout: no paths, ids or text (content-type names are ours)."""
     lines = [f"token-sparen replay: policy {rep.policy}, split {rep.split}, cutoff {rep.cutoff}"]
+    if rep.run:
+        r = rep.run
+        errors = ", ".join(f"{k} {v}" for k, v in r["worker_errors"].items()) or "none"
+        lines.append(
+            f"[run] files {r['files']}, sessions {r['sessions']}, "
+            f"excluded_dogfood {r['excluded_dogfood']}, malformed_lines {r['malformed_lines']}, "
+            f"oversize_lines {r['oversize_lines']}, skipped_records {r['skipped_records']}, "
+            f"groups {r['groups']} (resumed {r['groups_resumed']}), worker_errors {errors}"
+        )
+    for lane in rep.lanes:
+        lines.append(f"[lane {lane}] see the report")
     for label, t in [("all", rep.totals), *sorted(rep.by_split.items())]:
         counts = ("sessions", "sessions_failed", "calls", "tool_results", "eligible", "trimmed")
         lines.append(f"[{label}] " + ", ".join(f"{k} {t[k]}" for k in counts))

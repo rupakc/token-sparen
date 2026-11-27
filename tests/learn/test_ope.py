@@ -676,3 +676,22 @@ def _beside_home(tmp_path: Path) -> Path:
     cwd = tmp_path / "cwd"
     cwd.mkdir(exist_ok=True)
     return cwd
+
+
+def test_ope_quiet_stdout_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import hashlib
+    import re
+
+    monkeypatch.setenv("TOKEN_SPAREN_HOME", str(tmp_path / "home"))
+    log = _write_log(tmp_path / "home" / "projects" / KEY / "decisions.jsonl")
+    out = tmp_path / "priv" / "e3.json"
+    args = ["ope", "--log", str(log), "--target", "static", "--out", str(out), "--quiet"]
+    assert cli.main(args) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    m = re.fullmatch(r"report: (.+) id: ([0-9a-f]{12})\n", captured.out)
+    assert m is not None, captured.out
+    assert Path(m.group(1)) == out.resolve()
+    assert m.group(2) == hashlib.sha256(out.read_bytes()).hexdigest()[:12]

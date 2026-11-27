@@ -20,7 +20,8 @@ Decisions: `MEMORY.md`.
     (compression, guards, read_dedupe, governor, boundary, subagent, tracking, prune, loopguard)
   - `learn/` policy, decision log, engine, regret, session fold (`overlay`), circuit `breaker`,
     `ope` (off-policy evaluation)
-  - `replay/` E1 offline replay and the private report writer (`--out` outside any git tree)
+  - `replay/` E1 offline replay and the private report writer (`--out` outside any git tree);
+    `runner.py` runs it at scale (groups per project dir, processes, checkpoint, lanes)
   - `adapters/` host protocol; `adapters/claude/` Claude Code (entry, translate, statusline, settings)
   - `testing/conformance.py` compressor conformance kit
   - `token_sparen/params/defaults.toml` every tunable (hill-climbing surface; packaged inside

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from collections import OrderedDict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,9 @@ class ToolResultRecord:
     is_error: bool = False
     raw: Any = None  # the record's ``toolUseResult`` (the host's raw response), when present
     sidechain: bool = False
+    # Set by a replay that de-duplicates across files: the result is copied history (a resumed
+    # session) already seen earlier in the run.
+    duplicate: bool = False
 
 
 def _bounded_lines(
@@ -304,11 +307,21 @@ def iter_events(
     last ``recent_ids`` message ids. ``is_new_id`` (records the id, True if unseen) replaces the
     per-file id memory, e.g. to count a resumed session's copied history only once per run.
     """
+    return events_from_records(_records(path), recent_ids, is_new_id)
+
+
+def events_from_records(
+    records: Iterable[dict[str, Any]],
+    recent_ids: int = 4096,
+    is_new_id: Callable[[str], bool] | None = None,
+) -> Iterator[SessionEvent]:
+    """``iter_events`` over already parsed records (a caller that reads the file itself, e.g.
+    with its own line limits and counters)."""
     chain: bool | None = None
     uses = _Uses()
     seen: OrderedDict[str, None] = OrderedDict()
     turn = 0
-    for rec in _records(path):
+    for rec in records:
         kind = rec.get("type")
         if is_compaction(rec):
             yield Compaction()
@@ -357,6 +370,14 @@ def iter_events(
         elif isinstance(content, str) or any(b.get("type") == "text" for b in blocks):
             turn += 1
             yield Prompt(_prompt_text(content), turn)
+
+
+def tool_result_texts(rec: dict[str, Any]) -> list[str]:
+    """Texts of the tool results a user record carries (empty for every other record)."""
+    if rec.get("type") != "user":
+        return []
+    blocks = _blocks(_message(rec).get("content"))
+    return [_result_text(b.get("content")) for b in blocks if b.get("type") == "tool_result"]
 
 
 def first_field(path: Path, key: str, max_records: int = 50) -> Any:

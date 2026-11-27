@@ -107,8 +107,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rep.add_argument("--split", choices=["dev", "test", "all"], default="all")
     rep.add_argument("--cutoff", help="YYYY-MM-DD: sessions before are dev, the rest test")
+    rep.add_argument(
+        "--dogfood-start",
+        help="YYYY-MM-DD: sessions from this day on are excluded (default 2026-11-26)",
+    )
     rep.add_argument("--seed", type=int, default=0, help="engine policy: sampling seed")
     rep.add_argument("--out", type=Path, required=True, help="report file outside any repository")
+    rep.add_argument(
+        "--jobs", type=int, default=1, help="worker processes (one project group each; 0 = CPUs)"
+    )
+    rep.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue an interrupted run from its checkpoint (<out>.checkpoint)",
+    )
+    rep.add_argument(
+        "--lanes",
+        default="compression",
+        help="comma-separated lanes: compression (always runs) plus any of "
+        "facts, loopguard, prune, sim once available",
+    )
+    rep.add_argument("--quiet", action="store_true", help=_QUIET_HELP)
     ope_p = sub.add_parser("ope", help="E3: off-policy evaluation of decision logs (--out)")
     ope_p.add_argument("--log", nargs="+", type=Path, required=True, help="decisions.jsonl files")
     ope_p.add_argument("--target", choices=["static", "engine-snapshot"], required=True)
@@ -119,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="YYYY-MM-DD: evaluate only decisions logged on or after this date (UTC)",
     )
     ope_p.add_argument("--out", type=Path, required=True, help="report file outside any repository")
+    ope_p.add_argument("--quiet", action="store_true", help=_QUIET_HELP)
     facts = sub.add_parser("facts", help="learned repository facts: list, forget, disable")
     facts_sub = facts.add_subparsers(dest="action", required=True)
     _project_opt(facts_sub.add_parser("list", help="facts with status, evidence and posterior"))
@@ -143,6 +163,9 @@ _KEY_RE = re.compile(r"[0-9a-f]{16}")
 _FOLD_TRIES = 5
 _ID_RE = re.compile(r"[0-9a-f]{12}")
 _SHELL_SYNTAX = re.compile(r"[\s|&;<>()$`\\*?{}~!#]")
+
+
+_QUIET_HELP = "print only `report: <path> id: <12 hex>` (id = sha256 of the report's bytes)"
 
 
 class CliError(Exception):
@@ -822,10 +845,11 @@ def _private_out(path: Path) -> Path:
 
 
 def _replay_cmd(args: argparse.Namespace) -> int:
-    """E1. Prints aggregates only: no paths, ids or transcript text (errors included)."""
+    """E1. Prints aggregates only: no paths, ids or transcript text (errors included); with
+    ``--quiet`` only the report's path and id."""
     from datetime import date
 
-    from token_sparen.replay import replay, report
+    from token_sparen.replay import replay, report, runner
 
     out = _private_out(args.out)
     try:
@@ -833,14 +857,48 @@ def _replay_cmd(args: argparse.Namespace) -> int:
     except ValueError:
         raise CliError("--cutoff must be YYYY-MM-DD") from None
     try:
+        dogfood = (
+            date.fromisoformat(args.dogfood_start) if args.dogfood_start else replay.DOGFOOD_START
+        )
+    except ValueError:
+        raise CliError("--dogfood-start must be YYYY-MM-DD") from None
+    if args.jobs < 0:
+        raise CliError("--jobs must be >= 0 (0 = one per CPU)")
+    jobs = args.jobs or os.cpu_count() or 1
+    names = [n.strip() for n in args.lanes.split(",") if n.strip()]
+    try:
         replay.resolve_policies(args.policy, load_config(Path.cwd(), os.environ))
+        for name in names:
+            runner.lane_factory(name)
     except ValueError as exc:
         raise CliError(str(exc)) from None
+    if len(set(names)) != len(names):
+        raise CliError("--lanes must name distinct lanes")
+    extra = [(n, {"seed": args.seed}) for n in names if n != "compression"]
+    checkpoint = out.with_name(out.name + ".checkpoint")
     try:
-        result = replay.run(args.paths, args.policy, args.split, cutoff, seed=args.seed)
+        if not args.resume:
+            checkpoint.unlink(missing_ok=True)
+        result = replay.run(
+            args.paths,
+            args.policy,
+            args.split,
+            cutoff,
+            seed=args.seed,
+            jobs=jobs,
+            lanes=extra,
+            checkpoint=checkpoint,
+            dogfood_start=dogfood,
+        )
         report.write_private(out, result.to_dict())
+        checkpoint.unlink(missing_ok=True)
+    except runner.CheckpointError as exc:
+        raise CliError(f"{exc}: rerun without --resume") from None
     except Exception as exc:  # noqa: BLE001 - never echo a message that could quote a path
         raise CliError(f"replay failed ({type(exc).__name__})", 1) from None
+    if args.quiet:
+        print(report.quiet_line(out))
+        return 0
     for line in replay.summary_lines(result):
         print(line)
     print("token-sparen replay: private report written (mode 0600)")
@@ -930,6 +988,9 @@ def _ope_cmd(args: argparse.Namespace) -> int:
         raise
     except Exception as exc:  # noqa: BLE001 - never echo a message that could quote a path
         raise CliError(f"ope failed ({type(exc).__name__})", 1) from None
+    if args.quiet:
+        print(report.quiet_line(out))
+        return 0
     for name, agg in points.items():
         print(
             f"{name}: n {agg['n']} (no context {agg['no_context']}), "

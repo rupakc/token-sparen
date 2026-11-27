@@ -15,6 +15,7 @@ enforced.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -123,3 +124,14 @@ def write_private(path: Path, data: Any) -> Path:
         Path(tmp).unlink(missing_ok=True)
         raise
     return out
+
+
+def report_id(path: Path) -> str:
+    """First 12 hex of the sha256 of the written report's bytes (``--quiet`` prints it, so a
+    report can be cited without quoting a figure)."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()[:12]
+
+
+def quiet_line(path: Path) -> str:
+    """The only stdout of a ``--quiet`` run: ``report: <path> id: <12 hex>``."""
+    return f"report: {path} id: {report_id(path)}"

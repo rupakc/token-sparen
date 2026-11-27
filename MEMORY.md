@@ -1563,3 +1563,17 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   `File "<path>", line N`; JS/JVM `at [fn (]<path>:N[:M][)]`) without its file location, so a
   library frame in `requests/exceptions.py` is no longer pinned. Words outside the location
   (`at new ValidationError (...)`) still pin it. E2 stays 156/156.
+
+## 2026-11-27 M4 E1 at real-data scale (Task 2)
+- `replay.run` is a thin wrapper over `replay/runner.run_parallel`; the compression replay is
+  the `compression` lane. Group key = sha256 of the transcript's parent directory (16 hex), so
+  checkpoints and reports hold no path. Group results merge exactly (floats summed as
+  fractions): reports do not depend on scheduling, `--jobs` or resumes.
+- Split by first timestamp (`--cutoff`, default 2026-11-01); sessions from `--dogfood-start`
+  (default 2026-11-26; a CLI override so other users' later sessions are not all excluded) or
+  with a `[token-sparen:` marker in a tool result (oversize lines: marker bytes anywhere, a
+  conservative exclusion) are excluded whole. `split="test"` still reads dev files for id
+  de-duplication; lanes with `history = True` are also fed them.
+- Lines that are not UTF-8 are now skipped and counted (the old reader replaced bytes).
+- A failed group is not checkpointed (a resume retries it); a checkpoint of other options or of
+  changed transcripts is refused (`CheckpointError`).
