@@ -3,7 +3,7 @@
 This document describes how the M4 campaign selects (or declines to change) the packaged
 defaults in `token_sparen/params/defaults.toml`. It describes a method only. It contains no
 measured figure, and none will be committed to this repository (spec §10.1). Results are cited
-only as "selected on E1 dev, private report <id>", where the id is the first twelve hex digits
+only as "selected on maintainer E1 dev split, private report <id>", where the id is the first twelve hex digits
 of a private report's content hash.
 
 The harness is `evals/hillclimb/run.py` (see `evals/hillclimb/README.md`); the measurements come
@@ -23,14 +23,16 @@ its numbers is used below. Everything in this document is a fresh, pre-declared 
 - A session's split date is the timestamp of its first record that is not copied history (a
   resumed session copies earlier records; they are de-duplicated per project group across all
   files before the split is attributed).
-- **dev** is before 2026-11-08; **test** is on or after 2026-11-08 and before 2026-11-26.
+- **dev** is before 2026-11-08; **test** is on or after 2026-11-08 and before 2026-11-26. The
+  harness fixes this cutoff itself; plain `token-sparen replay` uses its own default cutoff (and
+  `--cutoff`), so the two agree only when the cutoff is passed explicitly.
 - The cutoff was chosen from session counts only, before any outcome was viewed: Claude Code keeps
   transcripts for about thirty days, so the retained history is short and the cutoff gives a
   workable share to each side. The honest consequence is low statistical power: the likeliest
   outcome of the campaign is that nothing is confirmed.
-- **Dogfooded sessions are excluded whole.** A session is left out if any of its records carries a
-  token-sparen marker (a trim marker, a loop-guard note, any hook text) or is dated on or after
-  2026-11-26, when the plugin was first used on the maintainer's own work. A session and its
+- **Dogfooded sessions are excluded whole.** A session is left out if any of its records contains
+  the raw text `[token-sparen:` or is dated on or after 2026-11-26, when the plugin was first used
+  on the maintainer's own work. Hook text that lacks that exact text does not exclude a session. A session and its
   subagent transcripts are excluded together, in both directions.
 - Sessions are grouped by project (the top-level directory under the input root). Groups are
   the unit of replay, of subsampling and of resampling. Chronological lanes always see a group's
@@ -52,8 +54,8 @@ Each lane is a separate measurement. A lane's numbers are never summed with anot
   rate, an upper bound on the waste targeted). It does not simulate activation. Contradictions
   are credited only within one split; candidates mined in dev and contradicted in test are
   reported separately.
-- **loopguard** and **prune**: risk measurements for M3 features. They may only move a default
-  toward less intervention.
+- **loopguard** and **prune**: risk measurements for M3 features. They inform separate
+  maintainer rulings only (see the next section on M3 keys).
 
 The reference in every comparison is the **packaged defaults**: the user config file, the
 project file and environment overrides are ignored in both roles, so a candidate is the packaged
@@ -66,8 +68,11 @@ committed before any real-data run, so a choice is a selection from a fixed menu
 number. Each grid contains the current default, holds few values and lies inside the owning
 module's clamp. Refit priors are snapped to a coarse grid. Keys that no lane measures are kept
 in the file labelled `unmeasured`; they are skipped, reported as `unmeasured` and never changed.
-Relevance weights are code constants and out of scope. The learner's temperature-like targets
-and the off-policy settings are never searched.
+All M3 keys (facts, pruning, loop guard) are of this kind: **the harness never changes an M3
+key.** M3 lane results may only inform a separate maintainer ruling, which may move an M3 default
+only toward less intervention and is recorded without figures.
+Relevance weights are code constants and out of scope. The learner's regret constraint (`[learn.tau]`)
+and the off-policy settings (`[ope]`) are never searched.
 
 ## Dev search
 
@@ -79,20 +84,23 @@ replay charges), taken from one lane per key and never mixed across lanes. Dev m
 many times; it yields exactly one joint proposal containing only the keys that moved, including
 binary choices.
 
-Minimum evidence applies to every evaluated point, on dev and on test: at least 8 project groups
-with a trim and at least 30 trims. Below that the verdict is `insufficient`: on dev the
-coordinate stays, on test the proposal is rejected.
+Minimum evidence applies to every evaluated point, on dev and on test: ≥ 8 project groups
+with a trim and ≥ 30 trims. Below that the verdict is `insufficient`: on dev the
+coordinate stays, on test the proposal is rejected. On dev a learning-key candidate is also
+inadmissible if its breaker trips exceed the reference engine's.
 
 ## One look at test, all or nothing
 
-The test split is read once, through a one-shot ledger created atomically before any test data is
-read; a second confirmation attempt is refused. The proposal is compared with the current
+The test split is read once. The one-shot ledger `<state root>/hillclimb/confirm-m4.json` (a
+fixed location, independent of the output directory) is created atomically before any test data is
+read, and any second confirmation attempt is refused. A deleted ledger cannot be detected, so any
+second look at test invalidates the result. The confirmation is one paired `sim` lane run. The proposal is compared with the current
 defaults, paired by project group, with a seeded bootstrap and a 95 % percentile interval. The
 proposal is accepted **only if all** of the following hold; otherwise every default stays
 unchanged and the rejection is recorded:
 
 a) the lower bound of the net-savings difference is above zero;
-b) for every point, the upper bound of the difference in proxy regret per trim is at most 0.2·τ
+b) for every point, the upper bound of the difference in proxy regret per trim is at most 0.2 · τ
    of that point (non-inferiority against the defaults, so the proxy's biases cancel), and the
    absolute proxy regret per trim is at most τ;
 c) the fact-preservation suite stays at 100 %, including the pre-trim level, and its inline rate
@@ -100,12 +108,11 @@ c) the fact-preservation suite stays at 100 %, including the pre-trim level, and
    below the defaults';
 d) the evidence minimum above is met.
 
-M3 lane results may move an M3 default only toward less intervention.
 
 ## Accepted changes and provenance
 
 An accepted change is committed with the first twelve hex digits of the confirming report's id
-and the sentence "selected on E1 dev, private report <id>"; a commit message contains no figure.
+and the sentence "selected on maintainer E1 dev split, private report <id>"; a commit message contains no figure.
 The report itself stays private (spec §7.9, §10.1, §10.6).
 
 ## Out of this campaign

@@ -1027,14 +1027,16 @@ plugin version** (hash recorded). No claim without a reproducible script in `ben
 
 ### 10.6 Hill-climbing
 Every tunable (keep ratios, thresholds, priors, λ targets, size floors, compressor rules) is a
-parameter in `token_sparen/params/defaults.toml` (inside the package so the wheel carries it). Loop: propose change → E2 must stay 100 % → E1/E3 on **dev**
-split must improve the objective (savings with regret ≤ target), choosing only values from grids
-pre-declared in `evals/hillclimb/space.toml` → confirm **once** on the **held-out test**
-split: accept all-or-nothing iff the paired (by project group) bootstrap lower bound of the
-net-savings difference is above zero, the proxy-regret-per-trim difference versus the current
-defaults is within 0.2·τ and the absolute value within τ at every point, E2 is 100 % (inline rate
-not below the defaults'), and the minimum evidence holds; otherwise defaults stay → (periodically) E4 confirmation. Search: coordinate ascent + successive halving; every
-accepted change is a commit citing the private report id (first twelve hex digits), without figures. Never tune on the test split (Reference B's flaw).
+parameter in `token_sparen/params/defaults.toml` (inside the package so the wheel carries it). Loop:
+propose change → E2 must stay 100 % → E1 on **dev** split must improve the objective (savings with
+regret ≤ target; E1 only, E3 is not wired into the harness), choosing only values from grids pre-
+declared in `evals/hillclimb/space.toml` → confirm **once** on the **held-out test** split: accept
+all-or-nothing iff the paired (by project group) bootstrap lower bound of the net-savings difference
+is above zero, the proxy-regret-per-trim difference versus the current defaults is within 0.2 · τ
+and the absolute value within τ at every point, E2 is 100 % (inline rate not below the defaults'),
+and the minimum evidence holds; otherwise defaults stay → (periodically) E4 confirmation. Search:
+coordinate ascent + successive halving; every accepted change is a commit citing the private report
+id (first twelve hex digits), without figures. Never tune on the test split (Reference B's flaw).
 
 ## 11. Repository, CI, release, docs
 
