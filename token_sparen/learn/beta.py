@@ -125,6 +125,9 @@ def _beta_quantile(q: float, a: float, b: float) -> float:
     return min(1.0, max(0.0, 1.0 - _lower_quantile(1.0 - q, b, a)))
 
 
+beta_quantile = _beta_quantile  # public alias (bench statistics, M5 Task 9)
+
+
 def _real(v: object) -> float:
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         raise ValueError(f"not a real number: {v!r}")
