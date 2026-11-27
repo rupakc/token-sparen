@@ -66,7 +66,6 @@ TRUST_FILE = "trusted_extensions.json"
 MANIFEST = "TOKEN_SPAREN_EXTENSION"
 MAX_DROPIN_BYTES = 1_000_000
 PREVIEW_LINES = 40
-OVERRIDE_ENV = "TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE"
 _MANIFEST_KEYS = frozenset({"compressors", "decision_points", "signals"})
 _API_KEY = "api"
 _API_RE = re.compile(r"(\d+)(?:\.(?:(\d+)|x))?")
@@ -492,9 +491,10 @@ def _truthy(value: Any) -> bool:
     return flag_on(value)
 
 
-def _user_allows_override(home: Path, env: Mapping[str, str]) -> bool:
-    if _truthy(env.get(OVERRIDE_ENV)):
-        return True
+def _user_allows_override(home: Path) -> bool:
+    """Set in ``~/.token-sparen/config.toml`` only: never a project file, a session override or
+    a ``TOKEN_SPAREN_*`` variable (a repository's committed Claude Code settings can set those;
+    the env layer may only narrow, ``config.sanitise_env``)."""
     try:
         user = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -507,13 +507,13 @@ def _allow_override(cfg: Config, home: Path, env: Mapping[str, str]) -> bool:
     """True only if the merged config says so *and* the user (not a project) set it."""
     if not _truthy(cfg.get("extensions.allow_override")):
         return False
-    if _user_allows_override(home, env):
+    if _user_allows_override(home):
         return True
     log_error(
         env,
         "extensions",
-        "allow_override ignored: set it in ~/.token-sparen/config.toml or "
-        f"{OVERRIDE_ENV}, not in a project file",
+        "allow_override ignored: set it in ~/.token-sparen/config.toml (not in a project file, "
+        "a session override or a TOKEN_SPAREN_* variable)",
     )
     return False
 

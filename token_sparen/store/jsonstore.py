@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import IO, Any
 
-from token_sparen.config import log_error
+from token_sparen.config import log_error, private_mkdir
 
 LOCK_TIMEOUT_S = 2.0
 _POLL_S = 0.001  # first lock retry; doubles per retry up to _POLL_MAX_S
@@ -70,7 +70,7 @@ def _unlock(fh: IO[bytes]) -> None:
 def locked(path: Path, timeout: float | None = None) -> Iterator[None]:
     """Exclusive lock on ``<name>.lock``; StoreBusy after ``timeout`` (default 2 s)."""
     lock_path = path.with_name(path.name + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(lock_path.parent)
     with lock_path.open("a+b") as fh:
         deadline = time.monotonic() + (LOCK_TIMEOUT_S if timeout is None else timeout)
         delay = _POLL_S
@@ -152,7 +152,7 @@ def update(
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Read-modify-write under an exclusive cross-process lock."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(path.parent)
     with locked(path, timeout):
         data = read_locked(path, default, env)
         new = fn(data)
@@ -173,5 +173,5 @@ def read_locked(
 
 def write_locked(path: Path, data: dict[str, Any]) -> None:
     """Atomic write; call only while holding ``locked(path)``."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(path.parent)
     _write_atomic(path, data)

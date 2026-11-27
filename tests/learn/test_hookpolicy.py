@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from userconf import to_user_config
 
 from token_sparen.config import load_config
 from token_sparen.events import SessionCtx
@@ -19,7 +20,8 @@ FULL = {"band": "unk", "cat": "shell", "size": "sm", "ctype": "log", "phase": "m
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
-    return {"TOKEN_SPAREN_HOME": str(tmp_path / "home"), **extra}
+    # widening settings live in the user's file (a TOKEN_SPAREN_* variable may only narrow)
+    return to_user_config({"TOKEN_SPAREN_HOME": str(tmp_path / "home"), **extra})
 
 
 def _pol(tmp_path: Path, **extra: str) -> HookPolicy:

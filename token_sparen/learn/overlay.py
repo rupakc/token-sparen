@@ -72,7 +72,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-from token_sparen.config import Config, log_error, state_home
+from token_sparen.config import Config, log_error, private_mkdir, state_home
 from token_sparen.facts import lifecycle, miners
 from token_sparen.learn import breaker, decisions, pending
 from token_sparen.learn.beta import Beta, Evidence
@@ -801,7 +801,7 @@ def project_tag(home: Path, project_key: str) -> str:
     ``<home>/secret`` (mode 0600), installed atomically on first use. An empty or malformed
     file (e.g. left by a crash) is re-read a few times, then replaced."""
     path = home / SECRET_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(path.parent)
     for attempt in range(SECRET_TRIES):
         secret = _read_secret(path)
         if secret:

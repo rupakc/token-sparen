@@ -214,8 +214,11 @@ Everything stays on your machine, but some of it is plain text you should know a
 
 - `<project>/.token-sparen/`: recovery files under `outputs/` (full tool outputs, so they can
   contain anything a command printed), plus a `.gitignore` containing `*` so the folder is never
-  committed. Created on the first compression in that project.
-- `~/.token-sparen/` (override with `TOKEN_SPAREN_HOME`; an override inside the current project
+  committed. Created on the first compression in that project, owner-only (mode 0700 on POSIX);
+  a `.token-sparen` or `outputs` that is a symbolic link (e.g. committed by a repository) is
+  never written through, so nothing is saved and the output stays whole.
+- `~/.token-sparen/` (directories token-sparen creates here are owner-only, mode 0700 on POSIX;
+  override with `TOKEN_SPAREN_HOME`; an override inside the current project
   or its git work tree (however it is spelled), or (POSIX) not owned by you, is ignored with one
   line in the default root's `logs/errors.jsonl`, because a repository's committed Claude Code
   settings can set environment variables; a not-yet-created path is accepted when its nearest
@@ -324,8 +327,11 @@ Later layers override earlier ones:
 2. `~/.token-sparen/config.toml`
 3. `<project>/token-sparen.toml`
 4. environment: `TOKEN_SPAREN_<SECTION>__<KEY>=value` (double underscore between parts, for
-   example `TOKEN_SPAREN_GUARDS__ENABLED=false`, `TOKEN_SPAREN_GOVERNOR__HARD_STOP=true`; list
-   values are comma-separated)
+   example `TOKEN_SPAREN_GUARDS__ENABLED=false`, `TOKEN_SPAREN_COMPRESSION__MIN_TOKENS=5000`;
+   list values are comma-separated). **Narrowing only:** a repository's committed Claude Code
+   settings can set environment variables, so a variable follows the same rules as a project file
+   (see below): it may make token-sparen intervene less or keep more, never more; anything else
+   is ignored and logged once. Widen in `~/.token-sparen/config.toml` or with `config set`.
 5. this session only: `token-sparen config set <section.key> <value> [--session ID]`
    (e.g. `config set guards.enabled false`)
 
@@ -336,7 +342,8 @@ ignored and `doctor` flags it).
 someone else's. It can only make token-sparen intervene less or keep more, never trim more,
 recover less or block more. A value is used only if it has the right type, is within sane
 bounds and moves in the allowed direction from your own value (defaults, your config, env,
-session); anything else is ignored and logged once.
+session); anything else is ignored and logged once. `TOKEN_SPAREN_*` variables follow the same
+table, measured from your config and session overrides.
 
 | Settings | A project may |
 |---|---|
@@ -409,9 +416,8 @@ and the first 40 lines, and `--yes` records it in `~/.token-sparen/trusted_exten
 edit revokes trust, and a repository cannot trust its own files. Symlinked, foreign-owned and
 world-writable files are skipped. `token-sparen extensions list` shows each drop-in's status;
 `extensions untrust <path|sha256>` revokes. Built-in compressors win unless
-`[extensions] allow_override = true` is set in `~/.token-sparen/config.toml` or via
-`TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE`; a project `token-sparen.toml` and `config set` cannot
-enable it.
+`[extensions] allow_override = true` is set in `~/.token-sparen/config.toml`; a project
+`token-sparen.toml`, `config set` and `TOKEN_SPAREN_*` variables cannot enable it.
 
 **What trust means: trusting a drop-in gives it full code execution as you**, with your files and
 credentials, every time a hook uses it. Only trust code you have read or whose author you trust.

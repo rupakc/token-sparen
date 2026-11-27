@@ -46,13 +46,11 @@ def test_project_cannot_release_a_hold(tmp_path: Path) -> None:
     assert len(logged) == 1  # once, not once per hook
 
 
-@pytest.mark.parametrize("where", ["user", "env", "session"])
-def test_user_env_or_session_may_release_a_hold(tmp_path: Path, where: str) -> None:
+@pytest.mark.parametrize("where", ["user", "session"])
+def test_user_or_session_may_release_a_hold(tmp_path: Path, where: str) -> None:
     user = "[learn.hold]\nsubagent_brief = false\n" if where == "user" else ""
     proj, env = _setup(tmp_path, user=user, project="[learn.hold]\nsubagent_brief = true\n")
     session: dict[str, Any] | None = None
-    if where == "env":
-        env["TOKEN_SPAREN_LEARN__HOLD__SUBAGENT_BRIEF"] = "false"
     if where == "session":
         session = {"config_overrides": {"learn": {"hold": {"subagent_brief": False}}}}
     if where == "user":  # the project's true still tightens the user's false
@@ -95,10 +93,34 @@ def test_project_cannot_change_the_breaker_window(tmp_path: Path) -> None:
         assert load_config(proj, env).get("learn.breaker_window") == 50
 
 
-def test_env_may_loosen(tmp_path: Path) -> None:
-    proj, env = _setup(tmp_path, project="[learn.tau]\nmedium = 0.5\n")
+def test_env_cannot_release_a_hold(tmp_path: Path) -> None:
+    """A committed Claude Code settings file can set environment variables: TOKEN_SPAREN_* may
+    only narrow, like a project file (ruling, M6 security review)."""
+    proj, env = _setup(tmp_path, project="[learn.hold]\nsubagent_brief = true\n")
+    env["TOKEN_SPAREN_LEARN__HOLD__SUBAGENT_BRIEF"] = "false"
+    assert load_config(proj, env).get("learn.hold.subagent_brief") is True
+    (tmp_path / "proj" / "token-sparen.toml").unlink()
+    assert load_config(proj, env).get("learn.hold.subagent_brief") is True  # packaged hold
+
+
+def test_env_may_only_tighten_numbers(tmp_path: Path) -> None:
+    proj, env = _setup(tmp_path)
+    default = load_config(proj, env).get("learn.tau.medium")
+    env["TOKEN_SPAREN_LEARN__TAU__MEDIUM"] = str(default * 2)
+    assert load_config(proj, env).get("learn.tau.medium") == default
+    env["TOKEN_SPAREN_LEARN__TAU__MEDIUM"] = str(default / 2)
+    assert load_config(proj, env).get("learn.tau.medium") == default / 2
+
+
+def test_env_loosening_is_relative_to_the_user(tmp_path: Path) -> None:
+    """The user's file and session overrides may widen; env may then narrow from there."""
+    proj, env = _setup(tmp_path, user="[learn.tau]\nmedium = 0.3\n")
     env["TOKEN_SPAREN_LEARN__TAU__MEDIUM"] = "0.2"
     assert load_config(proj, env).get("learn.tau.medium") == 0.2
+    env["TOKEN_SPAREN_LEARN__TAU__MEDIUM"] = "0.4"
+    assert load_config(proj, env).get("learn.tau.medium") == 0.3
+    session = {"config_overrides": {"learn": {"tau": {"medium": 0.45}}}}
+    assert load_config(proj, env, session=session).get("learn.tau.medium") == 0.45
 
 
 def test_learning_enabled_is_user_only(tmp_path: Path) -> None:
@@ -512,3 +534,112 @@ def test_user_may_set_any_loop_guard_key(tmp_path: Path) -> None:
     assert cfg.get("loopguard.watch_calls") == 2
     assert policy_for(("loopguard", "enabled")) == "false_only"
     assert policy_for(("loopguard", "min_k")) == "max"
+
+
+def test_project_config_cannot_enable_pruning(tmp_path: Path) -> None:
+    """Threat model (malicious repository): neither a committed token-sparen.toml nor a
+    TOKEN_SPAREN_* variable (a committed Claude Code settings file can set environment
+    variables) nor a session override can switch tool pruning on; only the user's own
+    ~/.token-sparen/config.toml can."""
+    from token_sparen.config import SESSION_KEY
+    from token_sparen.mechanisms import prune
+
+    proj, env = _setup(tmp_path, project="[prune]\nenabled = true\nbuiltins = true\n")
+    env = {**env, "TOKEN_SPAREN_PRUNE__ENABLED": "1", "TOKEN_SPAREN_PRUNE__BUILTINS": "1"}
+    session = {SESSION_KEY: {"prune": {"enabled": True, "builtins": True}}}
+    s = prune.settings_for(load_config(proj, env, session=session).data, env)
+    assert not s.enabled and not s.builtins
+    (tmp_path / "home" / "config.toml").write_text("[prune]\nenabled = true\n", encoding="utf-8")
+    assert prune.settings_for(load_config(proj, env).data, env).enabled
+
+
+def test_state_home_env_inside_repo_ignored(tmp_path: Path) -> None:
+    """Threat model (malicious repository): TOKEN_SPAREN_HOME pointing into the project (where
+    a repository could plant config.toml, trusted_extensions.json or a statusline launcher) is
+    ignored, so nothing planted there is read."""
+    from token_sparen.config import reset_env_path_checks, state_home
+
+    proj = tmp_path / "proj"
+    planted = proj / ".ts"
+    planted.mkdir(parents=True)
+    (planted / "config.toml").write_text("[learn]\nenabled = false\n", encoding="utf-8")
+    reset_env_path_checks()
+    env = {"TOKEN_SPAREN_HOME": str(planted), "CLAUDE_PROJECT_DIR": str(proj)}
+    assert state_home(env) != planted
+    assert load_config(proj, env).get("learn.enabled") is not False
+
+
+@pytest.mark.parametrize(
+    ("var", "key", "raw"),
+    [
+        ("TOKEN_SPAREN_COMPRESSION__TRIM_FILE_CONTENTS", "compression.trim_file_contents", "true"),
+        ("TOKEN_SPAREN_LEARN__OPTIN__SUBAGENT_BRIEF", "learn.optin.subagent_brief", "true"),
+        ("TOKEN_SPAREN_PRUNE__ENABLED", "prune.enabled", "1"),
+        ("TOKEN_SPAREN_OUTPUT_STYLE__ENABLED", "output_style.enabled", "true"),  # unlisted key
+        ("TOKEN_SPAREN_LEARN__ENABLED", "learn.enabled", "false"),  # user-only
+        ("TOKEN_SPAREN_GOVERNOR__HARD_STOP", "governor.hard_stop", "true"),  # blocks more
+        ("TOKEN_SPAREN_COMPRESSION__ALLOW_CTYPES", "compression.allow_ctypes", "text"),
+        ("TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE", "extensions.allow_override", "1"),
+        ("TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS", "adapter.latency_budget_ms", "999999"),
+    ],
+)
+def test_env_cannot_widen(tmp_path: Path, var: str, key: str, raw: str) -> None:
+    """Threat model (malicious repository): a cloned repository's committed
+    .claude/settings.json can set TOKEN_SPAREN_* in its ``env`` block, so an environment value
+    for a key the project policy restricts may only narrow; widening is ignored with one logged
+    line. Widening is honoured from ~/.token-sparen/config.toml or `token-sparen config set`."""
+    proj, env = _setup(tmp_path)
+    before = load_config(proj, env).get(key)
+    env[var] = raw
+    for _ in range(3):
+        assert load_config(proj, env).get(key) == before
+    logged = [e for e in _errors(tmp_path) if key in e and "TOKEN_SPAREN_" in e]
+    assert len(logged) == 1, _errors(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("var", "raw", "key", "want"),
+    [
+        ("TOKEN_SPAREN_GUARDS__ENABLED", "0", "guards.enabled", False),
+        ("TOKEN_SPAREN_GUARDS__ENABLED", "off", "guards.enabled", False),
+        ("TOKEN_SPAREN_LEARN__HOLD__COMPRESSION", "yes", "learn.hold.compression", True),
+        ("TOKEN_SPAREN_COMPRESSION__MIN_TOKENS", "5000", "compression.min_tokens", 5000),
+        (
+            "TOKEN_SPAREN_COMPRESSION__TRIM_FILE_CONTENTS",
+            "false",
+            "compression.trim_file_contents",
+            False,
+        ),
+        ("TOKEN_SPAREN_PRUNE__ALLOW", "false", "prune.allow", False),
+        ("TOKEN_SPAREN_FACTS__ENABLED", "no", "facts.enabled", False),
+        ("TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS", "50", "adapter.latency_budget_ms", 50),
+        ("TOKEN_SPAREN_STATUSLINE__ASCII", "true", "statusline.ascii", True),  # free
+    ],
+)
+def test_env_may_narrow(tmp_path: Path, var: str, raw: str, key: str, want: Any) -> None:
+    proj, env = _setup(tmp_path)
+    env[var] = raw
+    got = load_config(proj, env).get(key)
+    assert got == want and type(got) is type(want)
+    assert _errors(tmp_path) == []
+
+
+def test_env_tool_lists_only_narrow(tmp_path: Path) -> None:
+    proj, env = _setup(tmp_path)
+    cfg = load_config(proj, env)
+    skip, ctypes = cfg.get("compression.skip_tools"), cfg.get("compression.allow_ctypes")
+    env["TOKEN_SPAREN_COMPRESSION__SKIP_TOOLS"] = "Read, MyTool"
+    env["TOKEN_SPAREN_COMPRESSION__ALLOW_CTYPES"] = ctypes[0]
+    cfg = load_config(proj, env)
+    assert cfg.get("compression.skip_tools") == [
+        *skip,
+        *[t for t in ("Read", "MyTool") if t not in skip],
+    ]
+    assert cfg.get("compression.allow_ctypes") == [ctypes[0]]
+
+
+def test_user_file_may_widen_what_env_cannot(tmp_path: Path) -> None:
+    proj, env = _setup(tmp_path, user="[compression]\ntrim_file_contents = true\n")
+    assert load_config(proj, env).get("compression.trim_file_contents") is True
+    env["TOKEN_SPAREN_COMPRESSION__TRIM_FILE_CONTENTS"] = "false"  # env narrows the user's
+    assert load_config(proj, env).get("compression.trim_file_contents") is False

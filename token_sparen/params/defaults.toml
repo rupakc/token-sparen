@@ -181,7 +181,7 @@ high = 0.01
 none = 1.0
 
 # High-tier decision points learn only when the user opts in per point: `<point> = true` here in
-# ~/.token-sparen/config.toml or TOKEN_SPAREN_LEARN__OPTIN__<POINT>=true (a project file cannot).
+# ~/.token-sparen/config.toml (never a project file, a session override or a TOKEN_SPAREN_* var).
 # Without it the safe arm is always used. High tier is opt-in by design.
 [learn.optin]
 
@@ -327,8 +327,8 @@ latency_log_max_bytes = 1000000  # latency.jsonl rotates past this size
 
 [extensions]
 # Let a trusted extension replace a built-in compressor for a content type it also handles.
-# Honoured only from ~/.token-sparen/config.toml or TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE,
-# never from a project's token-sparen.toml.
+# Honoured only from ~/.token-sparen/config.toml, never from a session override, a
+# project's token-sparen.toml or a TOKEN_SPAREN_* variable.
 allow_override = false
 
 [ope]

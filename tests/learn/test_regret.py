@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from sampleoutputs import big_pytest
+from userconf import to_user_config
 
 from token_sparen.config import Config, load_config
 from token_sparen.events import Event, EventKind, SessionCtx, ToolCall
@@ -33,7 +34,7 @@ def _env(tmp_path: Path) -> dict[str, str]:
 def _cfg(tmp_path: Path, **over: str) -> Config:
     env = _env(tmp_path)
     env.update({f"TOKEN_SPAREN_{k}": v for k, v in over.items()})
-    return load_config(tmp_path / "proj", env)
+    return load_config(tmp_path / "proj", to_user_config(env))  # user-only: the user's file
 
 
 def _proj(tmp_path: Path) -> Path:

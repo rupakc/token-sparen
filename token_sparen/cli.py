@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from token_sparen import __version__
-from token_sparen.config import Config, load_config, state_home
+from token_sparen.config import Config, load_config, private_mkdir, state_home
 from token_sparen.events import ToolCall
 from token_sparen.store import jsonstore, keycache, paths, session
 
@@ -579,9 +579,14 @@ def _round_trip(root: Path) -> tuple[bool, str]:
         env.update(
             TOKEN_SPAREN_HOME=str(Path(tmp) / "home"),
             CLAUDE_PROJECT_DIR=str(project),
-            TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS="5000",
+        )
+        # widening settings come from the (temporary) user file: TOKEN_SPAREN_* may only narrow
+        private_mkdir(Path(tmp) / "home")
+        (Path(tmp) / "home" / "config.toml").write_text(
+            "[adapter]\nlatency_budget_ms = 5000\n"
             # a pipeline check: the static arm always compresses, a cold learner may not
-            TOKEN_SPAREN_LEARN__ENABLED="false",
+            "[learn]\nenabled = false\n",
+            encoding="utf-8",
         )
         try:
             proc = subprocess.run(  # noqa: S603
@@ -638,7 +643,7 @@ def _doctor(args: argparse.Namespace) -> int:
         add(_WARN, "min_tokens", "; ".join(floors))
     home = state_home(env)
     try:
-        home.mkdir(parents=True, exist_ok=True)
+        private_mkdir(home)
         probe = home / f".doctor-{os.getpid()}"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
@@ -688,7 +693,7 @@ def _write_launcher() -> Path:
     text = LAUNCHER_TEMPLATE.read_text(encoding="utf-8")
     text = text.replace(_FALLBACK_LINE, f"FALLBACK_ROOT={shlex.quote(str(PACKAGE_ROOT))}", 1)
     dest = _launcher_path()
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(dest.parent)
     tmp = dest.with_name(dest.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.chmod(tmp, 0o755)
@@ -1122,7 +1127,7 @@ def _facts_cmd(args: argparse.Namespace) -> int:
             doc.pop("disabled", None)
         return doc
 
-    pdir.mkdir(parents=True, exist_ok=True)
+    private_mkdir(pdir)
     jsonstore.update(store, toggle, {}, os.environ)
     state = "disabled" if off else "enabled"
     print(f"token-sparen facts: injection {state} for this project")

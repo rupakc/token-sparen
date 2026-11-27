@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from token_sparen.config import private_mkdir
 from token_sparen.store.jsonstore import replace_with_retry
 
 _ID_LEN = 12
@@ -37,17 +38,27 @@ def _encode(text: str) -> bytes:
         return text.encode("utf-8", errors="surrogatepass")
 
 
+def _refuse_links(*dirs: Path) -> None:
+    """A repository can commit ``.token-sparen`` (or ``outputs``) as a symbolic link: writing or
+    pruning through it would touch files outside the project, so it is refused (OSError)."""
+    for d in dirs:
+        if d.is_symlink():
+            raise OSError(f"{d} is a symbolic link; recovery files are not written through it")
+
+
 def save_full(project_dir: Path, text: str) -> RecoveryRef:
     """Persist ``text`` under its content id; identical content is touched, not rewritten."""
     data = _encode(text)
     rid = hashlib.sha256(data).hexdigest()[:_ID_LEN]
     root = _root(project_dir)
     out = root / "outputs"
-    out.mkdir(parents=True, exist_ok=True)
+    _refuse_links(root, out)
+    private_mkdir(out)
+    _refuse_links(root, out)  # re-checked: a link may have been planted meanwhile
     gitignore = root / ".gitignore"
-    if not gitignore.exists():
-        with contextlib.suppress(OSError):
-            gitignore.write_text("*\n", encoding="utf-8")
+    with contextlib.suppress(OSError):  # "x": O_EXCL never follows a (dangling) link
+        with gitignore.open("x", encoding="utf-8") as fh:
+            fh.write("*\n")
     path = (out / f"{rid}.txt").resolve()
     try:
         os.utime(path)
@@ -81,6 +92,7 @@ def prune_outputs(
     entries: list[tuple[float, int, Path]] = []
     now = time.time()
     try:
+        _refuse_links(out.parent, out)
         for p in out.iterdir():
             tmp = _TMP_RE.match(p.name) is not None
             if not tmp and not _FILE_RE.match(p.name):

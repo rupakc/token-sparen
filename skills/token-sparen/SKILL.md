@@ -74,7 +74,8 @@ A trimmed output ends with:
 
 ## Configuration
 Precedence, lowest first: packaged defaults, `~/.token-sparen/config.toml`,
-`<project>/token-sparen.toml`, environment `TOKEN_SPAREN_*`, then this session's overrides:
+`<project>/token-sparen.toml`, environment `TOKEN_SPAREN_*` (project file and environment may
+only make it do less), then this session's overrides:
 `token-sparen config set <section.key> <value> --session ${CLAUDE_SESSION_ID}` (e.g.
 `guards.enabled false`). State root `~/.token-sparen/` (`TOKEN_SPAREN_HOME`). Outputs under 2000
 estimated tokens are never modified.

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from userconf import write_user_config
 
 from token_sparen import cli
 from token_sparen.replay import replay
@@ -309,7 +310,7 @@ def test_engine_policy_is_frozen(
     path = resend_session().write(tmp_path / "a.jsonl")
     rep = replay.run([path], "engine", "all", CUTOFF)
     assert rep.eligible == 0 and rep.totals["gated"] == {"ctype_not_allowed": 1}  # gated
-    monkeypatch.setenv("TOKEN_SPAREN_COMPRESSION__ALLOW_CTYPES", "text")  # the user widens
+    write_user_config(_home, {"compression": {"allow_ctypes": ["text"]}})  # the user widens
     rep = replay.run([path], "engine", "all", CUTOFF)
     assert rep.eligible == 1
     written = [p for p in _home.rglob("*") if p.is_file()] if _home.exists() else []

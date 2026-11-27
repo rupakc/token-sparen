@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from token_sparen.config import log_error
+from token_sparen.config import log_error, private_mkdir
 from token_sparen.store.jsonstore import locked, replace_with_retry
 
 
@@ -28,7 +28,7 @@ def append_many(
     """Append records under one lock (rotation as ``append``, checked once for the batch)."""
     if not records:
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(path.parent)
     line = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records).encode("utf-8")
     with locked(path):
         try:
