@@ -285,13 +285,13 @@ tau = 0.01            # high tier: regret ucb must be <= tau
 ucb_q = 0.95
 
 [loopguard]
-# Failure-loop guard (spec 6.11): within one turn, the same normalised error k times (k learned:
-# patient 5, standard 3, eager 2), `burst` failures, or an edit reverted to an earlier state gets
-# one short redirect (additionalContext); a second detection only tells the user. A project file
-# may only switch it off or make it more patient (raise min_k / burst).
+# Failure-loop guard (spec 6.11): within one turn and per agent, the same error k times (k
+# learned: patient 5, standard 3, eager 2) or the same edit made and undone repeatedly gets one
+# short redirect (additionalContext); a second detection only tells the user. `[learn.hold]
+# loopguard = true` keeps the most patient arm (k = 5), it does not switch the guard off;
+# `enabled = false` does. A project file may only switch it off or raise min_k.
 enabled = true
 min_k = 2          # floor on the arm's k (a project may only raise it)
-burst = 8          # failures in one turn that trigger regardless of fingerprint
 watch_calls = 5    # tool calls after the redirect that decide "loop broken" (savings 1)
 
 [adapter]

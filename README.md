@@ -142,18 +142,26 @@ All of this is on by default. Nothing is sent anywhere.
 - **Hard stop (opt-in, off by default).** With `governor.hard_stop = true`, once the session passes
   100 % of `session_budget_tokens`, context-adding tools (Read, Bash, WebFetch, WebSearch, Grep,
   Glob, LS, Task/Agent, MCP tools) are denied. Edit tools are never blocked.
-- **Failure-loop guard.** When the agent hits the same error again and again within one turn
-  (a failed tool call whose error matches an earlier one once numbers, hex ids, paths, quoted
-  values and line:column are ignored), 8 failures in a turn, or an edit that reverts an earlier
-  edit of the same file, token-sparen adds one short line to that tool result for the model:
-  `[token-sparen: this error has repeated 3× this turn (<id>). Consider stepping back: re-read
-  the error, check assumptions, or try a different approach.]` The tool output itself is never
-  changed. At most one such line per turn; if it happens again in the same turn you get a
-  terminal notice instead (no model tokens). How many repeats it waits for (5, 3 or 2) is
-  learned: it starts at the most patient setting and counts it as useful only when the error
-  stops recurring within the next 5 tool calls, and as harmful when you interrupt or your next
-  prompt says stop, undo, revert, "that's wrong" or "no, don't". Only deterministic checks, no
-  LLM. Turn it off with `loopguard.enabled = false`; `loopguard.min_k` sets the fewest repeats.
+- **Failure-loop guard.** When an agent (the main agent or one subagent, each counted on its own)
+  hits the same error again and again within one turn, token-sparen adds one short line to that
+  tool result for the model: `[token-sparen: this error has repeated 3× this turn (<id>).
+  Consider stepping back: re-read the error, check assumptions, or try a different approach.]`
+  "The same error" means the same tool, the same command (its program and subcommand, e.g.
+  `pytest`, `git diff`) or file, and the same error line once directories, line:column, hex
+  ids, durations and long numbers are ignored; names, quoted values and literals still count, so
+  `No module named 'foo'` and `'bar'`, or `assert 3 == 5` and `assert 4 == 5`, are different
+  errors. A failure with no error line (a bare `Exit code 1` from `grep`, `test` or `diff`) is
+  never counted. The same edit made and undone twice on one file (A -> B -> A -> B; adding and
+  then removing a debug line is fine) gets `[token-sparen: the same edit has been made and
+  undone 2× this turn (<id>). ...]`. The tool output itself is never changed. At most one such
+  line per agent and turn; if it happens again you get a terminal notice instead (no model
+  tokens). How many repeats it waits for (5, 3 or 2) is learned, starting at the most patient
+  setting: a line counts as useful only when it came after at least 3 repeats and the error
+  then stops recurring within the agent's next 5 tool calls, and as harmful when you interrupt
+  or your next prompt says stop, undo, revert, "that's wrong" or "no, don't". Only deterministic
+  checks, no LLM. Turn it off with `loopguard.enabled = false`; `[learn.hold] loopguard = true`
+  does **not** turn it off, it only keeps the most patient setting (5 repeats).
+  `loopguard.min_k` sets the fewest repeats.
 - **Subagent brief.** A decision point that can append a short "be concise" brief to subagent
   prompts exists but is **off** by default.
 - **Never rewritten.** token-sparen never modifies a command you or the model typed.
@@ -231,9 +239,10 @@ Everything stays on your machine, but some of it is plain text you should know a
     secret; per fact also its status, a few learned numbers and a contradiction count; the ids of
     facts you forgot and whether injection is disabled for the project). The session overlay
     records which facts were injected or withheld at session start (fact ids and
-    probabilities). During a turn the session overlay keeps the loop guard's state: up to 50 error
-    fingerprints and up to 50 edited files, each **only as short hashes** (of the normalised
-    error, the file path and the edited text), with counts. The session overlay also keeps the settled regret values of its trims, each with the
+    probabilities). During a turn the session overlay keeps the loop guard's state per agent (up to 16
+    agents, keyed by Claude Code's subagent id): up to 50 error fingerprints and up to 50 edited
+    files, each **only as short hashes** (of the tool, command head or file path and the
+    normalised error, the file path and the edited text), with counts. The session overlay also keeps the settled regret values of its trims, each with the
     normalised command, until the session is folded, and the **path of the session's Claude Code
     transcript** and the project directory, which only the background fold reads (at most 50 MB
     per session) to mine those facts. Project folders are named by a hash, but the
@@ -308,7 +317,7 @@ session); anything else is ignored and logged once.
 |---|---|
 | `statusline.{segments,ascii,color,parse_budget_ms}`, `pricing.*`, `boundary.{min_ctx_pct,min_overlap,min_turn,history,min_identifiers,cooldown_turns}`, `governor.{econ,ctx}_{notice,advise}` | set freely within bounds (display, advice) |
 | `guards.enabled`, `read_dedupe.enabled`, `governor.enabled`, `boundary.enabled`, `subagent.enabled`, `facts.enabled`, `loopguard.enabled` | only turn off |
-| `compression.min_tokens`, `min_saving_ratio`, `levels.*.keep_ratio`, the per-type knobs (`json.items`, `diff.context`, `stacktrace.edge_frames`, `test_report.block_lines`, `search.per_file`, `pplx.results`, `log.tail`), `recovery.*`, `guards.max_read_bytes`, `read_dedupe.min_tokens`, `loopguard.min_k`, `loopguard.burst` | only raise (keep more, intervene later) |
+| `compression.min_tokens`, `min_saving_ratio`, `levels.*.keep_ratio`, the per-type knobs (`json.items`, `diff.context`, `stacktrace.edge_frames`, `test_report.block_lines`, `search.per_file`, `pplx.results`, `log.tail`), `recovery.*`, `guards.max_read_bytes`, `read_dedupe.min_tokens`, `loopguard.min_k` | only raise (keep more, intervene later) |
 | `compression.compiler.warnings.*` | only move from `count` to `keep` |
 | `compression.skip_tools` | only add tools |
 | `compression.allow_ctypes` | only remove content types |
@@ -336,7 +345,8 @@ session); anything else is ignored and logged once.
 | `facts.enabled` | true | inject learned repository facts at session start ([details](#learned-repository-facts)) |
 | `facts.max_facts`, `facts.max_tokens` | 8, 300 | size of the injected facts block |
 | `loopguard.enabled` | true | one redirect line when the same error repeats within a turn |
-| `loopguard.min_k`, `loopguard.burst` | 2, 8 | fewest repeats of one error, and failures of any kind, before the redirect (the learned setting is 2, 3 or 5) |
+| `loopguard.min_k` | 2 | fewest repeats of one error before the redirect (the learned setting is 2, 3 or 5) |
+| `learn.hold.loopguard` | false | `true` keeps the most patient setting (5 repeats); it does not switch the guard off |
 | `loopguard.watch_calls` | 5 | tool calls after the redirect that decide whether the loop broke (user only) |
 | `learn.enabled` | true | learn how strongly to trim; `false` uses the fixed defaults, which trim more than a cold learner (user config, env or `config set` only) |
 | `learn.hold.compression` | false | `true` stops all trimming of tool output (see [Turning it off](#turning-it-off)) |

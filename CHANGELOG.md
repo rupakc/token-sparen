@@ -9,16 +9,19 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code 
 (learning, offline evaluation, quality-first defaults and config safety). M3 is in progress.
 
 ### Added
-- Failure-loop guard (spec 6.11, decision point `loopguard`, medium tier): within one turn, the
-  same normalised error fingerprint `k` times (learned arm: patient 5, standard 3, eager 2; safe
-  arm patient), 8 failures, or an Edit/Write reverting an earlier state of the same file adds one
-  redirect line as `additionalContext` (PostToolUse and PostToolUseFailure; the tool output is
-  never touched); at most one per turn, a second detection is a terminal notice only. Reward:
-  savings 1 if the error does not recur in the next 5 tool calls; regret 1 on a user interrupt or
-  a next prompt saying stop/undo/revert/that's wrong/no, don't. Triggers also flag this turn's
-  error-bearing compressions to the regret detector (0.5). `[loopguard] enabled`, `min_k`,
-  `burst` (a project may only switch it off or raise them), `watch_calls`. Bounded per-turn state
-  (hashes only) in the session overlay.
+- Failure-loop guard (spec 6.11, decision point `loopguard`, medium tier): within one turn and
+  per agent (`agent_id`), the same failure fingerprint (tool + command head or file + most
+  specific error line; bare `Exit code N` failures have none and never count) `k` times (learned
+  arm: patient 5, standard 3, eager 2; safe arm patient), or the same edit made and undone twice
+  (A -> B -> A -> B), adds one redirect line as `additionalContext` (PostToolUse and
+  PostToolUseFailure; the tool output is never touched), with its own wording for edits; at most
+  one per agent and turn, a second detection is a terminal notice only. The decision is logged at
+  the first repeat for every arm. Reward: savings 1 only for a redirect delivered at >= 3
+  occurrences after which the error does not recur in the agent's next 5 tool calls, else 0;
+  regret 1 on a user interrupt or a next prompt saying stop/undo/revert/that's wrong/no, don't.
+  Error-loop triggers also flag this turn's error-bearing compressions to the regret detector
+  (0.5). `[loopguard] enabled`, `min_k` (a project may only switch it off or raise it),
+  `watch_calls`. Bounded per-turn state (hashes only) in the session overlay.
 - Opt-in learned tool pruning (`token-sparen prune status|enable|disable|restore <tool>|restore
   --all`): MCP servers none of whose tools was ever used are denied in the checkout's
   `.claude/settings.local.json` after >= 3 sessions / 15 prompts and a high-tier regret bound,

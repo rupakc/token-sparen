@@ -213,7 +213,6 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     (("ope", "**"), "user_only", None),  # offline evaluation thresholds are the user's
     (("loopguard", "enabled"), "false_only", None),  # a project may switch the guard off
     (("loopguard", "min_k"), "max", (2.0, 1e12)),  # ... or make it more patient
-    (("loopguard", "burst"), "max", (2.0, 1e12)),
     (("loopguard", "**"), "user_only", None),
     # compression: keep more, compress less
     (("compression", "min_tokens"), "max", COUNT),

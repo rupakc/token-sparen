@@ -1326,3 +1326,35 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   error-bearing ctypes get 0.5 regret (settled with their window).
 - Config: project may only set `enabled = false` and raise `min_k` / `burst`; `watch_calls` is
   user-only.
+
+## 2026-11-27 Loop guard fix round 1 (Task 28 review; controller rulings, supersede the above)
+- Fingerprint = tool name + target (Bash: `command_head`, the program base name plus its first
+  plain-word argument after the regret detector's `normalize_command`, leading `cd`s dropped;
+  file tools: the file path) + the last exception type + the most specific error line: the last
+  `<Type>Error/Exception: message` line, else the first pytest `E   ` detail line, a coded error
+  (`error TS2322:`, `error[E0308]:`, `error:`), a line naming an exception type, a line with an
+  error keyword. `Exit code N`, `Traceback (most recent call last):` and `<tool_use_error>` tags
+  are skipped; no informative line -> no fingerprint, never counted.
+- Normalisation narrowed (deviation from the brief's "replace digits / quoted strings"): only
+  volatile parts are dropped (directories -> base name, hex ids, line:col / `line N` / `(r,c)`,
+  durations, clock times, numbers of 5+ digits). Quoted values and short literals are kept: they
+  are what tells `No module named 'foo'` from `'bar'` and `assert 3 == 5` from `assert 4 == 5`.
+- The burst trigger and `[loopguard] burst` are removed (false "repeated 8×" message).
+- Oscillation needs >= 2 reversals of the same (old, new) pair on one file (A -> B -> A -> B;
+  Write: switching back and forth between two contents); it triggers at `max(2, k - 1)`
+  reversals with its own text ("the same edit has been made and undone {n}× ..."). It does not
+  call `on_loop` (no error involved).
+- Reward: the decision is logged at the first repeat for every arm (tokens_after 0; the
+  redirect's tokens are in the ledger). Savings 1 only if a redirect was delivered at >= 3
+  occurrences (oscillation: reversals + 1) and the fingerprint does not recur within the
+  agent's next 5 calls (turn end first counts as no recurrence); otherwise 0, including decisions
+  whose k was never reached. Regret unchanged for redirected decisions; a decision without a
+  redirect gets an explicit regret 0 (signal `no_redirect`). Rationale: crediting n = 2
+  redirects rewarded natural resolution and drifted the bandit to `eager`.
+- State is keyed by `agent_id` (main = ""), up to 16 agents per turn; one model-facing redirect
+  per agent and turn; the terminal notice stays once per turn. Watches count only that agent's
+  calls. Interrupts apply to the interrupted agent's redirect.
+- `[learn.hold] loopguard = true` means the safe arm (k = 5), not off; `loopguard.enabled =
+  false` is the switch (README says so).
+- Known noise (review M2): `is_stop` also matches "add a stop button" or "git revert the bad
+  commit"; such prompts record regret 1 for a redirected decision.

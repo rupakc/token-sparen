@@ -226,6 +226,13 @@ earlier content hash of the same file. Reward: savings 1 if the fingerprint does
 within the next 5 tool calls of the turn, else 0; regret 1 on a user interrupt or a next prompt
 saying stop/undo/revert/that's wrong/no, don't, else 0. A turn without a trigger logs no
 decision. A trigger calls `RegretDetector.on_loop`. No LLM judge.
+Fix round 1 (review): fingerprint = tool + command head (Bash) or file path + most specific
+error line, with only volatile parts normalised (directories, line:col, hex ids, durations, long
+numbers; quoted values and literals kept); a bare `Exit code N` failure has no fingerprint. No
+burst trigger. Oscillation needs two reversals (A -> B -> A -> B) and has its own text. State and
+the one-redirect limit are per agent (`agent_id`). The decision is logged at the first repeat
+for every arm; savings 1 only for a redirect at >= 3 occurrences that is followed by 5 calls
+without the error, else 0.
 
 ---
 
