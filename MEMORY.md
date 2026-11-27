@@ -1696,6 +1696,7 @@ and the two new issues they found.
   three full rounds from fresh state (`tests/perfutil.best_p95`), stopping at the first under
   budget. The budget (50 ms x `TOKEN_SPAREN_PERF_FACTOR`) and the invariant are unchanged:
   one whole round must meet it, and a real regression fails every round.
+
 ## 2026-11-27 M5 Task 1: hook launcher interpreter search
 - Hooks keep starting `python3` (now `python3 -I`); `hooks/run.py` re-launches on a Python
   >= 3.11 found by `hooks/_pyfind.py` (Python 3.6 syntax): `TOKEN_SPAREN_PYTHON` (ignored inside
@@ -1731,3 +1732,35 @@ and the two new issues they found.
 ## 2026-11-27 M6 Task 6 (evidence renderer) reconciled names
 - Evidence file `docs/evidence/e4.json`; loader `bench.e4.load_e4` (E4Error); gate field `gate.verdict` (passed|failed|underpowered); plugin hash = `scripts.plugin_hash.plugin_hash(tree)` vs `doc["plugin_hash"]`. `scripts/render_evidence.py`: render_evidence, check_release_gate, replace_block; markers `<!-- evidence:start/end -->`. Decision file `docs/release/gate-decision.toml` needs `version` (= plugin.json version) and non-empty `rationale`; failed is never overridable.
 - Test file is `tests/test_render_evidence.py` (tests/learn/test_evidence.py already uses the other basename).
+
+## 2026-11-27 M6 Task 4: upgrade path, 0.x state, CLI/plugin version skew
+- Schema versions of the versioned JSON documents are listed by file name in
+  `store/schema.py` (`KNOWN_VERSIONS`; the owning modules keep their constants, a test checks
+  they match). `jsonstore.read_locked` (every read-modify-write) raises `NewerSchema` (an
+  OSError, logged) for a document newer than this code knows, so it is never rewritten: an
+  older CLI cannot downgrade a newer plugin's state. Lock-free reads still return it (readers
+  validate versions themselves). Files without a version get none (absent = version 1).
+  Older versions keep the existing compat (v1 posteriors logged and started afresh, the v1
+  prune `files` table moved to `prune_rules.json`, corrupt files quarantined).
+- Fixtures: `scripts/make_state_fixtures.py` exports each milestone tag (`git archive`), drives
+  its own hooks and CLI with an isolated home, a git project with a fixed synthetic remote
+  (stable project key) and a Claude config dir, and stores the trees with placeholders
+  (`<project>`, `<home>`, ...) in `tests/fixtures/state/<tag>/`; `legacy/` holds hand-written
+  shapes of intermediate commits. `tests/store/test_upgrade.py` replays them on this code.
+- `doctor`: plugin version from `<plugin root>/.claude-plugin/plugin.json`, PATH CLI from
+  `token-sparen --version`; a mismatch is a warning (`!`), not a failure. The skill runs the
+  bundled CLI first, `token-sparen` only as a fallback, and with neither replies "token-sparen
+  works in Claude Code only".
+- Open: 0.x recovery outputs are not in the recovery id registry, so `show` refuses them after
+  an upgrade (files remain readable by path). Adopting them safely needs a ruling (sec-open-3).
+- Fix round 1 (rulings I-1..I-3, T4-c2): `fold` runs each store step isolated (`step()` in
+  `overlay._fold`); a `NewerSchema` step is recorded in `FoldReport.held`, the staged fold keeps
+  `done` steps and stays pending (`RETAIN_MAX` = 20 pending sessions, then cleared). Store
+  problems log via `jsonstore.log_once` (per process + `logs/once.json` keyed by
+  sha256(path, session)); hooks and folds set `jsonstore.LOG_SESSION`. Versioned docs get
+  `written_by` on every write so an older CLI can name the writer. Downgrade undo: prune
+  removes nothing (ruling R-1: a user's own bare deny rule could be taken for ours); it lists
+  candidates (our format minus the settings backup, `settings.downgrade_candidates`) as a
+  manual edit and exits 1; statusline by its launcher command;
+  everything else prints `NewerSchema.advice(command)`. v1 posteriors copied to
+  `posteriors.v1.bak.json` first.

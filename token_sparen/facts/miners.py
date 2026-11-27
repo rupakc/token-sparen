@@ -1099,7 +1099,10 @@ def record(
             out["applied"] = applied
         return out
 
-    jsonstore.update(pdir / FACTS_FILE, fn, {}, env, timeout=timeout)
+    try:
+        jsonstore.update(pdir / FACTS_FILE, fn, {}, env, timeout=timeout)
+    except jsonstore.NewerSchema:  # written by a newer token-sparen: left untouched (logged)
+        return 0
     return written[0]
 
 

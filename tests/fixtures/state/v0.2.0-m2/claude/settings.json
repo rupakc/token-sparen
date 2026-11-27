@@ -1,0 +1,8 @@
+{
+  "model": "default",
+  "statusLine": {
+    "type": "command",
+    "command": "sh <home>/statusline.sh",
+    "padding": 0
+  }
+}

@@ -39,7 +39,7 @@ from token_sparen.mechanisms import (
     subagent,
     tracking,
 )
-from token_sparen.store import jsonl, session
+from token_sparen.store import jsonl, jsonstore, session
 
 Handler = Callable[[Event, Config], Action]
 # Ordered handler chain per event kind; see ``handle`` for how the actions are composed.
@@ -484,6 +484,13 @@ def _respond(
     if not isinstance(payload, dict):
         raise ValueError("payload is not a JSON object")
     event = ADAPTER.parse(event_name, payload, env)
+    with jsonstore.log_session(event.session_id):  # store problems: one log line per session
+        return _respond_event(event, env, dog)
+
+
+def _respond_event(
+    event: Event, env: Mapping[str, str], dog: _Watchdog
+) -> tuple[str, Config | None, str]:
     # The session overlay holds the per-session kill switch (`token-sparen session disable`)
     # and the session config layer (`token-sparen config set`), merged last.
     overlay = session.read_session(tracking.overlay_path(event, env))

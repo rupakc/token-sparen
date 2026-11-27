@@ -93,7 +93,10 @@ def test_version_1_store_is_empty_and_logged(tmp_path: Path) -> None:
     st = StoreChain(KEY, home)
     assert st.get("compression", "*", "light", "savings", "project") is None
     assert st.get("compression", "*", "light", "savings", "global") is None
-    assert len(_log_lines(home)) == 1
+    assert len(_log_lines(home)) == 2  # once per store (T4-c2), not once per read
+    again = StoreChain(KEY, home)
+    assert again.get("compression", "*", "light", "savings", "project") is None
+    assert len(_log_lines(home)) == 2
 
 
 def test_files_read_once_per_instance(tmp_path: Path) -> None:

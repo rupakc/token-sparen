@@ -1,0 +1,1 @@
+{"version": 1, "facts": {"e97a7982f665": {"kind": "test_command", "subject": "tests", "value": "pytest", "sessions": ["b49bdd2a79992c59", "a10b4af3d6a3f43e"], "first_seen": 1795809338.4869308, "last_seen": 1795809343.6422908, "contradictions": 0, "truth": 0, "status": "candidate"}}, "applied": ["8646ea09b1114dd9a8c9ad6bf9ad0fc7", "a6f6aa7162cc40ee940b0d109c7a28cd"]}

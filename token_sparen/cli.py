@@ -648,6 +648,58 @@ def _python3_version(pyfind: ModuleType | None = None) -> tuple[int, int] | None
         return None
 
 
+def plugin_version(root: Path) -> str | None:
+    """``version`` of ``<root>/.claude-plugin/plugin.json`` (the plugin's hooks run this
+    version), or None when there is no readable manifest (e.g. a pip-only install)."""
+    try:
+        data = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    return version if isinstance(version, str) and version else None
+
+
+_VERSION_OUT = re.compile(r"^token-sparen (\S+)\s*$")
+
+
+def path_cli_version(
+    which: Callable[[str], str | None] | None = None,
+) -> tuple[str | None, str | None]:
+    """(version, path) of the ``token-sparen`` on PATH (``--version``), or (None, None)."""
+    exe = (shutil.which if which is None else which)("token-sparen")
+    if exe is None:
+        return None, None
+    try:
+        out = subprocess.run(  # noqa: S603
+            [exe, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=20,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    m = _VERSION_OUT.match(out.strip())
+    return (m.group(1), exe) if m else (None, None)
+
+
+def version_skew(
+    plugin: str | None, path_cli: str | None, path_exe: str | None
+) -> list[tuple[str, str, str]]:
+    """Doctor rows: the plugin version, the PATH CLI version and a warning when they differ
+    (the skill and the hooks use the plugin's bundled CLI; the PATH one is for terminals)."""
+    rows = [(_OK, "plugin version", plugin or "unknown (not run from a Claude Code plugin)")]
+    if path_cli is None:
+        rows.append((_OK, "CLI on PATH", "none (the skill uses the plugin's bundled CLI)"))
+        return rows
+    rows.append((_OK, "CLI on PATH", f"{path_cli} ({path_exe})"))
+    if plugin is not None and path_cli != plugin:
+        detail = f"CLI {path_cli} differs from plugin {plugin}; the plugin's hooks use {plugin}"
+        rows.append((_WARN, "version skew", detail))
+    return rows
+
+
 def _hook_python(env: Mapping[str, str], root: Path) -> tuple[str, str]:
     """(mark, detail) for the interpreter the hooks actually run: ``python3`` itself when it is
     >= 3.11, else what the launcher would re-launch on (searched fresh, not from the cache)."""
@@ -708,6 +760,8 @@ def _doctor(args: argparse.Namespace) -> int:
     else:
         good, detail = _check_hooks_json(root)
         add(_OK if good else _BAD, "plugin", detail)
+    for row in version_skew(plugin_version(root), *path_cli_version()):
+        add(*row)
     if good:
         good, detail = _round_trip(root)
         add(_OK if good else _BAD, "hook round-trip", detail)
@@ -1175,7 +1229,12 @@ def _facts_cmd(args: argparse.Namespace) -> int:
         return doc
 
     private_mkdir(pdir)
-    jsonstore.update(store, toggle, {}, os.environ)
+    try:
+        jsonstore.update(store, toggle, {}, os.environ)
+    except jsonstore.NewerSchema as exc:
+        if off:
+            return _facts_downgraded(exc, "token-sparen facts disable")
+        raise
     state = "disabled" if off else "enabled"
     print(f"token-sparen facts: injection {state} for this project")
     return 0
@@ -1249,7 +1308,10 @@ def _prune_cmd(args: argparse.Namespace) -> int:
             print(f"warning: nothing will be written to {target} while {why}.")
         return 0
     if args.action == "disable":
-        done = prune.disable(home, key, env, checkout=project)
+        try:
+            done = prune.disable(home, key, env, checkout=project)
+        except jsonstore.NewerSchema as exc:
+            return _prune_downgraded(exc, project, None, "token-sparen prune disable")
         print(
             "token-sparen prune: disabled for this project"
             + (f"; restored {', '.join(done)}" if done else "")
@@ -1259,6 +1321,11 @@ def _prune_cmd(args: argparse.Namespace) -> int:
         return 0
     if args.all == (args.tool is not None):
         raise CliError("prune restore needs a tool name or --all")
+    command = "token-sparen prune restore " + ("--all" if args.all else shlex.quote(args.tool))
+    try:
+        prune.check_current(home, key, env)
+    except jsonstore.NewerSchema as exc:
+        return _prune_downgraded(exc, project, None if args.all else args.tool, command)
     doc = prune.read_doc(home, key, env, checkout=project)
     if args.all:
         every = prune.restore(home, key, None, None, env, checkout=project)  # every checkout
@@ -1279,6 +1346,49 @@ def _prune_cmd(args: argparse.Namespace) -> int:
         raise CliError(f"could not change {', '.join(where)}; see `token-sparen doctor`", code=1)
     for fkey, rules in restored.items():
         print(f"token-sparen prune: restored {', '.join(rules)} in {fkey}")
+    return 0
+
+
+def _command_line(argv: list[str]) -> str:
+    return " ".join(["token-sparen", *(shlex.quote(a) for a in argv)])
+
+
+def _prune_downgraded(
+    exc: jsonstore.NewerSchema, project: Path, tool: str | None, command: str
+) -> int:
+    """``prune disable`` / ``restore`` when the prune state is newer than this code: ownership
+    cannot be read, so nothing is removed (a user's own deny rule could be taken for ours,
+    ruling R-1). Lists the candidate rules and the manual edit; always exits non-zero."""
+    from token_sparen.adapters.claude import settings
+
+    target = settings.local_settings_path(project)
+    candidates, why = settings.downgrade_candidates(project, tool)
+    err = sys.stderr
+    print(f"token-sparen: {exc.advice(command)}", file=err)
+    print("token-sparen prune: nothing was changed (which rules are ours cannot be read)", file=err)
+    if why is not None:
+        print(f"token-sparen prune: {why}", file=err)
+    elif candidates:
+        backup = target.name + settings.BACKUP_SUFFIX
+        print(
+            f'to undo by hand, remove from "permissions"."deny" in {target} the entries '
+            f"below that you did not add yourself (they are not in {backup}):",
+            file=err,
+        )
+        for rule in candidates:
+            print(f"  {json.dumps(rule)}", file=err)
+    else:
+        print(f"token-sparen prune: no rule in token-sparen's format in {target}", file=err)
+    return 1
+
+
+def _facts_downgraded(exc: jsonstore.NewerSchema, command: str) -> int:
+    """``facts disable`` when ``facts.json`` is newer: this version never injects from it."""
+    print(
+        "token-sparen facts: this version does not inject facts from a newer facts.json, so "
+        "injection is already off while it runs"
+    )
+    print(f"token-sparen: {exc.advice(command)} (to keep it off there)", file=sys.stderr)
     return 0
 
 
@@ -1324,6 +1434,9 @@ def main(argv: list[str] | None = None) -> int:
         args.cmd = [*args.cmd, *tail]
     try:
         return _dispatch(args)
+    except jsonstore.NewerSchema as exc:  # state from a newer version: say what to do
+        print(f"token-sparen: {exc.advice(_command_line(argv))}", file=sys.stderr)
+        return 1
     except CliError as exc:
         print(f"token-sparen: {exc}", file=sys.stderr)
         return exc.code

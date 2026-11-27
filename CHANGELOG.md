@@ -10,6 +10,41 @@ Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones 
 and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`
 for M3); the package version stays `0.1.0.dev0` until v1.0.
 
+### Upgrade safety and CLI/plugin version skew (M6)
+
+- State written by any 0.x milestone (`v0.1.0-m1` ... `v0.4.0-m4`) loads on this code, or is
+  quarantined / started afresh with one `errors.jsonl` line; nothing learned is lost (evidence,
+  facts, prune opt-in and records, statusline install record, sessions, recovery files). Tested
+  against state trees captured from each tag (`scripts/make_state_fixtures.py`,
+  `tests/fixtures/state/`).
+- No downgrade: a versioned document (`posteriors.json`, `facts.json`, `prune.json`,
+  `prune_rules.json`, `statusline_install.json`, `savings_scale.json`; `store/schema.py`) whose
+  version is newer than this code knows is read-only: never rewritten (`NewerSchema`, logged),
+  so an older CLI cannot downgrade state a newer plugin wrote. Files without a version get
+  none added.
+- The session fold isolates each store: a newer store skips only its own step (project,
+  global, pre-trim, facts, prune, backfill); the other steps still run, and the session stays
+  pending to finish that step later (at most 20 pending sessions, then it is cleared).
+- A newer or corrupt state file is logged once per store per session (`logs/once.json` holds
+  short hashes only), not once per hook.
+- Versioned documents record `written_by` (the token-sparen version that wrote them). After a
+  downgrade, `prune disable` / `prune restore` change nothing and list, as a manual edit, the
+  rules in token-sparen's format that are not in the settings backup (a rule you added yourself
+  would match too, so none is removed automatically), `statusline uninstall` reverts the
+  `statusLine` it recognises, `facts disable` explains that this version does not inject from a
+  newer `facts.json`, and any other command prints `state written by token-sparen <version>;
+  upgrade to it, or run <command> from that version` instead of an exception. README documents
+  the full uninstall path.
+- A v1 `posteriors.json` is copied to `posteriors.v1.bak.json` before it is rewritten.
+- `doctor` prints the plugin version and the `token-sparen` on PATH and warns
+  `CLI x differs from plugin y; the plugin's hooks use y` when they differ (a warning only).
+- The `/token-sparen` skill runs the plugin's bundled CLI first (`python3 -I
+  "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"`), `token-sparen` on PATH only as a fallback, and
+  when neither runs replies that token-sparen works in Claude Code only.
+- Known gap: recovery files saved by 0.x stay on disk and readable at the path in their marker,
+  but `token-sparen show <id>` serves only ids this install registered (M6 security), so it
+  refuses ids saved before the upgrade.
+
 ### Hook launcher finds a Python >= 3.11 (M5 Task 1)
 
 - Fixed: the hooks silently did nothing when the `python3` on `PATH` was older than 3.11 (macOS
