@@ -17,9 +17,10 @@ candidate facts, each passed through ``sanitize`` before it is kept:
   the variable **name** only; its value is never read into a fact, and the subject is the
   program + subcommand only (``mysql``, ``make run``), never its options or arguments;
 - ``test_command``: the runner invocation (``test_invocation``: program + subcommand/module
-  only, from the ``TEST_RUNNERS`` table; every path, test id and option dropped) with the most
-  successful runs (one ``cd <project-relative dir> && `` prefix allowed). A command that
-  matches no table row yields no fact;
+  only, from the ``TEST_RUNNERS`` table; every path, test id and option dropped except the
+  watch-mode stoppers ``KEEP_FLAGS`` and a leading ``CI=true``) with the most successful runs.
+  A command that matches no table row, runs in another directory (``cd <dir> &&``) or has a
+  directory / package option (``SCOPE_FLAGS``) yields no fact: no fact beats a narrow one;
 - ``build_first``: a test command that failed earlier succeeds right after a build-family
   command succeeded (the tool call immediately before it is that Bash call: any other tool
   call in between, such as the Edit that fixed the test, resets it; lint / type-check
@@ -335,6 +336,7 @@ TEST_RUNNERS: tuple[tuple[str, ...], ...] = (
     ("yarn", "test"),
     ("yarn", "run", "test"),
     ("npx", "jest"),
+    ("npx", "vitest", "run"),  # vitest's one-shot (non-watch) mode
     ("npx", "vitest"),
     ("cargo", "test"),
     ("go", "test", "./..."),
@@ -356,6 +358,40 @@ TEST_LAUNCHERS: tuple[tuple[str, ...], ...] = (
 )
 _CD_PREFIX = re.compile(r"cd (\S+) && (.+)")
 _CONTROL = re.compile(r"[;&|<>`$]")
+# Options that run the suite somewhere else or for a part of the workspace (a directory, a
+# package, a manifest, a config root): such a run may be narrow, and no fact beats a narrow one.
+# Matched as the whole word or ``flag=value``, for every runner; ``SCOPE_FLAGS_BY`` adds
+# per-program ones (``-p`` is a package for cargo / gradle but a plugin for pytest).
+SCOPE_FLAGS: frozenset[str] = frozenset(
+    {
+        "-C",
+        "--directory",
+        "--dir",
+        "--cwd",
+        "--prefix",
+        "--manifest-path",
+        "--package",
+        "--project-dir",
+        "--rootdir",
+        "--workspace",
+        "--projects",
+    }
+)
+SCOPE_FLAGS_BY: dict[str, frozenset[str]] = {
+    "cargo": frozenset({"-p"}),
+    "gradle": frozenset({"-p"}),
+    "gradlew": frozenset({"-p"}),
+    "mvn": frozenset({"-pl", "-f", "--file"}),
+    "make": frozenset({"-f", "--file", "--makefile"}),
+    "pnpm": frozenset({"-w", "--filter", "-F"}),
+    "yarn": frozenset({"-w"}),
+    "npm": frozenset({"-w"}),
+}
+# Options that never narrow the selection but stop a watch / interactive mode: kept and
+# rendered with the runner (after ``--`` when they were passed through it). ``CI=true`` in
+# front of the command is kept likewise.
+KEEP_FLAGS: tuple[str, ...] = ("--watchAll=false", "--watch=false", "--no-watch", "--run", "--ci")
+CI_PREFIX = "CI=true"
 
 
 def _runner_match(words: list[str]) -> list[str] | None:
@@ -376,26 +412,38 @@ def _runner_match(words: list[str]) -> list[str] | None:
     return None
 
 
+def _scoped(words: list[str]) -> bool:
+    """A directory / package / config-root option anywhere in the command."""
+    base = posixpath.basename(words[0]) if words else ""
+    flags = SCOPE_FLAGS | SCOPE_FLAGS_BY.get(base, frozenset())
+    return any(w.split("=", 1)[0] in flags for w in words[1:])
+
+
 def test_invocation(norm: str) -> str | None:
     """The runner invocation of a (normalised) test command, or None when it matches no
-    ``TEST_RUNNERS`` row: ``pytest tests/unit -q --no-cov`` -> ``pytest``, ``go test -v
-    ./...`` -> ``go test ./...``; one leading ``cd <dir> && `` and a ``TEST_LAUNCHERS`` prefix
-    are kept."""
-    m = _CD_PREFIX.fullmatch(norm)
-    rest = m.group(2) if m is not None else norm
-    if _CONTROL.search(rest):
-        return None  # a pipeline or command list: not one plain test run
-    words = [w for w in rest.split(" ") if w]
+    ``TEST_RUNNERS`` row or may be narrowed to a part of the project: ``pytest tests/unit -q
+    --no-cov`` -> ``pytest``, ``go test -v ./...`` -> ``go test ./...``; a ``cd <dir> &&``
+    prefix or a ``SCOPE_FLAGS`` option -> None. A ``TEST_LAUNCHERS`` prefix, a leading
+    ``CI=true`` and ``KEEP_FLAGS`` are kept."""
+    if _CD_PREFIX.fullmatch(norm) or _CONTROL.search(norm):
+        return None  # another directory, a pipeline or a command list: not one plain full run
+    words = [w for w in norm.split(" ") if w]
+    ci = words[:1] == [CI_PREFIX]
+    if ci:
+        words = words[1:]
     head: list[str] = []
     for pre in TEST_LAUNCHERS:
         if tuple(words[: len(pre)]) == pre:
             head, words = list(pre), words[len(pre) :]
             break
     found = _runner_match(words)
-    if found is None:
+    if found is None or _scoped(words):
         return None
-    value = " ".join([*head, *found])
-    return f"cd {m.group(1)} && {value}" if m is not None else value
+    sep = words.index("--") if "--" in words else len(words)
+    before = [w for w in words[:sep] if w in KEEP_FLAGS]
+    after = [w for w in words[sep:] if w in KEEP_FLAGS]
+    tail = [*before, *(["--", *after] if after else [])]
+    return " ".join([*([CI_PREFIX] if ci else []), *head, *found, *tail])
 
 
 def _words(cmd: str) -> list[str]:
@@ -434,6 +482,8 @@ def runner(norm: str) -> str:
     test`` are one ``npm-test-script``."""
     m = _CD_PREFIX.fullmatch(norm)
     words = _words(m.group(2) if m is not None else norm)
+    while words and _ASSIGN.fullmatch(words[0]):
+        words = words[1:]  # CI=true npm test
     if len(words) >= 2 and words[0] in _SCRIPT_RUNNERS:
         if words[1] == "test" or words[1:3] == ["run", "test"]:
             return NPM_TEST
@@ -552,6 +602,15 @@ def generated_evidence(root: str | None, rel_dir: str, files: Iterable[str]) -> 
     return None
 
 
+def _with_ci(cmd: str, norm: str) -> str:
+    """``norm`` with ``CI=true`` back in front when the raw command set it as a leading
+    assignment (``normalize_command`` drops assignments)."""
+    lead = _LEAD_ASSIGNS.match(cmd.strip())
+    if lead is not None and CI_PREFIX in lead.group(0).split():
+        return f"{CI_PREFIX} {norm}"
+    return norm
+
+
 def _bump(counter: Counter[str], key: str) -> None:
     if key in counter or len(counter) < MAX_KEYS:
         counter[key] += 1
@@ -632,7 +691,7 @@ class _Miner:
         if ok:
             self._alias_ok(norm, words)
             self._env_ok(cmd)
-            invocation = test_invocation(norm)
+            invocation = test_invocation(_with_ci(cmd, norm))
             if invocation is not None:
                 _bump(self.tests_ok, invocation)
             if fam == "test":
@@ -885,6 +944,8 @@ def record(
                 "last_seen": when,
                 "contradictions": int(_num(prev.get("contradictions"), 0.0)),
             }
+            if safe.kind == "generated_dir":
+                table[fid]["verified"] = True  # mined only with git / marker evidence
             written[0] += 1
         if after is not None:
             after(table, fresh)

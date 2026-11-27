@@ -1455,4 +1455,15 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   not fix it); checkers excluded (`runner`/`checker` moved to miners, aliased in lifecycle).
 - In-project absolute paths relativised in `mine_calls` before sanitise (sanitised without
   project_dir there, i.e. exactly as `record()` will).
+- Fix round 1 (2026-11-27, review I1, I2, m1, m3, m5): generated_dir entries get `verified: true`
+  when recorded from mining; `current()` hides unverified ones and the fold re-check retires
+  them unless evidence is True (git unavailable + no marker -> retired). Re-checks capped at
+  `GEN_RECHECKS = 3` per fold (edited first, unverified, oldest `checked_at`). test_command:
+  `cd` prefix or `SCOPE_FLAGS` (+ per-program `SCOPE_FLAGS_BY`; pytest `-p` is a plugin so not
+  listed for it; pnpm `--filter` only) -> no fact. Owner call: `KEEP_FLAGS` (`--watchAll=false`,
+  `--watch=false`, `--no-watch`, `--run`, `--ci`) and leading `CI=true` kept and rendered
+  (after `--` when passed through); `runner()` skips leading assignments. Not taken: m1's
+  `-c/--config` and `tox -e` (owner list only), m2 regex anchoring, m4 zombie entries, m6.
+  Horizon rule reasoning (concern 1): the plain `ucb < retire_ucb` rule already existed, so the
+  ruling must mean a comparison against the (prior, else withheld) baseline.
 

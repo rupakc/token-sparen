@@ -419,14 +419,17 @@ def test_build_first_skips_side_effect_commands(tmp_path: Path) -> None:
     assert _kinds(_mine(tmp_path, log), "build_first") == []
 
 
-def test_test_command_keeps_one_project_relative_cd(tmp_path: Path) -> None:
+def test_test_command_in_a_subdirectory_is_no_fact(tmp_path: Path) -> None:
+    """Fix round 1 (I2): a directory-changing run may narrow the suite: no fact beats a narrow
+    one, so only the plain run counts."""
     log = Log().prompt()
     for _ in range(2):
         log.bash("cd packages/api && npm test")
+        log.bash("cd tests/unit && pytest")
     log.bash("npm test")
-    assert _kinds(_mine(tmp_path, log), "test_command") == [
-        ("tests", "cd packages/api && npm test")
-    ]
+    assert _kinds(_mine(tmp_path, log), "test_command") == [("tests", "npm test")]
+    only_cd = Log().prompt().bash("cd tests/unit && pytest").bash("cd tests/unit && pytest")
+    assert _kinds(_mine(tmp_path, only_cd), "test_command") == []
 
 
 def test_space_separated_credentials_never_become_a_test_command(tmp_path: Path) -> None:
@@ -561,7 +564,7 @@ def test_generated_dir_without_project_dir_is_no_candidate(tmp_path: Path) -> No
         ("pnpm test", "pnpm test"),
         ("yarn test src/a.test.ts", "yarn test"),
         ("npx jest src/a.test.ts", "npx jest"),
-        ("npx vitest run", "npx vitest"),
+        ("npx vitest run", "npx vitest run"),
         ("cargo test parser --release", "cargo test"),
         ("go test ./...", "go test ./..."),
         ("go test -v -run TestX ./...", "go test ./..."),
@@ -572,7 +575,34 @@ def test_generated_dir_without_project_dir_is_no_candidate(tmp_path: Path) -> No
         ("dotnet test --filter X", "dotnet test"),
         ("bundle exec rspec spec/a_spec.rb", "bundle exec rspec"),
         ("rake test TEST=x", "rake test"),
-        ("cd packages/api && npm test -- --grep x", "cd packages/api && npm test"),
+        ("cd packages/api && npm test -- --grep x", None),
+        ("cd tests/unit && pytest", None),
+        ("cd tests/integration && python -m pytest -x", None),
+        ("pushd tests && pytest", None),
+        ("make -C sub test", None),
+        ("make test -C sub", None),
+        ("make test --directory=sub", None),
+        ("npm test --prefix packages/api", None),
+        ("npm --prefix packages/api test", None),
+        ("pnpm test --filter api", None),
+        ("cargo test -p core", None),
+        ("cargo test --package core", None),
+        ("cargo test --package=core", None),
+        ("cargo test --manifest-path crates/a/Cargo.toml", None),
+        ("go test -C sub ./...", None),
+        ("gradle test -p sub", None),
+        ("mvn test -pl core", None),
+        ("pytest --rootdir sub", None),
+        ("uv run --directory sub pytest", None),
+        ("npm test -- --watchAll=false", "npm test -- --watchAll=false"),
+        ("npm test -- --grep x --watchAll=false", "npm test -- --watchAll=false"),
+        ("npx jest --ci --watch=false src/a.test.ts", "npx jest --ci --watch=false"),
+        ("npx vitest --run src/x", "npx vitest --run"),
+        ("npx vitest run src/x", "npx vitest run"),
+        ("npx vitest --no-watch", "npx vitest --no-watch"),
+        ("CI=true npm test", "CI=true npm test"),
+        ("CI=true npm test -- --watchAll=false", "CI=true npm test -- --watchAll=false"),
+        ("CI=1 npm test", None),
         ("go test ./pkg/parser", None),
         ("go test", None),
         ("npm run test:unit", None),
@@ -588,6 +618,18 @@ def test_generated_dir_without_project_dir_is_no_candidate(tmp_path: Path) -> No
 )
 def test_test_invocation_is_the_runner_only(cmd: str, want: str | None) -> None:
     assert miners.test_invocation(cmd) == want
+
+
+def test_non_narrowing_flags_and_ci_prefix_are_kept(tmp_path: Path) -> None:
+    """Owner call: flags that stop watch / interactive modes are rendered with the runner
+    (they never narrow the selection); ``CI=true`` survives command normalisation."""
+    log = Log().prompt()
+    for _ in range(2):
+        log.bash("CI=true npm test -- --watchAll=false src/a.test.js", "ok")
+    log.bash("npm test", "ok")
+    got = _kinds(_mine(tmp_path, log), "test_command")
+    assert got == [("tests", "CI=true npm test -- --watchAll=false")]
+    assert miners.runner("CI=true npm test -- --watchAll=false") == miners.NPM_TEST
 
 
 def test_test_command_fact_is_the_runner_invocation(tmp_path: Path) -> None:
@@ -630,7 +672,9 @@ def test_stored_narrow_test_commands_are_renormalised_or_retired(tmp_path: Path)
     pdir = tmp_path / "p"
     narrow = _stored("test_command", "pytest tests/unit -q", status="active", effect=[5, 1, 4])
     unknown = _stored("test_command", "bazel test //x", status="active")
-    path = _legacy(pdir, narrow, unknown, ("junk", {"kind": "test_command", "value": 3}))
+    cd = _stored("test_command", "cd tests/unit && pytest", status="candidate")
+    junk = ("junk", {"kind": "test_command", "value": 3})
+    path = _legacy(pdir, narrow, unknown, cd, junk)
     # before any fold re-normalises the store, neither is offered for injection
     assert [f.value for _, f in lifecycle.active(miners.load(pdir))] == []
     miners.record(pdir, [], env={"TOKEN_SPAREN_HOME": str(tmp_path)}, fold_id="f1")
@@ -640,6 +684,7 @@ def test_stored_narrow_test_commands_are_renormalised_or_retired(tmp_path: Path)
     assert moved["value"] == "pytest" and moved["status"] == "active"
     assert moved["effect"] == [5, 1, 4] and len(moved["sessions"]) == 5
     assert facts[unknown[0]]["status"] == "retired"
+    assert facts[cd[0]]["status"] == "retired"
     assert [f.value for _, f in lifecycle.active(miners.load(pdir))] == ["pytest"]
 
 

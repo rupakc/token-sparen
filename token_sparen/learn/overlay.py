@@ -544,7 +544,9 @@ def _mine_facts(
         raw_root = staged.get(PROJECT_DIR_KEY)
         root = raw_root if isinstance(raw_root, str) else None
         shown, withheld = lifecycle.parse_log(staged.get(lifecycle.SESSION_KEY))
-        observer = lifecycle.Observer(lifecycle.in_play(doc, {*shown, *withheld}), root)
+        observer = lifecycle.Observer(
+            lifecycle.in_play(doc, {*shown, *withheld}), root, lifecycle.recheck_order(doc)
+        )
         found = miners.mine_transcript(path, sid, project_dir=root, env=env, tap=observer.feed)
         settings = lifecycle.settings(params)
         obs = observer.results()  # may ask git: before the facts.json lock is taken

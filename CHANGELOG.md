@@ -115,6 +115,10 @@ everything else. No savings figures are claimed for them yet.
 - Repository facts: a build step is no longer credited when an edit or a lint / type-check ran
   between the failing and the passing test; in-project absolute paths are stored
   project-relative instead of being dropped.
+- Repository facts: a generated-directory fact learned from edits alone is no longer injected
+  and is retired unless git or a generated marker confirms it; a test command run from a
+  subdirectory or for one package (`cd tests/unit && pytest`, `cargo test -p core`) is no
+  longer learned; watch-mode stoppers such as `--watchAll=false` and `CI=true` are kept.
 
 #### Security
 - Tool pruning is the second settings write after the statusline: it needs an explicit opt-in

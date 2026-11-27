@@ -88,8 +88,8 @@ def test_frequency_kinds_need_five_sessions_and_an_observed_waste_event() -> Non
     """test_command / generated_dir are frequencies, not waste -> fix patterns: they activate
     only with >= 5 sessions of evidence and >= 1 observed waste event (and no confirmation is
     ever counted for them)."""
-    t4 = _fact("test_command", "tests", "pytest", n=4)
-    t5 = _fact("test_command", "tests", "pytest -q", n=5)
+    t4 = _fact("test_command", "tests", "tox", n=4)
+    t5 = _fact("test_command", "tests", "pytest", n=5)
     g5 = _fact("generated_dir", "generated", "dist", n=5)
     g5w = _fact("generated_dir", "generated", "out", n=5)
     table = _table(t4, t5, g5, g5w, waste_events=1)
@@ -104,7 +104,7 @@ def test_frequency_kinds_need_five_sessions_and_an_observed_waste_event() -> Non
 
 
 def test_waste_events_are_counted_for_candidates() -> None:
-    t = _fact("test_command", "tests", "pytest -q", n=5)
+    t = _fact("test_command", "tests", "pytest", n=5)
     fid = fact_id(t)
     table = _table(t)
     obs = {fid: Obs(relevant=True, waste=True, waste_event=True)}
@@ -337,7 +337,7 @@ def test_build_first_relevance_waste_and_contradiction(tmp_path: Path) -> None:
 def test_generated_dir_relevance_only(tmp_path: Path) -> None:
     fid = fact_id(GEN)
     log = Log().prompt().call("Edit", {"file_path": f"{PROJECT}/dist/a.js"})
-    assert _observe(log, tmp_path, GEN)[fid] == Obs(relevant=True, waste=None)
+    assert _observe(log, tmp_path, GEN)[fid] == Obs(relevant=True, waste=None, checked=True)
     other = Log().prompt().call("Edit", {"file_path": f"{PROJECT}/src/dist.js"})
     assert _observe(other, tmp_path, GEN)[fid].relevant is False
 
@@ -539,10 +539,12 @@ def test_generated_dir_repeated_writes_while_shown_reward_zero(tmp_path: Path) -
     for name in ("a", "b"):
         log.call("Edit", {"file_path": f"{PROJECT}/dist/{name}.js"})
     o = _observe(log, tmp_path, GEN)[fid]
-    assert o == Obs(relevant=True, waste=True)
+    assert o == Obs(relevant=True, waste=True, checked=True)
     regen = Log().prompt().call("Edit", {"file_path": f"{PROJECT}/dist/a.js"})
     regen.bash("npm run build", "built")
-    assert _observe(regen, tmp_path, GEN)[fid] == Obs(relevant=True, waste=True, waste_event=True)
+    assert _observe(regen, tmp_path, GEN)[fid] == Obs(
+        relevant=True, waste=True, waste_event=True, checked=True
+    )
     table = _table(GEN, status="active")
     lifecycle.apply_session(table, shown={fid}, withheld={}, obs={fid: o}, mined=set(), settings=S)
     assert lifecycle.effect(table[fid]).to_list() == [1.0, 2.0, 1.0]
@@ -847,3 +849,83 @@ def test_narrow_and_full_runs_are_one_runner_for_a_normalised_fact(tmp_path: Pat
     assert _observe(log, tmp_path, fact)[fid] == Obs(relevant=True, waste=False)
     gone = Log().prompt().bash("pytest -q", "usage: pytest [options]", err=True)
     assert _observe(gone, tmp_path, fact)[fid].contradicted
+
+
+# --------------------------------------------------------------------------- fix round 1
+def test_legacy_generated_dir_without_evidence_is_retired_without_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I1 repro: a non-git project, hand-written ``build/h.py`` and an edit-mined legacy fact
+    (no ``verified`` stamp) -> retired at the next fold, never injected meanwhile."""
+    root = tmp_path / "plain"
+    (root / "build").mkdir(parents=True)
+    (root / "build" / "h.py").write_text("def helper(): ...\n", encoding="utf-8")
+    (root / "gen").mkdir()
+    (root / "gen" / "a.py").write_text("# @generated\n", encoding="utf-8")
+    build = _fact("generated_dir", "generated", "build")
+    gen = _fact("generated_dir", "generated", "gen")
+    table = _table(build, gen, status="active", truth=0)
+    doc = {"version": 1, "facts": table}
+    assert list(lifecycle.active(doc)) == []  # unverified: never offered
+    obs = _observe_in(Log().prompt().bash("ls"), tmp_path, root, build, gen)
+    assert obs[fact_id(build)].checked and obs[fact_id(build)].generated is None
+    lifecycle.apply_session(table, shown=(), withheld={}, obs=obs, mined=set(), settings=S)
+    assert table[fact_id(build)]["status"] == "retired"
+    assert table[fact_id(gen)]["status"] == "active" and table[fact_id(gen)]["verified"] is True
+    assert [f.value for _, f in lifecycle.active(doc)] == ["gen"]
+
+    # a verified fact is not retired when git cannot answer and no marker is found
+    def broken(*_a: object, **_k: object) -> None:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(miners.subprocess, "run", broken)
+    (root / "gen" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    obs = _observe_in(Log().prompt().bash("ls"), tmp_path, root, gen)
+    lifecycle.apply_session(table, shown=(), withheld={}, obs=obs, mined=set(), settings=S)
+    assert table[fact_id(gen)]["status"] == "active"
+
+
+def test_record_stamps_mined_generated_dirs_as_verified(tmp_path: Path) -> None:
+    pdir = tmp_path / "p"
+    gen = _fact("generated_dir", "generated", "gen")
+    miners.record(pdir, [gen, ALIAS], env={})
+    facts = miners.load(pdir)["facts"]
+    assert facts[fact_id(gen)]["verified"] is True and "verified" not in facts[fact_id(ALIAS)]
+
+
+def test_generated_dir_rechecks_are_capped_and_round_robin(tmp_path: Path) -> None:
+    root = tmp_path / "plain"
+    gens = [_fact("generated_dir", "generated", f"out{i}") for i in range(5)]
+    for f in gens:
+        (root / f.value).mkdir(parents=True)
+        (root / f.value / "a.py").write_text("# @generated\n", encoding="utf-8")
+    table = _table(*gens, status="active", truth=0, verified=True)
+    seen: list[str] = []
+    for now in (10.0, 20.0):
+        order = lifecycle.recheck_order({"facts": table})
+        obs = Observer({fact_id(f): f for f in gens}, str(root), order=order)
+        path = (
+            Log()
+            .prompt()
+            .call("Edit", {"file_path": f"{root}/out4/b.py"})
+            .write(tmp_path / f"r{now}.jsonl")
+        )
+        for call in iter_tool_results(path):
+            obs.feed(call)
+        res = obs.results()
+        checked = [fid for fid, o in res.items() if o.checked]
+        assert len(checked) == lifecycle.GEN_RECHECKS == 3
+        assert fact_id(gens[4]) in checked  # edited this session: always re-checked
+        seen.extend(checked)
+        lifecycle.apply_session(
+            table, shown=(), withheld={}, obs=res, mined=set(), settings=S, now=now
+        )
+    assert {fact_id(f) for f in gens} <= set(seen)  # every fact re-checked within two folds
+
+
+def test_ci_prefixed_test_command_is_its_own_runner(tmp_path: Path) -> None:
+    fact = _fact("test_command", "tests", "CI=true npm test -- --watchAll=false")
+    fid = fact_id(fact)
+    log = Log().prompt().bash("CI=true npm test -- --watchAll=false", "ok")
+    o = _observe(log, tmp_path, fact)[fid]
+    assert o.relevant and not o.contradicted and not o.waste

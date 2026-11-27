@@ -113,6 +113,7 @@ FREQUENCY_WASTE = 1  # ... and observed waste events
 EXCLUSIVE = frozenset({"test_command"})  # one active fact per (kind, subject)
 BASELINE_N = 3  # withheld relevant sessions before the baseline can retire a fact
 BASELINE_MARGIN = 0.1  # retire when baseline.mean >= effect.mean - this
+GEN_RECHECKS = 3  # generated_dir facts re-checked (git + markers) per fold, round robin
 EFFECT_HORIZON = 8  # injected relevant sessions after which the effect ucb alone can retire
 STALE_SESSIONS = 10  # relevant sessions without new evidence (frequency kinds)
 STALE_SECONDS = 30 * 86400.0  # ... or this long since the fact was last mined
@@ -220,13 +221,17 @@ class Obs:
     """One session's view of one fact. ``waste`` None = not detectable (reward 0.5);
     ``contradicted``: the fact looked wrong (counted when injected); ``unneeded``: the session
     did fine without what the fact says (counted when injected or withheld); ``waste_event``:
-    the waste a frequency fact targets was seen (counted for candidates too, for activation)."""
+    the waste a frequency fact targets was seen (counted for candidates too, for activation);
+    ``checked``: a generated_dir fact was re-checked this fold, ``generated`` its result
+    (``miners.generated_evidence``: True positive evidence, False hand-written, None unknown)."""
 
     relevant: bool = False
     waste: bool | None = False
     contradicted: bool = False
     unneeded: bool = False
     waste_event: bool = False
+    checked: bool = False
+    generated: bool | None = None
 
     @property
     def reward(self) -> float:
@@ -267,6 +272,12 @@ def apply_session(
         if o.contradicted and kind == "generated_dir" and fid not in shown and st != "retired":
             entry["contradictions"] = _count(entry, "contradictions") + 1  # a hand-written dir
         entry.setdefault("truth", truth(entry))
+        if kind == "generated_dir" and o.checked and st != "retired":
+            entry["checked_at"] = 0.0 if now is None else now
+            if o.generated is True:
+                entry["verified"] = True
+            elif entry.get("verified") is not True:  # mined from edits alone (before wave B)
+                entry["contradictions"] = max(1, _count(entry, "contradictions"))
         if o.unneeded and kind == "build_first":
             if fid in withheld and now is not None:  # injected sessions may owe it to the fact
                 days = _days(entry)
@@ -400,11 +411,29 @@ def active(doc: Mapping[str, Any]) -> Iterator[tuple[str, Fact]]:
 
 def current(raw: Mapping[str, Any]) -> bool:
     """False for a stored test_command whose value is not a runner invocation (a narrowed
-    command stored before fix wave B): never offered until a fold re-normalises it."""
-    if raw.get("kind") != "test_command":
+    command stored before fix wave B: never offered until a fold re-normalises it) and for a
+    generated_dir fact without a ``verified`` stamp (mined from edits alone: never offered; the
+    next fold verifies or retires it)."""
+    kind = raw.get("kind")
+    if kind == "generated_dir":
+        return raw.get("verified") is True
+    if kind != "test_command":
         return True
     value = raw.get("value")
     return isinstance(value, str) and miners.test_invocation(value) == value
+
+
+def recheck_order(doc: Mapping[str, Any]) -> dict[str, tuple[int, float]]:
+    """Re-check priority of the stored generated_dir facts (lower first): unverified ones,
+    then the longest since their last re-check (``checked_at``)."""
+    facts = doc.get("facts")
+    out: dict[str, tuple[int, float]] = {}
+    for fid, raw in facts.items() if isinstance(facts, dict) else ():
+        if isinstance(raw, dict) and raw.get("kind") == "generated_dir":
+            at = raw.get("checked_at")
+            ok = isinstance(at, int | float) and not isinstance(at, bool) and math.isfinite(at)
+            out[fid] = (int(raw.get("verified") is True), float(at) if ok else 0.0)  # type: ignore[arg-type]
+    return out
 
 
 def select(
@@ -471,9 +500,15 @@ class _State:
 class Observer:
     """Streams one session's main-chain tool calls and reports per fact (``results``)."""
 
-    def __init__(self, facts: Mapping[str, Fact], project_dir: str | None) -> None:
+    def __init__(
+        self,
+        facts: Mapping[str, Fact],
+        project_dir: str | None,
+        order: Mapping[str, tuple[int, float]] | None = None,
+    ) -> None:
         self._facts = dict(facts)
         self._root = project_dir
+        self._order = dict(order or {})
         self._state = {fid: _State() for fid in self._facts}
         self._exported: set[str] = set()
 
@@ -600,9 +635,18 @@ class Observer:
         elif st.built:
             st.waste, st.pending, st.built = True, False, False
 
+    def _rechecks(self) -> set[str]:
+        """At most ``GEN_RECHECKS`` generated_dir facts per fold: edited this session first,
+        then by ``recheck_order`` (unverified, least recently checked)."""
+        gens = [f for f, fact in self._facts.items() if fact.kind == "generated_dir"]
+        gens.sort(key=lambda f: (not self._state[f].edited, self._order.get(f, (0, 0.0)), f))
+        return set(gens[:GEN_RECHECKS])
+
     def results(self) -> dict[str, Obs]:
         out: dict[str, Obs] = {}
+        rechecks = self._rechecks()
         for fid, st in self._state.items():
+            checked, generated = False, None
             fact = self._facts[fid]
             waste: bool | None = st.waste
             contradicted = st.contradicted
@@ -623,8 +667,10 @@ class Observer:
             elif fact.kind == "generated_dir":
                 # Re-verified every fold it is in play (edited or not: an injected label stops
                 # the edits that would expose it): git says tracked and a file lacks a marker.
-                found = miners.generated_evidence(self._root, fact.value, st.files or ())
-                contradicted = contradicted or found is False
+                if fid in rechecks:
+                    checked = True
+                    generated = miners.generated_evidence(self._root, fact.value, st.files or ())
+                    contradicted = contradicted or generated is False
                 if st.relevant:
                     repeated = st.writes >= miners.GEN_MIN_PER_SESSION
                     waste = True if repeated or st.waste_event else None  # one write: unknown
@@ -634,6 +680,8 @@ class Observer:
                 contradicted=contradicted,
                 unneeded=st.unneeded,
                 waste_event=st.waste_event,
+                checked=checked,
+                generated=generated,
             )
         return out
 
@@ -697,13 +745,22 @@ def in_play(doc: Mapping[str, Any], ids: Collection[str]) -> dict[str, Fact]:
         fid
         for fid, raw in (facts.items() if isinstance(facts, dict) else ())
         if isinstance(raw, dict)
-        and raw.get("kind") in FREQUENCY
-        and status(raw) == "candidate"
-        and _evidence(raw) >= miners.MIN_SESSIONS
+        and (
+            (
+                raw.get("kind") in FREQUENCY
+                and status(raw) == "candidate"
+                and _evidence(raw) >= miners.MIN_SESSIONS
+            )
+            or (  # unverified generated_dir: verified or retired by the re-check
+                raw.get("kind") == "generated_dir"
+                and status(raw) != "retired"
+                and raw.get("verified") is not True
+            )
+        )
     ]
-    for fid in [*ids, *watch]:
+    for fid in dict.fromkeys([*ids, *watch]):
         raw = facts.get(fid) if isinstance(facts, dict) else None
-        if not isinstance(raw, dict) or not current(raw):
+        if not isinstance(raw, dict) or (raw.get("kind") == "test_command" and not current(raw)):
             continue
         fact = miners.parse_entry(raw)
         if fact is not None and fact_id(fact) == fid:

@@ -301,6 +301,17 @@ is the tool call immediately before the passing test: any other tool call resets
 also clears the earlier failures (the edit may be the fix), and lint / type-check commands are
 not builds. (5) In-project absolute paths in a candidate are made project-relative (POSIX)
 before it is stored; outside paths are rejected as before.
+Fix round 1: (1) a mined generated_dir carries a `verified` stamp; an unstamped (edit-mined,
+pre-wave-B) fact is never offered and is retired at its re-check unless git reports the
+directory ignored or the files carry a marker (git unavailable + no marker -> retired). At most 3
+generated_dir facts are re-checked per fold (edited this session first, then unverified, then
+least recently checked: round robin). (2) A test command run in another directory (`cd <dir> &&`)
+or with a directory / package option (`-C`, `--directory`, `--prefix`, `--manifest-path`,
+`--package`, `--rootdir`, ...; cargo/gradle `-p`, mvn `-pl`/`-f`, make `-f`, pnpm `--filter`)
+gives no test_command fact (no fact beats a narrow one); stored values with a `cd` prefix are
+retired. (3) Owner call: the non-narrowing watch-mode stoppers `--watchAll=false`,
+`--watch=false`, `--no-watch`, `--run`, `--ci` (after `--` when passed through it) and a leading
+`CI=true` are kept in the value; `npx vitest run` is its own row.
 
 ---
 
