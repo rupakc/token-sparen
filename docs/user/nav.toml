@@ -1,0 +1,152 @@
+# Order and titles of the user documentation. Every page under docs/user/ is listed exactly once.
+# `wiki` is the GitHub Wiki page name ([A-Za-z0-9-]+); `section` groups pages in the sidebar.
+
+[[page]]
+path = "index.md"
+title = "Home"
+wiki = "Home"
+section = "Start"
+
+[[page]]
+path = "install.md"
+title = "Install"
+wiki = "Install"
+section = "Start"
+
+[[page]]
+path = "support.md"
+title = "Support matrix"
+wiki = "Support-matrix"
+section = "Start"
+
+[[page]]
+path = "host-guides/claude-code.md"
+title = "Claude Code guide"
+wiki = "Claude-Code-guide"
+section = "Start"
+
+[[page]]
+path = "upgrade.md"
+title = "Upgrade"
+wiki = "Upgrade"
+section = "Start"
+
+[[page]]
+path = "uninstall.md"
+title = "Uninstall"
+wiki = "Uninstall"
+section = "Start"
+
+[[page]]
+path = "concepts.md"
+title = "Concepts"
+wiki = "Concepts"
+section = "How it works"
+
+[[page]]
+path = "architecture.md"
+title = "Architecture"
+wiki = "Architecture"
+section = "How it works"
+
+[[page]]
+path = "learning-engine.md"
+title = "Learning engine"
+wiki = "Learning-engine"
+section = "How it works"
+
+[[page]]
+path = "mechanisms/compression.md"
+title = "Output compression"
+wiki = "Mechanism-compression"
+section = "Mechanisms"
+
+[[page]]
+path = "mechanisms/guards.md"
+title = "Guards"
+wiki = "Mechanism-guards"
+section = "Mechanisms"
+
+[[page]]
+path = "mechanisms/read-dedupe.md"
+title = "Read de-duplication"
+wiki = "Mechanism-read-dedupe"
+section = "Mechanisms"
+
+[[page]]
+path = "mechanisms/governor.md"
+title = "Budget governor"
+wiki = "Mechanism-governor"
+section = "Mechanisms"
+
+[[page]]
+path = "mechanisms/boundary.md"
+title = "Task boundaries and compaction"
+wiki = "Mechanism-boundary"
+section = "Mechanisms"
+
+[[page]]
+path = "mechanisms/subagent.md"
+title = "Subagent brief"
+wiki = "Mechanism-subagent"
+section = "Mechanisms"
+
+[[page]]
+path = "mechanisms/facts.md"
+title = "Learned repository facts"
+wiki = "Mechanism-facts"
+section = "Mechanisms"
+
+[[page]]
+path = "mechanisms/tool-pruning.md"
+title = "Tool pruning"
+wiki = "Mechanism-tool-pruning"
+section = "Mechanisms"
+
+[[page]]
+path = "mechanisms/loop-guard.md"
+title = "Failure-loop guard"
+wiki = "Mechanism-loop-guard"
+section = "Mechanisms"
+
+[[page]]
+path = "mechanisms/statusline.md"
+title = "Live statusline"
+wiki = "Mechanism-statusline"
+section = "Mechanisms"
+
+[[page]]
+path = "configuration.md"
+title = "Configuration"
+wiki = "Configuration"
+section = "Reference"
+
+[[page]]
+path = "extending.md"
+title = "Extending"
+wiki = "Extending"
+section = "Reference"
+
+[[page]]
+path = "benchmarks-methodology.md"
+title = "Benchmarks and methodology"
+wiki = "Benchmarks-methodology"
+section = "Reference"
+
+[[page]]
+path = "privacy-security.md"
+title = "Privacy and security"
+wiki = "Privacy-security"
+section = "Reference"
+
+[[page]]
+path = "troubleshooting.md"
+title = "Troubleshooting"
+wiki = "Troubleshooting"
+section = "Help"
+
+[[page]]
+path = "faq.md"
+title = "FAQ"
+wiki = "FAQ"
+section = "Help"
