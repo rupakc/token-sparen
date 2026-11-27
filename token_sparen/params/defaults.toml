@@ -79,10 +79,10 @@ max_read_bytes = 5000000  # cat/Read of a larger text file without a range is bl
 # tail-biased level (head = pretrim_head, tail = K, standard keep_ratio); never a shell rewrite.
 pretrim_lines = 120  # K when a candidate names none
 pretrim_head = 10
-# Keep ratio of the bounded pre-trim arm (M4 tuning knob). No default: unset, it is the PACKAGED
-# compression.levels.standard.keep_ratio (the pre-M4 value; a configured standard ratio does not
-# move it); any number in [0, 1] is used as is. A project may only raise it (keep more), compared
-# with that packaged ratio while unset.
+# Keep ratio of the bounded pre-trim arm (M4 tuning knob). No default: unset, it is the larger of
+# the packaged and the configured compression.levels.standard.keep_ratio (a raised standard arm
+# raises it, a lowered one never lowers it); any number in [0, 1] is used as is. A project may
+# only raise it (keep more), compared with that larger ratio while unset.
 # pretrim_bounded_keep_ratio = 0.35
 
 [read_dedupe]

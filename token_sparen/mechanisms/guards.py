@@ -37,8 +37,8 @@ MAX_READ_BYTES = 5_000_000
 PRETRIM_LINES = 120
 PRETRIM_HEAD = 10
 PRETRIM_FILE = "pretrim.json"
-# The packaged standard arm's keep ratio: what an unset ``pretrim_bounded_keep_ratio`` follows,
-# so tuning or configuring the standard arm never silently moves the pre-trim arm (M4-G3).
+# The packaged standard arm's keep ratio: an unset ``pretrim_bounded_keep_ratio`` keeps at least
+# this, so tuning the standard arm down never lowers the pre-trim arm (M4-G3).
 PACKAGED_STANDARD_KEEP_RATIO = load_level(Config(data=packaged_defaults()), "standard").keep_ratio
 
 _SEPARATORS = frozenset({"|", "|&", "||", "&&", ";", "&", ";;", ";&", ";;&"})
@@ -432,8 +432,9 @@ def pretrim_lines(
 def pretrim_level(cfg: Config, lines: int) -> Level:
     """Tail-biased level: short head, ``lines`` tail, keep ratio
     ``[guards] pretrim_bounded_keep_ratio`` (M4 tuning knob; any number in [0, 1] is used as
-    is). Unset (no packaged default) or invalid: the PACKAGED standard arm's keep ratio
-    (``PACKAGED_STANDARD_KEEP_RATIO``, the pre-M4 value), never a configured one."""
+    is). Unset (no packaged default) or invalid: ``max(PACKAGED_STANDARD_KEEP_RATIO, the
+    configured standard keep ratio)``: a raised standard arm raises the pre-trim arm (as before
+    M4), a lowered one never lowers it."""
     head = _int(cfg, "guards.pretrim_head", PRETRIM_HEAD)
     ratio = _bounded_keep_ratio(cfg)
     if cfg.trusted is not None:  # a project file only ever keeps more than the user's setting
@@ -446,4 +447,4 @@ def _bounded_keep_ratio(cfg: Config) -> float:
     valid = not isinstance(raw, bool) and isinstance(raw, int | float) and 0.0 <= raw <= 1.0
     if valid:
         return float(raw)
-    return PACKAGED_STANDARD_KEEP_RATIO
+    return max(PACKAGED_STANDARD_KEEP_RATIO, load_level(cfg, "standard").keep_ratio)
