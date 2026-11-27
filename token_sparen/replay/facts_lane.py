@@ -4,28 +4,39 @@ Past sessions never had fact injections, so nothing here simulates activation or
 an injected fact; the lane measures the raw material from transcripts alone
 (``miners`` / ``lifecycle.Observer`` in ``evidence="transcript"`` mode: no file of the
 project is read and no process runs, see ``miners``). One lane instance replays one project
-group in chronological order (``history = True``: with ``split="test"`` the dev sessions are
-mined too, as production would have, but only the test split is reported).
+group in chronological order; copied history of a resumed session (``duplicate`` results) is
+neither mined nor observed again.
 
-Per session, the facts mined in *earlier* sessions of the group are observed by the production
-``lifecycle.Observer``; then the session is mined with the production miners (same thresholds),
-in the same order the fold uses. Copied history of a resumed session (``duplicate`` results) is
-neither mined nor observed again. Per split and fact kind (``kinds``):
+**Splits never mix.** Every counter of a split comes from sessions of that split only, so a
+split's row is the same whether or not the run also covers the other split. A dev session
+sees only facts mined in dev sessions; a test session also sees the facts mined in dev
+(``history = True``: production would have learned them), and what it observes about them is
+reported under separate ``*_cross_split`` keys of the test row, never in ``dev`` or in the
+test-only keys. Per session, the visible facts mined in *earlier* sessions are observed by the
+production ``lifecycle.Observer``; then the session is mined with the production miners (same
+thresholds), in the order the fold uses. Per split and fact kind (``kinds``):
 
-- ``candidates``: distinct facts first mined in a session of that split; ``eligible``: those
-  that reached ``miners.MIN_SESSIONS`` sessions of evidence (counted in the mining split);
-- ``contradicted_later``: candidates that a later session contradicted (the Observer's
-  ``contradicted``, whether or not production would have counted it: it only counts it for an
-  injected fact). Counted once per candidate, in the split where it was mined: the wrong-fact
-  risk of mining that kind;
-- ``waste_events``: (fact, later session) pairs where the Observer saw the waste the fact
-  targets (``waste`` or ``waste_event``), in the split of that session;
-- ``waste_tokens``: an **upper bound** of the tokens a fact of the kind could have avoided: the
-  estimated tokens (input + output) of the failed calls (and, for ``generated_dir``, the edits)
-  that bore on a wasted fact (``Observer.hits``) in those sessions, each call once per kind.
-  The split flag ``waste_tokens_upper_bound`` marks it;
+- ``candidates``: distinct facts first mined in that split (test: not mined in dev before);
+  ``eligible``: those mined in ``miners.MIN_SESSIONS`` sessions of that split;
+- ``contradicted_later``: candidates of the split that a later session of the same split
+  contradicted (the Observer's ``contradicted``, which production counts only for an injected
+  fact), once per candidate: the wrong-fact risk of mining that kind. Test row only:
+  ``contradicted_cross_split``, dev candidates contradicted by a test session.
+  ``contradiction_observable`` is false for ``generated_dir``: proving a directory hand-written
+  needs git, so its ``contradicted_later`` is 0 by construction, not by evidence;
+- ``waste_events``: (fact, later session) pairs where calls showed the waste the fact targets
+  (``Observer.waste_calls``: not-found of an alias's subject before its spelling worked, a
+  wrong test-runner spelling or runner (never red runs of the right one), an error naming a
+  required variable, failures a build step fixed, edits a build regenerated);
+  ``waste_tokens``: an **upper bound** of what a fact of the kind could avoid: the estimated
+  tokens (input + output) of those calls, each call once per kind. One call can show the waste
+  of two kinds (a not-found ``pytest`` for both an alias and a test command): never sum
+  ``waste_tokens`` across kinds. ``waste_unmeasured``: generated_dir facts whose directory was
+  edited in a session without a regenerating build (waste not measurable, not counted).
+  Test row only: ``waste_events_cross_split`` / ``waste_tokens_cross_split`` for facts mined
+  in dev;
 - ``render_tokens``: the estimated tokens each candidate adds to the SessionStart block
-  (``inject.build`` of the fact alone, minus the block's fixed frame);
+  (``inject.build`` of the fact alone, without the token budget, minus the block's frame);
 - ``skipped_needs_fs``: command aliases through a downloading launcher not proposed because
   they need the project's manifest (``command_alias`` only).
 
@@ -37,7 +48,7 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from token_sparen.config import Config
@@ -56,11 +67,15 @@ KIND_FIELDS = (
     "contradicted_later",
     "waste_events",
     "waste_tokens",
+    "waste_unmeasured",
     "render_tokens",
     "skipped_needs_fs",
 )
-MAX_HITS = 2000  # attributed calls kept per fact and session
+CROSS_FIELDS = ("contradicted_cross_split", "waste_events_cross_split", "waste_tokens_cross_split")
+UNOBSERVABLE_CONTRADICTION = frozenset({"generated_dir"})  # needs git (transcript mode)
+RENDER_BUDGET = 1_000_000  # render_tokens: a fact's line is costed even over [facts] max_tokens
 FRAME_TOKENS = estimate_tokens("\n".join([inject.OPEN, inject.DATA_LINE, inject.CLOSE]))
+DEV, TEST = SPLITS
 
 
 def call_tokens(call: ToolResultRecord) -> int:
@@ -69,22 +84,32 @@ def call_tokens(call: ToolResultRecord) -> int:
     return estimate_tokens(inp) + estimate_tokens(call.text)
 
 
-def _part() -> dict[str, Any]:
+def _part(split: str) -> dict[str, Any]:
+    fields = KIND_FIELDS + (CROSS_FIELDS if split == TEST else ())
+    kinds: dict[str, Any] = {}
+    for k in sorted(KINDS):
+        row: dict[str, Any] = dict.fromkeys(fields, 0)
+        row["contradiction_observable"] = k not in UNOBSERVABLE_CONTRADICTION
+        kinds[k] = row
     return {
         "sessions": 0,
         "sessions_failed": 0,
         "waste_tokens_upper_bound": True,
-        "kinds": {k: dict.fromkeys(KIND_FIELDS, 0) for k in sorted(KINDS)},
+        "kinds": kinds,
     }
 
 
 @dataclass
 class _Known:
     fact: Fact
-    split: str  # where it was first mined
-    sessions: int = 1  # sessions of evidence (counted up to MIN_SESSIONS)
-    last: int = 0  # index of the last session that mined it
-    contradicted: bool = False
+    mined: dict[str, int] = field(default_factory=dict)  # split -> sessions that mined it
+    last: dict[str, int] = field(default_factory=dict)  # split -> last mining session index
+    candidate: set[str] = field(default_factory=set)  # splits it was counted a candidate in
+    contradicted: set[tuple[str, str]] = field(default_factory=set)  # (split, key) credited
+
+    def home(self) -> str:
+        """The split whose candidate a test session's observation concerns (dev wins)."""
+        return DEV if DEV in self.mined else TEST
 
 
 class FactsLane:
@@ -94,28 +119,38 @@ class FactsLane:
 
     def __init__(self, cfg: Config, params: Mapping[str, Any]) -> None:
         self.settings = lifecycle.settings(cfg.data)
-        self.parts = {p: _part() for p in SPLITS}
+        self.parts = {p: _part(p) for p in SPLITS}
         self.known: dict[str, _Known] = {}
         self._cur: SessionInfo | None = None
         self._failed = False
         self._miner = miners.SessionMiner(None, evidence=EVIDENCE)
         self._observer = lifecycle.Observer({}, None, evidence=EVIDENCE)
-        self._tokens: dict[int, int] = {}  # attributed call number -> tokens
-        self._hits: dict[str, list[int]] = {}  # fact id -> attributed call numbers
+        self._tokens: dict[int, int] = {}  # fed call number -> tokens (failed calls, edits)
         self._n = 0
 
-    def _row(self, split: str, kind: str) -> dict[str, int]:
-        row: dict[str, int] = self.parts[split]["kinds"][kind]
+    def _row(self, split: str, kind: str) -> dict[str, Any]:
+        row: dict[str, Any] = self.parts[split]["kinds"][kind]
         return row
+
+    def _visible(self, split: str) -> dict[str, Fact]:
+        """Facts a session of ``split`` may observe (dev: dev-mined only), most recently mined
+        first, at most ``miners.MAX_FACTS``."""
+        seen = (DEV,) if split == DEV else SPLITS
+        ranked = sorted(
+            (
+                (-max(k.last[s] for s in seen if s in k.last), fid)
+                for fid, k in self.known.items()
+                if any(s in k.mined for s in seen)
+            ),
+        )
+        return {fid: self.known[fid].fact for _, fid in ranked[: miners.MAX_FACTS]}
 
     def _start(self, info: SessionInfo) -> None:
         self._cur = info
         self._failed = False
-        self._tokens, self._hits, self._n = {}, {}, 0
+        self._tokens, self._n = {}, 0
         self._miner = miners.SessionMiner(info.cwd, evidence=EVIDENCE)
-        recent = sorted(self.known.items(), key=lambda kv: (-kv[1].last, kv[0]))
-        watched = {fid: k.fact for fid, k in recent[: miners.MAX_FACTS]}
-        self._observer = lifecycle.Observer(watched, info.cwd, evidence=EVIDENCE)
+        self._observer = lifecycle.Observer(self._visible(info.split), info.cwd, evidence=EVIDENCE)
 
     def feed(self, event: Event, session: SessionInfo) -> None:
         if session is not self._cur:
@@ -124,14 +159,9 @@ class FactsLane:
             return
         try:
             self._miner.feed(event)
-            self._observer.feed(event)
-            hits = self._observer.hits
-            if hits and (event.is_error or event.tool_name in miners.EDIT_TOOLS):
+            self._observer.feed(event)  # numbers the call self._n, like this lane
+            if event.is_error or event.tool_name in miners.EDIT_TOOLS:
                 self._tokens[self._n] = call_tokens(event)
-                for fid in hits:
-                    calls = self._hits.setdefault(fid, [])
-                    if len(calls) < MAX_HITS:
-                        calls.append(self._n)
             self._n += 1
         except Exception:  # noqa: BLE001 - one bad session never stops the run (no details)
             self._failed = True
@@ -149,7 +179,7 @@ class FactsLane:
         except Exception:  # noqa: BLE001 - counted, never described
             part["sessions_failed"] += 1
         self._cur = None
-        self._tokens, self._hits = {}, {}
+        self._tokens = {}
 
     def abort_session(self, session: SessionInfo) -> None:
         """The runner failed mid-session: count it failed."""
@@ -158,18 +188,28 @@ class FactsLane:
             self.end_session(session)
 
     def _observe(self, split: str) -> None:
-        wasted: dict[str, set[int]] = {}
+        wasted: dict[tuple[str, str], set[int]] = {}  # (kind, suffix) -> call numbers
+        waste = self._observer.waste_calls
+        unsettled = self._observer.unsettled
         for fid, obs in self._observer.results().items():
             known = self.known[fid]
             kind = known.fact.kind
-            if obs.contradicted and not known.contradicted:
-                known.contradicted = True
-                self._row(known.split, kind)["contradicted_later"] += 1
-            if obs.waste is True or obs.waste_event:
-                self._row(split, kind)["waste_events"] += 1
-                wasted.setdefault(kind, set()).update(self._hits.get(fid, ()))
-        for name, calls in wasted.items():
-            self._row(split, name)["waste_tokens"] += sum(self._tokens[n] for n in calls)
+            cross = split == TEST and known.home() == DEV
+            suffix = "_cross_split" if cross else ""
+            row = self._row(split, kind)
+            if obs.contradicted:
+                key = "contradicted_cross_split" if cross else "contradicted_later"
+                if (split, key) not in known.contradicted:
+                    known.contradicted.add((split, key))
+                    row[key] += 1
+            if fid in waste:
+                row["waste_events" + suffix] += 1
+                wasted.setdefault((kind, suffix), set()).update(waste[fid])
+            elif fid in unsettled and kind == "generated_dir" and not cross:
+                row["waste_unmeasured"] += 1
+        for (name, suffix), calls in wasted.items():
+            tokens = sum(self._tokens.get(n, 0) for n in calls)
+            self._row(split, name)["waste_tokens" + suffix] += tokens
 
     def _mine(self, session: SessionInfo) -> None:
         split = session.split
@@ -177,19 +217,22 @@ class FactsLane:
         self._row(split, "command_alias")["skipped_needs_fs"] += self._miner.skipped_needs_fs
         for fact in found:
             fid = fact_id(fact)
-            known = self.known.get(fid)
-            if known is None:
-                known = self.known[fid] = _Known(fact, split, last=session.index)
-                self._row(split, fact.kind)["candidates"] += 1
-                self._row(split, fact.kind)["render_tokens"] += self._render(fid, fact)
-            elif known.last != session.index:
-                known.last = session.index
-                known.sessions += 1
-                if known.sessions == miners.MIN_SESSIONS:
-                    self._row(known.split, fact.kind)["eligible"] += 1
+            known = self.known.setdefault(fid, _Known(fact))
+            if known.last.get(split) == session.index:
+                continue
+            new_here = not known.mined.get(split) and (split == DEV or DEV not in known.mined)
+            known.mined[split] = known.mined.get(split, 0) + 1
+            known.last[split] = session.index
+            row = self._row(split, fact.kind)
+            if new_here:
+                known.candidate.add(split)
+                row["candidates"] += 1
+                row["render_tokens"] += self._render(fid, fact)
+            if split in known.candidate and known.mined[split] == miners.MIN_SESSIONS:
+                row["eligible"] += 1
 
     def _render(self, fid: str, fact: Fact) -> int:
-        block, _ = inject.build([(fid, fact)], self.settings.max_tokens, 1)
+        block, _ = inject.build([(fid, fact)], RENDER_BUDGET, 1)
         return max(0, estimate_tokens(block) - FRAME_TOKENS) if block else 0
 
     def report(self) -> dict[str, Any]:

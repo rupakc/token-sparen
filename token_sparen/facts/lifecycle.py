@@ -512,9 +512,20 @@ class _State:
 
 class Observer:
     """Streams one session's main-chain tool calls and reports per fact (``results``).
-    ``evidence`` as in ``miners``: ``"transcript"`` re-checks generated_dir facts only from the
-    file heads the session showed (no git, no file access). ``hits``: the facts the last fed
-    call bore on (ran, contradicted or showed the waste of; for replay attribution)."""
+
+    ``evidence`` as in ``miners``. ``"transcript"`` (offline replay) re-checks generated_dir
+    facts only from the file heads the session showed (no git, no file access) and attributes
+    the calls that show the waste each fact targets (``waste_calls``; the fold never needs it):
+
+    - command_alias: a not-found failure of the subject, once the fact's spelling then works;
+    - test_command: a test command failing with not-found / a usage error in a spelling other
+      than the fact's, or another runner's failure once the fact's runner then passes (red runs
+      of the fact's own runner never count);
+    - requires_env: a failure whose error names the variable;
+    - build_first: the subject's failures that the build step then fixed;
+    - generated_dir: edits under the directory once a regenerating build follows (edits never
+      followed by one are not measurable: ``unsettled``).
+    """
 
     def __init__(
         self,
@@ -530,15 +541,40 @@ class Observer:
         self._state = {fid: _State() for fid in self._facts}
         self._exported: set[str] = set()
         self._evidence = miners.check_evidence(evidence)
+        self._attribute = self._evidence == "transcript"
         self._heads: dict[str, bool] = {}
-        self._hits: set[str] = set()
+        self._n = -1  # number of the call being fed (every fed call counts, from 0)
+        self._owed: dict[str, list[int]] = {}  # fid -> calls awaiting proof of the waste
+        self._wasted: dict[str, list[int]] = {}  # fid -> calls that showed the waste
 
     @property
-    def hits(self) -> frozenset[str]:
-        return frozenset(self._hits)
+    def waste_calls(self) -> dict[str, tuple[int, ...]]:
+        """Transcript mode: fact id -> numbers of the fed calls that showed its waste."""
+        return {fid: tuple(calls) for fid, calls in self._wasted.items() if calls}
+
+    @property
+    def unsettled(self) -> frozenset[str]:
+        """Transcript mode: facts with calls still awaiting proof (generated_dir: edits that no
+        regenerating build followed: their waste is not measurable)."""
+        return frozenset(fid for fid, calls in self._owed.items() if calls)
+
+    def _owe(self, fid: str) -> None:
+        calls = self._owed.setdefault(fid, [])
+        if len(calls) < miners.MAX_KEYS:
+            calls.append(self._n)
+
+    def _waste(self, fid: str) -> None:
+        calls = self._wasted.setdefault(fid, [])
+        if len(calls) < miners.MAX_KEYS:
+            calls.append(self._n)
+
+    def _settle(self, fid: str) -> None:
+        owed = self._owed.pop(fid, [])
+        calls = self._wasted.setdefault(fid, [])
+        calls.extend(owed[: max(0, miners.MAX_KEYS - len(calls))])
 
     def feed(self, call: ToolResultRecord) -> None:
-        self._hits = set()
+        self._n += 1
         if call.sidechain:
             return
         if call.tool_name == "Bash":
@@ -561,7 +597,8 @@ class Observer:
         for fid, fact in self._facts.items():
             if fact.kind == "generated_dir" and rel.startswith(fact.value.rstrip("/") + "/"):
                 st = self._state[fid]
-                self._hits.add(fid)
+                if self._attribute:
+                    self._owe(fid)  # proven waste once a build regenerates the directory
                 st.relevant, st.edited = True, True
                 st.writes += 1
                 st.files = st.files or []
@@ -577,31 +614,89 @@ class Observer:
         for fid, fact in self._facts.items():
             st = self._state[fid]
             kind = fact.kind
-            hit = False
+            if self._attribute:
+                self._attribute_call(fid, fact, st, norm, words, program, family, ok, text, missing)
             if kind == "command_alias":
-                hit = self._alias(st, fact, words, ok, text, missing)
+                self._alias(st, fact, words, ok, text, missing)
             elif kind == "test_command":
                 if family == "test":
                     self._test(st, fact, norm, ok, missing)
-                    hit = True
                 core = _base(fact.value)
                 inv = miners.test_invocation(norm)
                 if missing and (
                     (inv is not None and _base(inv) == core)
                     or _starts(_words(_strip_ci(norm)), _words(core))
                 ):
-                    st.contradicted = hit = True
+                    st.contradicted = True
             elif kind == "generated_dir":
                 if family == "build" and ok and st.edited and not _checker(norm):
-                    st.waste_event = hit = True  # the edited files were regenerated
+                    st.waste_event = True  # the edited files were regenerated
             elif kind == "requires_env":
-                hit = self._env(st, fact, cmd, norm, program, ok, text)
+                self._env(st, fact, cmd, norm, program, ok, text)
             elif kind == "build_first":
-                hit = self._build(st, fact, norm, program, ok, missing)
-            if hit:
-                self._hits.add(fid)
+                self._build(st, fact, norm, program, ok, missing)
         for m in miners.EXPORT.finditer(cmd):
             self._exported.update(miners.ASSIGN.findall(m.group(1)))
+
+    def _attribute_call(
+        self,
+        fid: str,
+        fact: Fact,
+        st: _State,
+        norm: str,
+        words: list[str],
+        program: str,
+        family: str,
+        ok: bool,
+        text: str,
+        missing: bool,
+    ) -> None:
+        """Transcript mode: record whether this Bash call shows the fact's targeted waste (class
+        docstring). Runs before the call updates the fact's state."""
+        kind = fact.kind
+        if kind == "command_alias":
+            subject, value = _words(fact.subject), _words(fact.value)
+            if _starts(words, value):
+                if ok:
+                    self._settle(fid)
+            elif not ok and (
+                _starts(words, subject)
+                or (words and posixpath.basename(words[0]) == posixpath.basename(subject[-1]))
+            ):
+                if miners.missing_program(words, miners.error_text(text)) is not None:
+                    self._owe(fid)
+        elif kind == "test_command":
+            if family != "test":
+                return
+            own = runner(norm) == runner(fact.value)
+            core = _base(fact.value)
+            inv = miners.test_invocation(norm)
+            exact = (inv is not None and _base(inv) == core) or _starts(
+                _words(_strip_ci(norm)), _words(core)
+            )
+            if not ok and missing and not exact:
+                self._waste(fid)  # a spelling that does not work here
+            elif not ok and not missing and not own:
+                self._owe(fid)  # another runner's failure: waste once the fact's runner passes
+            elif ok and own:
+                self._settle(fid)
+        elif kind == "requires_env":
+            if not ok and fact.value in miners.env_names(miners.error_text(text)):
+                self._waste(fid)
+        elif kind == "build_first":
+            if program == fact.value or _starts(words, _words(fact.value)):
+                return
+            if program != fact.subject:
+                return
+            if not ok:
+                self._owe(fid)
+            elif st.pending and st.built:
+                self._settle(fid)  # the build fixed the earlier failures
+            else:
+                self._owed.pop(fid, None)  # fixed without the build: not this fact's waste
+        elif kind == "generated_dir":
+            if family == "build" and ok and st.edited and not _checker(norm):
+                self._settle(fid)
 
     @staticmethod
     def _test(st: _State, fact: Fact, norm: str, ok: bool, missing: bool) -> None:
@@ -627,47 +722,43 @@ class Observer:
     @staticmethod
     def _alias(
         st: _State, fact: Fact, words: list[str], ok: bool, text: str, missing: bool
-    ) -> bool:
+    ) -> None:
         subject, value = _words(fact.subject), _words(fact.value)
         prog = posixpath.basename(subject[-1])
         if _starts(words, value):
             st.relevant = True
             if missing:
                 st.contradicted = True
-            return True
+            return
         if _starts(words, subject) or (words and posixpath.basename(words[0]) == prog):
             st.relevant = True
             if not ok and miners.missing_program(words, miners.error_text(text)) is not None:
                 st.waste = True
             elif ok and _starts(words, subject):
                 st.unneeded = True  # the subject itself works now
-            return True
-        return False
 
     def _env(
         self, st: _State, fact: Fact, cmd: str, norm: str, program: str, ok: bool, text: str
-    ) -> bool:
-        named = not ok and fact.value in miners.env_names(miners.error_text(text))
-        if named:
+    ) -> None:
+        if fact.value in miners.env_names(miners.error_text(text)) and not ok:
             st.waste = True
         if program != fact.subject and not _starts(_words(norm), _words(fact.subject)):
-            return named
+            return
         st.relevant = True
         if ok and fact.value not in miners.set_vars(cmd) | self._exported:
             st.contradicted = True
-        return True
 
     @staticmethod
-    def _build(st: _State, fact: Fact, norm: str, program: str, ok: bool, missing: bool) -> bool:
+    def _build(st: _State, fact: Fact, norm: str, program: str, ok: bool, missing: bool) -> None:
         if program == fact.value or _starts(_words(norm), _words(fact.value)):
             st.seen = True
             if missing:
                 st.contradicted = True
             if ok and st.pending:
                 st.built = True
-            return True
+            return
         if program != fact.subject:
-            return False
+            return
         st.relevant = True
         if ok and not st.seen:
             st.unneeded = True  # the tests passed before any build
@@ -676,7 +767,6 @@ class Observer:
             st.pending, st.built = True, False
         elif st.built:
             st.waste, st.pending, st.built = True, False, False
-        return True
 
     def _rechecks(self) -> set[str]:
         """At most ``GEN_RECHECKS`` generated_dir facts per fold: edited this session first,

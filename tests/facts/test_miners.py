@@ -899,22 +899,30 @@ def test_unknown_evidence_mode_rejected() -> None:
         lifecycle.Observer({}, PROJECT, evidence="disk")  # type: ignore[arg-type]
 
 
-def test_observer_transcript_mode_and_hits(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_observer_transcript_mode_attributes_targeted_waste(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _forbid_fs(monkeypatch)
     gen = Fact("generated_dir", "generated", "gen", frozenset())
     env = Fact("requires_env", "make run", "API_HOST", frozenset())
-    facts = {fact_id(gen): gen, fact_id(env): env}
+    alias = Fact("command_alias", "pytest", "python -m pytest", frozenset())
+    facts = {fact_id(f): f for f in (gen, env, alias)}
     obs = lifecycle.Observer(facts, PROJECT, evidence="transcript")
     log = Log().prompt()
-    log.call("Read", {"file_path": f"{PROJECT}/gen/a.go"}, "     1\t// DO NOT EDIT\n")
-    log.call("Edit", {"file_path": f"{PROJECT}/gen/a.go"})
-    log.bash("make run", "KeyError: 'API_HOST'", err=True)
-    log.bash("ls")
-    hits = []
+    log.call("Read", {"file_path": f"{PROJECT}/gen/a.go"}, "     1\t// DO NOT EDIT\n")  # 0
+    log.call("Edit", {"file_path": f"{PROJECT}/gen/a.go"})  # 1
+    log.bash("make run", "KeyError: 'API_HOST'", err=True)  # 2
+    log.bash("pytest -q", "command not found: pytest", err=True)  # 3
+    log.bash("python -m pytest -q", "1 failed", err=True)  # 4: red run of the spelling
+    log.bash("python -m pytest -q", "ok")  # 5
+    log.call("Edit", {"file_path": f"{PROJECT}/gen/b.go"})  # 6: never regenerated
     for call in _calls(log):
         obs.feed(call)
-        hits.append(obs.hits)
-    assert hits == [frozenset(), {fact_id(gen)}, {fact_id(env)}, frozenset()]
+    assert obs.waste_calls == {fact_id(env): (2,), fact_id(alias): (3,)}
+    assert obs.unsettled == {fact_id(gen)}
     res = obs.results()
     assert res[fact_id(gen)].checked and res[fact_id(gen)].generated is True
-    assert res[fact_id(env)].waste is True
+    full = lifecycle.Observer(facts, PROJECT)
+    for call in _calls(log):
+        full.feed(call)
+    assert full.waste_calls == {} and full.unsettled == frozenset()  # the fold never pays
