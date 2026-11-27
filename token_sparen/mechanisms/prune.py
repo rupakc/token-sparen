@@ -1159,7 +1159,7 @@ def cli_command(env: Mapping[str, str]) -> str:
     """The CLI as the user can run it: the plugin's own launcher when the plugin root is known
     (a plugin-only install has no ``token-sparen`` on PATH), else ``token-sparen``."""
     root = env.get("CLAUDE_PLUGIN_ROOT")
-    return f'python3 "{root}/hooks/run_cli.py"' if root else "token-sparen"
+    return f'python3 -I "{root}/hooks/run_cli.py"' if root else "token-sparen"
 
 
 def status_lines(

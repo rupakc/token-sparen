@@ -28,12 +28,30 @@ statusline `saved` segment uses the same net figure). Net can be zero or negativ
 - Claude Code: the minimum, 2.1.121, is declared in the plugin manifest; tested with 2.1.332.
   Replacing a tool result needs the `updatedToolOutput` hook feature, which older hosts do not
   have: hooks would run, but nothing would be trimmed.
-- `python3` >= 3.11 on your `PATH` (the hooks run `python3`). No other runtime dependencies.
-  macOS's system `python3` is often older than 3.11: check with `python3 --version`, and run
-  `/token-sparen doctor` (below) first if you are unsure. Hooks fail open, so an old Python means
-  token-sparen silently does nothing rather than breaking your session.
-- macOS and Linux. Windows: hooks need a `python3` on `PATH` (`token-sparen doctor` suggests
-  `py -3` or `python` if it is missing), and the statusline launcher is not supported yet.
+- Python >= 3.11 somewhere on your machine. No other runtime dependencies. The hooks start
+  `python3 -I`; if that `python3` is older (macOS ships 3.9, Ubuntu 22.04 3.10), the launcher
+  finds a newer Python and re-runs the hook on it: `TOKEN_SPAREN_PYTHON` (a path or command
+  name, if you set one), then `python3.15` ... `python3.11` and `python3` on your `PATH` (on
+  Windows also `py -3.15` ... `py -3.11` and `py -3`), then `uv python find ">=3.11"` if `uv`
+  is installed (with downloads disabled; set `TOKEN_SPAREN_NO_UV=1` to skip uv). A candidate is
+  used only if it reports version >= 3.11 itself. The choice is cached in
+  `~/.token-sparen/launcher.json`, so the search runs once (again when `python3` or the chosen
+  interpreter changes or disappears). The cost of the extra interpreter start is measured by
+  `tests/perf/test_launcher_reexec.py`: about 40-45 ms per hook call (p95) on the development
+  machine; you avoid it by putting Python >= 3.11 first on your `PATH` as `python3`.
+  `/token-sparen doctor` names the interpreter the hooks actually use and fails if there is none.
+- macOS and Linux. Windows: hooks need a `python3` on `PATH` to start (`token-sparen doctor`
+  suggests `py -3` or `python` if it is missing), and the statusline launcher is not supported yet.
+
+**Troubleshooting: "token-sparen is inactive" / nothing is ever trimmed.** The hooks found no
+Python >= 3.11. They keep your session working (fail open), show this warning at most once a day
+and log one line a day to `~/.token-sparen/logs/errors.jsonl` (`"kind": "launcher"`). Install
+Python 3.11 or newer (python.org, Homebrew, your package manager, or `uv python install 3.12`), or
+point `TOKEN_SPAREN_PYTHON` at one in the environment Claude Code is launched from (for example
+`export TOKEN_SPAREN_PYTHON=/opt/homebrew/bin/python3.12` in your shell profile; a value inside
+the current project is ignored, because a repository's committed settings can set environment
+variables). Then run `/token-sparen doctor`: its `hook python` line shows which interpreter the
+hooks will use.
 
 ## Install
 
@@ -48,7 +66,8 @@ the hooks are picked up.
 **Using the CLI as a plugin-only user.** You do not need the `token-sparen` command: ask Claude
 `/token-sparen` (stats), `/token-sparen doctor`, `/token-sparen disable`, and it runs the bundled CLI
 for you. To run it yourself in a terminal, call the bundled launcher from the plugin directory:
-`python3 <plugin dir>/hooks/run_cli.py <args>` (for example `... stats`). The plugin directory is the
+`python3 -I <plugin dir>/hooks/run_cli.py <args>` (for example `... stats`; it re-launches on a
+Python >= 3.11 the same way the hooks do). The plugin directory is the
 `installPath` entry for `token-sparen` in `~/.claude/plugins/installed_plugins.json`.
 
 Optional: the `token-sparen` console command (handy in your own terminal). It is **not published on PyPI yet**;
@@ -232,7 +251,13 @@ Everything stays on your machine, but some of it is plain text you should know a
     checkout**, its project key, the deny rules token-sparen wrote there and what it created,
     rules about to be written, and pending notices; kept here, beside the statusline record, so a
     changed git remote never loses track of a rule);
-  - `logs/errors.jsonl` and sampled `logs/latency.jsonl`;
+  - `launcher.json`: the hook launcher's cached interpreter choice (only used when your `python3`
+    is older than 3.11): per hashed key (plugin directory, `python3`, `PATH`,
+    `TOKEN_SPAREN_PYTHON`) the **path of the chosen Python**, how it was found and its
+    modification time, or that none was found (re-checked after 10 minutes or when a candidate
+    appears);
+  - `logs/errors.jsonl` and sampled `logs/latency.jsonl`; `logs/launcher-warned-<date>` (empty
+    marker: the "no Python >= 3.11" warning was already given today);
   - small `<file>.lock` files next to the JSON files above, used for file locking;
   - `projects/<key>/`: `decisions.jsonl` (per-decision log; keeps the first 500 characters of Bash
     commands, and for each trim an outcome line with its settled regret value and signal; it is

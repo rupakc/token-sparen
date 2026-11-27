@@ -10,6 +10,28 @@ Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones 
 and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`
 for M3); the package version stays `0.1.0.dev0` until v1.0.
 
+### Hook launcher finds a Python >= 3.11 (M5 Task 1)
+
+- Fixed: the hooks silently did nothing when the `python3` on `PATH` was older than 3.11 (macOS
+  ships 3.9). `hooks/run.py` now re-launches itself on a Python >= 3.11 found by
+  `hooks/_pyfind.py`: `TOKEN_SPAREN_PYTHON`, `python3.15` ... `python3.11`, `python3`, on Windows
+  `py -3.15` ... `py -3.11` / `py -3`, then `uv python find ">=3.11"` (never downloads;
+  `TOKEN_SPAREN_NO_UV=1` skips it). Each candidate must report >= 3.11 itself; the choice is
+  cached in `~/.token-sparen/launcher.json` and re-checked when `python3` or the chosen
+  interpreter changes or disappears. POSIX re-launches with `execv`, Windows with a child process
+  on inherited stdio (exit code passed through); `TOKEN_SPAREN_REEXEC` stops a second hop and is
+  removed before the hook runs. Measured cost: about 40-45 ms per hook call (p95,
+  `tests/perf/test_launcher_reexec.py`).
+- With no Python >= 3.11 the hooks stay a no-op, show one warning (`systemMessage`) and log one
+  `errors.jsonl` line (`"kind": "launcher"`) at most once a day.
+- `run_cli.py` (the `/token-sparen` CLI fallback) and the statusline launcher use the same search.
+- `doctor`: new `hook python` line names the interpreter the hooks actually use and how it was
+  found; it fails when there is none.
+- Hardening: hook commands, the CLI fallback and the re-launch run Python isolated (`-I`; the
+  re-launch also `-S`), so `PYTHONPATH`, `PYTHONSTARTUP` and the user site directory (which a
+  repository's committed settings could set) never load code into a hook. The skill's
+  pre-approved CLI commands now read `python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" ...`.
+
 ### M4 final-review fixes (offline evaluation validity)
 
 - Hill-climbing `--confirm` also runs the `compression` lane on each arm whose

@@ -1678,3 +1678,26 @@ and the two new issues they found.
   gate size; cost vs counterfactual re-send floors; 1M latch never cleared on a model switch;
   marker-exclusion bias (documented); "production policy" is the cold-start engine
   (documented); ledger path follows `TOKEN_SPAREN_HOME`.
+
+## 2026-11-27 M5 Task 1: hook launcher interpreter search
+- Hooks keep starting `python3` (now `python3 -I`); `hooks/run.py` re-launches on a Python
+  >= 3.11 found by `hooks/_pyfind.py` (Python 3.6 syntax): `TOKEN_SPAREN_PYTHON` (ignored inside
+  the current project) -> `python3.15`..`python3.11` -> `python3` -> Windows `py -3.15`..`-3.11`,
+  `py -3` -> `uv python find ">=3.11"` with `UV_PYTHON_DOWNLOADS=never`, run from the home dir
+  (no project `.venv` discovery), skipped with `TOKEN_SPAREN_NO_UV`. The ruling said `uv run
+  --python 3.11`; `uv python find` resolves the same interpreter once and caches its path, so
+  there is no uv start per hook. Every candidate is version-probed (with `-I`).
+- Cache `<state root>/launcher.json`: hashed key (plugin root, current interpreter realpath +
+  mtime, PATH, TOKEN_SPAREN_PYTHON, no-uv, platform) -> path + realpath/mtime stamp (re-checked
+  on each use); "none found" is kept 10 minutes and only while no named candidate changed. Used
+  only when the state root exists and is owned by the user.
+- Re-launch: POSIX `execv(path, [path, "-I", "-S", run.py, ...])` (`-S` saves ~10 ms; the
+  runtime is stdlib only), Windows `subprocess.run` with inherited stdio and the child's exit
+  code. `TOKEN_SPAREN_REEXEC=1` marks the child, is popped at start and blocks a second hop.
+- Nothing found: no-op plus one `systemMessage` warning and one `errors.jsonl` line
+  (`kind: launcher`) per day (O_EXCL day marker `logs/launcher-warned-<date>`).
+- Security ruling (2026-11-27): interpreters run isolated (`-I`) everywhere: hooks.json, the
+  skill's CLI fallback and the `prune restore` hint (`python3 -I .../run_cli.py`), re-launch,
+  probes, statusline (already `-I`).
+- Measured re-exec overhead (p95, end-to-end subprocess PostToolUse, dev machine): ~40-46 ms;
+  budget direct p95 + 40 ms x `TOKEN_SPAREN_PERF_FACTOR` (CI uses 1.5).
