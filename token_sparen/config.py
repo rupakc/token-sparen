@@ -392,6 +392,8 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     (("loopguard", "enabled"), "false_only", None),  # a project may switch the guard off
     (("loopguard", "min_k"), "max", (2.0, 1e12)),  # ... or make it more patient
     (("loopguard", "**"), "user_only", None),
+    (("output_style", "enabled"), "false_only", None),  # only the user opts in (spec 6.6)
+    (("output_style", "directive"), "user_only", None),
     # compression: keep more, compress less
     (("compression", "min_tokens"), "max", COUNT),
     (("compression", "min_saving_ratio"), "max", RATIO),

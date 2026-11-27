@@ -25,6 +25,16 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   that scans generated trees and archives (`--path`) and fails closed on `main` when its word
   list is missing (`--require-private-words`).
 
+### M5
+
+- Output-style directive (spec 6.6, high tier, static): `[output_style] enabled = false`,
+  `directive = "concise"`. When the user opts in, SessionStart adds one line, `[token-sparen
+  output style] Be concise in prose. Never shorten code, commands, file paths, error messages or
+  quoted tool output.`, once per context epoch (startup, clear, compact; never resume), counted
+  as injected tokens. A project file or a `TOKEN_SPAREN_*` variable may only switch it off; the directive is user-only; an
+  unknown name means off and is logged once. Off by default in v1.0; E4 decides whether the
+  README recommends the opt-in.
+
 ### M4 final-review fixes (offline evaluation validity)
 
 - Hill-climbing `--confirm` also runs the `compression` lane on each arm whose

@@ -63,6 +63,16 @@ def main() -> int:
         missing += [f for f in REQUIRED_FILES if f not in names]
         if missing:
             sys.exit(f"FAIL wheel is missing: {missing}")
+        sys.path.insert(0, str(ROOT))
+        try:
+            from token_sparen import __version__
+        finally:
+            sys.path.pop(0)
+        (meta_name,) = [n for n in names if n.endswith(".dist-info/METADATA")]
+        meta = zipfile.ZipFile(wheel).read(meta_name).decode("utf-8")
+        found = re.search(r"^Version: (.+)$", meta, re.MULTILINE)
+        if not found or found.group(1).strip() != __version__:
+            sys.exit(f"FAIL wheel METADATA version {found and found.group(1)} != {__version__}")
         print(f"ok wheel {wheel.name}: {len(_subpackages())} packages + data present")
         env_dir = tmp / "venv"
         venv.EnvBuilder(with_pip=True).create(env_dir)

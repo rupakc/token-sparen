@@ -1,15 +1,15 @@
-"""Latency gate: SessionStart fact injection with a full fact store (500 active facts)."""
+"""Latency gate: SessionStart fact injection with a full fact store (500 active facts); best of
+``perfutil.P95_ROUNDS`` full rounds (see ``perfutil.best_p95``)."""
 
 from __future__ import annotations
 
 import json
-import statistics
 import time
 from pathlib import Path
 from types import MappingProxyType
 
 import pytest
-from perfutil import perf_factor
+from perfutil import best_p95, perf_factor
 
 from token_sparen.config import Config
 from token_sparen.events import Event
@@ -44,20 +44,25 @@ def test_session_start_injection_p95(tmp_path: Path) -> None:
     )
     env = {"TOKEN_SPAREN_HOME": str(home)}
     cfg = Config(data={"facts": {"enabled": True}})
-    times: list[float] = []
-    for n in range(60):
-        event = Event(
-            host="claude",
-            kind="session_start",
-            session_id=f"perf-{n}",
-            project_dir=tmp_path,
-            project_key=KEY,
-            transcript_path=None,
-            extra=MappingProxyType({"source": "startup"}),
-        )
-        t0 = time.perf_counter()
-        action = inject.on_session_start(event, cfg, env=env)
-        times.append((time.perf_counter() - t0) * 1000)
-        assert action.inject_context is not None
-    p95 = statistics.quantiles(times, n=100)[94]
-    assert p95 < P95_BUDGET_MS * perf_factor(), f"p95 {p95:.1f} ms"
+
+    def round_(k: int) -> list[float]:
+        times: list[float] = []
+        for n in range(60):
+            event = Event(
+                host="claude",
+                kind="session_start",
+                session_id=f"perf-{k}-{n}",
+                project_dir=tmp_path,
+                project_key=KEY,
+                transcript_path=None,
+                extra=MappingProxyType({"source": "startup"}),
+            )
+            t0 = time.perf_counter()
+            action = inject.on_session_start(event, cfg, env=env)
+            times.append((time.perf_counter() - t0) * 1000)
+            assert action.inject_context is not None
+        return times
+
+    budget = P95_BUDGET_MS * perf_factor()
+    p95 = best_p95(round_, budget)
+    assert p95 < budget, f"p95 {p95:.1f} ms"

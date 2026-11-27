@@ -18,12 +18,15 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def test_version_matches_pyproject() -> None:
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert token_sparen.__version__ == data["project"]["version"]
+    assert "version" not in data["project"]
+    assert "version" in data["project"]["dynamic"]
+    assert data["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "token_sparen.__version__"}
+    assert int(data["build-system"]["requires"][0].split(">=")[1]) >= 77
 
 
 def test_cli_version_prints(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--version"]) == 0
-    assert "0.1.0.dev0" in capsys.readouterr().out
+    assert token_sparen.__version__ in capsys.readouterr().out
 
 
 def test_cli_no_args_returns_zero(capsys: pytest.CaptureFixture[str]) -> None:

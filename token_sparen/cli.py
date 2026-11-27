@@ -630,6 +630,7 @@ def _doctor(args: argparse.Namespace) -> int:
     def add(mark: str, name: str, detail: str) -> None:
         results.append((mark, name, detail))
 
+    add(_OK, "token-sparen", __version__)
     ver = sys.version_info
     ok = ver >= (3, 11)
     add(_OK if ok else _BAD, "python", f"{ver.major}.{ver.minor}.{ver.micro} (need >= 3.11)")
