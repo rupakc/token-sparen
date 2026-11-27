@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import os
 import random
@@ -13,7 +14,7 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import IO, Any
 
-from token_sparen.config import log_error
+from token_sparen.config import log_error, private_mkdir
 
 LOCK_TIMEOUT_S = 2.0
 _POLL_S = 0.001  # first lock retry; doubles per retry up to _POLL_MAX_S
@@ -69,7 +70,7 @@ def _unlock(fh: IO[bytes]) -> None:
 def locked(path: Path, timeout: float | None = None) -> Iterator[None]:
     """Exclusive lock on ``<name>.lock``; StoreBusy after ``timeout`` (default 2 s)."""
     lock_path = path.with_name(path.name + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(lock_path.parent)
     with lock_path.open("a+b") as fh:
         deadline = time.monotonic() + (LOCK_TIMEOUT_S if timeout is None else timeout)
         delay = _POLL_S
@@ -87,12 +88,12 @@ def locked(path: Path, timeout: float | None = None) -> Iterator[None]:
 def _load(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     """Return (data, None), (None, None) when missing, or (None, reason) when corrupt."""
     try:
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_bytes()
     except FileNotFoundError:
         return None, None
     try:
-        data = json.loads(text)
-    except ValueError as exc:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError as exc:  # UnicodeDecodeError included: a non-UTF-8 file is corrupt
         return None, str(exc)
     if not isinstance(data, dict):
         return None, "top-level JSON value is not an object"
@@ -106,7 +107,7 @@ def read(
     data, bad = _load(path)
     if bad is not None:
         log_error(os.environ if env is None else env, "jsonstore", f"{path}: corrupt ({bad})")
-    return dict(default) if data is None else data
+    return copy.deepcopy(default) if data is None else data
 
 
 def _quarantine(path: Path, reason: str, env: Mapping[str, str] | None) -> None:
@@ -151,7 +152,7 @@ def update(
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Read-modify-write under an exclusive cross-process lock."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(path.parent)
     with locked(path, timeout):
         data = read_locked(path, default, env)
         new = fn(data)
@@ -167,10 +168,10 @@ def read_locked(
     data, bad = _load(path)
     if bad is not None:
         _quarantine(path, bad, env)
-    return dict(default) if data is None else data
+    return copy.deepcopy(default) if data is None else data
 
 
 def write_locked(path: Path, data: dict[str, Any]) -> None:
     """Atomic write; call only while holding ``locked(path)``."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(path.parent)
     _write_atomic(path, data)

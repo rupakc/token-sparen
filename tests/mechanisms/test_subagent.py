@@ -9,6 +9,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from userconf import to_user_config
+
 from token_sparen.config import Config, load_config
 from token_sparen.events import Event, ToolCall
 from token_sparen.learn.policy import SUBAGENT_BRIEF, StaticPolicy
@@ -131,6 +133,7 @@ def _agent_post(tmp_path: Path, response: Any, *, widen: bool = True) -> dict[st
     }
     if widen:
         env["TOKEN_SPAREN_COMPRESSION__ALLOW_CTYPES"] = "text"
+    env = to_user_config(env)  # widening settings live in the user's file (env only narrows)
     (tmp_path / "proj").mkdir(exist_ok=True)
     payload = {
         "session_id": "s",

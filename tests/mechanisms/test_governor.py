@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
+from userconf import to_user_config
 
 from token_sparen.config import Config, load_config
 from token_sparen.events import Event, EventKind, SessionCtx, ToolCall
@@ -33,7 +34,7 @@ def _frozen_clock(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatc
 def _env(tmp_path: Path, **over: str) -> dict[str, str]:
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
     env.update(over)
-    return env
+    return to_user_config(env)  # governor budgets are user-only: the user's file, not env
 
 
 def _cfg(tmp_path: Path, **over: str) -> Config:
@@ -542,6 +543,7 @@ def test_hard_stop_via_entry(tmp_path: Path) -> None:
         "TOKEN_SPAREN_GOVERNOR__HARD_STOP": "true",
         "TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS": "5000",
     }
+    env = to_user_config(env)  # user-only settings: the user's file, not env
     (tmp_path / "proj").mkdir(exist_ok=True)
     payload = {
         "session_id": "s-h",

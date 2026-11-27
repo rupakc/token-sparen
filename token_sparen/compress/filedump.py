@@ -26,7 +26,8 @@ and best-effort: a false positive leaves an output untouched, a false negative m
 Fix round 3 adds: ``kubectl|oc exec POD CMD`` without ``--``, ``oc rsh``, ``docker-compose``,
 ``fd -x|-X CMD`` (implicit path operand), nsenter, flock (``-c``), setsid, taskset, sshpass,
 ``sg -c``, ``vagrant ssh -c``, ``gcloud compute ssh --command``, ``multipass exec``, lima,
-``parallel CMD :::``; ``docker|kubectl cp SRC -|/dev/stdout``, ``hg cat``, ``openssl -in`` to
+``parallel CMD :::``, chrt, numactl, firejail, unshare, ``ssh host <<EOF`` and ``<<EOF |
+python`` here-documents; ``docker|kubectl cp SRC -|/dev/stdout``, ``hg cat``, ``openssl -in`` to
 stdout, iconv, brotli/lz4/lzma, zless-likes, ``dos2unix f /dev/stdout``; php ``-r``
 ``file_get_contents``/``fopen``, lua ``io.open``, awk ``getline < f``; here-document bodies of
 interpreters (a shell body is classified, other bodies searched for reads; a ``cat <<EOF`` body is
@@ -141,13 +142,21 @@ _GREP_ARGS = frozenset(
     {"-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "-g", "-t", "-T", "-M", "-E", "-j"}
     | {"--regexp", "--file", "--max-count", "--glob", "--type", "--type-not", "--context"}
 )
+# grep and its z/bz/xz variants: -E, -T, -M, -j, -g, -t are flags or absent, not value options
+_GNU_GREP_ARGS = frozenset(
+    {"-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D"}
+    | {"--regexp", "--file", "--max-count", "--context"}
+)
 _GREP_NOT_CONTENT = frozenset(
     {"-l", "-L", "-c", "-q", "-o", "--count", "--files-with-matches", "--files-without-match"}
     | {"--quiet", "--only-matching", "--files", "--count-matches"}
 )
 _MATCH_ALL = frozenset({"", ".", "^", "$", ".*", "^.*$", "^.*"})
 _HEREDOC_LINE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-_HEREDOC_INTERP = re.compile(r"\b(python[\d.]*|node|deno|ruby|perl|php|lua|bash|sh|zsh|dash|ksh)\b")
+_INTERPS = r"(python[\d.]*|node|deno|ruby|perl|php|lua|bash|sh|zsh|dash|ksh)\b"
+_HEREDOC_INTERP = re.compile(rf"\b{_INTERPS}")
+_HEREDOC_SSH = re.compile(r"(?:^|[\s;&|(])ssh\s")  # `ssh host <<EOF`: the body runs as a shell
+_PIPED_INTERP = re.compile(rf"{_INTERPS}")  # `<<EOF | python` (a program's base name)
 _PS_DUMP = frozenset({"get-content", "gc", "type"})
 _PS_READ = re.compile(r"\[(?:system\.)?io\.file\]::read", re.IGNORECASE)
 _CODE_READS = re.compile(
@@ -207,6 +216,16 @@ _DOCKER_ARGS = frozenset(
         "--project-name",
         "--index",
     }
+)
+# value options (short and long; getopt_long also accepts `--opt VALUE`)
+_NUMACTL_ARGS = frozenset(
+    {"-N", "-m", "-C", "-p", "-i", "-P", "-w"}
+    | {"--cpunodebind", "--membind", "--physcpubind", "--interleave", "--preferred"}
+    | {"--preferred-many", "--weighted-interleave"}
+)
+_UNSHARE_ARGS = frozenset(
+    {"-S", "-G", "-R", "-w", "--setuid", "--setgid", "--root", "--wd", "--map-user"}
+    | {"--map-group", "--map-users", "--map-groups", "--propagation", "--setgroups"}
 )
 _CONTAINERS = frozenset({"docker", "podman", "nerdctl"})
 _KUBE_ARGS = frozenset({"-c", "--container", "-n", "--namespace", "-f", "--filename", "--context"})
@@ -435,6 +454,12 @@ def _unwrap(words: list[str], depth: int) -> tuple[list[str], bool] | str | None
             if rest[:1] in (["-c"], ["--command"]):
                 return rest[1] if len(rest) > 1 else None
             words = rest
+        elif prog == "chrt":
+            words = _skip_opts(words[1:], frozenset({"-T", "-P", "-D"}))[1:]  # drop the priority
+        elif prog == "numactl":
+            words = _skip_opts(words[1:], _NUMACTL_ARGS)
+        elif prog in ("firejail", "unshare"):
+            words = _skip_opts(words[1:], _UNSHARE_ARGS if prog == "unshare" else frozenset())
         elif prog == "taskset":
             words = _skip_opts(words[1:], frozenset())[1:]  # drop the mask / cpu list
         elif prog == "sshpass":
@@ -503,6 +528,7 @@ def _match_all(prog: str, words: list[str]) -> bool:
     """A search whose pattern matches every line (``''``, ``.``, ``^``, ``$``) or ``rg
     --passthru``, with a file or directory operand: it prints whole files."""
     args = words[1:]
+    takes = _GREP_ARGS if prog in ("rg", "ag", "ack") else _GNU_GREP_ARGS
     if any(a in _GREP_NOT_CONTENT for a in args):
         return False
     if any(
@@ -522,7 +548,7 @@ def _match_all(prog: str, words: list[str]) -> bool:
             patterns.append(rest[0])
             rest = rest[1:]
         elif not only and a.startswith("-") and len(a) > 1:
-            if a in _GREP_ARGS and rest:
+            if a in takes and rest:
                 rest = rest[1:]
         else:
             operands.append(a)
@@ -538,6 +564,16 @@ def _awk_reads(words: list[str]) -> bool:
     """awk program text that reads a file itself (``getline < "f"``)."""
     rest = _skip_opts(words[1:], frozenset({"-F", "-v"}))
     return bool(rest) and bool(_CODE_READS.search(rest[0]))
+
+
+def _piped_interp(tail: str) -> re.Match[str] | None:
+    """An interpreter in any later pipe stage of a here-document's line (``<<EOF | sudo
+    python3``, ``| sed ... | python3``), wrappers and assignments peeled."""
+    for stage in tail.split("|")[1:]:
+        words = fam._strip(stage.split())
+        if words and (m := _PIPED_INTERP.match(os.path.basename(words[0]))) is not None:
+            return m
+    return None
 
 
 def _heredocs(cmd: str) -> tuple[str, bool]:
@@ -562,10 +598,12 @@ def _heredocs(cmd: str) -> tuple[str, bool]:
             i += 1
         i += 1  # the delimiter line
         text = "\n".join(body)
-        interp = _HEREDOC_INTERP.search(line[: m.start()])
-        if interp is None:
+        head, tail = line[: m.start()], line[m.end() :]
+        interp = _HEREDOC_INTERP.search(head) or _piped_interp(tail)
+        ssh = _HEREDOC_SSH.search(head) is not None  # ssh only decides that the body is read
+        if interp is None and not ssh:
             continue
-        name = interp.group(1)
+        name = interp.group(1) if interp is not None else "sh"
         if name in fam._SHELLS:
             reads = reads or _any(text, MAX_DEPTH - 1)
         else:

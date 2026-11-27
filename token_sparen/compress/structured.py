@@ -74,6 +74,31 @@ def _survey(root: Any) -> tuple[set[int], dict[int, int]]:
     return errs, lines
 
 
+class _RawNum(float):
+    """A JSON number that renders as written: re-encoding a float rounds it (``1e400`` would
+    become ``Infinity``), and the agent must see the value the tool printed."""
+
+    __slots__ = ("raw",)
+    raw: str
+
+    def __new__(cls, raw: str) -> _RawNum:
+        obj = super().__new__(cls, raw)
+        obj.raw = raw
+        return obj
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """A JSON object; a repeated key raises (a dict would silently keep only the last value)."""
+    obj = dict(pairs)
+    if len(obj) != len(pairs):
+        raise ValueError("duplicate object key")
+    return obj
+
+
+def _parse_json(text: str) -> Any:
+    return json.loads(text, parse_float=_RawNum, object_pairs_hook=_unique_object)
+
+
 class _JsonRender:
     def __init__(self, k: int, errs: set[int], lines: dict[int, int]) -> None:
         self.k = k
@@ -93,6 +118,8 @@ class _JsonRender:
             self.changed = True
             cut = json_dumps(v[:MAX_JSON_STRING])[:-1]
             return f'{cut}…(+{len(v) - MAX_JSON_STRING} chars)"'
+        if isinstance(v, _RawNum):
+            return v.raw
         return json_dumps(v)
 
     def _marker(self, pad: str, text: str) -> None:
@@ -180,7 +207,7 @@ class JsonCompressor:
         if len(text) * 4 > cap and len(text.encode("utf-8", "surrogatepass")) > cap:
             return _TEXT.compress(text, level, ctx)
         try:
-            doc = json.loads(text)
+            doc = _parse_json(text)
             if not isinstance(doc, dict | list):
                 return _TEXT.compress(text, level, ctx)
             errs, lines = _survey(doc)

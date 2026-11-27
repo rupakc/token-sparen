@@ -216,6 +216,10 @@ def _pplx_results(doc: Any) -> tuple[str, list[dict[str, Any]]] | None:
     return key, found
 
 
+def _indent(line: str) -> str:
+    return f"    {line}" if line else ""
+
+
 def _scalar(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
@@ -245,11 +249,14 @@ class PplxCompressor:
             of = total if isinstance(total, int) and not isinstance(total, bool) else len(results)
             out.append(f"pplx: showing {len(show)} of {of} hits")
         if isinstance(doc, dict):
-            out.extend(
-                f"{name}: {_scalar(v)}"
-                for name, v in doc.items()
-                if name != "total" and (v is None or isinstance(v, str | int | float | bool))
-            )
+            for name, v in doc.items():
+                if (name == "total" and key == "hits") or not (
+                    v is None or isinstance(v, str | int | float | bool)
+                ):
+                    continue
+                first, *rest = _scalar(v).splitlines() or [""]
+                out.append(f"{name}: {first}")
+                out.extend(_indent(ln) for ln in rest)  # a value never starts a line of its own
         for i in show:
             out.extend(self._render(i + 1, results[i], level, ctx))
         shown = set(show)
@@ -295,7 +302,7 @@ class PplxCompressor:
         page = res.get("text")
         if isinstance(page, str) and page:
             squeezed = _FALLBACK.compress(page, level, ctx).text
-            lines.extend(f"    {ln}" for ln in squeezed.rstrip("\n").split("\n"))
+            lines.extend(_indent(ln) for ln in squeezed.rstrip("\n").split("\n"))
         return lines
 
 

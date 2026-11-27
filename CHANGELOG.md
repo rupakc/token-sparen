@@ -31,6 +31,40 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   re-launch also `-S`), so `PYTHONPATH`, `PYTHONSTARTUP` and the user site directory (which a
   repository's committed settings could set) never load code into a hook. The skill's
   pre-approved CLI commands now read `python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" ...`.
+### Security and privacy review (M6)
+
+- `TOKEN_SPAREN_*` environment variables may only narrow, like a project's
+  `token-sparen.toml` (a repository's committed Claude Code settings can set environment
+  variables); an ignored value is logged once. Widen in `~/.token-sparen/config.toml` or with
+  `token-sparen config set`. `learn.optin.*` and `extensions.allow_override` are read from
+  `~/.token-sparen/config.toml` only. Migration: user-only keys are ignored from the environment
+  even when they would narrow (`LEARN__ENABLED`, `GOVERNOR__HARD_STOP`, `PRUNE__ENABLED`,
+  `ADAPTER__LATENCY_SAMPLE_RATE`, ...); set them in `config.toml`, or use
+  `TOKEN_SPAREN_DISABLE=1`, `TOKEN_SPAREN_GOVERNOR__ENABLED=false` or
+  `TOKEN_SPAREN_PRUNE__ALLOW=false`.
+- Directories under `~/.token-sparen/` and `<project>/.token-sparen/` are owner-only (0700 on
+  POSIX): created so, and older looser ones of yours are tightened on the next write; a
+  directory owned by someone else (or a link that appeared while creating) is refused.
+- Recovery files are never written, read or pruned through a symbolic link (directories or the
+  `<id>.txt` file itself; new files are written `O_EXCL`/`O_NOFOLLOW` and renamed into place),
+  and `token-sparen show` serves only outputs this install saved for this checkout (one empty
+  marker file per id under `~/.token-sparen/recovery/<hash>/`); a file a repository planted at
+  an id is replaced by the real output.
+- Threat model in `docs/user/privacy-security.md`; `SECURITY.md` states supported versions and
+  scope. CI: actions pinned by commit SHA, checkouts without a persisted token, a `supply-chain`
+  job (pinning and least-privilege tests, advisory `pip-audit`), Dependabot, and a deny-list
+  that scans generated trees and archives (`--path`) and fails closed on `main` when its word
+  list is missing (`--require-private-words`).
+
+### M5
+
+- Output-style directive (spec 6.6, high tier, static): `[output_style] enabled = false`,
+  `directive = "concise"`. When the user opts in, SessionStart adds one line, `[token-sparen
+  output style] Be concise in prose. Never shorten code, commands, file paths, error messages or
+  quoted tool output.`, once per context epoch (startup, clear, compact; never resume), counted
+  as injected tokens. A project file or a `TOKEN_SPAREN_*` variable may only switch it off; the directive is user-only; an
+  unknown name means off and is logged once. Off by default in v1.0; E4 decides whether the
+  README recommends the opt-in.
 
 ### M4 final-review fixes (offline evaluation validity)
 

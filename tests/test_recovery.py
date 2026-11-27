@@ -93,6 +93,30 @@ def test_prune_by_bytes_and_ignores_foreign(tmp_path: Path) -> None:
     assert (out / "sub").is_dir()
 
 
+def test_prune_count_ignores_files_the_byte_cap_removed(tmp_path: Path) -> None:
+    refs = [save_full(tmp_path, s) for s in ("a" * 100, "b" * 100, "c" * 10, "d" * 10)]
+    now = time.time()
+    for i, r in enumerate(refs):
+        os.utime(r.path, (now - i,) * 2)  # refs[0] newest
+    prune_outputs(tmp_path, max_files=2, max_bytes=150)
+    assert [r.path.exists() for r in refs] == [True, False, True, False]
+
+
+def test_prune_removes_stale_tmp_files_only(tmp_path: Path) -> None:
+    ref = save_full(tmp_path, "x")
+    out = _outputs(tmp_path)
+    stale = out / f"{ref.id}.txt.tmp-123-deadbeef"
+    fresh = out / f"{ref.id}.txt.tmp-456-cafebabe"
+    for p in (stale, fresh):
+        p.write_text("partial", encoding="utf-8")
+    old = time.time() - 2 * 3600
+    os.utime(stale, (old, old))
+    prune_outputs(tmp_path)
+    assert not stale.exists()
+    assert fresh.exists()  # may be a write in flight
+    assert ref.path.exists()
+
+
 def test_prune_missing_dir_is_noop(tmp_path: Path) -> None:
     prune_outputs(tmp_path)
 

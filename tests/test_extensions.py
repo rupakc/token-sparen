@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from userconf import write_user_config
 
 from token_sparen import config as config_mod
 from token_sparen import extensions
@@ -23,7 +24,7 @@ from token_sparen.compress import (
     TextCompressor,
     registry,
 )
-from token_sparen.config import Config, load_config
+from token_sparen.config import SESSION_KEY, Config, load_config
 from token_sparen.learn import policy
 from token_sparen.testing import conformance
 
@@ -238,10 +239,16 @@ def test_override_flag_lets_extension_replace_builtin(env: dict[str, str]) -> No
     assert comp.compress("a\nb", LEVEL, CTX).text == "a|ext"
 
 
-def test_override_flag_from_env(env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_override_flag_never_from_env(env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """A repository's committed Claude Code settings can set environment variables."""
     monkeypatch.setenv("TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE", "true")
     env = {**env, "TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE": "true"}
-    assert _load(env).allow_override is True
+    assert _load(env).allow_override is False
+
+
+def test_override_flag_never_from_session(env: dict[str, str]) -> None:
+    session = {SESSION_KEY: {"extensions": {"allow_override": True}}}
+    assert _load(env, load_config(_proj(env), env, session=session)).allow_override is False
 
 
 @posix_only
@@ -502,11 +509,11 @@ def test_runtime_rejects_error_line_only_inside_longer_line(env: dict[str, str])
 
 
 @pytest.mark.parametrize("value", ["1", "true", "TRUE"])
-def test_override_env_values(
+def test_override_env_values_ignored(
     env: dict[str, str], monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
     monkeypatch.setenv("TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE", value)
-    assert _load({**env, "TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE": value}).allow_override is True
+    assert _load({**env, "TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE": value}).allow_override is False
 
 
 def test_override_user_file_int_one(env: dict[str, str]) -> None:
@@ -725,12 +732,11 @@ def test_hook_uses_trusted_override(env: dict[str, str], monkeypatch: pytest.Mon
     body = "lines[0] + ' [ext]'"
     path, _ = _dropin(_home(env) / "extensions", handles=("text", "log"), body=body)
     extensions.trust(path, _home(env), env)
-    monkeypatch.setenv("TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE", "true")
-    run_env = {
-        **env,
-        "TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE": "true",
-        "TOKEN_SPAREN_COMPRESSION__ALLOW_CTYPES": "text",  # plain text is opt-in
-    }
+    write_user_config(
+        _home(env),
+        {"extensions": {"allow_override": True}, "compression": {"allow_ctypes": ["text"]}},
+    )  # both widen: the user's own file (plain text is opt-in)
+    run_env = dict(env)
     text = "".join(f"plain line number {i} with some padding words here\n" for i in range(3000))
     cfg = load_config(_proj(env), run_env)
     out, info = compress_text(

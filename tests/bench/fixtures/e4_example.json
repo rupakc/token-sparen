@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "source": "E4",
+  "suite": "swe-bench-verified-arm64-pool",
+  "stage": "confirmation",
+  "campaign": "synthetic-example",
+  "n_tasks": 120,
+  "seeds": 3,
+  "model": "claude-example-model",
+  "claude_code_version": "2.1.121",
+  "date": {"from": "2027-01-04", "to": "2027-02-12"},
+  "plugin_version": "1.0.0",
+  "plugin_hash": "070aa9e39df77cf6c758c3c4d621ee27564b69fa932841b377b7fe5405c8c200",
+  "harness_commit": "0123456789abcdef0123456789abcdef01234567",
+  "script": "python -m bench report --stage confirmation --campaign synthetic-example --publish",
+  "grader": {"name": "swebench", "version": "5.0.2", "arch": "arm64"},
+  "arms": [
+    {"name": "baseline", "kind": "baseline", "pin": null},
+    {"name": "token-sparen", "kind": "plugin", "pin": "v1.0.0-rc1"}
+  ],
+  "exclusions": [
+    {"instance_id": "django__django-00000", "reason": "gold patch did not resolve twice locally"}
+  ],
+  "power": {"required_tasks": 115, "seeds": 3, "achieved_power": 0.82, "verdict": "powered"},
+  "results": [
+    {
+      "metric": "resolved_diff_pp",
+      "arm": "token-sparen",
+      "baseline": "baseline",
+      "estimate": -0.8,
+      "ci95": [-3.9, 2.4],
+      "n": 120,
+      "method": "BCa task-cluster bootstrap, two-sided 95%",
+      "confirmatory": true,
+      "margin_pp": -5,
+      "non_inferior": true
+    },
+    {
+      "metric": "cost_ratio_median",
+      "arm": "token-sparen",
+      "baseline": "baseline",
+      "estimate": 0.81,
+      "ci95": [0.74, 0.88],
+      "n": 120,
+      "method": "paired BCa bootstrap of the median per-task ratio",
+      "confirmatory": false
+    },
+    {
+      "metric": "resolved_rate",
+      "arm": "baseline",
+      "baseline": null,
+      "estimate": 0.52,
+      "ci95": [0.45, 0.59],
+      "n": 120,
+      "method": "BCa task-cluster bootstrap",
+      "confirmatory": false
+    },
+    {
+      "metric": "tokens_cache_read_median",
+      "arm": "token-sparen",
+      "baseline": "baseline",
+      "estimate": 0.77,
+      "ci95": [0.70, 0.85],
+      "n": 120,
+      "method": "paired BCa bootstrap of the median per-task ratio",
+      "confirmatory": false
+    },
+    {
+      "metric": "turns_median",
+      "arm": "token-sparen",
+      "baseline": null,
+      "estimate": 31,
+      "ci95": [28, 34],
+      "n": 120,
+      "method": "BCa bootstrap of the median",
+      "confirmatory": false
+    },
+    {
+      "metric": "wall_s_median",
+      "arm": "baseline",
+      "baseline": null,
+      "estimate": 640.5,
+      "ci95": [590.0, 702.0],
+      "n": 120,
+      "method": "BCa bootstrap of the median",
+      "confirmatory": false
+    }
+  ],
+  "gate": {"verdict": "passed", "reasons": []},
+  "style_rule": "not_run"
+}

@@ -33,6 +33,7 @@ from token_sparen.mechanisms import (
     governor,
     guards,
     loopguard,
+    outputstyle,
     prune,
     read_dedupe,
     subagent,
@@ -199,6 +200,11 @@ def _on_facts(event: Event, cfg: Config) -> Action:
     return inject.on_session_start(event, cfg, env=HOOK_ENV.get())
 
 
+def _on_output_style(event: Event, cfg: Config) -> Action:
+    """The opt-in output-style directive (spec 6.6; off by default)."""
+    return outputstyle.on_session_start(event, cfg, env=HOOK_ENV.get())
+
+
 def _on_breaker_notice(event: Event, cfg: Config) -> Action:
     env = HOOK_ENV.get()
     msgs = breaker.notices(event.project_key, state_home(env), env)
@@ -293,6 +299,7 @@ for _kind, _fn in (
     ("session_start", _on_prune_start),  # before _on_session_active records this session
     ("session_start", _on_session_active),
     ("session_start", _on_facts),
+    ("session_start", _on_output_style),
     ("session_start", _on_fold_pending),
     ("session_start", _on_breaker_notice),  # after the fold: a trip it causes is shown now
     ("session_end", _on_regret),  # settles every open regret window

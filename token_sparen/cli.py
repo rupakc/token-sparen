@@ -21,8 +21,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from token_sparen import __version__
-from token_sparen.config import Config, load_config, state_home
+from token_sparen import __version__, recovery
+from token_sparen.config import Config, load_config, private_mkdir, state_home
 from token_sparen.events import ToolCall
 from token_sparen.store import jsonstore, keycache, paths, session
 
@@ -201,11 +201,11 @@ def _emit(text: str) -> None:
 def _show(args: argparse.Namespace) -> int:
     if not _ID_RE.fullmatch(args.id):
         raise CliError(f"invalid id {args.id!r}: expected 12 lowercase hex characters")
-    path = _project_dir(args) / ".token-sparen" / "outputs" / f"{args.id}.txt"
-    try:
-        data = path.read_bytes()
-    except OSError:
-        print(f"token-sparen: no saved output {args.id} in {path.parent}", file=sys.stderr)
+    project = _project_dir(args)
+    data = recovery.read_full(project, args.id, os.environ)
+    if data is None:  # missing, a link, or not written by this install for this checkout
+        where = project / ".token-sparen" / "outputs"
+        print(f"token-sparen: no saved output {args.id} in {where}", file=sys.stderr)
         return 1
     text = data.decode("utf-8", errors="surrogateescape")
     _record_recovery_read(args, text)
@@ -584,9 +584,14 @@ def _round_trip(root: Path) -> tuple[bool, str]:
         env.update(
             TOKEN_SPAREN_HOME=str(Path(tmp) / "home"),
             CLAUDE_PROJECT_DIR=str(project),
-            TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS="5000",
+        )
+        # widening settings come from the (temporary) user file: TOKEN_SPAREN_* may only narrow
+        private_mkdir(Path(tmp) / "home")
+        (Path(tmp) / "home" / "config.toml").write_text(
+            "[adapter]\nlatency_budget_ms = 5000\n"
             # a pipeline check: the static arm always compresses, a cold learner may not
-            TOKEN_SPAREN_LEARN__ENABLED="false",
+            "[learn]\nenabled = false\n",
+            encoding="utf-8",
         )
         try:
             proc = subprocess.run(  # noqa: S603
@@ -674,6 +679,7 @@ def _doctor(args: argparse.Namespace) -> int:
     def add(mark: str, name: str, detail: str) -> None:
         results.append((mark, name, detail))
 
+    add(_OK, "token-sparen", __version__)
     ver = sys.version_info
     ok = ver >= (3, 11)
     add(_OK if ok else _BAD, "python", f"{ver.major}.{ver.minor}.{ver.micro} (need >= 3.11)")
@@ -684,7 +690,7 @@ def _doctor(args: argparse.Namespace) -> int:
         add(_WARN, "min_tokens", "; ".join(floors))
     home = state_home(env)
     try:
-        home.mkdir(parents=True, exist_ok=True)
+        private_mkdir(home)
         probe = home / f".doctor-{os.getpid()}"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
@@ -734,7 +740,7 @@ def _write_launcher() -> Path:
     text = LAUNCHER_TEMPLATE.read_text(encoding="utf-8")
     text = text.replace(_FALLBACK_LINE, f"FALLBACK_ROOT={shlex.quote(str(PACKAGE_ROOT))}", 1)
     dest = _launcher_path()
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(dest.parent)
     tmp = dest.with_name(dest.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.chmod(tmp, 0o755)
@@ -1168,7 +1174,7 @@ def _facts_cmd(args: argparse.Namespace) -> int:
             doc.pop("disabled", None)
         return doc
 
-    pdir.mkdir(parents=True, exist_ok=True)
+    private_mkdir(pdir)
     jsonstore.update(store, toggle, {}, os.environ)
     state = "disabled" if off else "enabled"
     print(f"token-sparen facts: injection {state} for this project")

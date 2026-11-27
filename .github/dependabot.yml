@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Workflow actions are pinned to commit SHAs; Dependabot proposes the new SHA and version.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
+  # The runtime has no dependencies; this covers the build backend and the dev/docs extras.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      tooling:
+        patterns: ["*"]

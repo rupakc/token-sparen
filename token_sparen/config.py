@@ -10,7 +10,7 @@ import stat
 import time
 import tomllib
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from importlib import resources
@@ -26,8 +26,9 @@ _MISSING: Any = object()
 class Config:
     data: dict[str, Any] = field(default_factory=dict)
     disabled: bool = False
-    # Every layer except the project file (defaults, user file, env, session overrides): the base
-    # an allowlisted project learning setting may only tighten (``sanitise_project``).
+    # Every layer except the project file (defaults, user file, the narrowing-only env layer,
+    # session overrides): the base an allowlisted project setting may only tighten
+    # (``sanitise_project``) and where user-only switches are read.
     trusted: dict[str, Any] | None = None
 
     def get(self, dotted_key: str, default: Any = None) -> Any:
@@ -178,7 +179,7 @@ def _log_rejected(name: str, value: str) -> None:
         if seen.get(slot) == shown:
             return
         seen[slot] = shown
-        path.parent.mkdir(parents=True, exist_ok=True)
+        private_mkdir(path.parent)
         path.write_text(json.dumps(seen), encoding="utf-8")
     except Exception:  # noqa: BLE001 - logging must never break a hook
         return
@@ -193,7 +194,78 @@ def _log_rejected(name: str, value: str) -> None:
 def state_home(env: Mapping[str, str]) -> Path:
     """``TOKEN_SPAREN_HOME`` if safe to honour (``env_path``), else ``~/.token-sparen``."""
     override = env_path(env, "TOKEN_SPAREN_HOME")
-    return override if override is not None else Path.home() / ".token-sparen"
+    root = override if override is not None else Path.home() / ".token-sparen"
+    _tighten_root(root)
+    return root
+
+
+def _posix() -> bool:
+    return os.name == "posix"
+
+
+def _tighten(st: os.stat_result, path: Path) -> None:
+    """Best effort: a directory of ours with group or other bits becomes 0700 (an install from
+    before directories were created private). Never fails."""
+    if _posix() and st.st_mode & 0o077:
+        with suppress(OSError):
+            os.chmod(path, 0o700)
+
+
+def _ours(path: Path, *, follow: bool) -> os.stat_result:
+    """The directory's stat; OSError unless it is a directory owned by the current user (POSIX;
+    with ``follow`` false, a symbolic link is refused too)."""
+    st = os.stat(path) if follow else os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode):
+        raise NotADirectoryError(f"{path} is not a directory")
+    if _posix() and st.st_uid != os.getuid():
+        raise PermissionError(f"{path} is not owned by this user; not used for token-sparen state")
+    return st
+
+
+def private_mkdir(directory: Path) -> None:
+    """``directory.mkdir(parents=True, exist_ok=True)`` for token-sparen's own files: state and
+    recovery files hold prompts, commands and tool outputs other local users must not read.
+
+    Every directory created here gets mode 0700 (POSIX, whatever the umask). A directory that
+    appears meanwhile (a race) must be a real directory owned by the user, never a link. An
+    existing ``directory`` must be owned by the user and is tightened to 0700 when it is looser
+    (best effort). Raises OSError (the hooks fail open) for anything else."""
+    missing: list[Path] = []
+    d = directory
+    while not d.exists() and d.parent != d:
+        missing.append(d)
+        d = d.parent
+    for d in reversed(missing):
+        try:
+            d.mkdir(mode=0o700)
+        except FileExistsError:
+            _ours(d, follow=False)  # someone else's directory or link: never adopted
+            continue
+        if _posix():
+            os.chmod(d, 0o700)
+    if not missing:
+        _tighten(_ours(directory, follow=True), directory)
+    elif not directory.is_dir():
+        raise NotADirectoryError(f"{directory} is not a directory")
+
+
+_TIGHTENED: set[str] = set()
+
+
+def _tighten_root(root: Path) -> None:
+    """Once per process: an existing state root of ours that is looser than 0700 is tightened
+    (best effort; a root that is missing, a link target or not ours is left alone)."""
+    key = str(root)
+    if key in _TIGHTENED:
+        return
+    _TIGHTENED.add(key)
+    try:
+        st = os.stat(root)
+    except OSError:
+        _TIGHTENED.discard(key)  # not created yet: check again after it is
+        return
+    if stat.S_ISDIR(st.st_mode) and (not _posix() or st.st_uid == os.getuid()):
+        _tighten(st, root)
 
 
 _REDACT: ContextVar[bool] = ContextVar("token_sparen_redact_logs", default=False)
@@ -217,7 +289,7 @@ def log_error(env: Mapping[str, str], where: str, message: str) -> None:
         message = REDACTED
     try:
         path = state_home(env) / "logs" / "errors.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        private_mkdir(path.parent)
         rec = {"ts": time.time(), "where": where, "error": message}
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec) + "\n")
@@ -369,6 +441,8 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     (("loopguard", "enabled"), "false_only", None),  # a project may switch the guard off
     (("loopguard", "min_k"), "max", (2.0, 1e12)),  # ... or make it more patient
     (("loopguard", "**"), "user_only", None),
+    (("output_style", "enabled"), "false_only", None),  # only the user opts in (spec 6.6)
+    (("output_style", "directive"), "user_only", None),
     # compression: keep more, compress less
     (("compression", "min_tokens"), "max", COUNT),
     (("compression", "min_saving_ratio"), "max", RATIO),
@@ -567,6 +641,16 @@ def _set(data: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
     node[path[-1]] = value
 
 
+def _from_env(kind: str, value: Any, base: Any) -> Any:
+    """An environment value in the type its key expects: any on/off spelling for a boolean key,
+    a comma-separated string for a tool list; anything else as parsed (``parse_value``)."""
+    if kind in {"true_only", "false_only"} or isinstance(base, bool):
+        return flag(value, value) if not isinstance(value, bool) else value
+    if kind in {"union", "subset"} and isinstance(value, str):
+        return _tool_list(value)
+    return value
+
+
 def sanitise_project(
     project: Mapping[str, Any], trusted: Mapping[str, Any], defaults: Mapping[str, Any]
 ) -> tuple[dict[str, Any], list[tuple[str, Any]]]:
@@ -575,9 +659,29 @@ def sanitise_project(
     Each leaf of the project file (a scalar replacing a table counts as a leaf; empty tables are
     ignored) is kept only if ``PROJECT_POLICY`` allows its kind and direction against the trusted
     value (the packaged default when the trusted value is missing or of the wrong type)."""
+    return _sanitise(project, trusted, defaults, env_values=False)
+
+
+def sanitise_env(
+    layer: Mapping[str, Any], trusted: Mapping[str, Any], defaults: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[tuple[str, Any]]]:
+    """``sanitise_project`` for the ``TOKEN_SPAREN_*`` layer: a cloned repository's committed
+    Claude Code settings can set environment variables, so they may only narrow, exactly like a
+    project file (values are first converted with ``_from_env``). Widening is honoured from
+    ``~/.token-sparen/config.toml`` or session overrides (``token-sparen config set``) only."""
+    return _sanitise(layer, trusted, defaults, env_values=True)
+
+
+def _sanitise(
+    layer: Mapping[str, Any],
+    trusted: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+    *,
+    env_values: bool,
+) -> tuple[dict[str, Any], list[tuple[str, Any]]]:
     clean: dict[str, Any] = {}
     dropped: list[tuple[str, Any]] = []
-    for path, value in _leaves(project, ()):
+    for path, value in _leaves(layer, ()):
         rule = _rule(path)
         if rule is None or rule[0] == "user_only":
             dropped.append((".".join(path), value))
@@ -599,7 +703,9 @@ def sanitise_project(
             base = fallback
         if kind == "true_only" and base is _MISSING:
             base = False
-        ok, merged = _accept(kind, extra, value, base)
+        ok, merged = _accept(
+            kind, extra, _from_env(kind, value, base) if env_values else value, base
+        )
         if ok:
             _set(clean, path, merged)
         else:
@@ -607,10 +713,12 @@ def sanitise_project(
     return clean, dropped
 
 
-def _warn_once(env: Mapping[str, str], project_dir: Path, key: str, value: Any) -> None:
-    """Log an ignored project value once per (project, key, value). Best effort."""
+def _warn_once(env: Mapping[str, str], project_dir: Path | None, key: str, value: Any) -> None:
+    """Log an ignored project value once per (project, key, value), or with ``project_dir``
+    None an ignored ``TOKEN_SPAREN_*`` value once per (key, value). Best effort."""
     try:
-        tag = hashlib.sha256(str(project_dir).encode("utf-8", "surrogatepass")).hexdigest()[:16]
+        where = "env" if project_dir is None else str(project_dir)
+        tag = hashlib.sha256(where.encode("utf-8", "surrogatepass")).hexdigest()[:16]
         path = state_home(env) / SAFETY_WARNED_FILE
         try:
             seen = json.loads(path.read_text(encoding="utf-8"))
@@ -621,18 +729,26 @@ def _warn_once(env: Mapping[str, str], project_dir: Path, key: str, value: Any) 
         if seen.get(slot) == shown:
             return
         seen[slot] = shown
-        path.parent.mkdir(parents=True, exist_ok=True)
+        private_mkdir(path.parent)
         path.write_text(json.dumps(seen), encoding="utf-8")
     except Exception:  # noqa: BLE001 - logging must never break a hook
         pass
     else:
-        log_error(
-            env,
-            "config",
-            f"{key} = {shown} in the project's token-sparen.toml ignored: a project file may only "
-            "make token-sparen intervene less or keep more (see README); set it in "
-            "~/.token-sparen/config.toml, a TOKEN_SPAREN_* variable or `token-sparen config set`",
-        )
+        if project_dir is None:
+            var = ENV_PREFIX + "__".join(key.upper().split("."))
+            message = (
+                f"{var} ({key}) = {shown} ignored: a TOKEN_SPAREN_* variable (which a repository's "
+                "committed Claude Code settings can set) may only make token-sparen intervene "
+                "less or keep more (see README); set it in ~/.token-sparen/config.toml or with "
+                "`token-sparen config set`"
+            )
+        else:
+            message = (
+                f"{key} = {shown} in the project's token-sparen.toml ignored: a project file may "
+                "only make token-sparen intervene less or keep more (see README); set it in "
+                "~/.token-sparen/config.toml or with `token-sparen config set`"
+            )
+        log_error(env, "config", message)
 
 
 def validate_overlay(params: Mapping[str, Any]) -> None:
@@ -676,9 +792,18 @@ def load_config(
     user = _load_toml(None, user_file, env) if user_file.is_file() else {}
     project_file = project_dir / "token-sparen.toml"
     project = _load_toml(None, project_file, env) if project_file.is_file() else {}
-    env_layer = _env_overrides(env)
+    raw_env = _env_overrides(env)
     overrides = None if session is None else session.get(SESSION_KEY)
-    late = [env_layer, overrides] if isinstance(overrides, Mapping) else [env_layer]
+    session_layers = [overrides] if isinstance(overrides, Mapping) else []
+    env_layer: dict[str, Any] = {}
+    if raw_env:  # may only narrow what the user's file and session overrides set
+        base: dict[str, Any] = {}
+        for layer in (defaults, user, *session_layers):
+            _merge(base, layer)
+        env_layer, env_dropped = sanitise_env(raw_env, base, defaults)
+        for key, value in env_dropped:
+            _warn_once(env, None, key, value)
+    late = [env_layer, *session_layers]
     trusted: dict[str, Any] = {}
     for layer in (defaults, user, *late):
         _merge(trusted, layer)

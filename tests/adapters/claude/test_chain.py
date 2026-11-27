@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from userconf import to_user_config
 
 from token_sparen.adapters.claude import entry
 from token_sparen.config import Config
@@ -28,7 +29,7 @@ def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
     proj.mkdir(parents=True, exist_ok=True)
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home"), "CLAUDE_PROJECT_DIR": str(proj)}
     env.update(extra)
-    return env
+    return to_user_config(env)  # widening settings live in the user's file (env only narrows)
 
 
 def _run(event: str, payload: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:

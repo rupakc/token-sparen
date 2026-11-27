@@ -28,7 +28,6 @@ arm, propensity 1.0, bucket ``error``.
 from __future__ import annotations
 
 import math
-import os
 import random
 import time
 import tomllib
@@ -37,7 +36,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from token_sparen.config import ENV_PREFIX, Config, flag_off, flag_on, log_error
+from token_sparen.config import Config, flag_off, flag_on, log_error
 from token_sparen.events import SessionCtx
 from token_sparen.learn import pending
 from token_sparen.learn.beta import Beta, Evidence, beta_cdf
@@ -121,7 +120,7 @@ class Engine:
         env: Mapping[str, str] | None = None,
     ) -> None:
         self.stores = stores
-        self._os_env: Mapping[str, str] = os.environ if env is None else env
+        del env  # kept for callers; opt-ins are read from the trusted config layers only
         self._optin: dict[str, bool] = {}
         self.cfg = cfg
         self.rng = rng
@@ -253,7 +252,9 @@ class Engine:
 
     def opted_in(self, point: DecisionPoint) -> bool:
         """High-tier points learn only with ``[learn.optin] <point> = true`` in the merged config
-        *and* set by the user (``~/.token-sparen/config.toml`` or the env var), never a project."""
+        *and* set in the user's ``~/.token-sparen/config.toml``: never a project file, a session
+        override or a ``TOKEN_SPAREN_*`` variable (a repository's committed Claude Code settings
+        can set those)."""
         cached = self._optin.get(point.name)
         if cached is not None:
             return cached
@@ -262,15 +263,13 @@ class Engine:
             log_error(
                 self._env,
                 "engine",
-                f"learn.optin.{point.name} ignored: set it in ~/.token-sparen/config.toml or "
-                f"{ENV_PREFIX}LEARN__OPTIN__{point.name.upper()}, not in a project file",
+                f"learn.optin.{point.name} ignored: set it in ~/.token-sparen/config.toml (not in "
+                "a project file, a session override or a TOKEN_SPAREN_* variable)",
             )
         self._optin[point.name] = ok
         return ok
 
     def _user_optin(self, name: str) -> bool:
-        if _truthy(self._os_env.get(f"{ENV_PREFIX}LEARN__OPTIN__{name.upper()}")):
-            return True
         try:
             text = (self.stores.home / "config.toml").read_text(encoding="utf-8")
             user = tomllib.loads(text)
