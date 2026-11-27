@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -125,3 +126,82 @@ def test_workspace_does_not_tighten_existing_dirs(tmp_path: Path) -> None:
     iso.check_workspace(existing / "ws")
     if POSIX:
         assert existing.stat().st_mode & 0o777 == 0o755
+
+
+INSTALLER = """
+import os, pathlib, subprocess
+home = pathlib.Path(os.path.expanduser("~"))
+settings = home / ".claude" / "settings.json"
+settings.parent.mkdir(parents=True, exist_ok=True)
+settings.write_text('{"hooks": {}}')
+(home / "RTK.md").write_text("rtk")
+xdg = pathlib.Path(os.environ["XDG_CONFIG_HOME"]) / "tool" / "config.toml"
+xdg.parent.mkdir(parents=True, exist_ok=True)
+xdg.write_text("x = 1")
+subprocess.run(["git", "config", "--global", "user.name", "bench"], check=True)
+"""
+
+
+def test_install_writes_land_in_run_home(tmp_path: Path) -> None:
+    """Review I2: an `rtk init -g`-style installer resolving ~ and XDG dirs writes only under
+    the per-run HOME; the caller's home stays untouched."""
+    caller_home = Path(os.environ["HOME"])  # the suite's temporary home
+    before = sorted(p.relative_to(caller_home) for p in caller_home.rglob("*"))
+    ws = iso.check_workspace(tmp_path / "ws")
+    home = ws / "templates" / "rtk" / "home"
+    env = iso.isolated_env(home)
+    iso.assert_isolated_env(env, workspace=ws, real_home=caller_home, environ=os.environ)
+    assert not home.exists()  # isolated_env is pure; directories come after the check
+    iso.make_isolated_dirs(env)
+    if POSIX:
+        assert home.stat().st_mode & 0o777 == 0o700
+    assert env["HOME"] == str(home) and env["CLAUDE_CONFIG_DIR"] == str(home / ".claude")
+    for key in iso.ISOLATED_DIR_KEYS:
+        assert Path(env[key]).is_relative_to(home), key
+    script = tmp_path / "installer.py"
+    script.write_text(INSTALLER, encoding="utf-8")
+    run_env = {**env, "PATH": os.environ.get("PATH", "")}
+    subprocess.run([sys.executable, str(script)], env=run_env, check=True, cwd=tmp_path)
+    assert (home / ".claude" / "settings.json").is_file()
+    assert (home / "RTK.md").is_file()
+    assert (Path(env["XDG_CONFIG_HOME"]) / "tool" / "config.toml").is_file()
+    assert "bench" in Path(env["GIT_CONFIG_GLOBAL"]).read_text(encoding="utf-8")
+    assert sorted(p.relative_to(caller_home) for p in caller_home.rglob("*")) == before
+
+
+def test_refuses_env_reaching_real_home(tmp_path: Path, real_home: Path) -> None:
+    ws = iso.check_workspace(tmp_path / "ws")
+    good = iso.isolated_env(ws / "run" / "home")
+    iso.assert_isolated_env(good, workspace=ws, real_home=real_home, environ={})
+    bad_values = {
+        "HOME": str(real_home),
+        "XDG_CONFIG_HOME": str(real_home / ".config"),
+        "GIT_CONFIG_GLOBAL": str(real_home / ".gitconfig"),
+        "npm_config_prefix": str(real_home / ".npm-global"),
+        "ZDOTDIR": str(real_home),
+        "CARGO_HOME": str(tmp_path / "elsewhere"),  # outside the workspace
+        "CLAUDE_CONFIG_DIR": str(real_home / ".claude"),
+        "XDG_CACHE_HOME": "relative/cache",
+    }
+    for key, value in bad_values.items():
+        with pytest.raises(iso.IsolationError, match=key):
+            iso.assert_isolated_env(
+                {**good, key: value}, workspace=ws, real_home=real_home, environ={}
+            )
+    missing = {k: v for k, v in good.items() if k != "PIP_CACHE_DIR"}
+    with pytest.raises(iso.IsolationError, match="PIP_CACHE_DIR"):
+        iso.assert_isolated_env(missing, workspace=ws, real_home=real_home, environ={})
+    with pytest.raises(iso.IsolationError, match="GIT_CONFIG_NOSYSTEM"):
+        iso.assert_isolated_env(
+            {**good, "GIT_CONFIG_NOSYSTEM": "0"}, workspace=ws, real_home=real_home, environ={}
+        )
+    # a workspace inside the real home is fine as long as the run home is under it
+    inner_ws = iso.check_workspace(real_home / "private" / "bench")
+    inner = iso.isolated_env(inner_ws / "run" / "home")
+    iso.assert_isolated_env(inner, workspace=inner_ws, real_home=real_home, environ={})
+    # but a run home that is (or holds) the real home's dot-state is refused
+    for home in (real_home / ".claude" / "x", tmp_path):
+        with pytest.raises(iso.IsolationError, match="HOME"):
+            iso.assert_isolated_env(
+                iso.isolated_env(home), workspace=tmp_path, real_home=real_home, environ={}
+            )

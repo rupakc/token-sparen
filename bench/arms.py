@@ -13,8 +13,10 @@ version; nothing is installed by this module or its tests).
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import stat
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -42,6 +44,16 @@ HARNESS_ENV = frozenset(
         "CLAUDE_CODE_MAX_TURNS",
         "DISABLE_AUTOUPDATER",
         "IS_SANDBOX",
+    }
+)
+# the only variables an arm may set (documented by the tool it configures), with the sandbox
+# prefix a path value must stay under ("" = any value). Everything else is refused, notably
+# ANTHROPIC_* and CLAUDE_CODE_* (endpoint and provider overrides would redirect the OAuth
+# token), PATH/PYTHONPATH/NODE_OPTIONS, LD_*/DYLD_* and GIT_*.
+ARM_ENV_ALLOWED: Mapping[str, str] = MappingProxyType(
+    {
+        "TOKEN_SPAREN_PYTHON": "/opt/bench/",  # read-only toolchain mount (ruling I2 of Task 1)
+        "CAVEMAN_DEFAULT_MODE": "",  # caveman's documented switch for `claude -p` (Task 13)
     }
 )
 ARM_KEYS = frozenset(
@@ -98,6 +110,11 @@ def _state_path_ok(rel: str) -> bool:
     return not pure.is_absolute() and ".." not in pure.parts and "\\" not in rel and rel != "."
 
 
+def _under_prefix(value: str, prefix: str) -> bool:
+    pure = PurePosixPath(value)
+    return pure.is_absolute() and ".." not in pure.parts and value.startswith(prefix)
+
+
 def _freeze(value: Any) -> Any:
     if isinstance(value, dict):
         return MappingProxyType({k: _freeze(v) for k, v in value.items()})
@@ -142,6 +159,13 @@ def _arm(name: str, raw: Mapping[str, Any], common: tuple[str, ...], problems: l
     clash = sorted(set(env) & HARNESS_ENV)
     if clash:
         problems.append(f"{where}: env may not set harness variables {', '.join(clash)}")
+    denied = sorted(set(env) - HARNESS_ENV - set(ARM_ENV_ALLOWED))
+    if denied:
+        problems.append(f"{where}: env keys not on the allow-list: {', '.join(denied)}")
+    for key, value in env.items():
+        prefix = ARM_ENV_ALLOWED.get(key)
+        if prefix and isinstance(value, str) and not _under_prefix(value, prefix):
+            problems.append(f"{where}: env {key} must be an absolute path under {prefix}")
     ts_config = raw.get("ts_config", {})
     if not isinstance(ts_config, dict) or (ts_config and not frozen):
         problems.append(f"{where}: ts_config is a table, only for token-sparen arms")
@@ -190,12 +214,46 @@ def load_arms(path: Path = ARMS_FILE) -> dict[str, Arm]:
     return arms
 
 
+class StateError(Exception):
+    """A run's copied-out state is unsafe to promote (a symbolic link on a state path)."""
+
+
+def _lstat_chain(home: Path, rel: str) -> Path | None:
+    """``home/rel`` if it exists with no symbolic link from ``home`` (included) down to it;
+    `StateError` on a link; None when a component is missing."""
+    node = home
+    for part in ("", *PurePosixPath(rel).parts):
+        node = node / part if part else node
+        try:
+            mode = node.lstat().st_mode
+        except FileNotFoundError:
+            return None
+        if stat.S_ISLNK(mode):
+            raise StateError(f"symlink on state path {rel!r}: {node.name or node}")
+    return node
+
+
+def _copy_tree(src: Path, target: Path) -> None:
+    """Copy regular files and directories of ``src``; links and special files are skipped."""
+    for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
+        here = Path(dirpath)
+        out = target / here.relative_to(src)
+        out.mkdir(parents=True, exist_ok=True)
+        dirnames[:] = [d for d in dirnames if stat.S_ISDIR((here / d).lstat().st_mode)]
+        for name in filenames:
+            if stat.S_ISREG((here / name).lstat().st_mode):
+                shutil.copy2(here / name, out / name, follow_symlinks=False)
+
+
 def carry_state(arm: Arm, home: Path, dest: Path) -> list[str]:
     """Copy the ``state_paths`` of a ``stream`` arm from a finished run's ``home`` to ``dest``.
 
     ``dest`` is replaced (only the last promoted state of a stream is kept). Nothing is copied
-    for ``state = "none"``. Symbolic links are skipped, never followed, at any depth. Returns
-    the state paths that existed and were copied.
+    for ``state = "none"``. Every component from ``home`` down to a state path is checked with
+    ``lstat``: a symbolic link there raises `StateError` (a run may plant
+    ``.claude -> <real home>/.claude``; the run is not promoted). Inside a copied tree, links
+    and special files are skipped, never followed, and the copy is verified to hold none.
+    Returns the state paths that existed and were copied.
     """
     if dest.exists():
         shutil.rmtree(dest)
@@ -203,19 +261,23 @@ def carry_state(arm: Arm, home: Path, dest: Path) -> list[str]:
     copied: list[str] = []
     if arm.state != "stream":
         return copied
+    root = home.resolve()
     for rel in arm.state_paths:
-        src = home.joinpath(*PurePosixPath(rel).parts)
-        if src.is_symlink() or not src.exists():
+        src = _lstat_chain(home, rel)
+        if src is None:
             continue
+        if not src.resolve().is_relative_to(root):
+            raise StateError(f"state path {rel!r} resolves outside the run home")
         target = dest.joinpath(*PurePosixPath(rel).parts)
         target.parent.mkdir(parents=True, exist_ok=True)
-        if src.is_dir():
-            shutil.copytree(src, target, ignore=_ignore_symlinks)
+        if stat.S_ISDIR(src.lstat().st_mode):
+            _copy_tree(src, target)
+        elif stat.S_ISREG(src.lstat().st_mode):
+            shutil.copy2(src, target, follow_symlinks=False)
         else:
-            shutil.copy2(src, target)
+            continue
         copied.append(rel)
+    if any(p.is_symlink() for p in dest.rglob("*")):  # pragma: no cover - defence in depth
+        shutil.rmtree(dest)
+        raise StateError("promoted state holds a symlink")
     return copied
-
-
-def _ignore_symlinks(directory: str, names: list[str]) -> set[str]:
-    return {n for n in names if Path(directory, n).is_symlink()}

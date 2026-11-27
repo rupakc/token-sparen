@@ -85,6 +85,8 @@ pin = "headroom-ai[all]==0.45.0 (v0.45.0, ce0460cfa8598dc939243dbc7aec4b2d35f4e4
 # the Claude Code plugin only (skills + session hooks); its CLI proxy is not used. Its docs say
 # scripted `claude -p` runs start with caveman off unless CAVEMAN_DEFAULT_MODE is set: whether
 # that counts as the documented default under -p is settled in Task 13 (liveness probe).
+# Task 13 also checks whether `marketplace add <local dir>` copies the plugin into the config
+# dir cache or references /opt/bench/src (read-only) directly, and records which.
 kind = "plugin"
 liveness = "caveman"
 install = [

@@ -46,6 +46,9 @@ _FAKE_GIT_ENV = {
     "GIT_COMMITTER_NAME": "bench",
     "GIT_COMMITTER_EMAIL": "bench@example.invalid",
     "GIT_COMMITTER_DATE": "2020-01-01T00:00:00+00:00",
+    # no user or system config: no hooksPath, templateDir hooks or signing helpers apply
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
 }
 _GIT_REDIRECTS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
 

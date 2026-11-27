@@ -145,6 +145,22 @@ def test_fake_tasks_two_streams_of_two(tmp_path: Path) -> None:
     assert subprocess.run([sys.executable, "test_calc.py"], cwd=repo, check=False).returncode == 0
 
 
+def test_fake_repo_ignores_user_git_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review M2: a hostile global config (failing hook, signing) does not reach the fake repo."""
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    hook = hooks / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    cfg = tmp_path / "gitconfig"
+    cfg.write_text(
+        f"[core]\n\thooksPath = {hooks.as_posix()}\n[commit]\n\tgpgSign = true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+    assert tk.make_fake_repo(tmp_path / "fake") == tk.FAKE_BASE_COMMIT
+
+
 def test_fake_agent_fixes_bug_and_writes_stream(tmp_path: Path) -> None:
     repo = tmp_path / "fake"
     tk.make_fake_repo(repo)

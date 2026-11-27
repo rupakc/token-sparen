@@ -123,6 +123,25 @@ liveness = "none"
             "harness",
         ),
         ('[arms.x]\nkind = "baseline"\nliveness = "none"\n[arms.x.env]\nA = 1\n', "env"),
+        *[
+            (f'[arms.x]\nkind = "baseline"\nliveness = "none"\n[arms.x.env]\n{k} = "v"\n', "env")
+            for k in (
+                "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_BEDROCK_BASE_URL",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "PATH",
+                "PYTHONPATH",
+                "LD_PRELOAD",
+                "DYLD_INSERT_LIBRARIES",
+                "GIT_CONFIG_GLOBAL",
+                "NODE_OPTIONS",
+            )
+        ],
+        (
+            '[arms.x]\nkind = "baseline"\nliveness = "none"\n'
+            '[arms.x.env]\nTOKEN_SPAREN_PYTHON = "/usr/bin/python3"\n',
+            "/opt/bench",
+        ),
         (
             '[arms.x]\nkind = "baseline"\nliveness = "none"\n[arms.x.ts_config.a]\nb = 1\n',
             "ts_config",
@@ -195,9 +214,38 @@ def test_carry_state_skips_symlinks_and_replaces_dest(tmp_path: Path) -> None:
     am.carry_state(arm, home, dest)
     assert _tree(dest) == {".token-sparen/projects/k/state.json"}
     assert not (dest / ".token-sparen" / "link").exists()
-    # a state path that is itself a symlink is not followed
-    if os.name != "nt":
-        home2 = tmp_path / "home2"
-        home2.mkdir()
-        (home2 / ".token-sparen").symlink_to(home / ".token-sparen")
-        assert am.carry_state(arm, home2, tmp_path / "dest2") == []
+    assert not any(p.is_symlink() for p in dest.rglob("*"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_carry_state_refuses_symlinked_state_path_or_parent(tmp_path: Path) -> None:
+    """Review I1: a run (agent or competitor hook) can plant `.claude -> <real home>/.claude`
+    in its HOME; carry_state must never copy through it."""
+    real = tmp_path / "realhome"
+    (real / ".claude" / "projects" / "p").mkdir(parents=True)
+    _write(real / ".claude" / "projects" / "p" / "private.jsonl", "owner transcript")
+    (real / ".token-sparen").mkdir()
+    arms = am.load_arms()
+    # symlinked parent of a state path
+    home = tmp_path / "home"
+    (home / ".tokeneconomizer").mkdir(parents=True)
+    (home / ".claude").symlink_to(real / ".claude")
+    with pytest.raises(am.StateError, match="symlink"):
+        am.carry_state(arms["tokeneconomizer"], home, tmp_path / "d1")
+    assert not list((tmp_path / "d1").rglob("private.jsonl"))
+    # the state path itself
+    home2 = tmp_path / "home2"
+    home2.mkdir()
+    (home2 / ".token-sparen").symlink_to(real / ".token-sparen")
+    with pytest.raises(am.StateError, match="symlink"):
+        am.carry_state(arms["token-sparen"], home2, tmp_path / "d2")
+    # the run home itself is a symlink
+    with pytest.raises(am.StateError, match="symlink"):
+        alias = tmp_path / "alias"
+        alias.symlink_to(home2)
+        am.carry_state(arms["token-sparen"], alias, tmp_path / "d3")
+    # a symlinked directory deep inside the copied tree is skipped, not followed
+    home3 = _home(tmp_path / "home3")
+    (home3 / ".token-sparen" / "projects" / "evil").symlink_to(real / ".claude")
+    am.carry_state(arms["token-sparen"], home3, tmp_path / "d4")
+    assert _tree(tmp_path / "d4") == {".token-sparen/projects/k/state.json"}

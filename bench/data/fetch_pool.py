@@ -15,7 +15,10 @@ Never run by the tests or by CI. Two commands:
 
 Rows come from the Hugging Face datasets-server rows API, which serves the current revision
 only, so the hub revision is read before and after the download and a change in between is
-refused.
+refused. The datasets-server may lag a new hub revision by a conversion; equal
+shas before and after do not prove which revision it served (review M5). Verified has been
+stable, so this is accepted for the pool; Task 13 may instead read the parquet conversion at
+`?revision=<sha>` for the dataset command.
 """
 
 from __future__ import annotations
