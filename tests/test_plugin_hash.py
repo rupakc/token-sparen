@@ -171,6 +171,31 @@ def test_plugin_hash_refuses_symlinks(tmp_path: Path) -> None:
         ph.plugin_files(root)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+@pytest.mark.parametrize("linked", [".claude-plugin", "skills", "token_sparen/sub"])
+def test_plugin_hash_refuses_symlinked_dirs(tmp_path: Path, linked: str) -> None:
+    root = _full_plugin(tmp_path / "plugin")
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    (real / "plugin.json").write_bytes(PLUGIN_JSON)
+    target = root / linked
+    if target.exists():
+        for p in sorted(target.rglob("*"), reverse=True):
+            p.unlink() if p.is_file() else p.rmdir()
+        target.rmdir()
+    target.symlink_to(real, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink"):
+        ph.plugin_files(root)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs")
+def test_plugin_hash_refuses_fifo_instead_of_blocking(tmp_path: Path) -> None:
+    root = _two_file_plugin(tmp_path)
+    os.mkfifo(root / "hooks" / "pipe.py")
+    with pytest.raises(ValueError, match="not a regular file"):
+        ph.plugin_hash(root)
+
+
 def test_cli_prints_hash_and_files(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = _two_file_plugin(tmp_path)
     assert ph.main([str(root)]) == 0

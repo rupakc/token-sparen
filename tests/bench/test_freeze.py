@@ -104,6 +104,80 @@ def test_freeze_refuses_untagged_ref_unless_dry_run(repo: Path, tmp_path: Path) 
     assert frozen.plugin_hash == plugin_hash(repo)
 
 
+def test_freeze_refuses_revision_expressions_rooted_at_a_tag(repo: Path, tmp_path: Path) -> None:
+    _write(repo, "hooks/run.py", b"print(2)\n")
+    _git(repo, "commit", "-q", "-am", "second")
+    _git(repo, "tag", "v3")
+    for i, ref in enumerate(("v3~1", "v3^", "refs/tags/v3~1", "v3^{commit}", "v3@{0}")):
+        with pytest.raises(fz.FreezeError):
+            fz.freeze(repo, ref, tmp_path / f"refused-{i}")
+        assert not (tmp_path / f"refused-{i}").exists()
+    assert fz.freeze(repo, "v3", tmp_path / "ok").commit == _git(repo, "rev-parse", "HEAD")
+
+
+def test_freeze_refuses_branch_shadowing_no_tag(repo: Path, tmp_path: Path) -> None:
+    _git(repo, "branch", "release-x")
+    with pytest.raises(fz.FreezeError, match="not a tag"):
+        fz.freeze(repo, "release-x", tmp_path / "x")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_freeze_keeps_exec_bit(repo: Path, tmp_path: Path) -> None:
+    _write(repo, "hooks/launch.sh", b"#!/bin/sh\nexit 0\n")
+    os.chmod(repo / "hooks" / "launch.sh", 0o755)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "launcher")
+    frozen = fz.freeze(repo, "HEAD", tmp_path / "frozen", dry_run=True)
+    assert stat.S_IMODE((frozen.path / "hooks" / "launch.sh").stat().st_mode) == 0o555
+    assert stat.S_IMODE((frozen.path / "hooks" / "run.py").stat().st_mode) == 0o444
+    fz.verify(frozen)
+
+
+def test_freeze_drops_tracked_unhashed_files(repo: Path, tmp_path: Path) -> None:
+    _write(repo, "token_sparen/.gitignore", b"*.tmp\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "nested gitignore")
+    frozen = fz.freeze(repo, "HEAD", tmp_path / "frozen", dry_run=True)
+    assert not (frozen.path / "token_sparen" / ".gitignore").exists()
+    fz.verify(frozen)
+
+
+def test_frozen_hash_equals_checkout_of_same_commit(repo: Path, tmp_path: Path) -> None:
+    frozen = fz.freeze(repo, "v1.0.0-rc1", tmp_path / "frozen")
+    checkout = tmp_path / "checkout"
+    _git(repo, "worktree", "add", "-q", "--detach", str(checkout), "v1.0.0-rc1")
+    assert plugin_hash(checkout) == frozen.plugin_hash
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "token_sparen/__pycache__/x.cpython-312.pyc",
+        "token_sparen/stray.pyc",
+        "hooks/.DS_Store",
+        ".claude-plugin/marketplace.json",
+        "notes.txt",
+        "empty-dir/",
+    ],
+)
+def test_verify_flags_extra_entries(repo: Path, tmp_path: Path, extra: str) -> None:
+    frozen = fz.freeze(repo, "v1.0.0-rc1", tmp_path / "frozen")
+    target = frozen.path / extra.rstrip("/")
+    parents = [frozen.path / p for p in reversed(target.relative_to(frozen.path).parents)]
+    for d in parents:
+        if d.exists():
+            d.chmod(0o755)
+    if extra.endswith("/"):
+        target.mkdir()
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"\x00")
+    for p in [target, *parents]:  # read-only again: only the extra entry differs
+        p.chmod(0o555 if p.is_dir() else 0o444)
+    with pytest.raises(fz.FrozenPluginChanged, match="extra"):
+        fz.verify(frozen)
+
+
 def test_freeze_refuses_unknown_ref_and_existing_dest(repo: Path, tmp_path: Path) -> None:
     with pytest.raises(fz.FreezeError, match="unknown ref"):
         fz.freeze(repo, "no-such-ref", tmp_path / "x", dry_run=True)
