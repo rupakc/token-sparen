@@ -1,0 +1,9 @@
+diff --git a/calc.py b/calc.py
+--- a/calc.py
++++ b/calc.py
+@@ -3,4 +3,4 @@
+
+ def total(n: int) -> int:
+     """Sum of the integers 1..n inclusive."""
+-    return sum(range(1, n))
++    return sum(range(1, n + 1))
