@@ -634,7 +634,10 @@ def _warn_once(env: Mapping[str, str], project_dir: Path, key: str, value: Any) 
 
 def validate_overlay(params: Mapping[str, Any]) -> None:
     """Raise ValueError unless every leaf of ``params`` is a packaged-default key (same type)
-    or an ``OPTIONAL_KEYS`` key (a bounded number for the ratio keys)."""
+    or an ``OPTIONAL_KEYS`` key (a ratio in [0, 1]). User-layer rules only: a value the user
+    config would accept (e.g. ``prune.lease_sessions = 0``) is accepted; the project layer's
+    ``PROJECT_POLICY`` bounds do not apply. An int for a float key is fine, a float for an int
+    key is not (the readers ignore it)."""
     defaults = packaged_defaults()
     for path, value in _leaves(dict(params), ()):
         key = ".".join(path)
@@ -648,8 +651,7 @@ def validate_overlay(params: Mapping[str, Any]) -> None:
             raise ValueError(
                 f"params overlay: {key!r} must be {type(base).__name__}, got {value!r}"
             )
-        rule = _rule(path)
-        if rule is not None and not _in_bounds(value, rule[1]):
+        if key in OPTIONAL_KEYS and not _in_bounds(value, RATIO):  # its reader's valid range
             raise ValueError(f"params overlay: {key!r} out of range: {value!r}")
 
 

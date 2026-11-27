@@ -84,7 +84,7 @@ def test_params_overlay_reaches_compressors() -> None:
 
 def test_inline_rate_per_level() -> None:
     report = e2.run()
-    assert set(report.inline_rate) == set(e2.LEVELS)
+    assert set(report.inline_rate) == set(e2.ALL_LEVELS)
     assert all(0.0 < v <= 1.0 for v in report.inline_rate.values())
     more = e2.run(levels=("standard",), params=_overlay(head=400, tail=400, keep_ratio=0.95))
     assert more.inline_rate["standard"] >= report.inline_rate["standard"]
@@ -123,15 +123,42 @@ def test_params_flag_loads_overlay_file(tmp_path: Path, capsys: pytest.CaptureFi
 
 
 def test_optional_key_overlay_reaches_guard() -> None:
-    ok = {"guards": {"pretrim_bounded_keep_ratio": 0.35}}
-    assert e2.run(levels=("standard",), params=ok).failures == []
     from token_sparen.config import OPTIONAL_KEYS
 
     assert "guards.pretrim_bounded_keep_ratio" in OPTIONAL_KEYS
+
+    def rate(ratio: float) -> float:
+        p = {"guards": {"pretrim_bounded_keep_ratio": ratio, "pretrim_lines": 5}}
+        rep = e2.run(levels=("pretrim",), params=p)
+        assert rep.failures == []
+        return rep.inline_rate["pretrim"]
+
+    assert rate(0.0) < rate(0.9)
+    for bad in ("x", 2.0):
+        with pytest.raises(ValueError, match="overlay"):
+            e2.run(levels=("standard",), params={"guards": {"pretrim_bounded_keep_ratio": bad}})
+
+
+def test_pretrim_runs_on_command_cases_only() -> None:
+    report = e2.run(levels=("pretrim",))
+    n = sum(1 for c in CASES if c.command)
+    assert 0 < n < len(CASES)
+    assert report.cases == report.passed == n
+    assert {r["case"] for r in report.rows} == {c.file for c in CASES if c.command}
+
+
+def test_marker_text_is_not_inline() -> None:
+    assert e2._inline_text("body\n[token-sparen: kept 1 of 2 lines · x]", "full") == "body"
+    assert e2._inline_text("body\nlast", None) == "body\nlast"
+    assert e2._inline_text("body\nlast", "full") == "body\nlast"
+
+
+def test_overlay_uses_user_layer_bounds() -> None:
+    from token_sparen.config import validate_overlay
+
+    validate_overlay({"prune": {"lease_sessions": 0}})
     with pytest.raises(ValueError, match="overlay"):
-        e2.run(levels=("standard",), params={"guards": {"pretrim_bounded_keep_ratio": "x"}})
-    with pytest.raises(ValueError, match="overlay"):
-        e2.run(levels=("standard",), params={"guards": {"pretrim_bounded_keep_ratio": 2.0}})
+        validate_overlay({"compression": {"levels": {"standard": {"head": 400.0}}}})
 
 
 def test_optional_key_overlay_is_loaded_by_config(tmp_path: Path) -> None:

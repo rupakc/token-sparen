@@ -32,11 +32,14 @@ from token_sparen.compress import CompressContext, detect, load_level, registry
 from token_sparen.config import load_config, validate_overlay
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import ToolCall
+from token_sparen.mechanisms import guards
 
 HERE = Path(__file__).resolve().parent
 CORPUS = HERE / "corpus"
 NEEDLES = HERE / "needles.toml"
 LEVELS = ("light", "standard", "aggressive")
+PRETRIM = "pretrim"  # the guards.pretrim_level arm, run on the Bash-output (command) cases
+ALL_LEVELS = (*LEVELS, PRETRIM)
 MIN_TOKENS = 2000  # outputs below this are never modified in production
 MAX_MEAN_RATIO = 0.6
 
@@ -100,7 +103,14 @@ def _compress_case(case: Case, level: str, tmp: Path) -> tuple[str, str | None, 
         return case.text, None, 1.0
     cfg = load_config(tmp, {"TOKEN_SPAREN_HOME": str(tmp / "home")})
     comp = registry.for_type(_detected(case))  # type: ignore[arg-type]
-    res = comp.compress(case.text, load_level(cfg, level), CompressContext(None, (), cfg))
+    if level == PRETRIM:  # as the PostToolUse pretrim does for a noisy command
+        lines = cfg.get("guards.pretrim_lines", guards.PRETRIM_LINES)
+        if isinstance(lines, bool) or not isinstance(lines, int) or lines <= 0:
+            lines = guards.PRETRIM_LINES
+        lvl = guards.pretrim_level(cfg, lines)
+    else:
+        lvl = load_level(cfg, level)
+    res = comp.compress(case.text, lvl, CompressContext(None, (), cfg))
     final, recovered = res.text, None
     if not res.lossless:
         ref = recovery.save_full(tmp, case.text)
@@ -143,7 +153,16 @@ def _toml_dump(node: Mapping[str, Any], prefix: tuple[str, ...] = ()) -> str:
     return text
 
 
-def run(levels: Sequence[str] = LEVELS, params: Mapping[str, Any] | None = None) -> E2Report:
+def _inline_text(final: str, recovered: str | None) -> str:
+    """The compressed text without the appended recovery marker (a needle that only occurs
+    inside the marker is not visible inline)."""
+    if recovered is None:
+        return final
+    head, sep, tail = final.rpartition("\n")
+    return head if sep and tail.startswith("[token-sparen: kept ") else final
+
+
+def run(levels: Sequence[str] = ALL_LEVELS, params: Mapping[str, Any] | None = None) -> E2Report:
     cases = load_cases()
     if params:
         validate_overlay(params)
@@ -151,17 +170,21 @@ def run(levels: Sequence[str] = LEVELS, params: Mapping[str, Any] | None = None)
     rows: list[dict[str, object]] = []
     ratios: dict[str, list[float]] = {lv: [] for lv in levels}
     inline = {lv: 0 for lv in levels}
-    total = 0
+    total = {lv: 0 for lv in levels}
+    runs = 0
     passed = 0
     with tempfile.TemporaryDirectory(prefix="ts-e2-") as d, _isolated_home(Path(d)):
         tmp = Path(d)
         if params:
             (tmp / "home").mkdir(parents=True, exist_ok=True)
             (tmp / "home" / "config.toml").write_text(_toml_dump(params), encoding="utf-8")
-        total = sum(len(c.needles) for c in cases)
         for case in cases:
             kind = _detected(case)
             for lv in levels:
+                if lv == PRETRIM and not case.command:
+                    continue  # pretrim only ever applies to Bash output
+                runs += 1
+                total[lv] += len(case.needles)
                 bad: list[str] = []
                 if kind not in case.types:
                     bad.append(f"<detect: expected {'|'.join(case.types)}, got {kind}>")
@@ -170,7 +193,8 @@ def run(levels: Sequence[str] = LEVELS, params: Mapping[str, Any] | None = None)
                 except Exception as exc:  # noqa: BLE001 - a crash is a failure, not an abort
                     final, recovered, ratio = "", None, 1.0
                     bad.append(f"<exception: {type(exc).__name__}: {exc}>")
-                inline[lv] += sum(n in final for n in case.needles)
+                body = _inline_text(final, recovered)
+                inline[lv] += sum(n in body for n in case.needles)
                 for n in case.needles:
                     if not needle_ok(n, final, recovered, must_inline=n in case.must_inline):
                         bad.append(n)
@@ -182,8 +206,8 @@ def run(levels: Sequence[str] = LEVELS, params: Mapping[str, Any] | None = None)
                     {"case": case.file, "level": lv, "ok": not bad, "ratio": round(ratio, 3)}
                 )
     mean = {lv: (sum(r) / len(r) if r else 1.0) for lv, r in ratios.items()}
-    rate = {lv: (inline[lv] / total if total else 0.0) for lv in levels}
-    return E2Report(len(cases) * len(levels), passed, failures, mean, rows, rate)
+    rate = {lv: (inline[lv] / total[lv] if total[lv] else 0.0) for lv in levels}
+    return E2Report(runs, passed, failures, mean, rows, rate)
 
 
 def _table(report: E2Report, levels: Sequence[str]) -> str:
@@ -196,7 +220,10 @@ def _table(report: E2Report, levels: Sequence[str]) -> str:
     for case, cells in by_case.items():
         parts = []
         for lv in levels:
-            r = cells[lv]
+            r = cells.get(lv)
+            if r is None:  # pretrim only runs on command cases
+                parts.append(f"{'-':>4} {'-':>10}   ")
+                continue
             parts.append(f"{'PASS' if r['ok'] else 'FAIL':>4} {float(str(r['ratio'])):>10.3f}   ")
         lines.append(f"{case:<{width}}  " + "  ".join(parts))
     lines.append("")
@@ -218,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(report.__dict__, indent=2))
     else:
-        print(_table(report, LEVELS))
+        print(_table(report, ALL_LEVELS))
     if args.strict:
         if report.failures or report.passed != report.cases:
             return 1
