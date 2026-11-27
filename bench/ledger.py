@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from bench.patch import PATCH_FILE, patch_bytes, read_patch_file
 from bench.streamjson import PRICE_TABLE_VERSION
 from token_sparen.store.jsonstore import locked
 
@@ -83,7 +84,8 @@ class LedgerError(ValueError):
 
 
 def sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()
+    """sha256 of a patch's on-disk bytes (`bench.patch.patch_bytes`)."""
+    return hashlib.sha256(patch_bytes(text)).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -364,9 +366,9 @@ class Ledger:
             key = RunKey.from_id(key_id)
             patch = ""
             if end.get("run_dir"):
-                path = self.resolve(str(end["run_dir"])) / "patch.diff"
+                path = self.resolve(str(end["run_dir"])) / PATCH_FILE
                 if path.is_file():
-                    patch = path.read_bytes().decode("utf-8", "surrogateescape")
+                    patch = read_patch_file(path)
             if end.get("patch_sha256") != sha256_text(patch):
                 raise LedgerError(f"patch of {key_id} differs from its recorded sha256")
             runs.append(FinalRun(key_id, key.stage, key.arm, key.seed, key.instance_id, patch))

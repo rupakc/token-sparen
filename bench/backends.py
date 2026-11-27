@@ -60,7 +60,7 @@ from bench.freeze import FrozenPlugin, verify
 from bench.isolation import isolated_env, make_isolated_dirs
 from bench.leak import TOKEN_ENV, quarantine, scan_for_token, token_from_env
 from bench.liveness import LIVENESS_PATHS, is_live
-from bench.patch import PatchError, extract_patch, git_runner
+from bench.patch import PATCH_FILE, PatchError, extract_patch, git_runner, write_patch_file
 from bench.streamjson import RunMetrics, parse_stream, with_overhead
 from bench.tasks import BENCH_DIR, FAKE_BASE_COMMIT, FAKE_DIR, Task, make_fake_repo
 
@@ -87,7 +87,7 @@ CAP_ADD = ("CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID")
 RUN_OUT_MAX_BYTES = 4 * 1024**3
 OUTPUT_CAPS: dict[str, int] = {
     "stream.jsonl": 512 * 1024**2,
-    "patch.diff": 64 * 1024**2,
+    PATCH_FILE: 64 * 1024**2,
     "exit.json": 64 * 1024,
 }
 # kill-after 30 s + patch time limit (+ its 5 s kill-after) + copy-out must fit in the backstop
@@ -377,7 +377,7 @@ def collect_outcome(
             raise _UnsafeOutput("; ".join(unsafe))
         stream_data = _read_capped(run_dir, "stream.jsonl")
         exit_doc = _json_object(_read_capped(run_dir, "exit.json"))
-        patch_data = _read_capped(run_dir, "patch.diff")
+        patch_data = _read_capped(run_dir, PATCH_FILE)
     except _UnsafeOutput as exc:
         bad: RunStatus = ("infra_fail", "docker" if backstop_killed or oom_killed else "load")
         notes.append(f"unsafe run outputs, nothing read: {exc}")
@@ -500,7 +500,7 @@ class FakeBackend:
             make_isolated_dirs(iso)
             if req.state_in.is_dir():
                 _copy_tree(req.state_in, home)
-            (home / "mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
+            (home / "mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8", newline="\n")
             argv = build_claude_argv(req, mcp_path=str(home / "mcp.json"))
             skip = len(req.arm.wrapper) if req.arm.kind == "wrapper" else 1
             agent = [sys.executable, "-I", str(self.fixtures / "agent.py"), *argv[skip:]]
@@ -548,12 +548,14 @@ class FakeBackend:
                 req.arm.patch_excludes,
                 run=git_runner(self._environ),
             )
-            (req.run_dir / "patch.diff").write_bytes(patch.encode("utf-8", "surrogateescape"))
+            write_patch_file(req.run_dir / PATCH_FILE, patch)
         except PatchError:  # pragma: no cover - git failure on the fake repo
             patch_exit = 1
         copy_state_out(home, state_paths_out(req.arm), req.run_dir / "state-out")
         doc = {"agent_exit": agent_exit, "timed_out": agent_exit == 124, "patch_exit": patch_exit}
-        (req.run_dir / "exit.json").write_text(json.dumps(doc) + "\n", encoding="utf-8")
+        (req.run_dir / "exit.json").write_text(
+            json.dumps(doc) + "\n", encoding="utf-8", newline="\n"
+        )
 
 
 # --- docker --------------------------------------------------------------------------------

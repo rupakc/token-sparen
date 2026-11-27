@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from bench import ledger as lg
+from bench.patch import PATCH_FILE, read_patch_file, write_patch_file
 from bench.streamjson import PRICE_TABLE_VERSION
 
 KEY = lg.RunKey("c1", "screening", "baseline", 0, "fake__alpha-1")
@@ -192,7 +193,7 @@ def test_final_runs_for_grading(tmp_path: Path) -> None:
     run_dir = tmp_path / "runs" / "r1"
     run_dir.mkdir(parents=True)
     patch = "diff --git a/x b/x\n"
-    (run_dir / "patch.diff").write_text(patch, encoding="utf-8")
+    write_patch_file(run_dir / PATCH_FILE, patch)
     rec = _end(KEY, "ok", "success", 1.0) | {
         "run_dir": "runs/r1",
         "patch_sha256": lg.sha256_text(patch),
@@ -207,6 +208,46 @@ def test_final_runs_for_grading(tmp_path: Path) -> None:
     assert runs[KEY.id] == lg.FinalRun(KEY.id, "screening", "baseline", 0, KEY.instance_id, patch)
     assert runs[empty.id].patch == ""
     assert led.final_runs("confirmation") == []
+
+
+def test_patch_bytes_survive_any_newline_convention(tmp_path: Path) -> None:
+    """A CRLF patch (a Windows repo) keeps its exact bytes and hash, and a text-mode rewrite
+    with Windows newline translation is caught, not graded."""
+    led = _ledger(tmp_path)
+    patch = "diff --git a/w.txt b/w.txt\r\n-old\r\n+new\r\n+tail\n"
+    (tmp_path / "r").mkdir()
+    write_patch_file(tmp_path / "r" / PATCH_FILE, patch)
+    assert (tmp_path / "r" / PATCH_FILE).read_bytes() == patch.encode("utf-8")
+    led.append(
+        _end(KEY, "ok", "success", 1.0) | {"run_dir": "r", "patch_sha256": lg.sha256_text(patch)}
+    )
+    assert [r.patch for r in led.final_runs("screening")] == [patch]
+    lf = "diff --git a/x b/x\n"
+    with open(tmp_path / "r" / PATCH_FILE, "w", encoding="utf-8", newline="\r\n") as fh:
+        fh.write(lf)  # what a text-mode write does on Windows
+    led.append(
+        _end(KEY, "ok", "success", 2.0, attempt=2)
+        | {"run_dir": "r", "patch_sha256": lg.sha256_text(lf)}
+    )
+    with pytest.raises(lg.LedgerError, match="recorded sha256"):
+        led.final_runs("screening")
+
+
+def test_write_patch_file_ignores_text_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulate Windows text mode on any OS: every text write translates newlines to CRLF.
+    The patch writer never goes through it."""
+    real = Path.write_text
+
+    def crlf_write_text(self: Path, data: str, *a: Any, **kw: Any) -> int:
+        kw["newline"] = "\r\n"
+        return real(self, data, *a, **kw)
+
+    monkeypatch.setattr(Path, "write_text", crlf_write_text)
+    write_patch_file(tmp_path / PATCH_FILE, "a\nb\n")
+    assert (tmp_path / PATCH_FILE).read_bytes() == b"a\nb\n"
+    assert read_patch_file(tmp_path / PATCH_FILE) == "a\nb\n"
 
 
 def test_final_runs_refuses_a_changed_patch(tmp_path: Path) -> None:

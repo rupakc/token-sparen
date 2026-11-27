@@ -26,6 +26,10 @@ toolchain Python under its own time limit (``python -I patch.py --repo /testbed 
 --excludes-env TSB_PATCH_EXCLUDES --out /run-out/patch.diff``); the output file is written to a
 temporary name and renamed over ``--out`` (a planted link at ``--out`` is replaced, never
 followed). The fake backend calls `extract_patch` directly.
+
+The patch is hashed into the ledger (``patch_sha256``) and graded byte for byte, so it is only
+ever written and read as bytes (`write_patch_file`, `read_patch_file`): a text-mode write would
+turn every ``\n`` into ``\r\n`` on Windows, break the recorded hash and change the graded diff.
 """
 
 from __future__ import annotations
@@ -36,8 +40,10 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 
 Run = Callable[[list[str]], str]
+PATCH_FILE = "patch.diff"  # in every run dir
 # environment the git calls inherit (an explicit allow-list: no token, no GIT_* redirects)
 _GIT_ENV_KEYS = ("PATH", "SYSTEMROOT", "LANG", "LC_ALL", "TMPDIR", "TEMP", "TMP")
 _BATCH = 200
@@ -181,6 +187,21 @@ def _write_atomic(out: str, data: bytes) -> None:
         raise
 
 
+def patch_bytes(patch: str) -> bytes:
+    """The exact bytes of ``patch`` on disk (and under its ledger sha256)."""
+    return patch.encode("utf-8", "surrogateescape")
+
+
+def write_patch_file(path: Path, patch: str) -> None:
+    """Write ``patch`` as bytes: no newline translation on any OS."""
+    path.write_bytes(patch_bytes(patch))
+
+
+def read_patch_file(path: Path) -> str:
+    """Read a patch written by `write_patch_file` or ``entry.sh`` (bytes, no translation)."""
+    return path.read_bytes().decode("utf-8", "surrogateescape")
+
+
 def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = None) -> int:
     env = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(description="Extract the graded patch of one run.")
@@ -195,7 +216,7 @@ def main(argv: list[str] | None = None, *, environ: Mapping[str, str] | None = N
         excludes += [e for e in env.get(args.excludes_env, "").splitlines() if e]
     try:
         patch = extract_patch(args.repo, args.base, excludes, run=git_runner(env))
-        _write_atomic(args.out, patch.encode("utf-8", "surrogateescape"))
+        _write_atomic(args.out, patch_bytes(patch))
     except (PatchError, OSError) as exc:
         print(f"patch: {exc}", file=sys.stderr)
         return 1
