@@ -19,6 +19,7 @@ venv/
 .coverage.*
 coverage.xml
 htmlcov/
+_site/
 
 # local uv resolution; the project uses pip and the dev extra
 uv.lock

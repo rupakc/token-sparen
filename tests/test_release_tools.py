@@ -23,6 +23,7 @@ import pytest
 from sampleoutputs import big_pytest
 from userconf import to_user_config
 
+from bench.freeze import freeze
 from scripts import build_claude_tree as bct
 from scripts import release_check as rc
 from scripts import release_notes as rn
@@ -894,7 +895,9 @@ def test_claude_tree_hash_is_m5_plugin_hash(base_repo: Path, tmp_path: Path) -> 
     _git(tmp_path, "clone", "-q", "--no-hardlinks", str(base_repo), str(clean))
     second = tmp_path / "t2"
     bct.build_claude_tree(clean, second)
-    assert plugin_hash(first) == plugin_hash(second) == plugin_hash(clean)
+    # like with like: M5's freeze exports the same commit's blobs byte for byte
+    frozen = freeze(clean, "HEAD", tmp_path / "frozen", dry_run=True)
+    assert plugin_hash(first) == plugin_hash(second) == frozen.plugin_hash
     tracked = sorted(
         r
         for r in _git(clean, "ls-files", "-z").split("\0")
@@ -904,6 +907,40 @@ def test_claude_tree_hash_is_m5_plugin_hash(base_repo: Path, tmp_path: Path) -> 
     shutil.rmtree(second)
     bct.build_claude_tree(clean, second)
     assert plugin_hash(second) == plugin_hash(first)  # deterministic rebuild
+
+
+def test_claude_tree_is_blob_bytes_under_crlf_checkout(base_repo: Path, tmp_path: Path) -> None:
+    """A CRLF checkout (``core.autocrlf=true`` + ``eol=crlf`` attributes, as on Windows CI)
+    builds the same tree and hash as an LF one: files come from git blobs, not the work tree."""
+    lf_tree = tmp_path / "lf"
+    bct.build_claude_tree(base_repo, lf_tree)
+    crlf = tmp_path / "crlf"
+    _git(tmp_path, "clone", "-q", "--no-hardlinks", str(base_repo), str(crlf))
+    _git(crlf, "config", "core.autocrlf", "true")
+    (crlf / ".git" / "info").mkdir(exist_ok=True)
+    (crlf / ".git" / "info" / "attributes").write_text("* text eol=crlf\n", encoding="utf-8")
+    (crlf / ".git" / "index").unlink()
+    _git(crlf, "-c", "core.autocrlf=true", "reset", "-q", "--hard")
+    on_disk = (crlf / "hooks" / "run.py").read_bytes()
+    assert b"\r\n" in on_disk, "setup: the work tree must be CRLF"
+    (crlf / "token_sparen" / "cli.py").write_text("uncommitted edit\n", encoding="utf-8")
+    tree = tmp_path / "tree"
+    bct.build_claude_tree(crlf, tree)
+    blob = _git(crlf, "cat-file", "blob", "HEAD:hooks/run.py").encode("utf-8")
+    assert (tree / "hooks" / "run.py").read_bytes() == blob
+    assert b"\r\n" not in (tree / "hooks" / "run.py").read_bytes()
+    assert (tree / "token_sparen" / "cli.py").read_bytes() != b"uncommitted edit\n"
+    assert plugin_hash(tree) == plugin_hash(lf_tree)
+    assert (tree / "README.md").read_bytes() == (lf_tree / "README.md").read_bytes()
+
+
+def test_claude_tree_from_ref(base_repo: Path, tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    bct.build_claude_tree(base_repo, tree, ref=PIN)
+    assert plugin_hash(tree) == _tree_hash(base_repo, tmp_path)
+    for bad in ("no-such-ref", "--all"):
+        with pytest.raises(bct.TreeError):
+            bct.build_claude_tree(base_repo, tmp_path / "bad", ref=bad)
 
 
 # --- sdist ----------------------------------------------------------------------------------------
