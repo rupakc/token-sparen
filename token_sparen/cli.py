@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib.util
 import json
 import math
 import os
@@ -17,10 +18,11 @@ import time
 from collections.abc import Callable, Mapping
 from importlib import resources
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
-from token_sparen import __version__
-from token_sparen.config import Config, load_config, state_home
+from token_sparen import __version__, recovery
+from token_sparen.config import Config, load_config, private_mkdir, state_home
 from token_sparen.events import ToolCall
 from token_sparen.store import jsonstore, keycache, paths, session
 
@@ -199,11 +201,11 @@ def _emit(text: str) -> None:
 def _show(args: argparse.Namespace) -> int:
     if not _ID_RE.fullmatch(args.id):
         raise CliError(f"invalid id {args.id!r}: expected 12 lowercase hex characters")
-    path = _project_dir(args) / ".token-sparen" / "outputs" / f"{args.id}.txt"
-    try:
-        data = path.read_bytes()
-    except OSError:
-        print(f"token-sparen: no saved output {args.id} in {path.parent}", file=sys.stderr)
+    project = _project_dir(args)
+    data = recovery.read_full(project, args.id, os.environ)
+    if data is None:  # missing, a link, or not written by this install for this checkout
+        where = project / ".token-sparen" / "outputs"
+        print(f"token-sparen: no saved output {args.id} in {where}", file=sys.stderr)
         return 1
     text = data.decode("utf-8", errors="surrogateescape")
     _record_recovery_read(args, text)
@@ -574,14 +576,22 @@ def _round_trip(root: Path) -> tuple[bool, str]:
         project = Path(tmp) / "proj"
         project.mkdir()
         env = {
-            k: v for k, v in os.environ.items() if not k.startswith(("TOKEN_SPAREN_", "CLAUDE_"))
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("TOKEN_SPAREN_", "CLAUDE_"))
+            or k in ("TOKEN_SPAREN_PYTHON", "TOKEN_SPAREN_NO_UV")
         }
         env.update(
             TOKEN_SPAREN_HOME=str(Path(tmp) / "home"),
             CLAUDE_PROJECT_DIR=str(project),
-            TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS="5000",
+        )
+        # widening settings come from the (temporary) user file: TOKEN_SPAREN_* may only narrow
+        private_mkdir(Path(tmp) / "home")
+        (Path(tmp) / "home" / "config.toml").write_text(
+            "[adapter]\nlatency_budget_ms = 5000\n"
             # a pipeline check: the static arm always compresses, a cold learner may not
-            TOKEN_SPAREN_LEARN__ENABLED="false",
+            "[learn]\nenabled = false\n",
+            encoding="utf-8",
         )
         try:
             proc = subprocess.run(  # noqa: S603
@@ -601,10 +611,30 @@ def _round_trip(root: Path) -> tuple[bool, str]:
     return False, f"hook output had no updatedToolOutput/marker: {proc.stdout[:120]!r}"
 
 
-def _python3_version() -> tuple[int, int] | None:
+def _load_pyfind(root: Path) -> ModuleType | None:
+    """The hooks' interpreter search (``hooks/_pyfind.py``), or None outside a plugin tree."""
+    path = root / "hooks" / "_pyfind.py"
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("_token_sparen_pyfind", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception:  # noqa: BLE001 - a broken file is reported as "launcher missing"
+        return None
+    return mod
+
+
+def _python3_version(pyfind: ModuleType | None = None) -> tuple[int, int] | None:
+    """Version of the ``python3`` on PATH (the one hooks.json starts), via ``_pyfind.probe``."""
     py = shutil.which("python3")
     if py is None:
         return None
+    if pyfind is not None:
+        got = pyfind.probe([py])
+        return None if got is None else (int(got[0]), int(got[1]))
     try:
         out = subprocess.run(  # noqa: S603
             [py, "-c", "import sys;print(sys.version_info[0], sys.version_info[1])"],
@@ -618,6 +648,82 @@ def _python3_version() -> tuple[int, int] | None:
         return None
 
 
+def plugin_version(root: Path) -> str | None:
+    """``version`` of ``<root>/.claude-plugin/plugin.json`` (the plugin's hooks run this
+    version), or None when there is no readable manifest (e.g. a pip-only install)."""
+    try:
+        data = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    return version if isinstance(version, str) and version else None
+
+
+_VERSION_OUT = re.compile(r"^token-sparen (\S+)\s*$")
+
+
+def path_cli_version(
+    which: Callable[[str], str | None] | None = None,
+) -> tuple[str | None, str | None]:
+    """(version, path) of the ``token-sparen`` on PATH (``--version``), or (None, None)."""
+    exe = (shutil.which if which is None else which)("token-sparen")
+    if exe is None:
+        return None, None
+    try:
+        out = subprocess.run(  # noqa: S603
+            [exe, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=20,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    m = _VERSION_OUT.match(out.strip())
+    return (m.group(1), exe) if m else (None, None)
+
+
+def version_skew(
+    plugin: str | None, path_cli: str | None, path_exe: str | None
+) -> list[tuple[str, str, str]]:
+    """Doctor rows: the plugin version, the PATH CLI version and a warning when they differ
+    (the skill and the hooks use the plugin's bundled CLI; the PATH one is for terminals)."""
+    rows = [(_OK, "plugin version", plugin or "unknown (not run from a Claude Code plugin)")]
+    if path_cli is None:
+        rows.append((_OK, "CLI on PATH", "none (the skill uses the plugin's bundled CLI)"))
+        return rows
+    rows.append((_OK, "CLI on PATH", f"{path_cli} ({path_exe})"))
+    if plugin is not None and path_cli != plugin:
+        detail = f"CLI {path_cli} differs from plugin {plugin}; the plugin's hooks use {plugin}"
+        rows.append((_WARN, "version skew", detail))
+    return rows
+
+
+def _hook_python(env: Mapping[str, str], root: Path) -> tuple[str, str]:
+    """(mark, detail) for the interpreter the hooks actually run: ``python3`` itself when it is
+    >= 3.11, else what the launcher would re-launch on (searched fresh, not from the cache)."""
+    py = shutil.which("python3")
+    if py is None:
+        return _WARN, python3_missing_hint(_host_platform())
+    pyfind = _load_pyfind(root)
+    ver = _python3_version(pyfind)
+    if ver is None:
+        return _WARN, f"{py} did not report its version"
+    shown = f"{ver[0]}.{ver[1]}"
+    if ver >= (3, 11):
+        return _OK, f"python3 {shown} at {py} (hooks run it directly)"
+    if pyfind is None:
+        return _WARN, f"python3 is {shown} < 3.11 and hooks/_pyfind.py is missing"
+    found = pyfind.find_python(dict(env), ver, self_exe=py, root=str(root), use_cache=False)
+    if found is None:
+        return _BAD, (
+            f"python3 is {shown} and no Python >= 3.11 was found, so the hooks do nothing. "
+            "Install Python 3.11 or newer, or set TOKEN_SPAREN_PYTHON to its path"
+        )
+    return _OK, f"{found[0]} (found via {found[1]}; python3 is {shown}, hooks re-launch on it)"
+
+
 def _doctor(args: argparse.Namespace) -> int:
     env = os.environ
     results: list[tuple[str, str, str]] = []
@@ -629,17 +735,14 @@ def _doctor(args: argparse.Namespace) -> int:
     ver = sys.version_info
     ok = ver >= (3, 11)
     add(_OK if ok else _BAD, "python", f"{ver.major}.{ver.minor}.{ver.micro} (need >= 3.11)")
-    path_py = _python3_version()
-    if path_py is None:
-        add(_WARN, "python3 on PATH", python3_missing_hint(_host_platform()))
-    elif path_py < (3, 11):
-        add(_WARN, "python3 on PATH", f"{path_py[0]}.{path_py[1]} < 3.11; hooks use python3")
+    mark, detail = _hook_python(env, _plugin_root(env))
+    add(mark, "hook python", detail)
     floors = _below_floor(load_config(Path.cwd(), env))
     if floors:
         add(_WARN, "min_tokens", "; ".join(floors))
     home = state_home(env)
     try:
-        home.mkdir(parents=True, exist_ok=True)
+        private_mkdir(home)
         probe = home / f".doctor-{os.getpid()}"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
@@ -657,6 +760,8 @@ def _doctor(args: argparse.Namespace) -> int:
     else:
         good, detail = _check_hooks_json(root)
         add(_OK if good else _BAD, "plugin", detail)
+    for row in version_skew(plugin_version(root), *path_cli_version()):
+        add(*row)
     if good:
         good, detail = _round_trip(root)
         add(_OK if good else _BAD, "hook round-trip", detail)
@@ -689,7 +794,7 @@ def _write_launcher() -> Path:
     text = LAUNCHER_TEMPLATE.read_text(encoding="utf-8")
     text = text.replace(_FALLBACK_LINE, f"FALLBACK_ROOT={shlex.quote(str(PACKAGE_ROOT))}", 1)
     dest = _launcher_path()
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(dest.parent)
     tmp = dest.with_name(dest.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.chmod(tmp, 0o755)
@@ -1123,8 +1228,13 @@ def _facts_cmd(args: argparse.Namespace) -> int:
             doc.pop("disabled", None)
         return doc
 
-    pdir.mkdir(parents=True, exist_ok=True)
-    jsonstore.update(store, toggle, {}, os.environ)
+    private_mkdir(pdir)
+    try:
+        jsonstore.update(store, toggle, {}, os.environ)
+    except jsonstore.NewerSchema as exc:
+        if off:
+            return _facts_downgraded(exc, "token-sparen facts disable")
+        raise
     state = "disabled" if off else "enabled"
     print(f"token-sparen facts: injection {state} for this project")
     return 0
@@ -1198,7 +1308,10 @@ def _prune_cmd(args: argparse.Namespace) -> int:
             print(f"warning: nothing will be written to {target} while {why}.")
         return 0
     if args.action == "disable":
-        done = prune.disable(home, key, env, checkout=project)
+        try:
+            done = prune.disable(home, key, env, checkout=project)
+        except jsonstore.NewerSchema as exc:
+            return _prune_downgraded(exc, project, None, "token-sparen prune disable")
         print(
             "token-sparen prune: disabled for this project"
             + (f"; restored {', '.join(done)}" if done else "")
@@ -1208,6 +1321,11 @@ def _prune_cmd(args: argparse.Namespace) -> int:
         return 0
     if args.all == (args.tool is not None):
         raise CliError("prune restore needs a tool name or --all")
+    command = "token-sparen prune restore " + ("--all" if args.all else shlex.quote(args.tool))
+    try:
+        prune.check_current(home, key, env)
+    except jsonstore.NewerSchema as exc:
+        return _prune_downgraded(exc, project, None if args.all else args.tool, command)
     doc = prune.read_doc(home, key, env, checkout=project)
     if args.all:
         every = prune.restore(home, key, None, None, env, checkout=project)  # every checkout
@@ -1228,6 +1346,49 @@ def _prune_cmd(args: argparse.Namespace) -> int:
         raise CliError(f"could not change {', '.join(where)}; see `token-sparen doctor`", code=1)
     for fkey, rules in restored.items():
         print(f"token-sparen prune: restored {', '.join(rules)} in {fkey}")
+    return 0
+
+
+def _command_line(argv: list[str]) -> str:
+    return " ".join(["token-sparen", *(shlex.quote(a) for a in argv)])
+
+
+def _prune_downgraded(
+    exc: jsonstore.NewerSchema, project: Path, tool: str | None, command: str
+) -> int:
+    """``prune disable`` / ``restore`` when the prune state is newer than this code: ownership
+    cannot be read, so nothing is removed (a user's own deny rule could be taken for ours,
+    ruling R-1). Lists the candidate rules and the manual edit; always exits non-zero."""
+    from token_sparen.adapters.claude import settings
+
+    target = settings.local_settings_path(project)
+    candidates, why = settings.downgrade_candidates(project, tool)
+    err = sys.stderr
+    print(f"token-sparen: {exc.advice(command)}", file=err)
+    print("token-sparen prune: nothing was changed (which rules are ours cannot be read)", file=err)
+    if why is not None:
+        print(f"token-sparen prune: {why}", file=err)
+    elif candidates:
+        backup = target.name + settings.BACKUP_SUFFIX
+        print(
+            f'to undo by hand, remove from "permissions"."deny" in {target} the entries '
+            f"below that you did not add yourself (they are not in {backup}):",
+            file=err,
+        )
+        for rule in candidates:
+            print(f"  {json.dumps(rule)}", file=err)
+    else:
+        print(f"token-sparen prune: no rule in token-sparen's format in {target}", file=err)
+    return 1
+
+
+def _facts_downgraded(exc: jsonstore.NewerSchema, command: str) -> int:
+    """``facts disable`` when ``facts.json`` is newer: this version never injects from it."""
+    print(
+        "token-sparen facts: this version does not inject facts from a newer facts.json, so "
+        "injection is already off while it runs"
+    )
+    print(f"token-sparen: {exc.advice(command)} (to keep it off there)", file=sys.stderr)
     return 0
 
 
@@ -1273,6 +1434,9 @@ def main(argv: list[str] | None = None) -> int:
         args.cmd = [*args.cmd, *tail]
     try:
         return _dispatch(args)
+    except jsonstore.NewerSchema as exc:  # state from a newer version: say what to do
+        print(f"token-sparen: {exc.advice(_command_line(argv))}", file=sys.stderr)
+        return 1
     except CliError as exc:
         print(f"token-sparen: {exc}", file=sys.stderr)
         return exc.code

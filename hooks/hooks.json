@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionStart",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionStart",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" UserPromptSubmit",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" UserPromptSubmit",
             "timeout": 10
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreToolUse",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreToolUse",
             "timeout": 10
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUse",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUse",
             "timeout": 10
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUseFailure",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUseFailure",
             "timeout": 10
           }
         ]
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreCompact",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreCompact",
             "timeout": 10
           }
         ]
@@ -74,7 +74,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionEnd",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionEnd",
             "timeout": 10
           }
         ]
@@ -86,7 +86,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PermissionDenied",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PermissionDenied",
             "timeout": 10
           }
         ]

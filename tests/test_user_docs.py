@@ -15,8 +15,11 @@ README = ROOT / "README.md"
 
 # ---------------------------------------------------------------- figures
 
-# TODO(merge): align with the marker pair Task 6 writes into README.md / benchmarks-methodology.md.
-_EVIDENCE = re.compile(r"<!--\s*evidence\s*-->.*?<!--\s*/evidence\s*-->", re.S)
+# Both marker spellings: docs pages (evidence, /evidence) and the README renderer (evidence:start,
+# evidence:end).
+_EVIDENCE = re.compile(
+    r"<!--\s*evidence(?::start)?\s*-->.*?<!--\s*(?:/evidence|evidence:end)\s*-->", re.S
+)
 _FENCE = re.compile(r"^(?P<intro>(?:[^\n]+\n)+)\n```[^\n]*\n.*?\n```", re.M | re.S)
 _KEYWORDS = re.compile(
     r"\b(?:saved|savings|reduction|reduces|cheaper|faster|resolved|pass rate|fewer tokens)\b", re.I
@@ -41,7 +44,7 @@ _ALLOWED = [
     "80 % of recent decisions",  # statusline `exploiting`
     ">= 80 %",
     "0.3",
-    # TODO(merge): README wording, rewritten in Task 6; drop these two when it is.
+    # README wording (retention and the min_saving_ratio table row)
     "whenever a new one is saved: those older than 14 days",
     "minimum share saved for a replacement",
 ]
@@ -85,6 +88,7 @@ def test_figure_guard_positive_controls() -> None:
     assert figure_violations("Trims 12 runs, a reduction in tokens.")
     assert figure_violations("Config floor stays 2000 tokens; the test needs 100 % recall.") == []
     assert figure_violations("<!-- evidence -->\nsaved 43 %\n<!-- /evidence -->") == []
+    assert figure_violations("<!-- evidence:start -->\nsaved 43 %\n<!-- evidence:end -->") == []
 
 
 # ---------------------------------------------------------------- pages and links
@@ -190,7 +194,7 @@ def test_user_docs_have_no_figures() -> None:
 
 def test_benchmarks_page_has_evidence_marker() -> None:
     text = (DOCS / "benchmarks-methodology.md").read_text(encoding="utf-8")
-    assert re.search(r"<!--\s*evidence\s*-->", text)
+    assert re.search(r"<!--\s*evidence\s*-->", text) and "<!-- /evidence -->" in text
 
 
 def test_support_matrix_matches_ci() -> None:

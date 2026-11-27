@@ -7,7 +7,7 @@ import random
 from pathlib import Path
 
 import pytest
-from perfutil import best_of, perf_factor
+from perfutil import best_within, perf_factor
 
 from token_sparen.compress import CompressContext, Level, TextCompressor, is_error_line, registry
 from token_sparen.compress.search import LogCompressor, PplxCompressor, SearchCompressor
@@ -388,7 +388,9 @@ def _big(unit: str, size: int = 1024 * 1024) -> str:
 def test_search_budget_1mb() -> None:
     text = _big("src/pkg/mod{f}.py:{i}:    result = compute_{r}(value, option) + 1")
     ctx = CompressContext(prompt="compute value", recent_paths=())
-    best, res = best_of(lambda: SearchCompressor().compress(text, STANDARD, ctx), 3)
+    best, res = best_within(
+        lambda: SearchCompressor().compress(text, STANDARD, ctx), 0.1 * perf_factor(), 3
+    )
     assert res.text != text
     assert best < 0.1 * perf_factor(), f"{best * 1000:.0f} ms"
 
@@ -398,7 +400,9 @@ def test_pplx_budget_1mb() -> None:
     doc = {"results": [_result(i) for i in range(1, 6000)]}
     text = json.dumps(doc, indent=2)
     assert len(text) > 1024 * 1024 * 0.9
-    best, res = best_of(lambda: PplxCompressor().compress(text, STANDARD, NO_CTX), 3)
+    best, res = best_within(
+        lambda: PplxCompressor().compress(text, STANDARD, NO_CTX), 0.1 * perf_factor(), 3
+    )
     assert "[1] Title 1" in res.text
     assert best < 0.1 * perf_factor(), f"{best * 1000:.0f} ms"
 
@@ -416,7 +420,9 @@ def test_pplx_budget_1mb() -> None:
 )
 def test_log_budget_1mb(unit: str, base_s: float) -> None:
     text = _big(unit)
-    best, res = best_of(lambda: LogCompressor().compress(text, STANDARD, NO_CTX), 3)
+    best, res = best_within(
+        lambda: LogCompressor().compress(text, STANDARD, NO_CTX), base_s * perf_factor(), 3
+    )
     assert res.text != text
     assert best < base_s * perf_factor(), f"{best * 1000:.0f} ms"
 

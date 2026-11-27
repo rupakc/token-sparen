@@ -8,7 +8,9 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sampleoutputs import big_pytest
@@ -408,7 +410,7 @@ def test_slash_command_is_a_skill() -> None:
     # `session disable` only: re-enabling trimming (`session enable`) needs a permission prompt
     # `prune restore` only removes deny rules token-sparen wrote: always safe
     safe = ("stats", "show", "doctor", "session disable", "prune restore")
-    boot = 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"'
+    boot = 'python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"'
     assert tools == [f"Bash(token-sparen {c}:*)" for c in safe] + [
         f"Bash({boot} {c}:*)" for c in safe
     ]
@@ -426,7 +428,7 @@ def test_slash_command_is_a_skill() -> None:
     assert "explicitly" in body and "/token-sparen" in body
     assert "$ARGUMENTS" in body
     assert "session disable --session ${CLAUDE_SESSION_ID}" in body
-    assert 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"' in body
+    assert 'python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"' in body
     for needle in ("token-sparen stats", "statusline install", "extensions trust"):
         assert needle in body
 
@@ -639,13 +641,58 @@ def test_doctor_round_trip_does_not_depend_on_learning(
     arm must not make `doctor` report a broken install, so it runs with learning off."""
     from token_sparen import cli
 
-    seen: dict[str, str] = {}
+    seen: dict[str, Any] = {}
 
     def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        seen.update(kwargs["env"])  # type: ignore[arg-type]
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        user = Path(env["TOKEN_SPAREN_HOME"]) / "config.toml"
+        seen.update(tomllib.loads(user.read_text(encoding="utf-8")))
         return subprocess.CompletedProcess([], 0, "{}", "")
 
     monkeypatch.setattr(cli.subprocess, "run", run)
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/python3")
     cli._round_trip(Path(__file__).resolve().parents[1])
-    assert seen["TOKEN_SPAREN_LEARN__ENABLED"] == "false"
+    # from the temporary user file: a TOKEN_SPAREN_* variable may only narrow
+    assert seen["learn"]["enabled"] is False
+
+
+@posix_only
+def test_doctor_reports_hook_interpreter(
+    env: dict[str, str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """doctor names the interpreter the hooks would really run (python3, or what the launcher
+    finds when python3 is older than 3.11) and fails when there is none."""
+    import token_sparen.cli as cli
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+
+    def fake(name: str, version: tuple[int, int]) -> Path:
+        path = bindir / name
+        path.write_text(f'#!/bin/sh\necho "{version[0]} {version[1]} $0"\n', encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    fake("python3", (3, 9))
+    newer = fake("python3.12", (3, 12))
+    monkeypatch.setenv("PATH", str(bindir))
+    monkeypatch.setenv("TOKEN_SPAREN_NO_UV", "1")
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(ROOT))
+    monkeypatch.setattr(cli, "_round_trip", lambda root: (True, "skipped in this test"))
+    assert main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    line = next(x for x in out.splitlines() if "hook python" in x)
+    assert line.startswith("✓") and str(newer) in line and "3.9" in line and "python3.12" in line
+    newer.unlink()
+    assert main(["doctor"]) == 1
+    out = capsys.readouterr().out
+    line = next(x for x in out.splitlines() if "hook python" in x)
+    assert line.startswith("✗") and "TOKEN_SPAREN_PYTHON" in line
+    fake("python3", (3, 13))
+    assert main(["doctor"]) == 0
+    line = next(x for x in capsys.readouterr().out.splitlines() if "hook python" in x)
+    assert line.startswith("✓") and "3.13" in line and "directly" in line

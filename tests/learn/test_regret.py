@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from sampleoutputs import big_pytest
+from userconf import to_user_config
 
 from token_sparen.config import Config, load_config
 from token_sparen.events import Event, EventKind, SessionCtx, ToolCall
@@ -33,7 +34,7 @@ def _env(tmp_path: Path) -> dict[str, str]:
 def _cfg(tmp_path: Path, **over: str) -> Config:
     env = _env(tmp_path)
     env.update({f"TOKEN_SPAREN_{k}": v for k, v in over.items()})
-    return load_config(tmp_path / "proj", env)
+    return load_config(tmp_path / "proj", to_user_config(env))  # user-only: the user's file
 
 
 def _proj(tmp_path: Path) -> Path:
@@ -280,7 +281,7 @@ def test_cli_show_records_recovery_read(tmp_path: Path, monkeypatch: pytest.Monk
     from token_sparen.store import keycache
 
     proj = _proj(tmp_path)
-    ref = recovery.save_full(proj, FULL)
+    ref = recovery.save_full(proj, FULL, _env(tmp_path))
     for k in ("CLAUDE_PROJECT_DIR", "CLAUDE_SESSION_ID"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("TOKEN_SPAREN_HOME", str(tmp_path / "home"))
@@ -320,7 +321,7 @@ def test_cli_show_without_session_is_fine(
     from token_sparen.cli import main
 
     proj = _proj(tmp_path)
-    ref = recovery.save_full(proj, "hello\n")
+    ref = recovery.save_full(proj, "hello\n", _env(tmp_path))
     monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
     monkeypatch.setenv("TOKEN_SPAREN_HOME", str(tmp_path / "home"))
     monkeypatch.chdir(proj)

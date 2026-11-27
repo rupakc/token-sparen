@@ -46,7 +46,7 @@ python scripts/check_denylist.py
 - Mechanisms and compressors never import `token_sparen.adapters`.
 - Every elision carries the recovery marker and the full text is saved under `<project>/.token-sparen/outputs/`.
 - `TOKEN_SPAREN_DISABLE=1` disables every hook.
-- Config precedence: defaults < user config < project `token-sparen.toml` < env `TOKEN_SPAREN_*` < session overrides (`token-sparen config set`).
+- Config precedence: defaults < user config < project `token-sparen.toml` < env `TOKEN_SPAREN_*` < session overrides (`token-sparen config set`). Project file and env may only narrow (`PROJECT_POLICY`; `sanitise_project` / `sanitise_env`).
 - The project file is deny-by-default: it may only make token-sparen intervene less or keep more,
   and an unlisted key is user-only (`PROJECT_POLICY` in `config.py`).
 - Quality first: file contents are never trimmed by default (`compression.trim_file_contents`

@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from userconf import to_user_config
 
 from token_sparen import config as config_mod
 from token_sparen.compress import (
@@ -55,11 +56,12 @@ def test_levels_loaded_from_defaults(tmp_path: Path) -> None:
         load_level(cfg, "off")
 
 
-def test_level_override_from_env(tmp_path: Path) -> None:
+def test_level_override_from_user_config(tmp_path: Path) -> None:
     env = {
         "TOKEN_SPAREN_HOME": str(tmp_path / "h"),
         "TOKEN_SPAREN_COMPRESSION__LEVELS__LIGHT__HEAD": "5",
     }
+    env = to_user_config(env)  # head is user-only: a TOKEN_SPAREN_* variable is ignored
     assert load_level(load_config(tmp_path, env), "light") == Level(5, 40, 0.6)
 
 

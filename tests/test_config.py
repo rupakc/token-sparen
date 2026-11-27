@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from token_sparen.config import load_config
+from token_sparen.config import _env_overrides, load_config
 
 
 def _env(home: Path, **extra: str) -> dict[str, str]:
@@ -65,19 +65,25 @@ def test_env_value_parsing(tmp_path: Path) -> None:
         TOKEN_SPAREN_A__B__DEEP="9",
         TOKEN_SPAREN_NOSECTION="x",
     )
+    parsed = _env_overrides(env)
+    assert parsed["a"] == {
+        "int": 7,
+        "float": 0.5,
+        "t": True,
+        "f": False,
+        "one": 1,
+        "str": "hello",
+        "b": {"deep": 9},
+    }
+    assert "nosection" not in parsed
     cfg = load_config(tmp_path, env)
-    assert cfg.get("a.int") == 7
-    assert cfg.get("a.float") == 0.5
-    assert cfg.get("a.t") is True
-    assert cfg.get("a.f") is False
-    assert cfg.get("a.one") == 1
-    assert cfg.get("a.str") == "hello"
-    assert cfg.get("a.b.deep") == 9
+    assert cfg.get("a") is None  # unlisted keys are user-only: a variable may only narrow
 
 
 def test_env_overrides_non_table(tmp_path: Path) -> None:
     env = _env(tmp_path / "h", TOKEN_SPAREN_COMPRESSION__MIN_TOKENS__X="1")
-    assert load_config(tmp_path, env).get("compression.min_tokens.x") == 1
+    assert _env_overrides(env) == {"compression": {"min_tokens": {"x": 1}}}
+    assert load_config(tmp_path, env).get("compression.min_tokens") == 2000  # never a table
 
 
 def test_logging_failure_swallowed(tmp_path: Path) -> None:

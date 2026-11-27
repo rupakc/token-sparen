@@ -1,0 +1,212 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.1, pytest-8.1.0, pluggy-1.4.0
+rootdir: /srv/demo
+collected 900 items
+
+tests/test_mod_00.py::test_case_0000 PASSED                    [  0%]
+tests/test_mod_00.py::test_case_0001 PASSED                    [  0%]
+tests/test_mod_00.py::test_case_0002 PASSED                    [  0%]
+tests/test_mod_00.py::test_case_0003 PASSED                    [  0%]
+tests/test_mod_00.py::test_case_0004 PASSED                    [  0%]
+tests/test_mod_00.py::test_case_0005 PASSED                    [  0%]
+tests/test_mod_00.py::test_case_0006 PASSED                    [  0%]
+tests/test_mod_00.py::test_case_0007 PASSED                    [  0%]
+tests/test_mod_00.py::test_case_0008 PASSED                    [  0%]
+tests/test_mod_00.py::test_case_0009 PASSED                    [  1%]
+tests/test_mod_00.py::test_case_0010 PASSED                    [  1%]
+tests/test_mod_00.py::test_case_0011 PASSED                    [  1%]
+tests/test_mod_00.py::test_case_0012 PASSED                    [  1%]
+tests/test_mod_00.py::test_case_0013 PASSED                    [  1%]
+tests/test_mod_00.py::test_case_0014 PASSED                    [  1%]
+tests/test_mod_00.py::test_case_0015 PASSED                    [  1%]
+tests/test_mod_00.py::test_case_0016 PASSED                    [  1%]
+tests/test_mod_00.py::test_case_0017 PASSED                    [  1%]
+tests/test_mod_00.py::test_case_0018 PASSED                    [  2%]
+tests/test_mod_00.py::test_case_0019 PASSED                    [  2%]
+tests/test_mod_00.py::test_case_0020 PASSED                    [  2%]
+tests/test_mod_00.py::test_case_0021 PASSED                    [  2%]
+tests/test_mod_00.py::test_case_0022 PASSED                    [  2%]
+tests/test_mod_00.py::test_case_0023 PASSED                    [  2%]
+tests/test_mod_00.py::test_case_0024 PASSED                    [  2%]
+tests/test_mod_00.py::test_case_0025 PASSED                    [  2%]
+tests/test_mod_00.py::test_case_0026 PASSED                    [  2%]
+tests/test_mod_00.py::test_case_0027 PASSED                    [  3%]
+tests/test_mod_00.py::test_case_0028 PASSED                    [  3%]
+tests/test_mod_00.py::test_case_0029 PASSED                    [  3%]
+tests/test_mod_00.py::test_case_0030 PASSED                    [  3%]
+tests/test_mod_00.py::test_case_0031 PASSED                    [  3%]
+tests/test_mod_00.py::test_case_0032 PASSED                    [  3%]
+tests/test_mod_00.py::test_case_0033 PASSED                    [  3%]
+tests/test_mod_00.py::test_case_0034 PASSED                    [  3%]
+tests/test_mod_00.py::test_case_0035 PASSED                    [  3%]
+tests/test_mod_00.py::test_case_0036 PASSED                    [  4%]
+tests/test_mod_00.py::test_case_0037 PASSED                    [  4%]
+tests/test_mod_00.py::test_case_0038 PASSED                    [  4%]
+tests/test_mod_00.py::test_case_0039 PASSED                    [  4%]
+tests/test_mod_01.py::test_case_0040 PASSED                    [  4%]
+tests/test_mod_01.py::test_case_0041 PASSED                    [  4%]
+tests/test_mod_01.py::test_case_0042 PASSED                    [  4%]
+tests/test_mod_01.py::test_case_0043 PASSED                    [  4%]
+tests/test_mod_01.py::test_case_0044 PASSED                    [  4%]
+tests/test_mod_01.py::test_case_0045 PASSED                    [  5%]
+tests/test_mod_01.py::test_case_0046 PASSED                    [  5%]
+tests/test_mod_01.py::test_case_0047 PASSED                    [  5%]
+tests/test_mod_01.py::test_case_0048 PASSED                    [  5%]
+tests/test_mod_01.py::test_case_0049 PASSED                    [  5%]
+tests/test_mod_01.py::test_case_0050 PASSED                    [  5%]
+tests/test_mod_01.py::test_case_0051 PASSED                    [  5%]
+tests/test_mod_01.py::test_case_0052 PASSED                    [  5%]
+tests/test_mod_01.py::test_case_0053 PASSED                    [  5%]
+tests/test_mod_01.py::test_case_0054 PASSED                    [  6%]
+tests/test_mod_01.py::test_case_0055 PASSED                    [  6%]
+tests/test_mod_01.py::test_case_0056 PASSED                    [  6%]
+tests/test_mod_01.py::test_case_0057 PASSED                    [  6%]
+tests/test_mod_01.py::test_case_0058 PASSED                    [  6%]
+tests/test_mod_01.py::test_case_0059 PASSED                    [  6%]
+tests/test_mod_01.py::test_case_0060 PASSED                    [  6%]
+tests/test_mod_01.py::test_case_0061 PASSED                    [  6%]
+tests/test_mod_01.py::test_case_0062 PASSED                    [  6%]
+tests/test_mod_01.py::test_case_0063 PASSED                    [  7%]
+tests/test_mod_01.py::test_case_0064 PASSED                    [  7%]
+tests/test_mod_01.py::test_case_0065 PASSED                    [  7%]
+tests/test_mod_01.py::test_case_0066 PASSED                    [  7%]
+tests/test_mod_01.py::test_case_0067 PASSED                    [  7%]
+tests/test_mod_01.py::test_case_0068 PASSED                    [  7%]
+tests/test_mod_01.py::test_case_0069 PASSED                    [  7%]
+tests/test_mod_01.py::test_case_0070 PASSED                    [  7%]
+tests/test_mod_01.py::test_case_0071 PASSED                    [  7%]
+tests/test_mod_01.py::test_case_0072 PASSED                    [  8%]
+tests/test_mod_01.py::test_case_0073 PASSED                    [  8%]
+tests/test_mod_01.py::test_case_0074 PASSED                    [  8%]
+tests/test_mod_01.py::test_case_0075 PASSED                    [  8%]
+tests/test_mod_01.py::test_case_0076 PASSED                    [  8%]
+tests/test_mod_01.py::test_case_0077 PASSED                    [  8%]
+tests/test_mod_01.py::test_case_0078 PASSED                    [  8%]
+tests/test_mod_01.py::test_case_0079 PASSED                    [  8%]
+tests/test_mod_02.py::test_case_0080 PASSED                    [  8%]
+tests/test_mod_02.py::test_case_0081 PASSED                    [  9%]
+tests/test_mod_02.py::test_case_0082 PASSED                    [  9%]
+tests/test_mod_02.py::test_case_0083 PASSED                    [  9%]
+tests/test_mod_02.py::test_case_0084 PASSED                    [  9%]
+tests/test_mod_02.py::test_case_0085 PASSED                    [  9%]
+tests/test_mod_02.py::test_case_0086 PASSED                    [  9%]
+tests/test_mod_02.py::test_case_0087 PASSED                    [  9%]
+tests/test_mod_02.py::test_case_0088 PASSED                    [  9%]
+tests/test_mod_02.py::test_case_0089 PASSED                    [  9%]
+tests/test_mod_02.py::test_case_0090 PASSED                    [ 10%]
+tests/test_mod_02.py::test_case_0091 PASSED                    [ 10%]
+tests/test_mod_02.py::test_case_0092 PASSED                    [ 10%]
+tests/test_mod_02.py::test_case_0093 PASSED                    [ 10%]
+tests/test_mod_02.py::test_case_0094 PASSED                    [ 10%]
+tests/test_mod_02.py::test_case_0095 PASSED                    [ 10%]
+tests/test_mod_02.py::test_case_0096 PASSED                    [ 10%]
+tests/test_mod_02.py::test_case_0097 PASSED                    [ 10%]
+tests/test_mod_02.py::test_case_0098 PASSED                    [ 10%]
+tests/test_mod_02.py::test_case_0099 PASSED                    [ 11%]
+tests/test_mod_02.py::test_case_0100 PASSED                    [ 11%]
+tests/test_mod_02.py::test_case_0101 PASSED                    [ 11%]
+tests/test_mod_02.py::test_case_0102 PASSED                    [ 11%]
+tests/test_mod_02.py::test_case_0103 PASSED                    [ 11%]
+tests/test_mod_02.py::test_case_0104 PASSED                    [ 11%]
+tests/test_mod_02.py::test_case_0105 PASSED                    [ 11%]
+tests/test_mod_02.py::test_case_0106 PASSED                    [ 11%]
+tests/test_mod_02.py::test_case_0107 PASSED                    [ 11%]
+tests/test_mod_02.py::test_case_0108 PASSED                    [ 12%]
+tests/test_mod_02.py::test_case_0109 PASSED                    [ 12%]
+tests/test_mod_02.py::test_case_0110 PASSED                    [ 12%]
+tests/test_mod_02.py::test_case_0111 PASSED                    [ 12%]
+tests/test_mod_02.py::test_case_0112 PASSED                    [ 12%]
+tests/test_mod_02.py::test_case_0113 PASSED                    [ 12%]
+tests/test_mod_02.py::test_case_0114 PASSED                    [ 12%]
+tests/test_mod_02.py::test_case_0115 PASSED                    [ 12%]
+tests/test_mod_02.py::test_case_0116 PASSED                    [ 12%]
+tests/test_mod_02.py::test_case_0117 PASSED                    [ 13%]
+tests/test_mod_02.py::test_case_0118 PASSED                    [ 13%]
+============================= test session starts ==============================
+platform linux -- Python 3.12.1, pytest-8.1.0, pluggy-1.4.0
+rootdir: /srv/demo
+collected 142 items
+
+tests/test_api.py .................                                   [ 12%]
+tests/test_models.py ......F.....                                     [ 24%]
+tests/test_views.py .................                                 [ 36%]
+tests/test_utils.py .................                                 [ 48%]
+tests/test_cache.py ......F....                                       [ 60%]
+tests/test_auth.py .................                                  [ 72%]
+tests/test_forms.py .................                                 [ 84%]
+tests/test_tasks.py .................                                 [ 96%]
+
+=================================== FAILURES ===================================
+____________________ test_model_roundtrip[json-utf8] ____________________
+
+    @pytest.mark.parametrize('fmt', ['json'])
+    def test_model_roundtrip(fmt, model):
+        step_1 = prepare(model, 1)
+        step_2 = prepare(model, 2)
+        step_3 = prepare(model, 3)
+        step_4 = prepare(model, 4)
+        step_5 = prepare(model, 5)
+        step_6 = prepare(model, 6)
+        step_7 = prepare(model, 7)
+        data = model.dump(fmt)
+        again = Model.load(data)
+>       assert again == model
+E       AssertionError: assert Model(id=3) == Model(id=4)
+E         Differing attributes:
+E         ['id']
+
+tests/test_models.py:48: AssertionError
+________________________ test_cache_eviction ________________________
+
+    def test_cache_eviction(cache):
+        cache.put('k1', 1)
+        cache.put('k2', 2)
+        cache.put('k3', 3)
+        cache.put('k4', 4)
+        cache.put('k5', 5)
+        cache.put('k6', 6)
+        cache.put('k7', 7)
+        cache.put('k8', 8)
+        cache.put('k9', 9)
+        cache.put('k10', 10)
+        cache.put('k11', 11)
+        cache.put('k12', 12)
+        cache.put('k13', 13)
+        cache.put('k14', 14)
+        cache.put('k15', 15)
+        cache.put('k16', 16)
+        cache.put('k17', 17)
+        cache.put('k18', 18)
+        cache.put('k19', 19)
+        cache.put('k20', 20)
+        cache.put('k21', 21)
+        cache.put('k22', 22)
+        cache.put('k23', 23)
+        cache.put('k24', 24)
+        cache.put('k25', 25)
+        for k in range(30):
+>           cache.get(f'k{k}')
+E           KeyError: 'k0'
+
+tests/test_cache.py:77: KeyError
+------------------------------ Captured log call -------------------------------
+DEBUG    cache:store.py:1 evicting entry 1
+DEBUG    cache:store.py:2 evicting entry 2
+DEBUG    cache:store.py:3 evicting entry 3
+DEBUG    cache:store.py:4 evicting entry 4
+DEBUG    cache:store.py:5 evicting entry 5
+DEBUG    cache:store.py:6 evicting entry 6
+DEBUG    cache:store.py:7 evicting entry 7
+DEBUG    cache:store.py:8 evicting entry 8
+DEBUG    cache:store.py:9 evicting entry 9
+DEBUG    cache:store.py:10 evicting entry 10
+DEBUG    cache:store.py:11 evicting entry 11
+DEBUG    cache:store.py:12 evicting entry 12
+========== warnings summary ==========
+tests/test_utils.py::test_old
+  DeprecationWarning: use new_helper instead
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+============ short test summary info ============
+FAILED tests/test_models.py::test_model_roundtrip[json-utf8] - AssertionError: assert Model(id=3) == Model(id=4)
+FAILED tests/test_cache.py::test_cache_eviction - KeyError: 'k0'
+========== 2 failed, 140 passed, 1 warning in 4.82s ==========

@@ -8,7 +8,6 @@ token-sparen's north star is to maximise tokens saved subject to no measurable q
 No published results are included in this source. The release build fills this block from the public E4 evidence file; until a release has one, no savings are claimed.
 <!-- /evidence -->
 
-<!-- TODO(merge): Task 6 renders the generated Evidence block between these markers (and in the README); keep the marker pair in step with scripts/render_evidence.py. -->
 
 ## The four evaluations
 
@@ -26,16 +25,17 @@ E1 and E3 are private by design: figures derived from anyone's sessions are neve
 - A number may appear in the README, site or release notes only if it comes from a public E4 result for the plugin version being released (named by version and plugin hash).
 - Comparisons are paired per task. Cost is reported as a paired bootstrap 95 % confidence interval of the median ratio. Quality is judged by non-inferiority of the resolved rate with a margin of −5 pp; the release gate requires non-inferiority at that margin. A result that cannot show it is reported as failed or underpowered, with its intervals; it is never rounded up.
 - A result is published only with its interval, task count, seeds, model and date, and it measures the released plugin version (its hash is recorded).
+- The E4 harness (task pool, arms, prompt, isolation and the evidence schema) lives in [`bench/`](bench/e4.py) and its arms are declared in [`bench/arms.toml`](bench/arms.toml); the evidence file is `docs/evidence/e4.json` and the README and site render their Evidence block only from it.
+- A release passes only if the evidence exists, its plugin hash equals the hash of the tree being released and its gate result is `passed`. The one override is an `underpowered` result together with an owner-written `docs/release/gate-decision.toml`; a `failed` or missing result can never be overridden, and the README and site then state the underpowered result with its intervals.
 - Tuned parameters are chosen offline with the hill-climbing harness: grids declared in advance, one look at a held-out split, accept all or nothing, with the method in [`docs/reports/m4-method.md`](docs/reports/m4-method.md). Test windows are recorded and never reused.
 - Pages and README never state a savings, quality or cost result outside the Evidence block; this is enforced by a test.
 
-<!-- TODO(merge): link the M5 method document for E4 (path decided by the M5 plan) here once it is on main. -->
 
 ## Measuring it on your own sessions (offline, private)
 
 `token-sparen replay <transcript files or dirs> --policy default|static|engine|<arm>[,...] --out <file>`
 replays your past Claude Code transcripts through the same compression path the hook uses
-(nothing is saved or learned; `default` and `engine` apply the quality gate, `static` and
+(nothing is saved or learned; `default` and `engine` apply the quality gate above, `static` and
 an arm name replay every eligible output) and estimates tokens removed, projected re-sends until the next compaction,
 cache-aware cost-weighted savings and a proxy regret rate (the agent later used distinctive words
 that only the trimmed part contained). `--policy` takes a comma-separated list to compare several

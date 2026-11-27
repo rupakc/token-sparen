@@ -10,13 +10,100 @@ Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones 
 and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`
 for M3); the package version stays `0.1.0.dev0` until v1.0.
 
+### Upgrade safety and CLI/plugin version skew (M6)
+
+- State written by any 0.x milestone (`v0.1.0-m1` ... `v0.4.0-m4`) loads on this code, or is
+  quarantined / started afresh with one `errors.jsonl` line; nothing learned is lost (evidence,
+  facts, prune opt-in and records, statusline install record, sessions, recovery files). Tested
+  against state trees captured from each tag (`scripts/make_state_fixtures.py`,
+  `tests/fixtures/state/`).
+- No downgrade: a versioned document (`posteriors.json`, `facts.json`, `prune.json`,
+  `prune_rules.json`, `statusline_install.json`, `savings_scale.json`; `store/schema.py`) whose
+  version is newer than this code knows is read-only: never rewritten (`NewerSchema`, logged),
+  so an older CLI cannot downgrade state a newer plugin wrote. Files without a version get
+  none added.
+- The session fold isolates each store: a newer store skips only its own step (project,
+  global, pre-trim, facts, prune, backfill); the other steps still run, and the session stays
+  pending to finish that step later (at most 20 pending sessions, then it is cleared).
+- A newer or corrupt state file is logged once per store per session (`logs/once.json` holds
+  short hashes only), not once per hook.
+- Versioned documents record `written_by` (the token-sparen version that wrote them). After a
+  downgrade, `prune disable` / `prune restore` change nothing and list, as a manual edit, the
+  rules in token-sparen's format that are not in the settings backup (a rule you added yourself
+  would match too, so none is removed automatically), `statusline uninstall` reverts the
+  `statusLine` it recognises, `facts disable` explains that this version does not inject from a
+  newer `facts.json`, and any other command prints `state written by token-sparen <version>;
+  upgrade to it, or run <command> from that version` instead of an exception. README documents
+  the full uninstall path.
+- A v1 `posteriors.json` is copied to `posteriors.v1.bak.json` before it is rewritten.
+- `doctor` prints the plugin version and the `token-sparen` on PATH and warns
+  `CLI x differs from plugin y; the plugin's hooks use y` when they differ (a warning only).
+- The `/token-sparen` skill runs the plugin's bundled CLI first (`python3 -I
+  "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"`), `token-sparen` on PATH only as a fallback, and
+  when neither runs replies that token-sparen works in Claude Code only.
+- Known gap: recovery files saved by 0.x stay on disk and readable at the path in their marker,
+  but `token-sparen show <id>` serves only ids this install registered (M6 security), so it
+  refuses ids saved before the upgrade.
+
+### Hook launcher finds a Python >= 3.11 (M5 Task 1)
+
+- Fixed: the hooks silently did nothing when the `python3` on `PATH` was older than 3.11 (macOS
+  ships 3.9). `hooks/run.py` now re-launches itself on a Python >= 3.11 found by
+  `hooks/_pyfind.py`: `TOKEN_SPAREN_PYTHON`, `python3.15` ... `python3.11`, `python3`, on Windows
+  `py -3.15` ... `py -3.11` / `py -3`, then `uv python find ">=3.11"` (never downloads;
+  `TOKEN_SPAREN_NO_UV=1` skips it). Each candidate must report >= 3.11 itself; the choice is
+  cached in `~/.token-sparen/launcher.json` and re-checked when `python3` or the chosen
+  interpreter changes or disappears. POSIX re-launches with `execv`, Windows with a child process
+  on inherited stdio (exit code passed through); `TOKEN_SPAREN_REEXEC` stops a second hop and is
+  removed before the hook runs. The search is bounded to 2 s; `launcher.json` is private
+  (0600). Measured cost: about 40-55 ms per hook call (`tests/perf/test_launcher_reexec.py`),
+  paid only when `python3` is older than 3.11.
+- `TOKEN_SPAREN_PYTHON` follows the env-path safety rule: honoured only outside the current
+  project / git work tree, and (POSIX) when the interpreter and its directory are owned by the
+  user or root and not group/world-writable; re-checked on every cache hit, a rejection logged
+  once. The test-only `TOKEN_SPAREN_LAUNCHER_FORCE_REEXEC` needs a `TOKEN_SPAREN_HOME` the state
+  root accepts.
+- With no Python >= 3.11 the hooks stay a no-op, show one warning (`systemMessage`) and log one
+  `errors.jsonl` line (`"kind": "launcher"`) at most once a day.
+- `run_cli.py` (the `/token-sparen` CLI fallback) and the statusline launcher use the same search.
+- `doctor`: new `hook python` line names the interpreter the hooks actually use and how it was
+  found; it fails when there is none.
+- Hardening: hook commands, the CLI fallback and the re-launch run Python isolated (`-I`; the
+  re-launch also `-S`), so `PYTHONPATH`, `PYTHONSTARTUP` and the user site directory (which a
+  repository's committed settings could set) never load code into a hook. The skill's
+  pre-approved CLI commands now read `python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" ...`.
+### Security and privacy review (M6)
+
+- `TOKEN_SPAREN_*` environment variables may only narrow, like a project's
+  `token-sparen.toml` (a repository's committed Claude Code settings can set environment
+  variables); an ignored value is logged once. Widen in `~/.token-sparen/config.toml` or with
+  `token-sparen config set`. `learn.optin.*` and `extensions.allow_override` are read from
+  `~/.token-sparen/config.toml` only. Migration: user-only keys are ignored from the environment
+  even when they would narrow (`LEARN__ENABLED`, `GOVERNOR__HARD_STOP`, `PRUNE__ENABLED`,
+  `ADAPTER__LATENCY_SAMPLE_RATE`, ...); set them in `config.toml`, or use
+  `TOKEN_SPAREN_DISABLE=1`, `TOKEN_SPAREN_GOVERNOR__ENABLED=false` or
+  `TOKEN_SPAREN_PRUNE__ALLOW=false`.
+- Directories under `~/.token-sparen/` and `<project>/.token-sparen/` are owner-only (0700 on
+  POSIX): created so, and older looser ones of yours are tightened on the next write; a
+  directory owned by someone else (or a link that appeared while creating) is refused.
+- Recovery files are never written, read or pruned through a symbolic link (directories or the
+  `<id>.txt` file itself; new files are written `O_EXCL`/`O_NOFOLLOW` and renamed into place),
+  and `token-sparen show` serves only outputs this install saved for this checkout (one empty
+  marker file per id under `~/.token-sparen/recovery/<hash>/`); a file a repository planted at
+  an id is replaced by the real output.
+- Threat model in `docs/user/privacy-security.md`; `SECURITY.md` states supported versions and
+  scope. CI: actions pinned by commit SHA, checkouts without a persisted token, a `supply-chain`
+  job (pinning and least-privilege tests, advisory `pip-audit`), Dependabot, and a deny-list
+  that scans generated trees and archives (`--path`) and fails closed on `main` when its word
+  list is missing (`--require-private-words`).
+
 ### M5
 
 - Output-style directive (spec 6.6, high tier, static): `[output_style] enabled = false`,
   `directive = "concise"`. When the user opts in, SessionStart adds one line, `[token-sparen
   output style] Be concise in prose. Never shorten code, commands, file paths, error messages or
   quoted tool output.`, once per context epoch (startup, clear, compact; never resume), counted
-  as injected tokens. A project file may only switch it off; the directive is user-only; an
+  as injected tokens. A project file or a `TOKEN_SPAREN_*` variable may only switch it off; the directive is user-only; an
   unknown name means off and is logged once. Off by default in v1.0; E4 decides whether the
   README recommends the opt-in.
 

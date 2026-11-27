@@ -67,12 +67,12 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-from token_sparen.config import Config, log_error, state_home
+from token_sparen.config import Config, log_error, private_mkdir, state_home
 from token_sparen.facts import lifecycle, miners
 from token_sparen.learn import breaker, decisions, pending
 from token_sparen.learn.beta import Beta, Evidence
@@ -117,6 +117,8 @@ FOLDED_AT = "folded_at"
 APPLIED_KEY = "applied"
 APPLIED_MAX = 200
 PRETRIM_FILE = "pretrim.json"  # read by mechanisms.guards
+DONE_KEY = "done"  # steps a retained staged fold already completed
+RETAIN_MAX = 20  # pending sessions kept while a store they need is newer than this code
 DECISIONS_FILE = "decisions.jsonl"
 GLOBAL_WEIGHT = 0.3
 GLOBAL_AGE_DAYS = 90.0
@@ -162,6 +164,8 @@ class FoldReport:
     pruned: list[str] = field(default_factory=list)  # deny rules written by this fold
     tripped: list[str] = field(default_factory=list)
     reentered: list[str] = field(default_factory=list)
+    held: list[str] = field(default_factory=list)  # steps skipped: a newer store (NewerSchema)
+    retained: bool = False  # kept pending for a later fold (a step was held)
 
     def line(self) -> str:
         if not self.staged:
@@ -197,16 +201,36 @@ def _mark(doc: dict[str, Any], fold_id: str) -> None:
     doc[APPLIED_KEY] = [*_applied(doc), fold_id][-APPLIED_MAX:]
 
 
-def _evidence_doc(doc: dict[str, Any], env: Mapping[str, str], where: str) -> dict[str, Any]:
+def _evidence_doc(
+    doc: dict[str, Any], env: Mapping[str, str], where: str, path: Path | None = None
+) -> dict[str, Any]:
     """A v2 evidence document (``{"version": 2, "points": {...}}``) in place; anything else is
-    logged and started afresh (v1 held posteriors and reads as empty anyway)."""
+    logged and started afresh (v1 held posteriors and reads as empty anyway). The old document
+    is first copied to ``posteriors.v<N>.bak.json`` beside ``path`` (once; a newer version
+    never gets here: ``read_locked`` refused it)."""
     if doc and doc.get("version") != SCHEMA_VERSION:
+        if path is not None:
+            _backup_old(path, doc, env)
         log_error(env, "fold", f"{where}: unsupported version {doc.get('version')!r}, rebuilt")
         doc.clear()
     doc["version"] = SCHEMA_VERSION
     if not isinstance(doc.get("points"), dict):
         doc["points"] = {}
     return doc
+
+
+def _backup_old(path: Path, doc: Mapping[str, Any], env: Mapping[str, str]) -> None:
+    """Keep the pre-rewrite document as ``<stem>.v<N>.bak.json`` (never overwritten)."""
+    raw = doc.get("version")
+    tag = str(raw) if isinstance(raw, int) and not isinstance(raw, bool) else "unknown"
+    dest = path.with_name(f"{path.stem}.v{tag}.bak.json")
+    try:
+        with dest.open("x", encoding="utf-8") as fh:
+            fh.write(json.dumps(doc, ensure_ascii=False))
+    except FileExistsError:
+        return
+    except OSError as exc:
+        log_error(env, "fold", f"backup {dest.name}: {type(exc).__name__}: {exc}")
 
 
 def _node(points: dict[str, Any], point: str, bucket: str, arm: str) -> dict[str, Any]:
@@ -396,6 +420,7 @@ def fold(
     false on a live ``~/.token-sparen``."""
     env = {"TOKEN_SPAREN_HOME": str(home)}
     rep = FoldReport(session_id)
+    token = jsonstore.LOG_SESSION.set(session_id)  # store problems: one log line per session
     try:
         _fold(
             rep,
@@ -412,7 +437,15 @@ def fold(
         raise
     except Exception as exc:  # noqa: BLE001 - fail open
         log_error(env, "fold", f"{type(exc).__name__}: {exc}")
+    finally:
+        jsonstore.LOG_SESSION.reset(token)
     return rep
+
+
+def _done(staged: dict[str, Any]) -> list[str]:
+    """The staged fold's completed steps (a retained fold resumes after them)."""
+    raw = staged.get(DONE_KEY)
+    return [x for x in raw if isinstance(x, str)] if isinstance(raw, list) else []
 
 
 def _stage(
@@ -524,22 +557,53 @@ def _fold(
         rep.outcomes = len(outcomes)
         cap = _param(params, "posterior_cap", 50.0)
         cap = cap if cap > 0.0 else 50.0
-        _breaker_and_project(
-            rep, fid, cells, outcomes, pdir, params, now, cap, env, timeout, natural
-        )
-        _global(rep, fid, cells, home, key, params, now, cap, env, timeout, natural)
-        _pretrim(rep, fid, outcomes, pdir, params, now, env, timeout)
-        mined = (
-            _mine_facts(rep.session_id, fid, staged, pdir, now, env, timeout, params)
-            if mine_facts
-            else 0
-        )
-        rep.facts = max(0, mined)
-        if prune:
+        done = _done(staged)
+        mined = 0
+
+        def step(name: str, fn: Callable[[], None]) -> None:
+            """One store's step, isolated: a store written by a newer token-sparen
+            (``NewerSchema``, logged once) skips only this step (ruling I-1)."""
+            if name in done:
+                return  # a retained fold: done on an earlier run
+            try:
+                fn()
+            except jsonstore.NewerSchema:
+                rep.held.append(name)
+                return
+            done.append(name)
+
+        def facts_step() -> None:
+            nonlocal mined
+            mined = _mine_facts(rep.session_id, fid, staged, pdir, now, env, timeout, params)
+            rep.facts = max(0, mined)
+
+        def prune_step() -> None:
             rep.pruned = _prune(
                 fid, staged, home, key, params, env, timeout, apply=prune_apply, sid=rep.session_id
             )
-        rep.backfilled = _backfill(staged.get("outcomes"), pdir, params, env)
+
+        def backfill_step() -> None:
+            rep.backfilled = _backfill(staged.get("outcomes"), pdir, params, env)
+
+        step(
+            "project",
+            lambda: _breaker_and_project(
+                rep, fid, cells, outcomes, pdir, params, now, cap, env, timeout, natural
+            ),
+        )
+        step(
+            "global",
+            lambda: _global(rep, fid, cells, home, key, params, now, cap, env, timeout, natural),
+        )
+        step("pretrim", lambda: _pretrim(rep, fid, outcomes, pdir, params, now, env, timeout))
+        if mine_facts:
+            step("facts", facts_step)
+        if prune:
+            step("prune", prune_step)
+        step("backfill", backfill_step)
+        # A held step keeps the staged fold (and its pending entry) for a later fold, e.g. after
+        # the user upgrades again; bounded: past RETAIN_MAX pending sessions it is dropped.
+        rep.retained = bool(rep.held) and len(pending.entries(home, key, env)) <= RETAIN_MAX
 
         # Clear and un-index under one overlay lock: a hook that adds evidence either ran
         # before (the re-check sees it and keeps the entry) or runs after (its own index add
@@ -548,12 +612,15 @@ def _fold(
             state = jsonstore.read_locked(ov, {}, env)
             cur = state.get(FOLDING_KEY)
             if isinstance(cur, dict) and cur.get("id") == fid:
-                del state[FOLDING_KEY]
+                if rep.retained:
+                    cur[DONE_KEY] = done
+                else:
+                    del state[FOLDING_KEY]
             state[FOLDED_AT] = now
             if mined == MINING_FAILED:  # keep the facts log for the next fold of this session
                 lifecycle.restore_log(state, staged.get(lifecycle.SESSION_KEY))
             jsonstore.write_locked(ov, state)
-            if not _unfolded(state):
+            if not _unfolded(state) and not rep.retained:
                 pending.remove(home, key, name, env, timeout=timeout)
 
 
@@ -584,7 +651,7 @@ def _breaker_and_project(
                     obs.append((known, o.value))
             rep.tripped, rep.reentered = breaker.apply_session(bdoc, obs, now=now, params=params)
         resets = breaker.pending_resets(bdoc)
-        pdoc = _evidence_doc(jsonstore.read_locked(post, {}, env), env, "project")
+        pdoc = _evidence_doc(jsonstore.read_locked(post, {}, env), env, "project", post)
         points: dict[str, Any] = pdoc["points"]
         scale = min(1.0, max(0.0, _param(params, "breaker_reentry_scale", breaker.REENTRY_SCALE)))
         for name in resets:
@@ -658,7 +725,7 @@ def _mine_facts(
         return miners.record(
             pdir, found, now=now, env=env, fold_id=fid, timeout=timeout, after=after
         )
-    except jsonstore.StoreBusy:
+    except (jsonstore.StoreBusy, jsonstore.NewerSchema):
         raise
     except Exception as exc:  # noqa: BLE001 - fail open: facts are optional
         log_error(env, "fold", f"facts: {type(exc).__name__}: {exc}")
@@ -692,7 +759,7 @@ def _prune(
             transcript_key=TRANSCRIPT_KEY,
             project_dir_key=PROJECT_DIR_KEY,
         )
-    except jsonstore.StoreBusy:
+    except (jsonstore.StoreBusy, jsonstore.NewerSchema):
         raise
     except Exception as exc:  # noqa: BLE001 - fail open: pruning is optional
         log_error(env, "fold", f"prune: {type(exc).__name__}: {exc}")
@@ -734,7 +801,7 @@ def _global(
     weight = min(1.0, max(0.0, _param(params, "global_weight", GLOBAL_WEIGHT)))
     max_age = _param(params, "global_age_days", GLOBAL_AGE_DAYS) * 86400.0
     with jsonstore.locked(gpath, timeout):
-        gdoc = _evidence_doc(jsonstore.read_locked(gpath, {}, env), env, "global")
+        gdoc = _evidence_doc(jsonstore.read_locked(gpath, {}, env), env, "global", gpath)
         points: dict[str, Any] = gdoc["points"]
         rep.aged = _age(points, now, max_age) + _age_natural(gdoc, now, max_age)
         tag = project_tag(home, key)
@@ -801,7 +868,7 @@ def project_tag(home: Path, project_key: str) -> str:
     ``<home>/secret`` (mode 0600), installed atomically on first use. An empty or malformed
     file (e.g. left by a crash) is re-read a few times, then replaced."""
     path = home / SECRET_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(path.parent)
     for attempt in range(SECRET_TRIES):
         secret = _read_secret(path)
         if secret:

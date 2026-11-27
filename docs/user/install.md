@@ -9,9 +9,8 @@ claude plugin marketplace add rupakc/token-sparen
 claude plugin install token-sparen@token-sparen
 ```
 
-Start a new Claude Code session afterwards (or reload plugins) so the hooks are picked up. That is all the plugin needs; it has no runtime dependencies beyond Python 3.11 or newer.
+The marketplace entry tracks the `release/claude` branch of the repository (the built plugin tree), not `main`. Start a new Claude Code session afterwards (or reload plugins) so the hooks are picked up. That is all the plugin needs; it has no runtime dependencies beyond Python 3.11 or newer.
 
-<!-- TODO(merge): Task 9/14 make the marketplace and the plugin directory track the generated release/claude branch; confirm this wording when that lands. -->
 
 Installing from the Anthropic plugin directory, once the plugin is listed there, uses the same plugin files and the same `/token-sparen` skill.
 
@@ -33,9 +32,10 @@ You do not need the `token-sparen` command. In Claude Code, ask for `/token-spar
 pipx install token-sparen
 ```
 
-<!-- TODO(merge): the PyPI project is published by the owner-approved release; until then use `pip install .` from a checkout. -->
+The package is not published on PyPI yet; until it is, run `pip install .` from a checkout of the repository.
 
-To run the bundled copy from a terminal instead, call the plugin's launcher: `python3 <plugin dir>/hooks/run_cli.py <args>`. The plugin directory is the `installPath` entry for `token-sparen` in `~/.claude/plugins/installed_plugins.json`.
+
+To run the bundled copy from a terminal instead, call the plugin's launcher: `python3 -I <plugin dir>/hooks/run_cli.py <args>` (it re-launches on a Python 3.11 or newer the same way the hooks do). The plugin directory is the `installPath` entry for `token-sparen` in `~/.claude/plugins/installed_plugins.json`.
 
 Keep the CLI and the plugin on the same version: the plugin's hooks always use the plugin's own copy. `doctor` warns when they differ; see [Upgrade](upgrade.md).
 

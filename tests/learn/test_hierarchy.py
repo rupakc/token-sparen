@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from userconf import to_user_config
 
 from token_sparen.config import load_config
 from token_sparen.learn import hierarchy
@@ -92,7 +93,10 @@ def test_version_1_store_is_empty_and_logged(tmp_path: Path) -> None:
     st = StoreChain(KEY, home)
     assert st.get("compression", "*", "light", "savings", "project") is None
     assert st.get("compression", "*", "light", "savings", "global") is None
-    assert len(_log_lines(home)) == 1
+    assert len(_log_lines(home)) == 2  # once per store (T4-c2), not once per read
+    again = StoreChain(KEY, home)
+    assert again.get("compression", "*", "light", "savings", "project") is None
+    assert len(_log_lines(home)) == 2
 
 
 def test_files_read_once_per_instance(tmp_path: Path) -> None:
@@ -308,7 +312,7 @@ def test_user_config_overrides_apply(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "h"), "TOKEN_SPAREN_LEARN__KAPPA_DEFAULT": "12"}
-    cfg = load_config(proj, env)
+    cfg = load_config(proj, to_user_config(env))
     home = tmp_path / "h"
     _project(home, {"compression": {"*": {"light": _entry(_ev(0.9, 20))}}})  # < 50 obs
     st = StoreChain(KEY, home, params=cfg.data)

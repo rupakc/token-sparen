@@ -23,7 +23,7 @@ A trimmed result ends with a marker:
 [token-sparen: kept 48 of 1930 lines · full output: <path> · `token-sparen show a1b2c3d4e5f6`]
 ```
 
-- `token-sparen show <id>` prints the full text (the id is 12 hex characters); or read the `<path>` file. Add `--project <dir>` if you are not in that project. In Claude Code without the CLI installed, ask for `/token-sparen` and the skill runs the bundled CLI.
+- `token-sparen show <id>` prints the full text (the id is 12 hex characters); or read the `<path>` file. Add `--project <dir>` if you are not in that project. `show` serves only outputs this install saved itself; an output saved before an upgrade stays readable at its marker path until the 14-day cleanup. In Claude Code without the CLI installed, ask for `/token-sparen` and the skill runs the bundled CLI.
 - Full outputs live in `<project>/.token-sparen/outputs/<id>.txt`. Old files are pruned whenever a new one is written: those older than 14 days, then the oldest beyond 200 files or 100 MB.
 - Error lines, failures and stack-trace edges are never elided. Ask the model to read the file when it needs more; usually the visible lines suffice.
 

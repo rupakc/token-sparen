@@ -22,7 +22,6 @@ Illustrative example (the numbers are made up; colours on a terminal, `NO_COLOR`
 | `rate` | recent context growth per turn (`+2.4k/turn`) and your 5-hour rate-limit use when Claude Code reports it |
 | `saved` | estimated tokens removed by this session's trims minus recovery reads of trimmed output and the tokens token-sparen itself injected, with an approximate dollar figure derived from the session's average cost per token reported by Claude Code. Only the output kinds listed under [What changes in your session](../host-guides/claude-code.md#what-changes-in-your-session) are ever trimmed, so on file-heavy sessions it stays small or at 0 by design. It counts each removed token once (not its later re-sends) and can be negative |
 | `trims` | `✂` trims made, `↺` regrets detected (recovery reads, re-runs) |
-| `pruned` | `⊘ N`: number of tools pruned in this project (only with [tool pruning](tool-pruning.md)) |
 | `learn` | learner state: `cold` (< 20 observations), `adapting`, `exploiting` (>= 80 % of recent decisions pick the best-known arm) or `safe-mode` (a decision point is paused by the circuit breaker) |
 
 Choose segments with `statusline.segments`.

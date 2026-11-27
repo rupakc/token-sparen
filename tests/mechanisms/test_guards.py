@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
+from userconf import to_user_config
 
 from token_sparen.config import Config, load_config
 from token_sparen.events import Event, ToolCall
@@ -23,7 +24,7 @@ BIG = 5_000_001
 def _env(tmp_path: Path, **over: str) -> dict[str, str]:
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
     env.update({f"TOKEN_SPAREN_{k}": v for k, v in over.items()})
-    return env
+    return to_user_config(env)  # widening settings live in the user's file (env only narrows)
 
 
 def _cfg(tmp_path: Path, **over: str) -> Config:
@@ -532,26 +533,46 @@ def test_bounded_pretrim_default_reproduces_current(tmp_path: Path) -> None:
     assert guards.pretrim_level(cfg, 120) == old(cfg, 120)  # packaged defaults: as before M4
     # unset: max(packaged standard, configured standard) -- a raised standard raises it too
     std = load_config(
-        tmp_path / "proj", {**home, "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.5"}
+        tmp_path / "proj",
+        to_user_config(
+            {
+                "TOKEN_SPAREN_HOME": str(tmp_path / "h1"),
+                "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.5",
+            }
+        ),
     )
     assert guards.pretrim_level(std, 50).keep_ratio == 0.5
     # set: it is the bounded arm's keep ratio
     own = load_config(
-        tmp_path / "proj", {**home, "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "0.2"}
+        tmp_path / "proj",
+        to_user_config(
+            {
+                "TOKEN_SPAREN_HOME": str(tmp_path / "h2"),
+                "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "0.2",
+            }
+        ),
     )
     assert guards.pretrim_level(own, 50).keep_ratio == 0.2
     # any explicit number is used as is, 0.35 included (no sentinel)
     explicit = load_config(
         tmp_path / "proj",
-        {
-            **home,
-            "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "0.35",
-            "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.2",
-        },
+        to_user_config(
+            {
+                "TOKEN_SPAREN_HOME": str(tmp_path / "h9"),
+                "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "0.35",
+                "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.2",
+            }
+        ),
     )
     assert guards.pretrim_level(explicit, 50).keep_ratio == 0.35
     bad = load_config(
-        tmp_path / "proj", {**home, "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "7"}
+        tmp_path / "proj",
+        to_user_config(
+            {
+                "TOKEN_SPAREN_HOME": str(tmp_path / "h3"),
+                "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "7",
+            }
+        ),
     )
     assert guards.pretrim_level(bad, 50) == old(bad, 50)  # out of range: ignored
 

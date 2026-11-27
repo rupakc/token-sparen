@@ -15,25 +15,62 @@ shows a live token meter. Everything runs locally.
 
 ## Status
 
-Pre-release (see `token-sparen --version`). The mechanisms below work today; how strongly to trim is learned per
-project from your own sessions (see [How it learns](#how-it-learns)), starting conservatively.
-There are **no published benchmark numbers yet**, so this README makes no savings claims; measure
-on your own sessions with `/token-sparen` or `token-sparen stats`. Both report **net** savings:
+v1.0 target, Claude Code only (other hosts are planned for a later release). The mechanisms below
+work today; how strongly to trim is learned per project from your own sessions (see
+[How it learns](#how-it-learns)), starting conservatively. This README makes no savings claims
+beyond the [Evidence](#evidence) section below; measure on your own sessions with `/token-sparen`
+or `token-sparen stats`. Both report **net** savings:
 tokens removed by trims, minus the tokens the agent spent re-reading trimmed output, minus the
 tokens token-sparen itself injected (`stats` also prints the gross figure and both parts; the
 statusline `saved` segment uses the same net figure). Net can be zero or negative.
+
+## Evidence
+
+<!-- evidence:start -->
+No published benchmark results yet. Results appear here only from the live benchmark (E4), each with its 95 % CI, number of tasks, seeds, model, date and the plugin hash it measured.
+<!-- evidence:end -->
 
 ## Requirements
 
 - Claude Code: the minimum, 2.1.121, is declared in the plugin manifest; tested with 2.1.332.
   Replacing a tool result needs the `updatedToolOutput` hook feature, which older hosts do not
   have: hooks would run, but nothing would be trimmed.
-- `python3` >= 3.11 on your `PATH` (the hooks run `python3`). No other runtime dependencies.
-  macOS's system `python3` is often older than 3.11: check with `python3 --version`, and run
-  `/token-sparen doctor` (below) first if you are unsure. Hooks fail open, so an old Python means
-  token-sparen silently does nothing rather than breaking your session.
-- macOS and Linux. Windows: hooks need a `python3` on `PATH` (`token-sparen doctor` suggests
-  `py -3` or `python` if it is missing), and the statusline launcher is not supported yet.
+- Python >= 3.11 somewhere on your machine. No other runtime dependencies. The hooks start
+  `python3 -I`; if that `python3` is older (macOS ships 3.9, Ubuntu 22.04 3.10), the launcher
+  finds a newer Python and re-runs the hook on it: `TOKEN_SPAREN_PYTHON` (a path or command
+  name, if you set one), then `python3.15` ... `python3.11` and `python3` on your `PATH` (on
+  Windows also `py -3.15` ... `py -3.11` and `py -3`), then `uv python find ">=3.11"` if `uv`
+  is installed (with downloads disabled; set `TOKEN_SPAREN_NO_UV=1` to skip uv). A candidate is
+  used only if it reports version >= 3.11 itself. The choice is cached in
+  `~/.token-sparen/launcher.json`, so the search runs once (again when `python3` or the chosen
+  interpreter changes or disappears); the whole search is bounded to 2 seconds. The cost of the
+  extra interpreter start is measured by `tests/perf/test_launcher_reexec.py`: about 40-55 ms
+  per hook call on the development machine, paid only when your `python3` is older than 3.11
+  (without the launcher those hooks would not run at all); you avoid it by putting Python >= 3.11
+  first on your `PATH` as `python3`. `token-sparen doctor` names the interpreter the hooks
+  actually use and fails if there is none.
+- `TOKEN_SPAREN_PYTHON` must be set in the environment Claude Code is started from (your shell
+  profile); `config.toml` cannot set it, because the launcher runs before any Python >= 3.11 can
+  read it. It is honoured only if it resolves outside the current project and its git work tree
+  and, on macOS/Linux, the interpreter file and its directory are owned by you or root and not
+  writable by group or others (a repository's committed Claude Code settings can set environment
+  variables); otherwise it is skipped with one line in `logs/errors.jsonl`. Some installers
+  (for example python.org's macOS framework, group `admin` writable) fail this check; such a
+  Python is still found through `PATH` (`python3.12` etc.).
+- macOS and Linux. Windows: hooks need a `python3` on `PATH` to start (`token-sparen doctor`
+  suggests `py -3` or `python` if it is missing), and the statusline launcher is not supported yet.
+
+**Troubleshooting: "token-sparen is inactive" / nothing is ever trimmed.** The hooks found no
+Python >= 3.11. They keep your session working (fail open), show this warning at most once a day
+and log one line a day to `~/.token-sparen/logs/errors.jsonl` (`"kind": "launcher"`). Install
+Python 3.11 or newer (python.org, Homebrew, your package manager, or `uv python install 3.12`), or
+`export TOKEN_SPAREN_PYTHON=/path/to/python3.12` in your shell profile, and restart Claude Code.
+A "nothing found" result is remembered for up to 10 minutes; a new `python3.x` on `PATH` is
+noticed at once, but a Python installed only through uv (found by `uv python find`) is picked up
+after those 10 minutes (or delete `~/.token-sparen/launcher.json`). Then run
+`token-sparen doctor` in a terminal: its `hook python` line shows which interpreter the hooks
+will use. `doctor` itself needs a Python >= 3.11 too: `python3 -I <plugin dir>/hooks/run_cli.py
+doctor` finds one the same way, and says so when there is none.
 
 ## Install
 
@@ -42,13 +79,18 @@ claude plugin marketplace add rupakc/token-sparen
 claude plugin install token-sparen@token-sparen
 ```
 
+The marketplace entry tracks the `release/claude` branch of this repository (the built plugin
+tree). To work on token-sparen itself, see [CONTRIBUTING.md](CONTRIBUTING.md) for the development
+install.
+
 That is all the plugin needs. Start a new Claude Code session afterwards (or reload plugins) so
 the hooks are picked up.
 
 **Using the CLI as a plugin-only user.** You do not need the `token-sparen` command: ask Claude
 `/token-sparen` (stats), `/token-sparen doctor`, `/token-sparen disable`, and it runs the bundled CLI
 for you. To run it yourself in a terminal, call the bundled launcher from the plugin directory:
-`python3 <plugin dir>/hooks/run_cli.py <args>` (for example `... stats`). The plugin directory is the
+`python3 -I <plugin dir>/hooks/run_cli.py <args>` (for example `... stats`; it re-launches on a
+Python >= 3.11 the same way the hooks do). The plugin directory is the
 `installPath` entry for `token-sparen` in `~/.claude/plugins/installed_plugins.json`.
 
 Optional: the `token-sparen` console command (handy in your own terminal). It is **not published on PyPI yet**;
@@ -92,8 +134,8 @@ All of this is on by default. Nothing is sent anywhere.
   `ssh`/`docker exec`/`kubectl exec` and similar wrappers, and any command whose stdin is
   redirected from a file). Nor does it trim plain text, tables or stack traces from any
   tool (Agent/Task and web results included). Those outputs are shown in full and never reach
-  the learner. To widen it, in your own `~/.token-sparen/config.toml`, env or `config set` (a
-  project file may only narrow it):
+  the learner. To widen it, in your own `~/.token-sparen/config.toml` or `config set` (a
+  project file or a `TOKEN_SPAREN_*` variable may only narrow it):
 
   ```toml
   [compression]
@@ -197,7 +239,7 @@ A trimmed result ends with a marker:
 | Read pointers only | `[learn.hold] read_dedupe = true` or `read_dedupe.enabled = false` |
 | Learned repository facts | `token-sparen facts disable` (this project; `facts enable` undoes it), `[facts] enabled = false` (everywhere; a project's `token-sparen.toml` may set it too), or `token-sparen facts forget <id>` for one fact (see [Learned repository facts](#learned-repository-facts)) |
 | Failure-loop guard | `[loopguard] enabled = false` (a project's `token-sparen.toml` may set it too). `[learn.hold] loopguard = true` does not switch it off, it only keeps the most patient setting |
-| Output-style directive | off unless you opted in (`[output_style] enabled = true` in your `config.toml`, or `token-sparen config set output_style.enabled true` for one session); `enabled = false` switches it off again (a project's `token-sparen.toml` may set that too) |
+| Output-style directive | off unless you opted in (`[output_style] enabled = true` in your `config.toml`, or `token-sparen config set output_style.enabled true` for one session); `enabled = false` switches it off again (a project's `token-sparen.toml` or a `TOKEN_SPAREN_*` variable may only set that) |
 | Tool pruning | off unless you opted in; `token-sparen prune disable` opts out and removes every rule token-sparen wrote, `prune restore <tool>` gives one tool back, and a project's `token-sparen.toml` may set `[prune] allow = false` (see [Tool pruning](#tool-pruning-opt-in)) |
 | Blocking, notices, other mechanisms | `guards.enabled`, `governor.enabled`, `boundary.enabled` or `subagent.enabled` set to `false` |
 | Uninstall | `claude plugin uninstall token-sparen@token-sparen`; run `token-sparen statusline uninstall` first if you installed the statusline |
@@ -209,14 +251,38 @@ compression), which trims more than a cold learner does.
 Uninstalling leaves `~/.token-sparen/` and each project's `.token-sparen/` in place; both are safe
 to delete.
 
+**Full uninstall**, in this order (the settings edits live outside the state folder, so deleting
+`~/.token-sparen/` alone does not undo them):
+
+1. `token-sparen prune disable` in each project where you enabled tool pruning: it removes every
+   deny rule token-sparen wrote to `.claude/settings.local.json` (in every recorded checkout).
+2. `token-sparen statusline uninstall`: restores your original `statusLine`.
+3. `claude plugin uninstall token-sparen@token-sparen` (and `pipx uninstall token-sparen` or the
+   like if you installed the CLI for your terminal).
+4. Delete `~/.token-sparen/` and each project's `.token-sparen/` folder. Backups named
+   `*.token-sparen.bak` next to your settings files can go too once you have checked them.
+
+After a downgrade (an older token-sparen meeting state a newer one wrote), the older version
+never rewrites that state. `prune disable` / `prune restore` then change nothing (which deny
+rules are token-sparen's cannot be read): they list the rules in token-sparen's format that are
+not in the `.token-sparen.bak` backup, with the file to edit by hand (keep any you added
+yourself). `statusline uninstall` reverts the `statusLine` it recognises by its launcher; for
+the rest each command prints `state written by token-sparen <version>; upgrade to it, or run
+<command> from that version`.
+
 ## What it writes to disk
 
 Everything stays on your machine, but some of it is plain text you should know about.
 
 - `<project>/.token-sparen/`: recovery files under `outputs/` (full tool outputs, so they can
   contain anything a command printed), plus a `.gitignore` containing `*` so the folder is never
-  committed. Created on the first compression in that project.
-- `~/.token-sparen/` (override with `TOKEN_SPAREN_HOME`; an override inside the current project
+  committed. Created on the first compression in that project, owner-only (mode 0700 on POSIX;
+  an older, looser folder of yours is tightened on the next write). Nothing is written, read or
+  pruned through a symbolic link (a `.token-sparen`, `outputs` or `<id>.txt` link, e.g. committed
+  by a repository, means nothing is saved and the output stays whole), and `token-sparen show`
+  serves only outputs this install saved for this checkout.
+- `~/.token-sparen/` (owner-only, mode 0700 on POSIX: created so, and an older looser root of
+  yours is tightened; a directory not owned by you is never used; override with `TOKEN_SPAREN_HOME`; an override inside the current project
   or its git work tree (however it is spelled), or (POSIX) not owned by you, is ignored with one
   line in the default root's `logs/errors.jsonl`, because a repository's committed Claude Code
   settings can set environment variables; a not-yet-created path is accepted when its nearest
@@ -233,7 +299,17 @@ Everything stays on your machine, but some of it is plain text you should know a
     checkout**, its project key, the deny rules token-sparen wrote there and what it created,
     rules about to be written, and pending notices; kept here, beside the statusline record, so a
     changed git remote never loses track of a rule);
-  - `logs/errors.jsonl` and sampled `logs/latency.jsonl`;
+  - `launcher.json`: the hook launcher's cached interpreter choice (only used when your `python3`
+    is older than 3.11): per hashed key (plugin directory, `python3`, `PATH`,
+    `TOKEN_SPAREN_PYTHON`) the **path of the chosen Python**, how it was found and its
+    modification time, or that none was found (re-checked after 10 minutes or when a candidate
+    appears);
+  - `logs/errors.jsonl` and sampled `logs/latency.jsonl`; `logs/launcher-warned-<date>` (empty
+    marker: the "no Python >= 3.11" warning was already given today); `logs/once.json` (short hashes of
+    store path and session, so a broken or newer state file is reported once per session);
+  - `recovery/<hash>/<id>`: one empty file per recovery file this install saved, per checkout (the
+    folder name is a hash of the checkout path), so `show` never serves a file a repository
+    planted;
   - small `<file>.lock` files next to the JSON files above, used for file locking;
   - `projects/<key>/`: `decisions.jsonl` (per-decision log; keeps the first 500 characters of Bash
     commands, and for each trim an outcome line with its settled regret value and signal; it is
@@ -250,7 +326,8 @@ Everything stays on your machine, but some of it is plain text you should know a
     session ids with their last activity, removed when a session ends), `savings_scale.json` (numbers only: recent savings
     sizes per bucket), `floor_warned.json`, `style_warned.json` (only a hash of an unknown `output_style.directive` already reported), `posteriors.json` and `breaker.json` (numbers only:
     learned evidence per bucket, the loop guard's natural break rate per bucket, and recent
-    regret values per decision point), `pending.json`
+    regret values per decision point; an older layout is first copied to
+    `posteriors.v<N>.bak.json`), `pending.json`
     (ids of sessions waiting to be folded) and `pretrim.json`
     (**normalised Bash commands** with per-command counts, and the learned pre-trim candidates),
     `facts.json` (repository facts mined when a session is folded: **normalised
@@ -325,8 +402,15 @@ Later layers override earlier ones:
 2. `~/.token-sparen/config.toml`
 3. `<project>/token-sparen.toml`
 4. environment: `TOKEN_SPAREN_<SECTION>__<KEY>=value` (double underscore between parts, for
-   example `TOKEN_SPAREN_GUARDS__ENABLED=false`, `TOKEN_SPAREN_GOVERNOR__HARD_STOP=true`; list
-   values are comma-separated)
+   example `TOKEN_SPAREN_GUARDS__ENABLED=false`, `TOKEN_SPAREN_COMPRESSION__MIN_TOKENS=5000`;
+   list values are comma-separated). **Narrowing only:** a repository's committed Claude Code
+   settings can set environment variables, so a variable follows the same rules as a project file
+   (see below): it may make token-sparen intervene less or keep more, never more; anything else
+   is ignored and logged once. Widen in `~/.token-sparen/config.toml` or with `config set`.
+   User-only keys are ignored from the environment even when they would narrow; use
+   `TOKEN_SPAREN_DISABLE=1`, `TOKEN_SPAREN_GOVERNOR__ENABLED=false` or
+   `TOKEN_SPAREN_PRUNE__ALLOW=false` instead of `LEARN__ENABLED`, `GOVERNOR__HARD_STOP` or
+   `PRUNE__ENABLED`.
 5. this session only: `token-sparen config set <section.key> <value> [--session ID]`
    (e.g. `config set guards.enabled false`)
 
@@ -337,7 +421,8 @@ ignored and `doctor` flags it).
 someone else's. It can only make token-sparen intervene less or keep more, never trim more,
 recover less or block more. A value is used only if it has the right type, is within sane
 bounds and moves in the allowed direction from your own value (defaults, your config, env,
-session); anything else is ignored and logged once.
+session); anything else is ignored and logged once. `TOKEN_SPAREN_*` variables follow the same
+table, measured from your config and session overrides.
 
 | Settings | A project may |
 |---|---|
@@ -350,7 +435,7 @@ session); anything else is ignored and logged once.
 | `compression.trim_file_contents`, `prune.allow` | only set `false` (`prune.allow = false`: never prune here, and token-sparen's rules are reverted) |
 | `read_dedupe.max_turn_gap`, `read_dedupe.max_entries`, `compression.save_deadline_ms`, `adapter.latency_budget_ms`, `facts.max_facts`, `facts.max_tokens`, `prune.lease_sessions` | only lower (`prune.lease_sessions`: pruned tools are restored sooner) |
 | `learn.tau.<tier>` lower; `learn.floor.<tier>`, `learn.ladder_obs` higher; `learn.hold.<point>` only `true`; `learn.breaker_min_obs`, `learn.breaker_every` lower; `learn.breaker_lcb_q`, `learn.breaker_sessions` higher | only make learning more careful |
-| everything else, including `learn.enabled` and all other `learn.*`, `compression.levels.*.{head,tail}` and `guards.pretrim_{lines,head}` (a larger head/tail displaces prompt-relevant lines), `governor.hard_stop`, `governor.session_budget_tokens`, `governor.windows`, `adapter.latency_sample_rate`, `adapter.latency_log_max_bytes`, `extensions.*`, the other `facts.*` keys, the other `prune.*` keys (including `prune.enabled`: pruning is opted in only with `prune enable` or your own `config.toml`), `loopguard.watch_calls`, `output_style.directive`, `ope.*`, and any key not listed | nothing (user config, env or `config set` only) |
+| everything else, including `learn.enabled` and all other `learn.*`, `compression.levels.*.{head,tail}` and `guards.pretrim_{lines,head}` (a larger head/tail displaces prompt-relevant lines), `governor.hard_stop`, `governor.session_budget_tokens`, `governor.windows`, `adapter.latency_sample_rate`, `adapter.latency_log_max_bytes`, `extensions.*`, the other `facts.*` keys, the other `prune.*` keys (including `prune.enabled`: pruning is opted in only with `prune enable` or your own `config.toml`), `loopguard.watch_calls`, `output_style.directive`, `ope.*`, and any key not listed | nothing (your `config.toml` or `config set` only; a `TOKEN_SPAREN_*` variable is ignored too) |
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -374,7 +459,7 @@ session); anything else is ignored and logged once.
 | `loopguard.min_k` | 2 | fewest repeats of one error before the redirect (the learned setting is 2, 3 or 5) |
 | `learn.hold.loopguard` | false | `true` keeps the most patient setting (5 repeats); it does not switch the guard off |
 | `loopguard.watch_calls` | 5 | tool calls after the redirect that decide whether the loop broke (user only) |
-| `output_style.enabled` | false | one line at session start (startup, `/clear`, after compaction; never on resume) asking for concise prose while never shortening code, commands, file paths, error messages or quoted tool output; opt-in only: enabled only from your `config.toml` or a session override (`config set`); a project may only switch it off (spec 6.6) |
+| `output_style.enabled` | false | one line at session start (startup, `/clear`, after compaction; never on resume) asking for concise prose while never shortening code, commands, file paths, error messages or quoted tool output; opt-in only: enabled only from your `config.toml` or a session override (`config set`); a project or a `TOKEN_SPAREN_*` variable may only switch it off (spec 6.6) |
 | `output_style.directive` | `concise` | which directive; an unknown name means off and is logged once (user only) |
 | `prune.enabled` | false | tool pruning ([opt-in](#tool-pruning-opt-in)); read only from your own `config.toml` (or set per project by `token-sparen prune enable`) |
 | `prune.builtins` | false | also prune built-in tools an SDK `init` record listed as always loaded (your `config.toml` only) |
@@ -383,17 +468,17 @@ session); anything else is ignored and logged once.
 | `prune.tau`, `prune.ucb_q` | 0.01, 0.95 | prune only when the regret bound `ucb(ucb_q) <= tau` (about 300 unused prompts; user only) |
 | `prune.idle_minutes` | 60 | new rules are written only if no other session of the project was active this long (user only) |
 | `prune.lease_sessions` | 15 | a pruned tool is restored after this many sessions to observe it again (a project may only lower it) |
-| `learn.enabled` | true | learn how strongly to trim; `false` uses the fixed defaults, which trim more than a cold learner (user config, env or `config set` only) |
+| `learn.enabled` | true | learn how strongly to trim; `false` uses the fixed defaults, which trim more than a cold learner (your `config.toml` or `config set` only) |
 | `learn.hold.compression` | false | `true` stops all trimming of tool output (see [Turning it off](#turning-it-off)) |
 | `learn.hold.read_dedupe` | false | `true` stops read pointers |
-| `learn.savings_reward` | `"scaled"` | savings reward of a trim: `scaled` (removed x resends / recent p95), `fraction`, `counterfactual` (vs the best arm on the same output; `learn.resend_horizon`, 20) or `cost` (cache-weighted); a tuning option (user config, env or `config set` only) |
+| `learn.savings_reward` | `"scaled"` | savings reward of a trim: `scaled` (removed x resends / recent p95), `fraction`, `counterfactual` (vs the best arm on the same output; `learn.resend_horizon`, 20) or `cost` (cache-weighted); a tuning option (your `config.toml` or `config set` only) |
 | `learn.ladder_retry_decisions` | 0 | `N > 0`: re-open a locked, harsher trimming level for one probing decision after N decisions of that bucket within one session (counted per session; user only) |
 | `guards.pretrim_bounded_keep_ratio` | unset | share of lines a learned pre-trim keeps; unset is the larger of the packaged and your configured `compression.levels.standard.keep_ratio` (raising the standard arm raises the pre-trim, lowering it never lowers the pre-trim), any number is used as is (a project may only raise it) |
 | `statusline.segments` | all six | which segments to show |
 | `statusline.ascii`, `statusline.color` | false, true | plain glyphs; colours |
 | `recovery.ttl_days`, `max_files`, `max_bytes` | 14, 200, 100 MB | recovery file retention |
 | `adapter.latency_budget_ms` | 400 | hook time cap before it becomes a no-op |
-| `extensions.allow_override` | false | let a trusted extension replace a built-in (user config or env only) |
+| `extensions.allow_override` | false | let a trusted extension replace a built-in (your `config.toml` only) |
 
 ## Extensions (opt-in, explicit trust)
 
@@ -412,15 +497,21 @@ and the first 40 lines, and `--yes` records it in `~/.token-sparen/trusted_exten
 edit revokes trust, and a repository cannot trust its own files. Symlinked, foreign-owned and
 world-writable files are skipped. `token-sparen extensions list` shows each drop-in's status;
 `extensions untrust <path|sha256>` revokes. Built-in compressors win unless
-`[extensions] allow_override = true` is set in `~/.token-sparen/config.toml` or via
-`TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE`; a project `token-sparen.toml` and `config set` cannot
-enable it.
+`[extensions] allow_override = true` is set in `~/.token-sparen/config.toml`; a project
+`token-sparen.toml`, `config set` and `TOKEN_SPAREN_*` variables cannot enable it.
 
 **What trust means: trusting a drop-in gives it full code execution as you**, with your files and
 credentials, every time a hook uses it. Only trust code you have read or whose author you trust.
 The runtime checks (error lines kept, line counts consistent, failures disabled) protect you from
 *buggy* extensions, not *malicious* ones. Trust follows content, not location: an identical copy of
 a trusted file in another project also loads.
+
+## Settings it may change (statusline, tool pruning)
+
+Two opt-in features write Claude Code settings, each backed up and reversible: the
+[live statusline](#live-statusline-opt-in) (`token-sparen statusline install`) and
+[tool pruning](#tool-pruning-opt-in) (deny rules, only on git confirmation). Nothing else edits
+your settings; details are in [What it writes to disk](#what-it-writes-to-disk).
 
 ## Privacy
 
@@ -683,7 +774,7 @@ While they run, error log lines keep only where an error happened, never its mes
 
 ## Documentation
 
-The user documentation lives in [`docs/user/`](docs/user/index.md): [install](docs/user/install.md), [support matrix](docs/user/support.md), [upgrade](docs/user/upgrade.md), [uninstall](docs/user/uninstall.md), [configuration](docs/user/configuration.md), [troubleshooting](docs/user/troubleshooting.md), [privacy and security](docs/user/privacy-security.md) and one page per mechanism.
+The user documentation lives in [`docs/user/`](docs/user/index.md): [install](docs/user/install.md), [support matrix](docs/user/support.md), [upgrade](docs/user/upgrade.md), [uninstall](docs/user/uninstall.md), [configuration](docs/user/configuration.md), [troubleshooting](docs/user/troubleshooting.md), [privacy and security](docs/user/privacy-security.md) and one page per mechanism; [CHANGELOG.md](CHANGELOG.md) lists changes.
 
 ## Credits and licence
 

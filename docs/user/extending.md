@@ -16,12 +16,7 @@ edit revokes trust, and a repository cannot trust its own files. Symlinked, fore
 world-writable files are skipped. `token-sparen extensions list` shows each drop-in's status;
 `extensions untrust <path|sha256>` revokes. Built-in compressors win unless
 `[extensions] allow_override = true` is set in `~/.token-sparen/config.toml`; a project
-`token-sparen.toml`, the environment (which can only narrow, see [Configuration](configuration.md#precedence)) and `config set` cannot
-enable it.
-
-<!-- TODO(merge): until the narrow-only environment rule is on main, TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE still enables it. -->
-
-The Python package API is versioned independently of the plugin; see the [design spec](docs/specs/2026-11-25-token-sparen-design.md) section 9 for the extension model.
+`token-sparen.toml`, `config set` and `TOKEN_SPAREN_*` variables cannot enable it.
 
 **What trust means: trusting a drop-in gives it full code execution as you**, with your files and
 credentials, every time a hook uses it. Only trust code you have read or whose author you trust.

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from userconf import to_user_config
 
 from token_sparen.config import Config, load_config
 from token_sparen.events import SessionCtx
@@ -177,7 +178,7 @@ def test_high_tier_optin_in_project_config_is_ignored(tmp_path: Path) -> None:
     assert any("optin" in line for line in _log_lines(home))
 
 
-def test_high_tier_optin_by_user_config_or_env(tmp_path: Path) -> None:
+def test_high_tier_optin_by_user_config_only(tmp_path: Path) -> None:
     home = tmp_path / "h"
     extra = _high_ready(home)
     _optin_user(home)
@@ -187,9 +188,13 @@ def test_high_tier_optin_by_user_config_or_env(tmp_path: Path) -> None:
     extra2 = _high_ready(home2)
     extra2["learn"]["optin"] = {"hp_test": True}
     cfg = _cfg(home2, extra2)
+    # a TOKEN_SPAREN_* variable never opts in (a repository's committed settings can set one)
     env = {"TOKEN_SPAREN_HOME": str(home2), "TOKEN_SPAREN_LEARN__OPTIN__HP_TEST": "true"}
     eng2 = Engine(StoreChain(KEY, home2, SID, params=cfg.data), cfg, random.Random(1), env=env)
-    assert Counter(eng2.decide(HIGH, {}, _ctx(home2)).arm for _ in range(200))["on"] > 150
+    assert Counter(eng2.decide(HIGH, {}, _ctx(home2)).arm for _ in range(200))["on"] == 0
+    _optin_user(home2)  # the user's own file does
+    eng3 = Engine(StoreChain(KEY, home2, SID, params=cfg.data), cfg, random.Random(1), env=env)
+    assert Counter(eng3.decide(HIGH, {}, _ctx(home2)).arm for _ in range(200))["on"] > 150
 
 
 def test_ladder_cold_bucket_only_first_arm(tmp_path: Path) -> None:
@@ -710,6 +715,7 @@ def _compress_reward(tmp_path: Path, arm: str, mode: str | None, **env_over: str
     if mode is not None:
         env["TOKEN_SPAREN_LEARN__SAVINGS_REWARD"] = mode
     env.update({f"TOKEN_SPAREN_{k}": v for k, v in env_over.items()})
+    env = to_user_config(env)  # learn.* is user-only: the user's file, not env
     cfg = load_config(proj, env)
     text = big_pytest()
     ev = Event(

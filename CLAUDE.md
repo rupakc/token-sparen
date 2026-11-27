@@ -69,7 +69,7 @@ Use the repo `.venv`. All must pass before a commit.
   to `<project>/.token-sparen/outputs/<id>.txt`.
 - `TOKEN_SPAREN_DISABLE=1` makes every hook a no-op.
 - Config precedence: defaults < `~/.token-sparen/config.toml` < `<project>/token-sparen.toml` < env
-  `TOKEN_SPAREN_*` < session overrides (`token-sparen config set`).
+  `TOKEN_SPAREN_*` (narrowing only, like the project file: `sanitise_env`) < session overrides.
 - The project file is deny-by-default: it may only make token-sparen intervene less or keep more
   (never trim more, recover less or block more); an unlisted key is user-only (`PROJECT_POLICY`
   in `config.py`).
