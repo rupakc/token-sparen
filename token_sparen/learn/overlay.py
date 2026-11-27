@@ -389,9 +389,11 @@ def fold(
     could not be taken; nothing is lost, retry later); every other failure is logged.
     ``prune_apply``: the detached SessionEnd fold of this session, the only fold that writes new
     deny rules (tool pruning); any other fold leaves them ``pending``. ``mine_facts`` /
-    ``prune`` false skip the fact miners (and the session's fact lifecycle log) and tool
-    pruning, so an offline simulation folds engine evidence only (posteriors, breaker,
-    pre-trim candidates, outcome backfill)."""
+    ``prune`` false skip the fact miners (the session's fact lifecycle log is then dropped,
+    not judged) and tool pruning (including the restore of a pruned tool the session needed),
+    so an offline simulation folds engine evidence only (posteriors, breaker, pre-trim
+    candidates, outcome backfill). For throw-away simulation state roots only: never pass
+    false on a live ``~/.token-sparen``."""
     env = {"TOKEN_SPAREN_HOME": str(home)}
     rep = FoldReport(session_id)
     try:

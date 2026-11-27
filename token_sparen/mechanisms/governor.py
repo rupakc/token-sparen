@@ -44,6 +44,8 @@ HEAD_BYTES = 256
 MAX_IDS = 64
 CHUNK = 4 << 20
 CACHE = "governor"
+WINDOW_1M_KEY = "window_1m"  # governor cache: the session has shown a 1M context window
+SESSION_MODEL_KEY = "session_model"  # overlay: the model id SessionStart reported
 ADVISED = "governor_advised"
 # Context-adding tools the opt-in hard stop denies (plus every MCP tool); never edit tools.
 STOP_TOOLS = frozenset(
@@ -166,6 +168,8 @@ def _apply_line(cache: dict[str, Any], line: bytes, count_burn: bool = True) -> 
     cache["last_ctx"] = ctx
     if model is not None:
         cache["model"] = model
+    if features.is_1m((model,), ctx):
+        cache[WINDOW_1M_KEY] = True  # latched for the session (survives a compaction)
 
 
 def _next_newline(fh: BinaryIO, pos: int, size: int) -> int | None:
@@ -250,6 +254,8 @@ def _advance(
             or _int(cache.get("burn")) is None
         ):
             new = {**_fresh(), "path": pid}  # restart: burn, EWMA and turn state reset
+            if cache is not None and cache.get(WINDOW_1M_KEY) is True:
+                new[WINDOW_1M_KEY] = True  # ... but never the session's 1M latch
         else:
             new = {**cache, "ids": dict(cache["ids"])}
         new["size"] = size
@@ -318,12 +324,13 @@ def band_window(
     session_id: str,
     models: tuple[str | None, ...],
     last_ctx: int,
+    latched: bool = False,
 ) -> int:
-    """The window of the ``band`` feature: the resolved one when authoritative, else the
-    reported model window (``features.band_window``; 200k vs 1M)."""
+    """The context window of the governor and the ``band`` feature: the resolved one when
+    authoritative, else 1M on the session's latch or 1M evidence (``features.band_window``)."""
     first = next((m for m in models if isinstance(m, str)), None)
     window, authoritative = _resolve_window(cfg, env, session_id, first)
-    return features.band_window(window, authoritative, models, last_ctx)
+    return features.band_window(window, authoritative, models, last_ctx, latched=latched)
 
 
 def _level(value: float, notice: float, advise: float) -> Level:
@@ -333,11 +340,18 @@ def _level(value: float, notice: float, advise: float) -> Level:
 
 
 def _build(
-    cache: Mapping[str, Any], cfg: Config, env: Mapping[str, str], session_id: str
+    cache: Mapping[str, Any],
+    cfg: Config,
+    env: Mapping[str, str],
+    session_id: str,
+    hook_model: str | None = None,
 ) -> GovernorState:
     model = cache.get("model")
-    window = resolve_window(cfg, env, session_id, model if isinstance(model, str) else None)
+    seen = model if isinstance(model, str) else None
     last_ctx = _int(cache.get("last_ctx")) or 0
+    window = band_window(
+        cfg, env, session_id, (hook_model, seen), last_ctx, cache.get(WINDOW_1M_KEY) is True
+    )
     burn = _int(cache.get("burn")) or 0
     budget = _pos_int(cfg.get("governor.session_budget_tokens")) or DEFAULT_BUDGET
     unknown = cache.get("burn_unknown") is True
@@ -386,7 +400,36 @@ def cached(
     cache = overlay.get(CACHE)
     if not isinstance(cache, dict):
         return None
-    return _build(cache, cfg or Config(), os.environ if env is None else env, session_id)
+    env = os.environ if env is None else env
+    return _build(cache, cfg or Config(), env, session_id, _hook_model(overlay, None))
+
+
+def _hook_model(overlay: Mapping[str, Any], model: str | None) -> str | None:
+    """The hook-reported model id: this hook's, else the one SessionStart recorded."""
+    if model is not None:
+        return model
+    got = overlay.get(SESSION_MODEL_KEY)
+    return got if isinstance(got, str) else None
+
+
+def record_session_model(event: Event, *, env: Mapping[str, str] | None = None) -> None:
+    """SessionStart (the only hook input with ``model``, and not always): keep the model id in
+    the session overlay and latch ``window_1m`` when it is a 1M variant. Never clears a latch."""
+    model = event.model
+    if not model or event.session_id == "unknown":
+        return
+    one_m = features.reported_window(model) is not None
+
+    def apply(state: dict[str, Any]) -> dict[str, Any]:
+        state[SESSION_MODEL_KEY] = model
+        if one_m:
+            cache = state.get(CACHE)
+            cache = cache if isinstance(cache, dict) else {}
+            cache[WINDOW_1M_KEY] = True
+            state[CACHE] = cache
+        return state
+
+    session.update_session(tracking.overlay_path(event, env), apply)
 
 
 def ctx_pct(
@@ -403,13 +446,10 @@ def ctx_pct(
     is known, so a 1M-context session is no longer mis-banded. None when unknown: no cache or
     last call yet, or the last call exceeds even that window."""
     cache = overlay.get(CACHE)
-    last_ctx = (_int(cache.get("last_ctx")) or 0) if isinstance(cache, dict) else 0
-    if not isinstance(cache, dict) or not last_ctx > 0:
+    if not isinstance(cache, dict) or not (_int(cache.get("last_ctx")) or 0) > 0:
         return None
-    seen = cache.get("model")
-    models = (model, seen if isinstance(seen, str) else None)
-    window = band_window(cfg, env, session_id, models, last_ctx)
-    return None if last_ctx > window else last_ctx / window
+    st = _build(cache, cfg, env, session_id, _hook_model(overlay, model))
+    return None if st.window_unknown else st.ctx_pct
 
 
 def decision_ctx(
@@ -468,8 +508,9 @@ def state(
     started = _monotonic()
     overlay = session.read_session(session_ctx.overlay_path)
     prior = overlay.get(CACHE)
+    hook_model = _hook_model(overlay, session_ctx.model)
     if not turn_boundary and isinstance(prior, dict) and _unchanged(prior, transcript):
-        return _build(prior, cfg, env, session_ctx.session_id)
+        return _build(prior, cfg, env, session_ctx.session_id, hook_model)
     result: dict[str, Any] = {}
 
     def apply(st: dict[str, Any]) -> dict[str, Any]:
@@ -484,7 +525,7 @@ def state(
         return st
 
     session.update_session(session_ctx.overlay_path, apply)
-    return _build(result, cfg, env, session_ctx.session_id)
+    return _build(result, cfg, env, session_ctx.session_id, hook_model)
 
 
 def _unchanged(cache: Mapping[str, Any], transcript: Path) -> bool:

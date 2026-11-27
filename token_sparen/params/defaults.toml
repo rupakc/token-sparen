@@ -79,10 +79,10 @@ max_read_bytes = 5000000  # cat/Read of a larger text file without a range is bl
 # tail-biased level (head = pretrim_head, tail = K, standard keep_ratio); never a shell rewrite.
 pretrim_lines = 120  # K when a candidate names none
 pretrim_head = 10
-# Keep ratio of the bounded pre-trim arm (M4 tuning knob). 0.35, the packaged default, means
-# "the standard arm's keep_ratio", which is the pre-M4 behaviour; any other value in [0, 1] is used
-# as is. A project may only raise it (keep more).
-pretrim_bounded_keep_ratio = 0.35
+# Keep ratio of the bounded pre-trim arm (M4 tuning knob). No default: unset, it follows
+# compression.levels.standard.keep_ratio (the pre-M4 behaviour); any number in [0, 1] is used as
+# is. A project may only raise it (keep more), compared with the standard ratio while unset.
+# pretrim_bounded_keep_ratio = 0.35
 
 [read_dedupe]
 enabled = true
@@ -166,9 +166,10 @@ savings_reward = "scaled"  # savings reward at decision time: "scaled" = min(1, 
 # the output once per arm: hook p95 gated by tests/perf/test_counterfactual_reward.py); "cost" =
 # cache-weighted cost removed (pricing.cache_write + pricing.cache_read x resends) / its p95
 resend_horizon = 20  # R of the counterfactual reward: resends at which a removal counts in full
-ladder_retry_decisions = 0  # 0 = off. N > 0: after N decisions of a bucket with the next harsher
-# arm locked only because the safer arm is not yet established (too few observations, regret
-# mean <= tau), that arm competes for one decision (probe), then the count restarts
+ladder_retry_decisions = 0  # 0 = off. N > 0: after N decisions of a bucket within one session
+# (counted per session, not per project) with the next harsher arm locked only because the safer
+# arm is not yet established (too few observations, regret mean <= tau), that arm competes for
+# one decision (probe), then the count restarts
 
 # Regret target per tier: a trimming arm is feasible only if its sampled regret is <= tau
 # (high tier additionally needs its regret 95 % upper bound <= tau).

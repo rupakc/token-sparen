@@ -447,8 +447,8 @@ def handle_post_tool(
 
     def max_removed() -> float:
         """Counterfactual mode only: the largest removal over the point's trimming arms on this
-        output (the chosen arm's actual removal included)."""
-        best = float(before - after)
+        output, every arm measured the same way (``Candidate.tokens_after``, stand-in marker)."""
+        best = float(before - picked.tokens_after)
         if point is not COMPRESSION:
             return best  # the pre-trim point has one trimming arm
         for arm in COMPRESSION.arms:

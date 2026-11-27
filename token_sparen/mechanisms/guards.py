@@ -36,9 +36,6 @@ __all__ = ["PRETRIM", "check", "pretrim_level", "pretrim_lines"]
 MAX_READ_BYTES = 5_000_000
 PRETRIM_LINES = 120
 PRETRIM_HEAD = 10
-# The packaged default of [guards] pretrim_bounded_keep_ratio (= the packaged standard keep ratio);
-# at this value the bounded arm follows compression.levels.standard.keep_ratio, as before M4.
-PRETRIM_BOUNDED_KEEP_RATIO = 0.35
 PRETRIM_FILE = "pretrim.json"
 
 _SEPARATORS = frozenset({"|", "|&", "||", "&&", ";", "&", ";;", ";&", ";;&"})
@@ -431,8 +428,8 @@ def pretrim_lines(
 
 def pretrim_level(cfg: Config, lines: int) -> Level:
     """Tail-biased level: short head, ``lines`` tail, keep ratio
-    ``[guards] pretrim_bounded_keep_ratio`` (M4 tuning knob). Left at its packaged default (or
-    invalid) it is the standard arm's keep ratio, exactly as before M4."""
+    ``[guards] pretrim_bounded_keep_ratio`` (M4 tuning knob; any number in [0, 1] is used as
+    is). Unset (no packaged default) or invalid: the standard arm's keep ratio, as before M4."""
     head = _int(cfg, "guards.pretrim_head", PRETRIM_HEAD)
     ratio = _bounded_keep_ratio(cfg)
     if cfg.trusted is not None:  # a project file only ever keeps more than the user's setting
@@ -443,6 +440,6 @@ def pretrim_level(cfg: Config, lines: int) -> Level:
 def _bounded_keep_ratio(cfg: Config) -> float:
     raw = cfg.get("guards.pretrim_bounded_keep_ratio")
     valid = not isinstance(raw, bool) and isinstance(raw, int | float) and 0.0 <= raw <= 1.0
-    if valid and raw != PRETRIM_BOUNDED_KEEP_RATIO:
+    if valid:
         return float(raw)
     return load_level(cfg, "standard").keep_ratio

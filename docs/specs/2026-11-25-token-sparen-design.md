@@ -398,13 +398,16 @@ p95 < 50 ms, which it does) | `cost` (`removed x (cache_write + cache_read x res
 off): after N decisions of a bucket whose next harsher arm is locked only because the safer arm
 is unestablished (never when it is known risky), the ladder re-opens it for one decision; the
 count lives in the session's pending sidecar and the draw and its exact propensity use the same
-ladder state. `[guards] pretrim_bounded_keep_ratio` (0.35 = the standard arm's keep ratio, the
-previous behaviour; project may only raise it, floored at the trusted value).
+ladder state; the count is per session (fail-safe: short sessions re-open less often).
+`[guards] pretrim_bounded_keep_ratio` has no default (unset = the standard arm's keep ratio, the
+previous behaviour; any number is used as is; a project may only raise it, compared with the
+standard ratio while unset, floored at the trusted value).
 `overlay.fold(mine_facts=, prune=)` lets a simulation fold engine evidence only. Correctness fix,
-on: the `band` feature's window is the statusline/env/model-table window when one applies, else
-the reported model window (`[1m]` marker in the hook-input or transcript model id → 1M) or, when a
-call exceeds 200k but not 1M, 1M (it read `unk` before); otherwise unchanged. The governor's
-advisories keep their window.
+on: the window of the governor and of the `band` feature is the statusline/env/model-table
+window when one applies; otherwise a per-session `window_1m` latch (governor cache, kept across
+cache restarts and compactions) selects 1M once SessionStart reports a `[1m]` model id (the only
+hook input with `model`; kept as `session_model` in the overlay) or any call exceeds 200k tokens
+(it read `unk` before); otherwise unchanged. Replay latches per transcript the same way.
 
 ---
 

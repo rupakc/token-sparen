@@ -528,9 +528,9 @@ def test_bounded_pretrim_default_reproduces_current(tmp_path: Path) -> None:
 
     home = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
     cfg = load_config(tmp_path / "proj", home)
-    assert cfg.get("guards.pretrim_bounded_keep_ratio") == 0.35
+    assert cfg.get("guards.pretrim_bounded_keep_ratio") is None  # no default: follow standard
     assert guards.pretrim_level(cfg, 120) == old(cfg, 120)
-    # left at its default it still follows the standard arm, exactly as before
+    # unset it follows the standard arm, exactly as before
     std = load_config(
         tmp_path / "proj", {**home, "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.5"}
     )
@@ -541,6 +541,16 @@ def test_bounded_pretrim_default_reproduces_current(tmp_path: Path) -> None:
         tmp_path / "proj", {**home, "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "0.2"}
     )
     assert guards.pretrim_level(own, 50).keep_ratio == 0.2
+    # any explicit number is used as is, 0.35 included (no sentinel)
+    explicit = load_config(
+        tmp_path / "proj",
+        {
+            **home,
+            "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "0.35",
+            "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.2",
+        },
+    )
+    assert guards.pretrim_level(explicit, 50).keep_ratio == 0.35
     bad = load_config(
         tmp_path / "proj", {**home, "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "7"}
     )
@@ -551,10 +561,16 @@ def test_bounded_pretrim_project_may_only_raise(tmp_path: Path) -> None:
     proj = tmp_path / "proj"
     proj.mkdir()
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
+    # unset by the user: the project's number is compared with the standard keep ratio (0.35)
     (proj / "token-sparen.toml").write_text("[guards]\npretrim_bounded_keep_ratio = 0.1\n", "utf-8")
-    assert load_config(proj, env).get("guards.pretrim_bounded_keep_ratio") == 0.35
+    assert guards.pretrim_level(load_config(proj, env), 50).keep_ratio == 0.35
     (proj / "token-sparen.toml").write_text("[guards]\npretrim_bounded_keep_ratio = 0.6\n", "utf-8")
     assert load_config(proj, env).get("guards.pretrim_bounded_keep_ratio") == 0.6
+    assert guards.pretrim_level(load_config(proj, env), 50).keep_ratio == 0.6
+    # set by the user: a project may only raise it
+    user = {**env, "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "0.5"}
+    (proj / "token-sparen.toml").write_text("[guards]\npretrim_bounded_keep_ratio = 0.4\n", "utf-8")
+    assert load_config(proj, user).get("guards.pretrim_bounded_keep_ratio") == 0.5
     # a project raising it above the default but below the user's standard ratio keeps the
     # user's (larger) ratio: a project never trims more
     std = {**env, "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.7"}

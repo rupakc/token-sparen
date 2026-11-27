@@ -234,7 +234,8 @@ class Engine:
 
     def _wait(self, point: str, bucket: str) -> int:
         """Decisions of ``(point, bucket)`` since its next harsher arm was locked (or last
-        re-opened), from the pending sidecar (read once per engine)."""
+        re-opened), from this session's pending sidecar (read once per engine): the count is per
+        session, so a short session re-opens less often, never more."""
         if self._waits is None:
             self._waits = {}
             if self._overlay is not None:

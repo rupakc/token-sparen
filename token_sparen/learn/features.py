@@ -49,23 +49,30 @@ def reported_window(model: str | None) -> int | None:
     return None
 
 
+def is_1m(models: Sequence[str | None], last_ctx: int) -> bool:
+    """Evidence of a 1M window: a reported model id with the ``[1m]`` marker, or a call larger
+    than 200k tokens (a 200k-window model cannot report one). The governor latches it per
+    session, so it survives a compaction."""
+    return any(reported_window(m) is not None for m in models) or last_ctx > WINDOW_200K
+
+
 def band_window(
-    resolved: int, authoritative: bool, models: Sequence[str | None], last_ctx: int
+    resolved: int,
+    authoritative: bool,
+    models: Sequence[str | None],
+    last_ctx: int,
+    *,
+    latched: bool = False,
 ) -> int:
-    """The window the ``band`` feature divides by (spec 7.2; M4 correctness fix).
+    """The context window of the governor and the ``band`` feature (spec 7.2; M4 fix).
 
     ``resolved`` is the governor's window; ``authoritative`` when it came from the statusline
     sensor, ``CLAUDE_CODE_MAX_CONTEXT_TOKENS`` or a model-table match (then it is used as is).
-    Otherwise the reported model ids (hook input, transcript) decide 1M vs 200k, and a call
-    larger than ``resolved`` but within 1M proves a 1M window (it used to read ``unk``). Unknown
-    otherwise: ``resolved``, as before."""
+    Otherwise 1M when the session's ``window_1m`` latch is set or ``is_1m`` (a ``[1m]`` model id
+    or a call above 200k, within 1M); else ``resolved``, as before."""
     if authoritative:
         return resolved
-    for model in models:
-        got = reported_window(model)
-        if got is not None:
-            return got
-    if resolved < last_ctx <= WINDOW_1M:
+    if latched or (is_1m(models, last_ctx) and last_ctx <= WINDOW_1M):
         return WINDOW_1M
     return resolved
 

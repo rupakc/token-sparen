@@ -1257,7 +1257,9 @@ def reward_savings(
             horizon = _num_param(cfg, "learn.resend_horizon", RESEND_HORIZON)
             value = counterfactual_value(removed, best, resends, horizon)
         elif mode == "cost":
-            weight = cost_weight(removed, resends, Prices.load(cfg))
+            # the user's prices (pricing.* is project-free: a project must not shape a reward)
+            trusted = cfg if cfg is None or cfg.trusted is None else Config(cfg.trusted)
+            weight = cost_weight(removed, resends, Prices.load(trusted))
             value = savings_value(
                 home, project_key, point + COST_SUFFIX, bucket, removed, resends, env, weight=weight
             )

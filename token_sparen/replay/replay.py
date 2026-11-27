@@ -540,6 +540,7 @@ class _Session:
         self.seen: set[str] = set()
         self.ctx_tokens: int | None = None
         self.model: str | None = None
+        self.window_1m = False
         self.project_dir = Path(os.devnull).parent
         self.project_key = "replay"
         self._keys: dict[str, str] = {}
@@ -576,6 +577,8 @@ class _Session:
                 acc.baseline_context_cost += cost
         if rec.model:
             self.model = rec.model
+        if features.is_1m((self.model,), self.ctx_tokens or 0):
+            self.window_1m = True  # the hook's per-session latch
         for (cat, ctype, fam, kind, signal), n in self.sent.items():
             self._book(cat, ctype, fam, kind, signal, n, self.prices.cache_read)
         for key, n in self.awaiting.items():
@@ -734,7 +737,7 @@ class _Session:
         if self.ctx_tokens is None:
             return None
         window = governor.band_window(
-            self.cfg, os.environ, "replay", (self.model,), self.ctx_tokens
+            self.cfg, os.environ, "replay", (self.model,), self.ctx_tokens, self.window_1m
         )  # the hook's band window (a 1M-context session is not mis-banded)
         return self.ctx_tokens / window if window > 0 else None
 

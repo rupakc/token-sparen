@@ -20,14 +20,17 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
 - `[learn] ladder_retry_decisions` (default 0 = off): after N decisions of a bucket whose next
   harsher arm is locked only because the safer arm is not yet established, that arm competes
   for one decision; the logged propensity stays exact.
-- `[guards] pretrim_bounded_keep_ratio` (default 0.35 = follow the standard arm's keep ratio, as
-  before); a project may only raise it, and never below the user's own ratio.
+- `[guards] pretrim_bounded_keep_ratio` (no default: unset follows the standard arm's keep
+  ratio, as before; any number, 0.35 included, is used as is); a project may only raise it
+  (compared with the standard ratio while unset), and never below the user's own ratio.
 - `overlay.fold(..., mine_facts=True, prune=True)`: false folds engine evidence only (offline
   simulation).
-- Fix (on by default): the `band` feature divides by the reported context window. Without the
-  statusline sensor, a model id with the `[1m]` marker (hook input or transcript) or a call
-  larger than 200k tokens now means a 1M window, so a 1M-context session is no longer banded
-  `unk` (or too full); replay uses the same window.
+- Fix (on by default): the governor and the `band` feature use a per-session 1M-window latch.
+  Without the statusline sensor (or another authoritative window), SessionStart's model id with
+  the `[1m]` marker (kept in the session overlay; SessionStart is the only hook input with
+  `model`) or any call above 200k tokens latches a 1M window for the rest of the session,
+  compactions included, so a 1M-context session is no longer banded `unk` or too full and gets
+  no false context notices; replay uses the same latch per transcript.
 
 ### M4 E1 at real-data scale
 

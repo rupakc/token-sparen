@@ -316,7 +316,7 @@ def test_line_over_cap_is_skipped_not_stalled(
 
 
 def test_window_unknown_when_last_call_exceeds_it(tmp_path: Path) -> None:
-    t = _transcript(tmp_path, [_assistant("m1", 300_000)])
+    t = _transcript(tmp_path, [_assistant("m1", 1_200_000)])  # beyond even a 1M window
     st = _state(tmp_path, t)
     assert st.window_unknown is True and st.ctx_level == "ok" and st.level == "ok"
     assert _prompt(tmp_path, t, _cfg(tmp_path)) is None
@@ -634,3 +634,61 @@ def test_ctx_pct_unknown_when_the_window_is_wrong(tmp_path: Path) -> None:
     cfg.data["governor"]["windows"] = {"default": 200_000, "m*": 100_000}  # a table match binds
     overlay = {"governor": {"last_ctx": 150_000, "model": "m1"}}
     assert governor.ctx_pct(overlay, cfg, env, "s-1") is None
+
+
+# --------------------------------------------------------------------------- 1M latch (M4 T6)
+
+
+def _band_pct(tmp_path: Path) -> float | None:
+    cfg, env = _cfg(tmp_path), _env(tmp_path)
+    ev = _event(tmp_path, "post_tool", None, tool="Bash")
+    overlay = session.read_session(tracking.overlay_path(ev, env))
+    return governor.ctx_pct(overlay, cfg, env, "s-1")
+
+
+def test_window_1m_latch_survives_compaction(tmp_path: Path) -> None:
+    t = _transcript(tmp_path, [_assistant("m1", 205_000)])
+    st = _state(tmp_path, t)
+    assert st.window == 1_000_000 and st.ctx_level == "ok"  # the governor uses the latch too
+    assert _band_pct(tmp_path) == pytest.approx(0.205)
+    _append(t, [_assistant("m2", 150_000)])  # after a compaction: back under 200k
+    st = _state(tmp_path, t)
+    assert st.window == 1_000_000 and st.ctx_pct == pytest.approx(0.15)
+    assert _band_pct(tmp_path) == pytest.approx(0.15)
+    # a cache restart (rewritten transcript) keeps the latch as well
+    t.write_text(_assistant("m3", 120_000) + "\n", encoding="utf-8")
+    _state(tmp_path, t)
+    assert _band_pct(tmp_path) == pytest.approx(0.12)
+
+
+def test_session_start_1m_model_bands_from_the_first_call(tmp_path: Path) -> None:
+    import dataclasses
+
+    # wired into the SessionStart chain
+    import inspect
+
+    from token_sparen.adapters.claude import entry
+
+    assert "record_session_model" in inspect.getsource(entry._on_session_active)
+    env = _env(tmp_path)
+    start = dataclasses.replace(
+        _event(tmp_path, "session_start", None), model="claude-opus-4-6[1m]"
+    )
+    governor.record_session_model(start, env=env)
+    ev = _event(tmp_path, "post_tool", None, tool="Bash")
+    overlay = session.read_session(tracking.overlay_path(ev, env))
+    assert overlay["session_model"] == "claude-opus-4-6[1m]"
+    t = _transcript(tmp_path, [_assistant("m1", 150_000)])
+    st = _state(tmp_path, t)
+    assert st.window == 1_000_000
+    assert _band_pct(tmp_path) == pytest.approx(0.15)
+
+
+def test_plain_200k_model_under_200k_unchanged(tmp_path: Path) -> None:
+    governor.record_session_model(
+        _event(tmp_path, "session_start", None), env=_env(tmp_path)
+    )  # no model id: nothing latched
+    t = _transcript(tmp_path, [_assistant("m1", 150_000, model="claude-sonnet-4-5")])
+    st = _state(tmp_path, t)
+    assert st.window == 200_000 and st.ctx_pct == pytest.approx(0.75)
+    assert _band_pct(tmp_path) == pytest.approx(0.75)

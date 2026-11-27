@@ -384,8 +384,8 @@ session); anything else is ignored and logged once.
 | `learn.hold.compression` | false | `true` stops all trimming of tool output (see [Turning it off](#turning-it-off)) |
 | `learn.hold.read_dedupe` | false | `true` stops read pointers |
 | `learn.savings_reward` | `"scaled"` | savings reward of a trim: `scaled` (removed x resends / recent p95), `fraction`, `counterfactual` (vs the best arm on the same output; `learn.resend_horizon`, 20) or `cost` (cache-weighted); a tuning option (user config, env or `config set` only) |
-| `learn.ladder_retry_decisions` | 0 | `N > 0`: re-open a locked, harsher trimming level for one probing decision every N decisions (user only) |
-| `guards.pretrim_bounded_keep_ratio` | 0.35 | share of lines a learned pre-trim keeps; 0.35 follows `compression.levels.standard.keep_ratio` (a project may only raise it) |
+| `learn.ladder_retry_decisions` | 0 | `N > 0`: re-open a locked, harsher trimming level for one probing decision after N decisions of that bucket within one session (counted per session; user only) |
+| `guards.pretrim_bounded_keep_ratio` | unset | share of lines a learned pre-trim keeps; unset follows `compression.levels.standard.keep_ratio`, any number is used as is (a project may only raise it) |
 | `statusline.segments` | all six | which segments to show |
 | `statusline.ascii`, `statusline.color` | false, true | plain glyphs; colours |
 | `recovery.ttl_days`, `max_files`, `max_bytes` | 14, 200, 100 MB | recovery file retention |
