@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib.util
 import json
 import math
 import os
@@ -17,6 +18,7 @@ import time
 from collections.abc import Callable, Mapping
 from importlib import resources
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from token_sparen import __version__, recovery
@@ -574,7 +576,10 @@ def _round_trip(root: Path) -> tuple[bool, str]:
         project = Path(tmp) / "proj"
         project.mkdir()
         env = {
-            k: v for k, v in os.environ.items() if not k.startswith(("TOKEN_SPAREN_", "CLAUDE_"))
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("TOKEN_SPAREN_", "CLAUDE_"))
+            or k in ("TOKEN_SPAREN_PYTHON", "TOKEN_SPAREN_NO_UV")
         }
         env.update(
             TOKEN_SPAREN_HOME=str(Path(tmp) / "home"),
@@ -606,10 +611,30 @@ def _round_trip(root: Path) -> tuple[bool, str]:
     return False, f"hook output had no updatedToolOutput/marker: {proc.stdout[:120]!r}"
 
 
-def _python3_version() -> tuple[int, int] | None:
+def _load_pyfind(root: Path) -> ModuleType | None:
+    """The hooks' interpreter search (``hooks/_pyfind.py``), or None outside a plugin tree."""
+    path = root / "hooks" / "_pyfind.py"
+    if not path.is_file():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("_token_sparen_pyfind", path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception:  # noqa: BLE001 - a broken file is reported as "launcher missing"
+        return None
+    return mod
+
+
+def _python3_version(pyfind: ModuleType | None = None) -> tuple[int, int] | None:
+    """Version of the ``python3`` on PATH (the one hooks.json starts), via ``_pyfind.probe``."""
     py = shutil.which("python3")
     if py is None:
         return None
+    if pyfind is not None:
+        got = pyfind.probe([py])
+        return None if got is None else (int(got[0]), int(got[1]))
     try:
         out = subprocess.run(  # noqa: S603
             [py, "-c", "import sys;print(sys.version_info[0], sys.version_info[1])"],
@@ -623,6 +648,30 @@ def _python3_version() -> tuple[int, int] | None:
         return None
 
 
+def _hook_python(env: Mapping[str, str], root: Path) -> tuple[str, str]:
+    """(mark, detail) for the interpreter the hooks actually run: ``python3`` itself when it is
+    >= 3.11, else what the launcher would re-launch on (searched fresh, not from the cache)."""
+    py = shutil.which("python3")
+    if py is None:
+        return _WARN, python3_missing_hint(_host_platform())
+    pyfind = _load_pyfind(root)
+    ver = _python3_version(pyfind)
+    if ver is None:
+        return _WARN, f"{py} did not report its version"
+    shown = f"{ver[0]}.{ver[1]}"
+    if ver >= (3, 11):
+        return _OK, f"python3 {shown} at {py} (hooks run it directly)"
+    if pyfind is None:
+        return _WARN, f"python3 is {shown} < 3.11 and hooks/_pyfind.py is missing"
+    found = pyfind.find_python(dict(env), ver, self_exe=py, root=str(root), use_cache=False)
+    if found is None:
+        return _BAD, (
+            f"python3 is {shown} and no Python >= 3.11 was found, so the hooks do nothing. "
+            "Install Python 3.11 or newer, or set TOKEN_SPAREN_PYTHON to its path"
+        )
+    return _OK, f"{found[0]} (found via {found[1]}; python3 is {shown}, hooks re-launch on it)"
+
+
 def _doctor(args: argparse.Namespace) -> int:
     env = os.environ
     results: list[tuple[str, str, str]] = []
@@ -634,11 +683,8 @@ def _doctor(args: argparse.Namespace) -> int:
     ver = sys.version_info
     ok = ver >= (3, 11)
     add(_OK if ok else _BAD, "python", f"{ver.major}.{ver.minor}.{ver.micro} (need >= 3.11)")
-    path_py = _python3_version()
-    if path_py is None:
-        add(_WARN, "python3 on PATH", python3_missing_hint(_host_platform()))
-    elif path_py < (3, 11):
-        add(_WARN, "python3 on PATH", f"{path_py[0]}.{path_py[1]} < 3.11; hooks use python3")
+    mark, detail = _hook_python(env, _plugin_root(env))
+    add(mark, "hook python", detail)
     floors = _below_floor(load_config(Path.cwd(), env))
     if floors:
         add(_WARN, "min_tokens", "; ".join(floors))

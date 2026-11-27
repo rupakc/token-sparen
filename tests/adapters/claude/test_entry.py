@@ -342,7 +342,7 @@ def test_plugin_manifest_valid() -> None:
         (hook,) = group["hooks"]
         assert hook["type"] == "command"
         assert hook["timeout"] == 10
-        assert hook["command"] == f'python3 "${{CLAUDE_PLUGIN_ROOT}}/hooks/run.py" {event}'
+        assert hook["command"] == f'python3 -I "${{CLAUDE_PLUGIN_ROOT}}/hooks/run.py" {event}'
 
 
 def test_pipeline_wiring_uses_entry_env(tmp_path: Path) -> None:

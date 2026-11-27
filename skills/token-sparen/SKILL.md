@@ -8,11 +8,11 @@ allowed-tools:
   - Bash(token-sparen doctor:*)
   - Bash(token-sparen session disable:*)
   - Bash(token-sparen prune restore:*)
-  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" stats:*)'
-  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" show:*)'
-  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" doctor:*)'
-  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" session disable:*)'
-  - 'Bash(python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" prune restore:*)'
+  - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" stats:*)'
+  - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" show:*)'
+  - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" doctor:*)'
+  - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" session disable:*)'
+  - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" prune restore:*)'
 ---
 
 # token-sparen
@@ -23,7 +23,7 @@ the model sees them, and keeps the full text on disk so nothing is lost. File co
 
 ## Running the CLI
 Use `token-sparen <args>`. If that is not installed (command not found), run exactly
-`python3 "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>` instead (same arguments). Run nothing else.
+`python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>` instead (same arguments). Run nothing else.
 Pre-approved: `stats`, `show`, `doctor`, `session disable`, `prune restore <tool>` (run it when you
 need a tool the session-start line lists as pruned). Every other subcommand (`statusline install`,
 `config set`, `prune enable`, ...) goes through the normal permission prompt: only when asked.

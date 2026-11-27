@@ -1696,3 +1696,34 @@ and the two new issues they found.
   three full rounds from fresh state (`tests/perfutil.best_p95`), stopping at the first under
   budget. The budget (50 ms x `TOKEN_SPAREN_PERF_FACTOR`) and the invariant are unchanged:
   one whole round must meet it, and a real regression fails every round.
+## 2026-11-27 M5 Task 1: hook launcher interpreter search
+- Hooks keep starting `python3` (now `python3 -I`); `hooks/run.py` re-launches on a Python
+  >= 3.11 found by `hooks/_pyfind.py` (Python 3.6 syntax): `TOKEN_SPAREN_PYTHON` (ignored inside
+  the current project) -> `python3.15`..`python3.11` -> `python3` -> Windows `py -3.15`..`-3.11`,
+  `py -3` -> `uv python find ">=3.11"` with `UV_PYTHON_DOWNLOADS=never`, run from the home dir
+  (no project `.venv` discovery), skipped with `TOKEN_SPAREN_NO_UV`. The ruling said `uv run
+  --python 3.11`; `uv python find` resolves the same interpreter once and caches its path, so
+  there is no uv start per hook. Every candidate is version-probed (with `-I`).
+- Cache `<state root>/launcher.json`: hashed key (plugin root, current interpreter realpath +
+  mtime, PATH, TOKEN_SPAREN_PYTHON, no-uv, platform) -> path + realpath/mtime stamp (re-checked
+  on each use); "none found" is kept 10 minutes and only while no named candidate changed. Used
+  only when the state root exists and is owned by the user.
+- Re-launch: POSIX `execv(path, [path, "-I", "-S", run.py, ...])` (`-S` saves ~10 ms; the
+  runtime is stdlib only), Windows `subprocess.run` with inherited stdio and the child's exit
+  code. `TOKEN_SPAREN_REEXEC=1` marks the child, is popped at start and blocks a second hop.
+- Nothing found: no-op plus one `systemMessage` warning and one `errors.jsonl` line
+  (`kind: launcher`) per day (O_EXCL day marker `logs/launcher-warned-<date>`).
+- Security ruling (2026-11-27): interpreters run isolated (`-I`) everywhere: hooks.json, the
+  skill's CLI fallback and the `prune restore` hint (`python3 -I .../run_cli.py`), re-launch,
+  probes, statusline (already `-I`).
+- Measured re-exec overhead (end-to-end subprocess PostToolUse, dev machine): ~40-55 ms.
+- Fix round 1 rulings (2026-11-27): I1 supply-chain test requires `python3 -I` for hook commands
+  and pre-approvals; I2 `TOKEN_SPAREN_PYTHON` accepted only outside the project/work tree and
+  (POSIX) when the interpreter and its dir are owned by the user or root and not group/world
+  writable, re-checked on every cache hit (cache key adds project dir + cwd when it is set),
+  rejection logged once; the force seed needs a `TOKEN_SPAREN_HOME` that `state_root` accepts;
+  I3 perf gate = per-pair extra time, `perfutil.best_p95` (3 rounds), budget 60 ms x factor;
+  I4 widening test settings go to the temporary user `config.toml`. Minors: `launcher.json` 0600,
+  2 s search deadline, warning says where to set `TOKEN_SPAREN_PYTHON`, uv TTL documented.
+  Known trade-off: python.org macOS framework Pythons are group-`admin` writable and so are not
+  accepted as `TOKEN_SPAREN_PYTHON` (still found via PATH).
