@@ -24,14 +24,20 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   E2 100 % with `inline_rate` per level not below the defaults', sim breaker trips not above the
   reference engine's).
 - `--confirm proposal.toml`: evaluates the joint proposal against the defaults once on the test
-  split (one paired `sim` run), all or nothing; one-shot per plan (a private ledger in `--out`
-  refuses every later confirmation); only grid values are accepted.
+  split (one paired `sim` run), all or nothing; one-shot per plan (a ledger under the state root,
+  `hillclimb/confirm-m4.json`, created exclusively before any test data is read, refuses every
+  later or concurrent confirmation, whatever `--out`); only grid values are accepted.
+- Minimum evidence on dev and test: 8 paired project groups with a trim and 30 trims per point,
+  else `insufficient` (nothing changes). A `compression.levels.<arm>` key is measured on its
+  own arm, every other static key under the production policy (the learner frozen on its
+  packaged priors); keys no lane replays are `measured_by = "none"` (never run, `unmeasured`).
 - `space.toml`: every grid includes the current default, holds at most 5 values and is checked
   against the owning module's clamp before any run; `[learn.tau]` and `[ope]` are never
   searched; M3 keys (facts, pruning, loop guard) only toward less intervention.
 - Private files only (`trail.jsonl`, `proposal.toml`, `dev.json`, `confirm.json`, mode 0600,
   outside any git work tree; `report.write_private(..., raw=True)` writes text files);
-  `--quiet` prints only the report path and id, `status:` and `<key>: accepted|rejected|unchanged`.
+  `--quiet` prints only the report path and id, `status:` and
+  `<key>: accepted|rejected|unchanged|unmeasured`.
 - `hill-climb` skill and `eval-hillclimber` agent: commit messages cite the private report id,
   never a figure.
 

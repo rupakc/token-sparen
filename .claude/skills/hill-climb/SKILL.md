@@ -14,8 +14,9 @@ The harness is `evals/hillclimb/run.py` (see `evals/hillclimb/README.md`); never
 3. Confirm ONCE on the held-out TEST split: `--confirm PRIVATE_DIR/proposal.toml`. The ledger
    refuses any second confirmation. All or nothing: rejected means the defaults stay.
 4. Only an accepted proposal changes `token_sparen/params/defaults.toml`, as one commit
-   (`chore(params): <keys> from hill-climb (E1 dev, private report <id12>)`).
+   (`chore(params): M4 joint proposal, E1 dev-selected, test-confirmed (report <id12>)`, the
+   `confirm.json` id).
 5. Private-figure rule: E1/E3 numbers never leave the private files. Run real data with
-   `--quiet` (stdout: report path + 12-hex id, status, `<key>: accepted|rejected|unchanged`).
+   `--quiet` (stdout: report path + 12-hex id, status, `<key>: accepted|rejected|unchanged|unmeasured`).
    Commit messages, CHANGELOG, docs and chat cite the report id only, never a figure.
 Use the `eval-hillclimber` agent for the loop.

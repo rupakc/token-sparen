@@ -6,45 +6,57 @@ E1 **dev** split only, write one joint proposal, and confirm it **once** on the 
 
 (``DIR``: a private directory outside any git work tree.)
 
-**Space.** ``[[entry]]`` tables ``{key, values, point}``: explicit grids only (at most
-``MAX_VALUES`` values, the current default among them), every value a config key the packaged
-defaults know (``config.validate_overlay``) and honoured as is by the owning module's reader
-(``module_value``: inside its clamp and the invariants, e.g. ``min_tokens >= 2000``, ratios in
-[0, 1]). ``[learn.tau]`` and ``[ope]`` are never searched; the M3 keys (``CONSERVATIVE``) only
-in the direction of less intervention (values >= current). A space that breaks any rule fails
+**Space.** ``[[entry]]`` tables ``{key, values, point[, measured_by]}``: explicit grids only
+(at most ``MAX_VALUES`` values, the current default among them), every value a config key the
+packaged defaults know (``config.validate_overlay``) and honoured as is by the owning module's
+reader (``module_value``: inside its clamp and the invariants, e.g. ``min_tokens >= 2000``,
+ratios in [0, 1]). ``[learn.tau]`` and ``[ope]`` are never searched; the M3 keys
+(``CONSERVATIVE``) only in the direction of less intervention (values >= current). Keys no E1
+lane replays (``UNMEASURED``: guards, read de-dupe, M3) must say ``measured_by = "none"``: they
+are never run, reported ``unmeasured`` and never changed. A space that breaks any rule fails
 before any run.
 
 **Dev search** (``climb``). Coordinate ascent in the order of ``space.toml``: one pass, and a
 second only if the first moved a key (cap 2). Per coordinate the other grid values (each joined
 to the current point; a value equal to its default is never written) pass the E2 gate first
 (``e2_gate``: 100 % and ``inline_rate`` per level not below the defaults'), then successive
-halving by project group: a seeded 25 % sample of the groups screens them (the top half goes
-on), 50 % keeps the best, and 100 % decides it with the acceptance rule (``judge``) against the
-current point, while proxy regret is compared with the current **defaults**. The objective is
-the cost-weighted net savings of one lane, never summed across lanes: the frozen-engine
-``compression`` replay (its static arm, or the arm a ``compression.levels.<arm>`` key belongs
-to, gated as in production; ``hc_compression``, per group) for static keys; the ``sim`` lane
-(the shipped learner, candidate versus the packaged-defaults reference, paired per group) for
-the learning keys (``LEARNING``), where breaker trips may not exceed the reference engine's.
-A key that no lane reads (guards, read de-dupe, M3 keys) can never show a gain, so it stays
-unchanged. Written privately: ``trail.jsonl`` (every screening and verdict), ``proposal.toml``
-(the joint proposal: keys that moved) and ``dev.json`` (the run's summary, the ``--quiet``
-report).
+halving over the project groups that have a dev session: a seeded 25 % sample screens them (the
+top half goes on), 50 % keeps the best, and 100 % decides it with the acceptance rule
+(``judge``) against the current point, while proxy regret is compared with the current
+**defaults**. The objective is the cost-weighted net savings of one lane, never summed across
+lanes: the ``compression`` replay per group (``hc_compression``, gated as in production) for
+static keys -- a ``compression.levels.<arm>`` key on the arm it governs, every other key under
+the production policy (the learner frozen on its packaged priors in an empty temporary state
+root); the ``sim`` lane (the shipped learner, candidate versus the packaged-defaults reference,
+paired per group) for the learning keys (``LEARNING``), where breaker trips may not exceed the
+reference engine's. No lane replays read de-dupe, so the objective has no read de-dupe term.
+Written privately: ``trail.jsonl`` (every screening and verdict), ``proposal.toml`` (the joint
+proposal: keys that moved) and ``dev.json`` (the run's summary with the proposal's sha256, the
+``--quiet`` report).
 
-**Confirmation** (``--confirm``). One-shot per plan: the first confirmation records the
-proposal's sha256 and the time in the private ledger ``confirm-ledger.json`` in ``--out``
-before it runs; every later ``--confirm`` (any proposal) is refused. The proposal must hold grid
-values only. It runs the ``sim`` lane once on the test split (proposal and defaults in the same
-paired run) and accepts all or nothing: bootstrap (by project group, ``RESAMPLES`` seeded
-resamples, 95 % percentile interval) lower bound of the net-savings difference > 0; for every
-point the upper bound of the proxy-regret-per-trim difference <= 0.2 tau(point) and the proxy
-regret per trim <= tau(point) (``ope.tau_for``); E2 100 % and ``inline_rate`` not below the
-defaults'. Writes ``confirm.json`` privately.
+**Evidence.** Nothing is decided on fewer than ``MIN_GROUPS`` paired project groups with a trim
+or fewer than ``MIN_TRIMS`` trims per evaluated point on either side: the verdict is
+``insufficient`` (the coordinate stays; a confirmation rejects).
+
+**Confirmation** (``--confirm``). One-shot per plan: the proposal is checked (grid values of
+measured keys only), then the ledger ``<state root>/hillclimb/confirm-m4.json`` (whatever
+``--out`` is) is created exclusively (``O_CREAT | O_EXCL``, 0600) with the proposal's sha256 and
+the time **before** any test-split data is read; if it exists, the confirmation is refused, so of
+any number of confirmations exactly one runs. A deleted ledger cannot be detected: any second
+look at test invalidates the result (cite the ``confirm.json`` id, which records the ledger).
+It runs the ``sim`` lane once on the test split (proposal and defaults in the same paired run)
+and accepts all or nothing: bootstrap (by project group, ``RESAMPLES`` seeded resamples, 95 %
+percentile interval) lower bound of the net-savings difference > 0; for every point the upper
+bound of the proxy-regret-per-trim difference <= 0.2 tau(point) and the proxy regret per trim
+<= tau(point) (``ope.tau_for``); E2 100 % and ``inline_rate`` not below the defaults'. Breaker
+trips are reported, not gated (the plan's acceptance rule does not list them). Writes
+``confirm.json`` privately (``dev_report``: the id of the ``dev.json`` beside the proposal that
+wrote it, else null).
 
 **Privacy.** Files go through ``replay.report.write_private`` (0600, never inside a git work
 tree). ``--quiet`` stdout is only ``report: <path> id: <12 hex>``, ``status: complete|incomplete``
-and one ``<key>: accepted|rejected|unchanged`` line per space key; errors name the exception
-type only. Commit messages cite the report id, never a figure.
+and one ``<key>: accepted|rejected|unchanged|unmeasured`` line per space key; errors name the
+exception type only. Commit messages cite the report id, never a figure.
 """
 
 from __future__ import annotations
@@ -56,8 +68,11 @@ import math
 import os
 import random
 import re
+import shutil
 import sys
+import tempfile
 import tomllib
+import weakref
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
@@ -74,11 +89,14 @@ from token_sparen.config import (
     UNSET_FOLLOWS,
     Config,
     packaged_defaults,
+    state_home,
     validate_overlay,
 )
 from token_sparen.facts import lifecycle
 from token_sparen.learn import hierarchy, ope, regret
+from token_sparen.learn.engine import Engine
 from token_sparen.learn.features import lookup_param
+from token_sparen.learn.hierarchy import StoreChain
 from token_sparen.learn.policy import COMPRESSION, StaticPolicy, get_point
 from token_sparen.mechanisms import compression, guards, loopguard, prune, read_dedupe
 from token_sparen.replay import replay, report, runner
@@ -95,7 +113,9 @@ RESAMPLES = 2000
 ALPHA = 0.05  # 95 % percentile interval
 NONINFERIORITY = 0.2  # regret-per-trim margin, times tau(point)
 MAX_PASSES = 2
-LEDGER = "confirm-ledger.json"
+LEDGER = ("hillclimb", "confirm-m4.json")  # under the state root: one confirmation per plan
+MIN_GROUPS = 8  # project groups with >= 1 trim needed before anything is decided
+MIN_TRIMS = 30  # trims per evaluated point (each side) needed before anything is decided
 EXCLUDED = ("learn.tau", "ope")  # never searched (prefixes of dotted keys)
 LEARNING = ("learn.savings_reward", "learn.ladder_retry_decisions", "learn.defaults")
 # M3 keys: only values >= the current default (less intervention)
@@ -110,7 +130,11 @@ CONSERVATIVE = frozenset(
     }
 )
 M3_PREFIXES = ("facts.", "prune.", "loopguard.")
-EXTRA_POINTS = frozenset({"facts", "prune"})  # owners that are not engine decision points
+EXTRA_POINTS = frozenset({"facts", "prune", "guards"})  # owners that are not decision points
+# keys no E1 lane replays (guard blocks, read de-dupe, M3 mechanisms): listed so a choice is
+# never off-grid, labelled ``measured_by = "none"``, never run and never changed
+UNMEASURED = ("guards.", "read_dedupe.", "facts.", "prune.", "loopguard.")
+MEASURED_BY = ("compression", "sim", "none")
 
 
 class SpaceError(ValueError):
@@ -258,6 +282,8 @@ def _default(key: str) -> Any:
 
 
 def _lane(key: str) -> str:
+    if key.startswith(UNMEASURED):
+        return "none"
     return "sim" if key.startswith(LEARNING) else "compression"
 
 
@@ -267,17 +293,24 @@ class Coordinate:
     values: tuple[Any, ...]
     point: str
     default: Any
-    lane: str  # "compression" or "sim": the objective's one lane
+    lane: str  # "compression" or "sim": the objective's one lane; "none": never measured
 
 
 def _same(a: Any, b: Any) -> bool:
     return type(a) is type(b) and a == b or (_num(a) and _num(b) and float(a) == float(b))
 
 
-def coordinate(key: Any, values: Any, point: Any) -> Coordinate:
-    """One checked ``space.toml`` entry (``SpaceError`` on any broken rule)."""
+def coordinate(key: Any, values: Any, point: Any, measured_by: Any = None) -> Coordinate:
+    """One checked ``space.toml`` entry (``SpaceError`` on any broken rule). ``measured_by``
+    must be ``"none"`` exactly for the keys no lane replays; if given otherwise, it must name
+    the key's lane."""
     if not isinstance(key, str) or not key:
         raise SpaceError("entry without a key")
+    lane = _lane(key)
+    if measured_by is not None and measured_by not in MEASURED_BY:
+        raise SpaceError(f"{key}: measured_by is one of {', '.join(MEASURED_BY)}")
+    if (lane == "none") != (measured_by == "none") or measured_by not in (None, lane):
+        raise SpaceError(f"{key}: measured_by must be {lane!r}")
     if any(key == p or key.startswith(f"{p}.") for p in EXCLUDED):
         raise SpaceError(f"{key}: tau and [ope] are never searched")
     if not isinstance(point, str) or not (get_point(point) or point in EXTRA_POINTS):
@@ -304,7 +337,7 @@ def coordinate(key: Any, values: Any, point: Any) -> Coordinate:
         seen = module_value(key, value)
         if not _same(seen, value):
             raise SpaceError(f"{key}: {value!r} is outside the module's clamp")
-    return Coordinate(key, tuple(values), point, default, _lane(key))
+    return Coordinate(key, tuple(values), point, default, lane)
 
 
 def load_space(path: Path) -> list[Coordinate]:
@@ -318,9 +351,13 @@ def load_space(path: Path) -> list[Coordinate]:
         raise SpaceError("no [[entry]] tables")
     coords: list[Coordinate] = []
     for item in entries:
-        if not isinstance(item, dict) or set(item) - {"key", "values", "point"}:
-            raise SpaceError("an entry holds only key, values and point")
-        coords.append(coordinate(item.get("key"), item.get("values"), item.get("point")))
+        if not isinstance(item, dict) or set(item) - {"key", "values", "point", "measured_by"}:
+            raise SpaceError("an entry holds only key, values, point and measured_by")
+        coords.append(
+            coordinate(
+                item.get("key"), item.get("values"), item.get("point"), item.get("measured_by")
+            )
+        )
     keys = [c.key for c in coords]
     if len(set(keys)) != len(keys):
         raise SpaceError("a key is listed twice")
@@ -356,6 +393,7 @@ class Verdict:
     admissible: bool
     reasons: list[str]
     stats: dict[str, Any]
+    insufficient: bool = False  # too little evidence: nothing decided (never admissible)
 
 
 def _quantile(sorted_xs: Sequence[float], q: float) -> float:
@@ -374,16 +412,38 @@ def _per_trim(rows: Iterable[Row], point: str) -> float:
 
 
 def judge(cand: Rows, base: Rows, ref: Rows, *, seed: str, breaker: bool = False) -> Verdict:
-    """The acceptance rule, paired by project group: bootstrap 95 % lower bound of the net
-    savings difference (``cand - base``) > 0; per point, upper bound of the proxy-regret-per-trim
+    """The acceptance rule, paired by project group (groups every side reports): with at least
+    ``MIN_GROUPS`` groups that trimmed and ``MIN_TRIMS`` trims per evaluated point on each side
+    (else ``insufficient``: nothing decided), bootstrap 95 % lower bound of the net savings
+    difference (``cand - base``) > 0; per point, upper bound of the proxy-regret-per-trim
     difference (``cand - ref``, ref = the current defaults) <= 0.2 tau and ``cand``'s proxy
     regret per trim <= tau; with ``breaker``, ``cand``'s breaker trips <= ``ref``'s."""
-    groups = sorted(set(cand) | set(base) | set(ref))
-    empty = Row(0.0)
-    c = [cand.get(g, empty) for g in groups]
-    b = [base.get(g, empty) for g in groups]
-    r = [ref.get(g, empty) for g in groups]
-    points = sorted({p for row in (*c, *r) for p in row.trims})
+    every = set(cand) | set(base) | set(ref)
+    groups = sorted(set(cand) & set(base) & set(ref))
+    c = [cand[g] for g in groups]
+    b = [base[g] for g in groups]
+    r = [ref[g] for g in groups]
+    points = sorted({p for row in (*c, *r) for p, t in row.trims.items() if t > 0})
+    trimmed = sum(
+        1
+        for x, y, z in zip(c, b, r, strict=True)
+        if any(sum(v.trims.values()) > 0 for v in (x, y, z))
+    )
+    evidence: list[str] = []
+    if trimmed < MIN_GROUPS:
+        evidence.append("insufficient:groups")
+    for p in points:
+        if min(sum(v.trims.get(p, 0.0) for v in side) for side in (c, r)) < MIN_TRIMS:
+            evidence.append(f"insufficient:trims:{p}")
+    if not points and "insufficient:groups" not in evidence:
+        evidence.append("insufficient:trims")
+    if evidence:
+        stats0 = {
+            "groups": len(groups),
+            "groups_trimmed": trimmed,
+            "unpaired": len(every) - len(groups),
+        }
+        return Verdict(False, evidence, stats0, True)
     rng = random.Random(f"hillclimb|{seed}")
     nets: list[float] = []
     diffs: dict[str, list[float]] = {p: [] for p in points}
@@ -398,6 +458,8 @@ def judge(cand: Rows, base: Rows, ref: Rows, *, seed: str, breaker: bool = False
     lb = _quantile(nets, ALPHA / 2)
     stats: dict[str, Any] = {
         "groups": n,
+        "groups_trimmed": trimmed,
+        "unpaired": len(every) - len(groups),
         "resamples": len(nets),
         "net_diff": sum(x.net - y.net for x, y in zip(c, b, strict=True)),
         "net_diff_lb": lb,
@@ -451,9 +513,10 @@ def e2_gate(overlay: Mapping[str, Any]) -> tuple[bool, list[str]]:
 
 # --------------------------------------------------------------------------- search
 
-# (lane, {label: flat overlay}, groups) -> {label: (rows of the overlay, rows of the defaults)}
+# (lane, {label: flat overlay}, groups, the coordinate's key)
+#   -> {label: (rows of the overlay, rows of the defaults)}
 Evaluate = Callable[
-    [str, Mapping[str, Mapping[str, Any]], Sequence[str]], dict[str, tuple[Rows, Rows]]
+    [str, Mapping[str, Mapping[str, Any]], Sequence[str], str], dict[str, tuple[Rows, Rows]]
 ]
 E2Gate = Callable[[Mapping[str, Any]], tuple[bool, list[str]]]
 
@@ -482,6 +545,9 @@ def _step(
     """One coordinate: the value it ends at (the current one unless a grid value is admissible)."""
     now = current.get(coord.key, coord.default)
     head = {"split": "dev", "pass": pass_no, "key": coord.key, "lane": coord.lane}
+    if coord.lane == "none":  # no lane replays it: never run, never changed
+        log({**head, "stage": "unmeasured"})
+        return now
     survivors: list[tuple[int, Any]] = []
     for i, value in enumerate(coord.values):
         if _same(value, now):
@@ -502,7 +568,7 @@ def _step(
         sample = _sample(groups, seed, coord.key, share)
         overlays = {"base": dict(current)}
         overlays.update({f"v{i}": joined(current, coord, v) for i, v in survivors})
-        rows = evaluate(coord.lane, overlays, sample)
+        rows = evaluate(coord.lane, overlays, sample, coord.key)
         scored = []
         for i, value in survivors:
             s = _score(rows[f"v{i}"][0], rows["base"][0])
@@ -535,6 +601,7 @@ def _step(
             "stage": "verdict",
             "groups": len(sample),
             "admissible": verdict.admissible,
+            "insufficient": verdict.insufficient,
             "reasons": verdict.reasons,
             "stats": verdict.stats,
         }
@@ -578,18 +645,51 @@ def climb(
 # --------------------------------------------------------------------------- lanes
 
 
+PRIOR_KEY = "0" * 16  # the empty state root's one project key
+
+
+class _PriorEngine(replay.FrozenEngine):
+    """The production learner as it decides on day one: a frozen ``Engine`` over an empty,
+    temporary state root (packaged priors only; nothing read from or written to any real
+    home)."""
+
+    def __init__(self, cfg: Config, seed: int) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="token-sparen-hc-"))
+        self._cleanup = weakref.finalize(self, shutil.rmtree, str(self.tmp), True)
+        super().__init__(cfg, self.tmp / ".token-sparen", seed)
+        self.env = {"HOME": str(self.tmp), "TOKEN_SPAREN_HOME": str(self.home)}
+
+    def engine(self, project_key: str) -> Engine:
+        """One engine for every session (no project has evidence; the key is a placeholder)."""
+        eng = self._engines.get(PRIOR_KEY)
+        if eng is None:
+            stores = StoreChain(PRIOR_KEY, self.home, None, params=self.cfg.data)
+            rng = random.Random(f"{self.seed}|{PRIOR_KEY}")
+            eng = self._engines[PRIOR_KEY] = Engine(stores, self.cfg, rng, env=self.env)
+        return eng
+
+
 class GroupedCompression:
-    """The ``compression`` lane (frozen static engine, production quality gate) reported per
-    project group (``runner.LANES["hc_compression"]``). Params: ``arm`` (the static arm, default
-    the packaged one), ``overlay``, ``seed``."""
+    """The ``compression`` lane (production quality gate) reported per project group
+    (``runner.LANES["hc_compression"]``). Params: ``arm`` (a static arm: the arm a
+    ``compression.levels.<arm>`` coordinate governs) or else the production policy (the
+    learner frozen on its packaged priors, ``_PriorEngine``), ``overlay``, ``seed``."""
 
     history = False
 
     def __init__(self, cfg: Config, params: Mapping[str, Any]) -> None:
-        self.inner = replay.CompressionLane(cfg, {"policy": "default", "seed": params.get("seed")})
+        seed = params.get("seed")
+        seed = seed if isinstance(seed, int) and not isinstance(seed, bool) else 0
+        self.inner = replay.CompressionLane(cfg, {"policy": "default", "seed": seed})
         arm = params.get("arm")
-        if isinstance(arm, str) and arm in COMPRESSION.arms:  # still gated: named "default"
-            self.inner.policies = [("default", StaticPolicy({COMPRESSION.name: arm}))]
+        policy: Any
+        if isinstance(arm, str) and arm in COMPRESSION.arms:
+            policy = StaticPolicy({COMPRESSION.name: arm})
+        else:
+            policy = _PriorEngine(cfg, seed)
+        # named "default": gated like production; one project key (no git probe of any cwd)
+        self.inner.policies = [("default", policy)]
+        self.inner.needs_key = False
         self.group: str | None = None
 
     def feed(self, event: Event, session: SessionInfo) -> None:
@@ -698,7 +798,11 @@ class Evaluator:
         return out
 
     def __call__(
-        self, lane: str, overlays: Mapping[str, Mapping[str, Any]], groups: Sequence[str]
+        self,
+        lane: str,
+        overlays: Mapping[str, Mapping[str, Any]],
+        groups: Sequence[str],
+        key: str,
     ) -> dict[str, tuple[Rows, Rows]]:
         if lane == "sim":
             specs: list[runner.LaneSpec] = [
@@ -707,8 +811,7 @@ class Evaluator:
             ]
             got = self.run(specs, groups)
             return {label: sim_rows(got.get(f"hc_{label}", {})) for label in overlays}
-        arms = {_arm_of(k) for o in overlays.values() for k in o} - {None}
-        key_arm = next(iter(arms)) if len(arms) == 1 else None
+        key_arm = _arm_of(key)  # the arm this coordinate governs, else the production policy
         labels = {**{f"hc_{k}": dict(v) for k, v in overlays.items()}, "hc__defaults": {}}
         specs = [
             (
@@ -718,7 +821,7 @@ class Evaluator:
                     "overlay": nest(o),
                     "seed": self.seed,
                     "label": label,
-                    **({"arm": key_arm} if key_arm else {}),
+                    **({"arm": key_arm} if key_arm else {"policy": "engine"}),
                 },
             )
             for label, o in labels.items()
@@ -746,7 +849,7 @@ def load_proposal(path: Path, coords: Sequence[Coordinate]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in flat.items():
         coord = by_key.get(key)
-        if coord is None or not any(_same(value, v) for v in coord.values):
+        if coord is None or coord.lane == "none" or not any(_same(value, v) for v in coord.values):
             raise ProposalError(f"{key}: not a grid value")
         out = joined(out, coord, value)
     return out
@@ -780,6 +883,49 @@ def _groups(paths: Sequence[Path]) -> list[str]:
     return sorted(runner.group_files(paths))
 
 
+def dev_groups(evaluator: Evaluator) -> list[str]:
+    """The project groups with a dev session (one cheap pass on the safe arm): the samples of
+    the successive halving are drawn from these only."""
+    spec = {"module": MODULE, "label": "hc_scan", "arm": COMPRESSION.safe_arm}
+    got = evaluator.run([("hc_compression", spec)], None)
+    return sorted(got.get("hc_scan", {}).get("groups", {}))
+
+
+def ledger_path() -> Path:
+    """The one-shot confirmation ledger: under the state root, whatever ``--out`` is."""
+    return state_home(os.environ).joinpath(*LEDGER)
+
+
+def claim_ledger(sha: str) -> dict[str, str]:
+    """Create the ledger exclusively (``O_CREAT | O_EXCL``, 0600) or raise ``ConfirmRefused``:
+    of any number of confirmations, concurrent or not, exactly one gets past this."""
+    path = ledger_path()
+    report._mkdirs_private(path.parent)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        raise ConfirmRefused("the confirmation of this plan already ran") from None
+    entry = {"proposal_sha256": sha, "recorded": datetime.now(UTC).isoformat()}
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(entry, fh, sort_keys=True)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    return entry
+
+
+def _dev_report(proposal_path: Path, sha: str) -> str | None:
+    """The id of the dev report written with this proposal (``dev.json`` beside it), if any."""
+    dev_json = Path(proposal_path).parent / "dev.json"
+    try:
+        doc = json.loads(dev_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(doc, dict) and doc.get("proposal_sha256") == sha:
+        return report.report_id(dev_json)
+    return None
+
+
 def dev(
     coords: Sequence[Coordinate],
     paths: Sequence[Path],
@@ -796,10 +942,20 @@ def dev(
         text = "".join(json.dumps(row, sort_keys=True, default=repr) + "\n" for row in trail)
         report.write_private(out / "trail.jsonl", text, raw=True)
 
-    proposal = climb(coords, evaluator, _groups(paths), seed=seed, trail=trail, on_step=save_trail)
+    proposal = climb(
+        coords, evaluator, dev_groups(evaluator), seed=seed, trail=trail, on_step=save_trail
+    )
     save_trail()
-    report.write_private(out / "proposal.toml", _toml(proposal), raw=True)
-    keys = {c.key: ("accepted" if c.key in proposal else "unchanged") for c in coords}
+    text = _toml(proposal)
+    report.write_private(out / "proposal.toml", text, raw=True)
+    keys = {
+        c.key: "unmeasured"
+        if c.lane == "none"
+        else "accepted"
+        if c.key in proposal
+        else "unchanged"
+        for c in coords
+    }
     doc = {
         "version": 1,
         "kind": "hillclimb-dev",
@@ -810,6 +966,7 @@ def dev(
         "space_sha256": space_sha,
         "seed": seed,
         "proposal": proposal,
+        "proposal_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "keys": keys,
         "complete": evaluator.log.complete,
         "run": asdict(evaluator.log),
@@ -829,12 +986,8 @@ def confirm(
 ) -> tuple[Path, bool, list[str]]:
     proposal = load_proposal(proposal_path, coords)  # before the one shot is used
     sha = hashlib.sha256(Path(proposal_path).read_bytes()).hexdigest()
-    ledger = out / LEDGER
-    if ledger.exists():
-        raise ConfirmRefused("the confirmation of this plan already ran")
-    report.write_private(
-        ledger, {"proposal_sha256": sha, "recorded": datetime.now(UTC).isoformat()}
-    )
+    report.check_out_path(out / "confirm.json")
+    ledger = claim_ledger(sha)  # before any test-split data is read
     e2_ok, e2_reasons = e2_gate(proposal)
     evaluator = Evaluator(paths, jobs=jobs, seed=seed, split="test")
     got = evaluator.run([("sim", {"overlay": nest(proposal), "seed": seed, "label": "sim"})], None)
@@ -851,18 +1004,25 @@ def confirm(
         "dogfood_start": DOGFOOD_START.isoformat(),
         "generated": datetime.now(UTC).date().isoformat(),
         "proposal_sha256": sha,
+        "ledger": ledger,
+        "dev_report": _dev_report(proposal_path, sha),  # None: not the dev run's proposal
         "proposal_overlay": proposal,
         "seed": seed,
         "baseline": _summary(ref),
         "proposal": _summary(cand),
         "verdict": {"reasons": reasons, "stats": verdict.stats},
         "accepted": accepted,
+        "insufficient": verdict.insufficient,
         "complete": complete,
         "run": asdict(evaluator.log),
     }
     path = report.write_private(out / "confirm.json", doc)
     word = "accepted" if accepted else "rejected"
-    lines = [f"{c.key}: {word if c.key in proposal else 'unchanged'}" for c in coords]
+    lines = [
+        f"{c.key}: "
+        + ("unmeasured" if c.lane == "none" else word if c.key in proposal else "unchanged")
+        for c in coords
+    ]
     return path, complete, lines
 
 

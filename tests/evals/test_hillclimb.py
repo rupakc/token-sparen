@@ -29,7 +29,7 @@ from test_replay import assert_mode  # noqa: E402
 from test_sim_lane import session  # noqa: E402
 
 M3_KEYS = ("facts.", "prune.", "loopguard.")
-KEY_LINE = r"[a-z0-9_.]+: (?:accepted|rejected|unchanged)\n"
+KEY_LINE = r"[a-z0-9_.]+: (?:accepted|rejected|unchanged|unmeasured)\n"
 SMALL_SPACE = """
 [[entry]]
 key = "compression.min_saving_ratio"
@@ -40,6 +40,12 @@ point = "compression"
 key = "learn.savings_reward"
 values = ["scaled", "fraction"]
 point = "compression"
+
+[[entry]]
+key = "read_dedupe.max_turn_gap"
+values = [4, 8]
+point = "read_dedupe"
+measured_by = "none"
 """
 
 
@@ -68,10 +74,12 @@ def write(path: Path, text: str) -> Path:
     return path
 
 
-def entry(key: str, values: Sequence[Any], point: str = "compression") -> str:
-    return f"[[entry]]\nkey = {json.dumps(key)}\nvalues = {json.dumps(list(values))}\n" + (
-        f"point = {json.dumps(point)}\n"
-    )
+def entry(
+    key: str, values: Sequence[Any], point: str = "compression", measured_by: str | None = None
+) -> str:
+    text = f"[[entry]]\nkey = {json.dumps(key)}\nvalues = {json.dumps(list(values))}\n"
+    text += f"point = {json.dumps(point)}\n"
+    return text + (f"measured_by = {json.dumps(measured_by)}\n" if measured_by else "")
 
 
 class Spy:
@@ -133,8 +141,8 @@ def test_space_values_within_module_clamps(
         entry("compression.levels.standard.keep_ratio", [0.35, 1.5]),
         entry("compression.min_saving_ratio", [0.15, -0.1]),
         entry("compression.min_tokens", [2000, 1000]),  # invariant: never below 2000
-        entry("read_dedupe.min_tokens", [2000, 1500], "read_dedupe"),
-        entry("guards.pretrim_bounded_keep_ratio", [0.35, 1.2], "pretrim"),
+        entry("read_dedupe.min_tokens", [2000, 1500], "read_dedupe", "none"),
+        entry("guards.pretrim_bounded_keep_ratio", [0.35, 1.2], "pretrim", "none"),
         entry("learn.defaults.compression.light.savings", [0.35, 1.3]),
         entry("learn.savings_reward", ["scaled", "bogus"]),
         entry("learn.ladder_retry_decisions", [0, -3]),
@@ -180,7 +188,12 @@ def test_harness_stdout_template(
     assert report == (out / "dev.json").resolve()
     assert m.group(2) == hashlib.sha256(report.read_bytes()).hexdigest()[:12]
     keys = [line.split(":")[0] for line in m.group(3).splitlines()]
-    assert keys == ["compression.min_saving_ratio", "learn.savings_reward"]
+    assert keys == [
+        "compression.min_saving_ratio",
+        "learn.savings_reward",
+        "read_dedupe.max_turn_gap",
+    ]
+    assert m.group(3).endswith("read_dedupe.max_turn_gap: unmeasured\n")
     for name in ("dev.json", "trail.jsonl", "proposal.toml"):
         assert_mode(out / name, 0o600)
     # the confirmation prints the same template
@@ -194,7 +207,8 @@ def test_harness_stdout_template(
     assert Path(m.group(1)) == (out / "confirm.json").resolve()
     lines = m.group(3).splitlines()
     assert lines[0] == "compression.min_saving_ratio: unchanged"
-    assert lines[1] in ("learn.savings_reward: accepted", "learn.savings_reward: rejected")
+    # three groups are too few to decide anything: the proposal is rejected (insufficient)
+    assert lines[1:] == ["learn.savings_reward: rejected", "read_dedupe.max_turn_gap: unmeasured"]
     # an unexpected error is reported by its type only
     secret = "secret-session-text-zq"
 
@@ -229,7 +243,7 @@ def test_dev_only_without_confirm(
         assert call["cutoff"] == date(2026, 11, 8) == hc.DEV_CUTOFF
         assert call["dogfood_start"] == date(2026, 11, 26)
     assert not (out / "confirm.json").exists()
-    assert not (out / hc.LEDGER).exists()
+    assert not hc.ledger_path().exists()
     trail = [json.loads(line) for line in (out / "trail.jsonl").read_text().splitlines()]
     assert trail and all(row["split"] == "dev" for row in trail)
     proposal = tomllib.loads((out / "proposal.toml").read_text(encoding="utf-8"))
@@ -254,19 +268,58 @@ def test_confirm_runs_once_per_proposal(
     assert doc["proposal_overlay"] == {"learn.savings_reward": "fraction"}
     assert {"baseline", "proposal", "accepted", "verdict"} <= doc.keys()
     assert doc["baseline"]["groups"] == doc["proposal"]["groups"] == 3  # same paired run
-    ledger = json.loads((out / hc.LEDGER).read_text(encoding="utf-8"))
+    assert doc["insufficient"] is True and doc["accepted"] is False  # 3 groups only
+    ledger = json.loads(hc.ledger_path().read_text(encoding="utf-8"))
     assert ledger["proposal_sha256"] == hashlib.sha256(proposal.read_bytes()).hexdigest()
+    assert doc["ledger"] == ledger
     assert "recorded" in ledger
-    assert_mode(out / hc.LEDGER, 0o600)
+    assert_mode(hc.ledger_path(), 0o600)
     before = (out / "confirm.json").read_bytes()
     other = write(tmp_path / "q.toml", "[compression]\nmin_saving_ratio = 0.3\n")
-    for again in (proposal, other):  # the same proposal or any other: refused
-        assert hc.main([*args, "--confirm", str(again)]) == 2
+    elsewhere = [*args[:4], "--out", str(tmp_path / "elsewhere"), "--quiet"]
+    for again, argv in ((proposal, args), (other, args), (other, elsewhere)):
+        # the same proposal or any other, into the same --out or another: refused
+        assert hc.main([*argv, "--confirm", str(again)]) == 2
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err.strip() == "hillclimb: confirm refused (already run once)"
     assert len(spy.calls) == 1
     assert (out / "confirm.json").read_bytes() == before
+    assert not (tmp_path / "elsewhere").exists()
+
+
+def test_concurrent_confirms_run_exactly_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import threading
+    import time
+
+    space = write(tmp_path / "space.toml", SMALL_SPACE)
+    proposal = write(tmp_path / "p.toml", '[learn]\nsavings_reward = "fraction"\n')
+    runs: list[int] = []
+
+    def slow(*_a: Any, **_k: Any) -> runner.RunResult:
+        runs.append(1)
+        time.sleep(0.3)
+        return runner.RunResult(by_split={"test": {}})
+
+    monkeypatch.setattr(runner, "run_parallel", slow)
+    codes: list[int] = []
+    start = threading.Barrier(4)
+
+    def go(i: int) -> None:
+        argv = ["--space", str(space), "--transcripts", str(tmp_path / "none")]
+        start.wait()
+        codes.append(hc.main([*argv, "--out", str(tmp_path / f"o{i}"), "--confirm", str(proposal)]))
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    capsys.readouterr()
+    assert len(runs) == 1
+    assert sorted(codes) == [0, 2, 2, 2]
 
 
 # ------------------------------------------------------------------ the search
@@ -290,8 +343,13 @@ class FakeEval:
         self.calls: list[tuple[str, dict[str, dict[str, Any]], list[str]]] = []
 
     def __call__(
-        self, lane: str, overlays: Mapping[str, Mapping[str, Any]], groups: Sequence[str]
+        self,
+        lane: str,
+        overlays: Mapping[str, Mapping[str, Any]],
+        groups: Sequence[str],
+        key: str,
     ) -> dict[str, tuple[hc.Rows, hc.Rows]]:
+        assert key == self.key
         self.calls.append((lane, {k: dict(v) for k, v in overlays.items()}, list(groups)))
         out: dict[str, tuple[hc.Rows, hc.Rows]] = {}
         for label, overlay in overlays.items():
@@ -388,7 +446,7 @@ def test_values_only_from_grid(
         assert captured.err.strip() == "hillclimb: invalid proposal (ProposalError)"
         with pytest.raises(hc.ProposalError):
             hc.load_proposal(prop, hc.load_space(space))
-    assert not (out / hc.LEDGER).exists()  # a refused proposal does not use the one shot
+    assert not hc.ledger_path().exists()  # a refused proposal does not use the one shot
 
 
 def test_m3_keys_only_conservative_direction(tmp_path: Path) -> None:
@@ -402,14 +460,14 @@ def test_m3_keys_only_conservative_direction(tmp_path: Path) -> None:
         for part in key.split("."):
             node = node[part]
         lower = node - 1 if isinstance(node, int) else round(node - 0.05, 4)
-        space = write(tmp_path / "s.toml", entry(key, [node, lower], key.split(".")[0]))
+        space = write(tmp_path / "s.toml", entry(key, [node, lower], key.split(".")[0], "none"))
         with pytest.raises(hc.SpaceError):
             hc.load_space(space)
         higher = node + 1 if isinstance(node, int) else round(node + 0.05, 4)
-        space = write(tmp_path / "s.toml", entry(key, [node, higher], key.split(".")[0]))
+        space = write(tmp_path / "s.toml", entry(key, [node, higher], key.split(".")[0], "none"))
         assert hc.load_space(space)[0].values == (node, higher)
     # an M3 key the harness has no direction for is refused outright
-    space = write(tmp_path / "s.toml", entry("prune.tau", [0.01, 0.02], "prune"))
+    space = write(tmp_path / "s.toml", entry("prune.tau", [0.01, 0.02], "prune", "none"))
     with pytest.raises(hc.SpaceError):
         hc.load_space(space)
 
@@ -460,12 +518,13 @@ def test_lanes_report_paired_rows_per_group(tmp_path: Path) -> None:
     ev = hc.Evaluator([src], jobs=1, seed=0, split="dev")
     groups = hc._groups([src])
     assert len(groups) == 3
-    got = ev("compression", {"base": {}, "tight": {"compression.min_saving_ratio": 0.99}}, groups)
+    key = "compression.min_saving_ratio"
+    got = ev("compression", {"base": {}, "tight": {key: 0.99}}, groups, key)
     base, ref = got["base"]
     assert sorted(base) == sorted(ref) == groups  # one row per project group
     assert all(r.trims["compression"] > 0 and r.net > 0 for r in base.values())
     assert all(r.trims["compression"] == 0 for r in got["tight"][0].values())  # overlay reached
-    assert ev.log.runs == 1 and ev.log.complete
+    assert ev.log.runs == 1 and ev.log.complete and ev.log.sessions_failed == 0
     # a level's key is measured on that level's arm (the safe arm never trims)
     res = runner.run_parallel(
         [src],
@@ -476,7 +535,8 @@ def test_lanes_report_paired_rows_per_group(tmp_path: Path) -> None:
     )
     rows = hc.compression_rows(res.by_split["dev"]["off"])
     assert sorted(rows) == groups and all(r.trims["compression"] == 0 for r in rows.values())
-    sim = ev("sim", {"base": {}, "f": {"learn.savings_reward": "fraction"}}, groups[:2])
+    key = "learn.savings_reward"
+    sim = ev("sim", {"base": {}, "f": {key: "fraction"}}, groups[:2], key)
     cand, ref = sim["base"]
     assert sorted(cand) == sorted(ref) == sorted(groups[:2])
     assert cand == ref  # no overlay: the candidate is the reference (common random numbers)
@@ -490,3 +550,121 @@ def test_write_private_raw_text(tmp_path: Path) -> None:
     assert_mode(path, 0o600)
     with pytest.raises(TypeError):
         report.write_private(tmp_path / "p" / "y.toml", {"a": 1}, raw=True)
+
+
+# ------------------------------------------------------------------ fix round 1
+
+
+def test_minimum_evidence_or_insufficient() -> None:
+    """Below 8 project groups with a trim, or 30 trims per point, nothing is decided."""
+    one = {"g0": _row(10.001, trims=100)}
+    v = hc.judge(one, {"g0": _row(10.0, trims=100)}, {"g0": _row(10.0, trims=100)}, seed="s")
+    assert not v.admissible and v.insufficient and "insufficient:groups" in v.reasons
+    three = {f"g{i}": _row(10.0 + 0.01 * (i + 1), trims=40) for i in range(3)}
+    flat = {f"g{i}": _row(10.0, trims=40) for i in range(3)}
+    v = hc.judge(three, flat, flat, seed="s")
+    assert not v.admissible and v.insufficient
+    # eight groups, but a group without trims does not count
+    groups = [f"g{i}" for i in range(8)]
+    cand = {g: _row(12.0, trims=10 if i else 0) for i, g in enumerate(groups)}
+    base = {g: _row(10.0, trims=10 if i else 0) for i, g in enumerate(groups)}
+    assert hc.judge(cand, base, base, seed="s").insufficient
+    # eight groups with a trim each, but fewer than 30 trims at the point
+    cand = {g: _row(12.0 + i % 3, trims=3) for i, g in enumerate(groups)}
+    base = {g: _row(10.0 + i % 3, trims=3) for i, g in enumerate(groups)}
+    v = hc.judge(cand, base, base, seed="s")
+    assert v.insufficient and "insufficient:trims:compression" in v.reasons
+    # enough: decided on the evidence
+    cand = {g: _row(12.0 + i % 3, trims=4) for i, g in enumerate(groups)}
+    base = {g: _row(10.0 + i % 3, trims=4) for i, g in enumerate(groups)}
+    v = hc.judge(cand, base, base, seed="s")
+    assert v.admissible and not v.insufficient
+    # an unpaired group never counts (only groups every side reports)
+    extra = {**cand, "lonely": _row(1000.0, trims=50)}
+    assert hc.judge(extra, base, base, seed="s").stats["unpaired"] == 1
+    # the search keeps the current value on insufficient evidence
+    key = "compression.min_saving_ratio"
+    small = FakeEval(key, {0.2: 4.0}, {})
+    assert hc.climb(_coords((key, [0.1, 0.15, 0.2])), small, groups[:3], e2=_ok_e2) == {}
+
+
+def test_each_level_measured_on_its_own_arm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = corpus(tmp_path / "t", groups=2, dev=1, test=0)
+    spy = Spy(monkeypatch)
+    ev = hc.Evaluator([src], jobs=1, seed=0, split="dev")
+    moved = {"compression.levels.standard.keep_ratio": 0.3}
+    groups = hc._groups([src])
+
+    def lane_params() -> list[dict[str, Any]]:
+        return [p for _, p in spy.calls[-1]["specs"]]
+
+    key = "compression.levels.light.keep_ratio"
+    ev("compression", {"base": moved, "v": {**moved, key: 0.7}}, groups, key)
+    assert {p.get("arm") for p in lane_params()} == {"light"}  # not frozen by standard's move
+    key = "compression.levels.aggressive.keep_ratio"
+    ev("compression", {"base": moved, "v": {**moved, key: 0.1}}, groups, key)
+    assert {p.get("arm") for p in lane_params()} == {"aggressive"}
+    # a global key runs the production policy: the engine from packaged priors, no fixed arm
+    key = "compression.min_saving_ratio"
+    agg = {"compression.levels.aggressive.keep_ratio": 0.1}
+    got = ev("compression", {"base": agg, "v": {**agg, key: 0.2}}, groups, key)
+    assert all("arm" not in p and p["policy"] == "engine" for p in lane_params())
+    assert all(r.trims["compression"] > 0 for r in got["base"][0].values())
+    assert ev.log.complete and ev.log.sessions_failed == 0
+
+
+def test_unmeasured_keys_are_never_run_or_changed(tmp_path: Path) -> None:
+    coords = hc.load_space(hc.SPACE)
+    unmeasured = {c.key for c in coords if c.lane == "none"}
+    assert {"read_dedupe.min_tokens", "guards.max_read_bytes", "loopguard.min_k"} <= unmeasured
+    assert all(c.lane in ("compression", "sim") for c in coords if c.key not in unmeasured)
+    calls: list[Any] = []
+
+    def never(*a: Any) -> Any:
+        calls.append(a)
+        raise AssertionError("an unmeasured key must not be run")
+
+    trail: list[dict[str, Any]] = []
+    picked = [c for c in coords if c.lane == "none"]
+    assert hc.climb(picked, never, ["g"], e2=_ok_e2, trail=trail) == {}
+    assert not calls
+    assert {r["stage"] for r in trail} == {"unmeasured"}
+    # the space must label them: a missing or wrong label is refused
+    for text in (
+        entry("read_dedupe.max_turn_gap", [4, 8], "read_dedupe"),
+        entry("compression.min_saving_ratio", [0.15, 0.2]) + 'measured_by = "none"\n',
+        entry("compression.min_saving_ratio", [0.15, 0.2]) + 'measured_by = "sim"\n',
+    ):
+        with pytest.raises(hc.SpaceError):
+            hc.load_space(write(tmp_path / "s.toml", text))
+    # a proposal can never change an unmeasured key
+    prop = write(tmp_path / "p.toml", "[read_dedupe]\nmax_turn_gap = 4\n")
+    with pytest.raises(hc.ProposalError):
+        hc.load_proposal(prop, coords)
+
+
+def test_dev_search_samples_only_groups_with_dev_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    src = corpus(tmp_path / "t", groups=2)
+    session("x0", "2026-11-12T09:00:00.000Z", n=1, log=True).write(src / "late" / "a.jsonl")
+    seen: list[list[str]] = []
+    real = hc.climb
+
+    def spy(coords: Any, evaluate: Any, groups: Sequence[str], **kw: Any) -> dict[str, Any]:
+        seen.append(list(groups))
+        return real(coords, evaluate, groups, **kw)
+
+    monkeypatch.setattr(hc, "climb", spy)
+    space = write(tmp_path / "space.toml", SMALL_SPACE)
+    out = tmp_path / "private"
+    argv = ["--space", str(space), "--transcripts", str(src), "--out", str(out), "--quiet"]
+    assert hc.main(argv) == 0
+    capsys.readouterr()
+    assert len(seen) == 1 and len(seen[0]) == 2  # the test-only group is not sampled
+    doc = json.loads((out / "dev.json").read_text(encoding="utf-8"))
+    sha = hashlib.sha256((out / "proposal.toml").read_bytes()).hexdigest()
+    assert doc["proposal_sha256"] == sha
+    assert doc["keys"]["read_dedupe.max_turn_gap"] == "unmeasured"

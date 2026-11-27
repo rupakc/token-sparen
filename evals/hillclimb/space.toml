@@ -5,13 +5,14 @@
 # prune, loop guard) only move toward less intervention (values >= current).
 #
 # Order = coordinate-ascent order. Objective lane: `sim` for learn.savings_reward,
-# learn.ladder_retry_decisions and learn.defaults.*; the frozen-engine `compression` replay for
-# every other key. Keys no replay lane reads (guards, read de-dupe, M3) cannot show a gain on E1
-# and stay unchanged: they are listed so a choice is never made off-grid.
+# learn.ladder_retry_decisions and learn.defaults.*; the `compression` replay for every other
+# measured key (a compression.levels.<arm> key on its own arm, others under the production
+# policy). Keys no replay lane reads (guards, read de-dupe, M3) carry `measured_by = "none"`:
+# listed so a choice is never made off-grid, never run, reported `unmeasured`, never changed.
 #
-# Not searchable: the BM25 relevance weights (module constants, not config keys) and designed
-# prior strengths of the compression point (no config key; only the loop guard declares one,
-# and the loop guard is not replayed by the sim lane).
+# Deferred (not searchable): the BM25 relevance weights (module constants, not config keys) and
+# designed prior strengths of the compression point (no config key; only the loop guard
+# declares one, and the loop guard is not replayed by the sim lane).
 
 # --- compression (frozen-engine replay; a level's keys are measured on that level's arm)
 
@@ -41,11 +42,13 @@ point = "compression"
 key = "read_dedupe.min_tokens"
 values = [2000, 4000]
 point = "read_dedupe"
+measured_by = "none"
 
 [[entry]]
 key = "read_dedupe.max_turn_gap"
 values = [4, 8, 12]
 point = "read_dedupe"
+measured_by = "none"
 
 # --- guard limits (the bounded pre-trim arm's keep ratio: unset today = the standard ratio)
 
@@ -53,16 +56,19 @@ point = "read_dedupe"
 key = "guards.pretrim_bounded_keep_ratio"
 values = [0.25, 0.35, 0.5]
 point = "pretrim"
+measured_by = "none"
 
 [[entry]]
 key = "guards.pretrim_lines"
 values = [80, 120, 200]
 point = "pretrim"
+measured_by = "none"
 
 [[entry]]
 key = "guards.max_read_bytes"
 values = [5000000, 10000000]
-point = "compression"
+point = "guards"
+measured_by = "none"
 
 # --- learning (sim lane): reward mode, ladder retry, designed priors on the snapped grid
 #     (means in {0.02, 0.05, 0.1, 0.2, 0.3, 0.5} plus the current default)
@@ -113,28 +119,34 @@ point = "compression"
 key = "facts.activate_lcb"
 values = [0.55, 0.65, 0.75]
 point = "facts"
+measured_by = "none"
 
 [[entry]]
 key = "facts.retire_ucb"
 values = [0.4, 0.5]
 point = "facts"
+measured_by = "none"
 
 [[entry]]
 key = "prune.min_sessions"
 values = [3, 5, 8]
 point = "prune"
+measured_by = "none"
 
 [[entry]]
 key = "prune.min_prompts"
 values = [15, 30]
 point = "prune"
+measured_by = "none"
 
 [[entry]]
 key = "prune.idle_minutes"
 values = [60, 120]
 point = "prune"
+measured_by = "none"
 
 [[entry]]
 key = "loopguard.min_k"
 values = [2, 3]
 point = "loopguard"
+measured_by = "none"
