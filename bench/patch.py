@@ -18,7 +18,7 @@ repository's objects read-only through ``objects/info/alternates``. No repo-loca
 ``core.fsmonitor``, ``core.hooksPath``, filter or textconv driver, ``diff.external``, prefix or
 colour setting is ever read, so none runs or changes the output; attributes naming a driver find
 no driver. Every call also carries explicit clean ``-c`` settings and diff flags, git runs with
-``GIT_CONFIG_NOSYSTEM=1`` and ``GIT_CONFIG_GLOBAL=/dev/null``, and the agent's repository (its
+``GIT_CONFIG_NOSYSTEM=1`` and ``GIT_CONFIG_GLOBAL=os.devnull``, and the agent's repository (its
 index included) is never modified. The repository's ``.git/info/exclude`` is not consulted.
 
 Stdlib only and runnable as a script: `entry.sh` runs it inside the task container with the
@@ -45,10 +45,6 @@ GIT_TIMEOUT_S = 50.0  # per git call; `entry.sh` bounds the whole extraction
 CLEAN_CONFIG = (
     "-c",
     "core.fsmonitor=false",
-    "-c",
-    f"core.hooksPath={os.devnull}",
-    "-c",
-    f"core.attributesFile={os.devnull}",
     "-c",
     "core.untrackedCache=false",
     "-c",
@@ -130,19 +126,36 @@ def excluded(path: str, excludes: Sequence[str]) -> bool:
     return False
 
 
+def _posix(path: str) -> str:
+    """Forward slashes (git reads ``C:/x/y`` on Windows; a no-op on POSIX)."""
+    return path.replace(os.sep, "/") if os.sep != "/" else path
+
+
 def extract_patch(repo: str, base_commit: str, excludes: Sequence[str], *, run: Run) -> str:
     """The run's patch against ``base_commit`` without tool artefacts (module docstring)."""
     objects = os.path.join(os.path.abspath(repo), ".git", "objects")
     if not os.path.isdir(objects) or os.path.islink(os.path.join(repo, ".git")):
         raise PatchError("the task repository has no plain .git directory")
     with tempfile.TemporaryDirectory(prefix="tsb-patch-") as scratch:
+        # real empty files and dirs instead of /dev/null (portable to Git for Windows)
+        no_hooks = os.path.join(scratch, "no-hooks")
+        empty = os.path.join(scratch, "empty")
+        os.mkdir(no_hooks)
+        open(empty, "wb").close()
+        clean = [
+            *CLEAN_CONFIG,
+            "-c",
+            f"core.hooksPath={_posix(no_hooks)}",
+            "-c",
+            f"core.attributesFile={_posix(empty)}",
+        ]
         gitdir = os.path.join(scratch, "git")
-        run(["git", *CLEAN_CONFIG, "init", "-q", "--bare", "--template=", gitdir])
+        run(["git", *clean, "init", "-q", "--bare", "--template=", gitdir])
         alternates = os.path.join(gitdir, "objects", "info", "alternates")
         os.makedirs(os.path.dirname(alternates), exist_ok=True)
-        with open(alternates, "w", encoding="utf-8") as fh:
-            fh.write(objects + "\n")
-        git = ["git", *CLEAN_CONFIG, f"--git-dir={gitdir}", f"--work-tree={os.path.abspath(repo)}"]
+        with open(alternates, "wb") as fh:  # binary: a CRLF line names `objects\r` on Windows
+            fh.write(_posix(objects).encode("utf-8") + b"\n")
+        git = ["git", *clean, f"--git-dir={gitdir}", f"--work-tree={os.path.abspath(repo)}"]
         run([*git, "read-tree", base_commit])
         run([*git, "add", "-A"])
         added = run(

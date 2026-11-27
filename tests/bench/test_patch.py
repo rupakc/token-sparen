@@ -203,6 +203,32 @@ def test_patch_cli_unwritable_out_fails_cleanly(repo: tuple[Path, str], tmp_path
     assert pt.main(["--repo", str(root), "--base", base, "--out", str(out)], environ={}) == 1
 
 
+def test_extraction_files_are_portable(repo: tuple[Path, str]) -> None:
+    """Windows CI: a text-mode alternates file ends in CRLF and git reads `objects\\r`; the clean
+    settings must name real empty files/dirs, not a POSIX-only /dev/null."""
+    root, base = repo
+    real = pt.git_runner()
+    seen: dict[str, object] = {}
+
+    def run(argv: list[str]) -> str:
+        if "read-tree" in argv:
+            gitdir = next(a for a in argv if a.startswith("--git-dir="))[len("--git-dir=") :]
+            data = Path(gitdir, "objects", "info", "alternates").read_bytes()
+            seen["alternates"] = data
+            values = [argv[i + 1] for i, a in enumerate(argv) if a == "-c"]
+            seen["config"] = values
+        return real(argv)
+
+    _write(root, "src.py", "x = 7\n")
+    assert "src.py" in pt.extract_patch(str(root), base, (), run=run)
+    data = seen["alternates"]
+    assert isinstance(data, bytes) and data.endswith(b"/objects\n") and b"\r" not in data
+    assert b"\\" not in data
+    config = dict(v.split("=", 1) for v in seen["config"])  # type: ignore[attr-defined]
+    assert Path(config["core.hooksPath"]).is_dir() or not Path(config["core.hooksPath"]).exists()
+    assert config["core.hooksPath"] != "/dev/null" and config["core.attributesFile"] != "/dev/null"
+
+
 def test_git_runner_times_out(repo: tuple[Path, str]) -> None:
     root, base = repo
     with pytest.raises(pt.PatchError):
