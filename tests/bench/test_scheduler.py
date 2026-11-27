@@ -27,6 +27,7 @@ from bench import ledger as lg
 from bench import quota as qt
 from bench import scheduler as sc
 from bench import tasks as tk
+from bench.patch import PATCH_FILE, write_patch_file
 from bench.streamjson import RateLimit, RunMetrics
 
 H = 3600.0
@@ -116,7 +117,7 @@ class ScriptBackend:
         out = req.run_dir / "state-out" / STATE
         out.mkdir(parents=True)
         (out / "history").write_text(" ".join([*history, req.task.instance_id]), encoding="utf-8")
-        (req.run_dir / "patch.diff").write_text(f"patch {req.key_id}\n", encoding="utf-8")
+        write_patch_file(req.run_dir / PATCH_FILE, f"patch {req.key_id}\n")
         planned = self.plan(req)
         if self.clock is not None:
             self.clock.t += 60.0
@@ -223,6 +224,17 @@ def _run(
         account=account or led.path.parent / "account",
         **extra,
     )
+
+
+def test_real_campaign_refused_on_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    docker = bk.DockerBackend(tmp_path / "toolchain", tmp_path / "templates", environ={})
+    monkeypatch.setattr(sc, "_HOST_OS", "nt")
+    with pytest.raises(sc.UnsupportedHost, match="macOS or Linux"):
+        _run(tmp_path / "w", docker, _keys())
+    assert not (tmp_path / "w" / "state-empty").exists()  # refused before any campaign work
+    sc.require_benchmark_host(ScriptBackend())  # the fake backend runs on Windows
+    monkeypatch.setattr(sc, "_HOST_OS", "posix")
+    sc.require_benchmark_host(docker)
 
 
 def _ends(led: lg.Ledger) -> list[dict[str, Any]]:

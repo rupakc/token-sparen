@@ -221,6 +221,11 @@ def test_arm64_dataset_rewrites_image(tmp_path: Path) -> None:
     assert [r["image"] for r in written] == [arm64_image(DJANGO), arm64_image(SPHINX)]
     assert written[0]["patch"] == rows[0]["patch"]  # every other field kept
     assert rows[0]["image"].startswith("swebench/sweb.eval.x86_64.")  # input untouched
+
+
+@pytest.mark.skipif(os.name == "nt", reason="no POSIX permission bits on Windows")
+def test_arm64_dataset_is_private(tmp_path: Path) -> None:
+    out = gr.write_arm64_dataset([_row(DJANGO)], tmp_path / "ds.jsonl")
     assert os.stat(out).st_mode & 0o077 == 0
 
 

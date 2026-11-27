@@ -3,7 +3,8 @@
 One JSON object per line, private (0600). The first line is the header::
 
     {"kind": "e4-ledger", "schema": 1, "campaign", "stage", "harness_commit", "plugin_hash",
-     "plugin_ref", "pins", "model", "claude_code_version", "price_table_version"}
+     "plugin_ref", "pins", "model", "claude_code_version", "price_table_version",
+     "price_table_id"}
 
 Every later record has ``kind`` (one of `RECORD_KINDS`) and ``at`` (epoch seconds):
 
@@ -60,7 +61,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from bench.streamjson import PRICE_TABLE_VERSION
+from bench.patch import PATCH_FILE, patch_bytes, read_patch_file
+from bench.streamjson import PRICE_TABLE_ID, PRICE_TABLE_VERSION
 from token_sparen.store.jsonstore import locked
 
 LEDGER_KIND = "e4-ledger"
@@ -104,7 +106,8 @@ class LedgerError(ValueError):
 
 
 def sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()
+    """sha256 of a patch's on-disk bytes (`bench.patch.patch_bytes`)."""
+    return hashlib.sha256(patch_bytes(text)).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -226,6 +229,7 @@ class Ledger:
                 raise LedgerError(f"ledger header lacks {', '.join(missing)}")
             doc = {"kind": LEDGER_KIND, "schema": SCHEMA, **dict(header)}
             doc.setdefault("price_table_version", PRICE_TABLE_VERSION)
+            doc.setdefault("price_table_id", PRICE_TABLE_ID)
             path.parent.mkdir(parents=True, exist_ok=True)
             with locked(path, timeout=LOCK_TIMEOUT_S):
                 lines = read_jsonl(path)  # re-checked under the lock: one header only
@@ -238,7 +242,7 @@ class Ledger:
         if first.get("kind") != LEDGER_KIND or first.get("schema") != SCHEMA:
             raise LedgerError(f"not an E4 ledger (schema {SCHEMA}): {path}")
         if header is not None:
-            for k in (*HEADER_KEYS, "price_table_version"):
+            for k in (*HEADER_KEYS, "price_table_version", "price_table_id"):
                 if k in header and header[k] != first.get(k):
                     raise LedgerError(f"ledger header {k} differs: {first.get(k)!r}")
         self.header = first
@@ -385,9 +389,9 @@ class Ledger:
             key = RunKey.from_id(key_id)
             patch = ""
             if end.get("run_dir"):
-                path = self.resolve(str(end["run_dir"])) / "patch.diff"
+                path = self.resolve(str(end["run_dir"])) / PATCH_FILE
                 if path.is_file():
-                    patch = path.read_bytes().decode("utf-8", "surrogateescape")
+                    patch = read_patch_file(path)
             if end.get("patch_sha256") != sha256_text(patch):
                 raise LedgerError(f"patch of {key_id} differs from its recorded sha256")
             runs.append(FinalRun(key_id, key.stage, key.arm, key.seed, key.instance_id, patch))

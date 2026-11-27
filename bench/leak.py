@@ -165,6 +165,7 @@ def quarantine(run_dir: Path, hits: Sequence[Path], token: str = "") -> Path:
     marker.write_text(
         json.dumps({"reason": "token leak", "files": sorted(names)}, indent=2) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
     os.chmod(marker, 0o600)
     return marker

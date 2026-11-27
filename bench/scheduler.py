@@ -36,6 +36,10 @@ stage, campaign and workspace; the scheduler holds the exclusive account lock fo
 held only around each agent container (grading takes it itself, in the same process, after the
 run released it; it never runs while an agent container runs).
 
+Real campaigns (`bench.backends.DockerBackend`) run on macOS or Linux only: on Windows
+`run_campaign` refuses to start (`UnsupportedHost`) before taking any lock or writing anything.
+The fake backend runs everywhere (CI exercises the scheduler on Windows with it).
+
 Errors that would repeat on every resume (a final run's state or patch gone, an image pull or
 removal failing) end the invocation with a ``pause`` record (reason ``error``) and
 ``incomplete`` instead of an exception.
@@ -58,6 +62,7 @@ from typing import Any, Literal, Protocol
 from bench.arms import Arm
 from bench.backends import (
     BackendError,
+    DockerBackend,
     ImageBackend,
     RunOutcome,
     RunRequest,
@@ -112,6 +117,23 @@ BENCH_LOCK_TIMEOUT_S = 6 * 3600.0
 WAIT_MARGIN_S = 60.0
 BREAKER_EXEMPT = frozenset({"rate", "disk"})
 _STOP_AT_ONCE: dict[str, CampaignStatus] = {"auth": "stopped_auth", "leak": "stopped_leak"}
+
+
+_HOST_OS = os.name  # a module constant so tests can stand in for Windows
+
+
+class UnsupportedHost(RuntimeError):
+    """A real (Docker) campaign was started on a host benchmarks do not run on."""
+
+
+def require_benchmark_host(backend: object) -> None:
+    """Refuse a real campaign on Windows: the arm64 task containers, POSIX permission bits on
+    private state and the bench toolchain assume macOS or Linux."""
+    if _HOST_OS == "nt" and isinstance(backend, DockerBackend):
+        raise UnsupportedHost(
+            "real benchmark campaigns (Docker backend) run on macOS or Linux only; "
+            "on Windows only the fake backend is supported"
+        )
 
 
 class SchedulerBusy(RuntimeError):
@@ -609,7 +631,9 @@ def run_campaign(
 ) -> CampaignStatus:
     """Run (or resume) ``keys`` of the ledger's campaign stage; see the module docstring.
     Keys of another campaign or stage, or naming an unknown task or arm, are skipped and the
-    result is then at best ``incomplete``."""
+    result is then at best ``incomplete``. Raises `UnsupportedHost` for a Docker backend on
+    Windows."""
+    require_benchmark_host(backend)
     _private_dir(workspace)
     acct = Account(default_account_dir() if account is None else account)
     try:

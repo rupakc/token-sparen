@@ -19,7 +19,7 @@
     {"name": "token-sparen", "kind": "plugin", "pin": "v1.0.0-rc1"}
   ],
   "exclusions": [
-    {"instance_id": "django__django-00000", "reason": "gold patch did not resolve twice locally"}
+    {"instance_id": "django__django-00000", "reason": "preflight_flaky_gold"}
   ],
   "power": {"required_tasks": 115, "seeds": 3, "achieved_power": 0.82, "verdict": "powered"},
   "results": [

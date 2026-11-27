@@ -61,6 +61,8 @@ PRICE_TABLE_VERSION = (
     "claude-api skill model table (cached 2026-11-03); confirm in Task 13 against the live "
     "pricing page before any public cost claim"
 )
+# machine-readable id of the same table (published in e4.json; bump with every price change)
+PRICE_TABLE_ID = "claude-api-2026-11-03"
 # keyed by model id prefix; the longest matching prefix wins (date and `[1m]` suffixes match)
 PRICE_TABLE: Mapping[str, ModelPrice] = {
     "claude-fable-5-2": ModelPrice(8.0, 40.0, 0.20),
