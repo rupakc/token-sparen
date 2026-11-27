@@ -161,12 +161,59 @@ def test_install_writes_land_in_run_home(tmp_path: Path) -> None:
     script = tmp_path / "installer.py"
     script.write_text(INSTALLER, encoding="utf-8")
     run_env = {**env, "PATH": os.environ.get("PATH", "")}
+    if os.name == "nt":  # Python and git on Windows need these to start; not home locations
+        run_env |= {k: os.environ[k] for k in ("SYSTEMROOT", "COMSPEC") if k in os.environ}
     subprocess.run([sys.executable, str(script)], env=run_env, check=True, cwd=tmp_path)
     assert (home / ".claude" / "settings.json").is_file()
     assert (home / "RTK.md").is_file()
     assert (Path(env["XDG_CONFIG_HOME"]) / "tool" / "config.toml").is_file()
     assert "bench" in Path(env["GIT_CONFIG_GLOBAL"]).read_text(encoding="utf-8")
     assert sorted(p.relative_to(caller_home) for p in caller_home.rglob("*")) == before
+
+
+def test_windows_home_variables(tmp_path: Path, real_home: Path) -> None:
+    """CI run 46065317768: on Windows `~` expands from USERPROFILE (then HOMEDRIVE+HOMEPATH),
+    not HOME, and tools keep state in APPDATA/LOCALAPPDATA; all point into the run home."""
+    ws = iso.check_workspace(tmp_path / "ws")
+    home = ws / "run" / "home"
+    env = iso.isolated_env(home, windows=True)
+    assert env["USERPROFILE"] == str(home)
+    assert env["HOMEDRIVE"] + env["HOMEPATH"] == str(home)
+    assert Path(env["APPDATA"]).is_relative_to(home)
+    assert Path(env["LOCALAPPDATA"]).is_relative_to(home)
+    iso.assert_isolated_env(env, workspace=ws, real_home=real_home, environ={}, windows=True)
+    assert "USERPROFILE" not in iso.isolated_env(home, windows=False)
+    for key, value in {
+        "USERPROFILE": str(real_home),
+        "APPDATA": str(real_home / "AppData" / "Roaming"),
+        "LOCALAPPDATA": str(tmp_path / "elsewhere"),
+    }.items():
+        with pytest.raises(iso.IsolationError, match=key):
+            iso.assert_isolated_env(
+                {**env, key: value}, workspace=ws, real_home=real_home, environ={}, windows=True
+            )
+    with pytest.raises(iso.IsolationError, match="HOMEPATH"):
+        iso.assert_isolated_env(
+            {**env, "HOMEPATH": str(real_home)},
+            workspace=ws,
+            real_home=real_home,
+            environ={},
+            windows=True,
+        )
+    posix_only = iso.isolated_env(home, windows=False)
+    with pytest.raises(iso.IsolationError, match="USERPROFILE"):
+        iso.assert_isolated_env(
+            posix_only, workspace=ws, real_home=real_home, environ={}, windows=True
+        )
+    # the caller's USERPROFILE counts as a real home
+    with pytest.raises(iso.IsolationError, match="USERPROFILE"):
+        iso.assert_isolated_env(
+            {**env, "USERPROFILE": str(ws)},
+            workspace=ws,
+            real_home=real_home,
+            environ={"USERPROFILE": str(ws / "run")},
+            windows=True,
+        )
 
 
 def test_refuses_env_reaching_real_home(tmp_path: Path, real_home: Path) -> None:
