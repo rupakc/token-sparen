@@ -529,13 +529,12 @@ def test_bounded_pretrim_default_reproduces_current(tmp_path: Path) -> None:
     home = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
     cfg = load_config(tmp_path / "proj", home)
     assert cfg.get("guards.pretrim_bounded_keep_ratio") is None  # no default: follow standard
-    assert guards.pretrim_level(cfg, 120) == old(cfg, 120)
-    # unset it follows the standard arm, exactly as before
+    assert guards.pretrim_level(cfg, 120) == old(cfg, 120)  # packaged defaults: as before M4
+    # unset it follows the PACKAGED standard ratio (M4-G3), not a configured one
     std = load_config(
         tmp_path / "proj", {**home, "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.5"}
     )
-    assert guards.pretrim_level(std, 50) == old(std, 50)
-    assert guards.pretrim_level(std, 50).keep_ratio == 0.5
+    assert guards.pretrim_level(std, 50).keep_ratio == 0.35
     # set: it is the bounded arm's keep ratio
     own = load_config(
         tmp_path / "proj", {**home, "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "0.2"}
@@ -557,6 +556,23 @@ def test_bounded_pretrim_default_reproduces_current(tmp_path: Path) -> None:
     assert guards.pretrim_level(bad, 50) == old(bad, 50)  # out of range: ignored
 
 
+def test_unset_pretrim_follows_packaged_standard(tmp_path: Path) -> None:
+    """M4-G3: tuning (or setting) the standard arm never silently moves the pre-trim arm."""
+    from token_sparen.compress import load_level
+    from token_sparen.config import packaged_defaults
+
+    packaged = load_level(Config(data=packaged_defaults()), "standard").keep_ratio
+    assert guards.PACKAGED_STANDARD_KEEP_RATIO == packaged
+    home = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
+    user = tmp_path / "home" / "config.toml"
+    user.parent.mkdir(parents=True)
+    user.write_text("[compression.levels.standard]\nkeep_ratio = 0.2\n", "utf-8")
+    cfg = load_config(tmp_path / "proj", home)
+    assert load_level(cfg, "standard").keep_ratio == 0.2  # the user's standard arm moved
+    assert cfg.get("guards.pretrim_bounded_keep_ratio") is None
+    assert guards.pretrim_level(cfg, 50).keep_ratio == packaged  # the pre-trim arm did not
+
+
 def test_bounded_pretrim_project_may_only_raise(tmp_path: Path) -> None:
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -571,7 +587,11 @@ def test_bounded_pretrim_project_may_only_raise(tmp_path: Path) -> None:
     user = {**env, "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "0.5"}
     (proj / "token-sparen.toml").write_text("[guards]\npretrim_bounded_keep_ratio = 0.4\n", "utf-8")
     assert load_config(proj, user).get("guards.pretrim_bounded_keep_ratio") == 0.5
-    # a project raising it above the default but below the user's standard ratio keeps the
-    # user's (larger) ratio: a project never trims more
+    # unset by the user, the effective ratio is the packaged standard one (M4-G3) whatever the
+    # user's standard arm says, so the project's 0.4 keeps more than that and is honoured
     std = {**env, "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.7"}
-    assert guards.pretrim_level(load_config(proj, std), 50).keep_ratio == 0.7
+    assert guards.pretrim_level(load_config(proj, std), 50).keep_ratio == 0.4
+    # and a user standard ratio below the packaged one never lets a project trim more
+    low = {**env, "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.2"}
+    (proj / "token-sparen.toml").write_text("[guards]\npretrim_bounded_keep_ratio = 0.3\n", "utf-8")
+    assert guards.pretrim_level(load_config(proj, low), 50).keep_ratio == 0.35

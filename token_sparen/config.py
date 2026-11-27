@@ -434,8 +434,8 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     (("adapter", "latency_sample_rate"), "user_only", None),  # the user's own logs
     (("adapter", "latency_log_max_bytes"), "user_only", None),
 ]
-# Keys with no packaged default that, while unset, follow another key's value: a project value
-# is compared with the trusted value of that key instead.
+# Keys with no packaged default that, while unset, follow another key's PACKAGED value (never a
+# configured one, M4-G3): a project value is compared with that packaged value instead.
 UNSET_FOLLOWS: dict[tuple[str, ...], tuple[str, ...]] = {
     ("guards", "pretrim_bounded_keep_ratio"): ("compression", "levels", "standard", "keep_ratio"),
 }
@@ -584,9 +584,8 @@ def sanitise_project(
         kind, extra = rule
         base = _dig(trusted, path)
         follows = UNSET_FOLLOWS.get(path)
-        if follows is not None and base is _MISSING:  # unset: compare with what it follows
-            base = _dig(trusted, follows)
-            path_default = _dig(defaults, follows)
+        if follows is not None and base is _MISSING:  # unset: it follows the PACKAGED value
+            base = path_default = _dig(defaults, follows)
         else:
             path_default = _dig(defaults, path)
         fallback = path_default

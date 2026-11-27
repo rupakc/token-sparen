@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from token_sparen.compress.base import Level, load_level
-from token_sparen.config import Config, flag
+from token_sparen.config import Config, flag, packaged_defaults
 from token_sparen.events import Action, Event
 from token_sparen.learn.policy import PRETRIM
 from token_sparen.learn.regret import MAX_SIG_CHARS, normalize_command
@@ -37,6 +37,9 @@ MAX_READ_BYTES = 5_000_000
 PRETRIM_LINES = 120
 PRETRIM_HEAD = 10
 PRETRIM_FILE = "pretrim.json"
+# The packaged standard arm's keep ratio: what an unset ``pretrim_bounded_keep_ratio`` follows,
+# so tuning or configuring the standard arm never silently moves the pre-trim arm (M4-G3).
+PACKAGED_STANDARD_KEEP_RATIO = load_level(Config(data=packaged_defaults()), "standard").keep_ratio
 
 _SEPARATORS = frozenset({"|", "|&", "||", "&&", ";", "&", ";;", ";&", ";;&"})
 _REDIR_OPS = frozenset(
@@ -429,7 +432,8 @@ def pretrim_lines(
 def pretrim_level(cfg: Config, lines: int) -> Level:
     """Tail-biased level: short head, ``lines`` tail, keep ratio
     ``[guards] pretrim_bounded_keep_ratio`` (M4 tuning knob; any number in [0, 1] is used as
-    is). Unset (no packaged default) or invalid: the standard arm's keep ratio, as before M4."""
+    is). Unset (no packaged default) or invalid: the PACKAGED standard arm's keep ratio
+    (``PACKAGED_STANDARD_KEEP_RATIO``, the pre-M4 value), never a configured one."""
     head = _int(cfg, "guards.pretrim_head", PRETRIM_HEAD)
     ratio = _bounded_keep_ratio(cfg)
     if cfg.trusted is not None:  # a project file only ever keeps more than the user's setting
@@ -442,4 +446,4 @@ def _bounded_keep_ratio(cfg: Config) -> float:
     valid = not isinstance(raw, bool) and isinstance(raw, int | float) and 0.0 <= raw <= 1.0
     if valid:
         return float(raw)
-    return load_level(cfg, "standard").keep_ratio
+    return PACKAGED_STANDARD_KEEP_RATIO
