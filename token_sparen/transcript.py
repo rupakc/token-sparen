@@ -372,14 +372,6 @@ def events_from_records(
             yield Prompt(_prompt_text(content), turn)
 
 
-def tool_result_texts(rec: dict[str, Any]) -> list[str]:
-    """Texts of the tool results a user record carries (empty for every other record)."""
-    if rec.get("type") != "user":
-        return []
-    blocks = _blocks(_message(rec).get("content"))
-    return [_result_text(b.get("content")) for b in blocks if b.get("type") == "tool_result"]
-
-
 def first_field(path: Path, key: str, max_records: int = 50) -> Any:
     """The first non-empty value of ``key`` among the first ``max_records`` records (e.g. the
     session's ``timestamp`` or ``cwd``), else None."""

@@ -891,17 +891,27 @@ def _replay_cmd(args: argparse.Namespace) -> int:
             dogfood_start=dogfood,
         )
         report.write_private(out, result.to_dict())
-        checkpoint.unlink(missing_ok=True)
+        complete = bool(result.run.get("complete", True))
+        if complete:
+            checkpoint.unlink(missing_ok=True)
     except runner.CheckpointError as exc:
         raise CliError(f"{exc}: rerun without --resume") from None
     except Exception as exc:  # noqa: BLE001 - never echo a message that could quote a path
         raise CliError(f"replay failed ({type(exc).__name__})", 1) from None
     if args.quiet:
         print(report.quiet_line(out))
-        return 0
+        print(f"status: {'complete' if complete else 'incomplete'}")
+        return 0 if complete else 1
     for line in replay.summary_lines(result):
         print(line)
     print("token-sparen replay: private report written (mode 0600)")
+    if not complete:
+        print(
+            "token-sparen replay: incomplete run (some groups failed): the report is partial; "
+            "the checkpoint is kept, rerun with --resume",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

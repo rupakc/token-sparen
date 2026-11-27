@@ -60,11 +60,11 @@ def test_dogfood_sessions_excluded_whole(tmp_path: Path) -> None:
     resend_session("late", "2026-11-26T00:00:01.000Z").write(proj / "c.jsonl")
     resend_session("test-ok", "2026-11-20T09:00:00.000Z").write(proj / "d.jsonl")
     quoted = resend_session("quoted", "2026-11-21T09:00:00.000Z")
-    quoted.prompt("what does [token-sparen: kept 3 of 9 lines] mean?")  # a prompt, not a result
+    quoted.prompt("what does [token-sparen: kept 3 of 9 lines] mean?")  # anywhere counts
     quoted.write(proj / "e.jsonl")
     res = runner.run_parallel([tmp_path], [COMP], jobs=1, cutoff=CUTOFF)
-    assert res.files == 5 and res.excluded_dogfood == 2 and res.sessions == 3
-    assert comp(res, "dev")["sessions"] == 1 and comp(res, "test")["sessions"] == 2
+    assert res.files == 5 and res.excluded_dogfood == 3 and res.sessions == 2
+    assert comp(res, "dev")["sessions"] == 1 and comp(res, "test")["sessions"] == 1
     one = replay.run([proj / "a.jsonl"], "static", "all", CUTOFF)
     # the marked session's earlier (unmarked) trim is not counted either: excluded whole
     assert comp(res, "dev")["trimmed"] == one.trimmed == 1
@@ -177,7 +177,7 @@ def test_quiet_stdout_template(tmp_path: Path, capsys: pytest.CaptureFixture[str
     assert cli.main([*args, "--jobs", "2", "--lanes", "compression"]) == 0
     captured = capsys.readouterr()
     assert captured.err == ""
-    m = re.fullmatch(r"report: (.+) id: ([0-9a-f]{12})\n", captured.out)
+    m = re.fullmatch(r"report: (.+) id: ([0-9a-f]{12})\nstatus: complete\n", captured.out)
     assert m is not None, captured.out
     assert Path(m.group(1)) == out.resolve()
     assert m.group(2) == hashlib.sha256(out.read_bytes()).hexdigest()[:12]
@@ -191,13 +191,14 @@ def test_worker_error_recorded_as_type_only(
 ) -> None:
     src = _corpus(tmp_path / "in", n=6, groups=3)
 
-    def boom(self: Any, session: Any) -> None:
+    def boom(self: Any, *_a: Any) -> None:
         raise RuntimeError(f"cannot handle {tmp_path} secret-session-text")
 
     with monkeypatch.context() as m:
-        m.setattr(replay.CompressionLane, "end_session", boom)
+        m.setattr(replay.CompressionLane, "report", boom)
         res = runner.run_parallel([src], [COMP], jobs=1, cutoff=CUTOFF)
-    assert res.worker_errors == {"RuntimeError": 3}
+    assert res.worker_errors == res.failed_groups == {"RuntimeError": 3}
+    assert not res.complete
     dumped = json.dumps(res.to_dict())
     assert "secret" not in dumped and str(tmp_path) not in dumped
     # across processes too: the lane fails at construction in each worker
@@ -286,15 +287,54 @@ def test_resume_skips_finished_groups(tmp_path: Path, monkeypatch: pytest.Monkey
     assert resumed.groups_resumed == 2
 
 
-def test_resume_refuses_a_different_run(tmp_path: Path) -> None:
+def test_resume_refuses_a_different_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from token_sparen.config import load_config
+
     src = _corpus(tmp_path / "in", n=4, groups=2)
     ckpt = tmp_path / "priv" / "run.checkpoint"
     runner.run_parallel([src], [COMP], jobs=1, cutoff=CUTOFF, checkpoint=ckpt)
     with pytest.raises(runner.CheckpointError):
         runner.run_parallel([src], [COMP], jobs=1, cutoff=date(2026, 10, 1), checkpoint=ckpt)
-    resend_session("new", "2026-10-05T00:00:00.000Z").write(next(src.iterdir()) / "zz.jsonl")
-    with pytest.raises(runner.CheckpointError):  # a finished group changed since
+    other = runner.apply_overlay(
+        load_config(Path.cwd(), os.environ), {"compression.min_saving_ratio": 0.5}
+    )
+    with pytest.raises(runner.CheckpointError):  # another effective config
+        runner.run_parallel([src], [COMP], jobs=1, cutoff=CUTOFF, checkpoint=ckpt, cfg=other)
+    import token_sparen
+
+    monkeypatch.setattr(token_sparen, "__version__", "9.9.9")
+    with pytest.raises(runner.CheckpointError) as err:  # another package version
         runner.run_parallel([src], [COMP], jobs=1, cutoff=CUTOFF, checkpoint=ckpt)
+    assert str(tmp_path) not in str(err.value)
+
+
+def test_resume_replays_the_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = _corpus(tmp_path / "in", n=9, groups=3)
+    fresh = runner.run_parallel([src], [COMP], jobs=1, cutoff=CUTOFF)
+    ckpt = tmp_path / "priv" / "run.checkpoint"
+    real = runner._work_group
+
+    def first_only(task: Any) -> Any:
+        if first_only.calls:  # type: ignore[attr-defined]
+            raise KeyboardInterrupt
+        first_only.calls += 1  # type: ignore[attr-defined]
+        return real(task)
+
+    first_only.calls = 0  # type: ignore[attr-defined]
+    monkeypatch.setattr(runner, "_work_group", first_only)
+    with pytest.raises(KeyboardInterrupt):
+        runner.run_parallel([src], [COMP], jobs=1, cutoff=CUTOFF, checkpoint=ckpt)
+    monkeypatch.setattr(runner, "_work_group", real)
+    # the live directory moves on: new sessions everywhere, and an existing file grows
+    for g in sorted(src.iterdir()):
+        regret_session(f"new-{g.name}", "2026-10-03T00:00:00.000Z").write(g / "zz-new.jsonl")
+    grown = sorted((src / "g2").glob("s*.jsonl"))[0]
+    extra = resend_session("extra", "2026-10-04T00:00:00.000Z").records
+    with grown.open("a", encoding="utf-8") as fh:
+        fh.write("".join(json.dumps(r) + "\n" for r in extra))
+    resumed = runner.run_parallel([src], [COMP], jobs=1, cutoff=CUTOFF, checkpoint=ckpt)
+    assert resumed.groups_resumed == 1 and resumed.complete
+    assert resumed.by_split == fresh.by_split and resumed.files == fresh.files
 
 
 def test_cli_resume_and_lanes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -397,3 +437,179 @@ def test_cli_dogfood_start(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
     assert cli.main([*base, "--dogfood-start", "2027-01-01"]) == 0
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data["run"]["excluded_dogfood"] == 0 and data["totals"]["sessions"] == 1
+
+
+# ------------------------------------------------------------------ fix round 1
+
+
+def _resume_of(first: Session, new_ts: str) -> Session:
+    """A realistic resume: the copied history keeps its original timestamps and ids."""
+    resumed = Session(f"{first.sid}-resumed", new_ts)  # a resume gets a new session id
+    resumed.records = [dict(r) for r in first.records]
+    resumed.n = 1000  # fresh uuids for the new records
+    resumed.prompt("continue").call("m30", tool=("t30", "Bash", {"command": "make again"}))
+    resumed.result("t30", big_output(seed=30)).call("m31", text="done").call("m32", text="ok")
+    return resumed
+
+
+@pytest.mark.parametrize(
+    ("new_ts", "dev", "test", "excluded"),
+    [("2026-11-05T10:00:00.000Z", 1, 1, 0), ("2026-12-05T10:00:00.000Z", 1, 0, 1)],
+)
+def test_resume_is_dated_by_its_own_work(
+    tmp_path: Path, new_ts: str, dev: int, test: int, excluded: int
+) -> None:
+    proj = tmp_path / "proj"
+    first = resend_session("a", "2026-10-20T10:00:00.000Z")
+    first.write(proj / "z-first.jsonl")
+    _resume_of(first, new_ts).write(proj / "a-resume.jsonl")  # sorts first by name
+    res = runner.run_parallel([proj], [COMP], jobs=1, cutoff=CUTOFF)
+    assert res.excluded_dogfood == excluded
+    assert comp(res, "dev")["sessions"] == dev and comp(res, "test")["sessions"] == test
+    assert comp(res, "dev")["trimmed"] == 1  # the original's trim, once
+    assert comp(res, "test")["trimmed"] == test  # the resume's own new trim
+    assert comp(res, "all")["duplicate_results"] == 1 - excluded
+
+
+def test_marker_in_hook_context_excludes(tmp_path: Path) -> None:
+    s = resend_session("hooked", "2026-10-10T09:00:00.000Z")
+    s.records.append(
+        s._base(
+            "attachment",
+            attachment={
+                "type": "hook_additional_context",
+                "content": ["[token-sparen: this error has repeated 3 times]"],
+            },
+        )
+    )
+    s.write(tmp_path / "p" / "a.jsonl")
+    res = runner.run_parallel([tmp_path], [COMP], jobs=1, cutoff=CUTOFF)
+    assert res.excluded_dogfood == 1 and res.sessions == 0
+
+
+def _subagent(parent: str, marked: bool) -> Session:
+    sub = Session(parent, "2026-10-12T09:00:00.000Z")
+    sub.records.append(sub._base("user", message={"content": "brief"}, isSidechain=True))
+    sub.call("s1", tool=_bash("t1"), sidechain=True)
+    text = big_output() + ("\n[token-sparen: kept 1 of 2 lines]" if marked else "")
+    sub.result("t1", text, sidechain=True).call("s2", text="x", sidechain=True)
+    return sub
+
+
+@pytest.mark.parametrize("marked", ["main", "subagent"])
+@pytest.mark.parametrize("root_is_project", [False, True])
+def test_exclusion_spreads_between_session_and_subagents(
+    tmp_path: Path, marked: str, root_is_project: bool
+) -> None:
+    proj = tmp_path / "projects" / "proj"
+    main = dogfood_result("sid1", "2026-10-12T09:00:00.000Z") if marked == "main" else None
+    main = main or resend_session("sid1", "2026-10-12T09:00:00.000Z")
+    main.write(proj / "sid1.jsonl")
+    _subagent("sid1", marked == "subagent").write(proj / "sid1" / "subagents" / "agent-a.jsonl")
+    resend_session("other", "2026-10-13T09:00:00.000Z").write(proj / "other.jsonl")
+    root = proj if root_is_project else tmp_path / "projects"
+    assert len(runner.group_files([root])) == 1  # a session and its subagents: one group
+    res = runner.run_parallel([root], [COMP], jobs=1, cutoff=CUTOFF)
+    assert res.files == 3 and res.excluded_dogfood == 2 and res.sessions == 1
+
+
+def test_session_failure_does_not_drop_the_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = _corpus(tmp_path / "in", n=4, groups=1)
+    real = runner._replay_session
+    calls: list[int] = []
+
+    def flaky(*args: Any) -> None:
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError("secret disk trouble")
+        real(*args)
+
+    monkeypatch.setattr(runner, "_replay_session", flaky)
+    res = runner.run_parallel([src], [COMP], jobs=1, cutoff=CUTOFF)
+    assert res.complete and res.sessions == 3 and res.sessions_failed == 1
+    assert comp(res)["sessions"] == 3
+
+
+_KILLER = """
+import os
+from pathlib import Path
+
+from token_sparen.replay import replay, runner
+
+
+class Killer(replay.CompressionLane):
+    def __init__(self, cfg, params):
+        super().__init__(cfg, dict(params, policy="static"))
+        self.victim = params["victim"]
+        self.flag = params.get("flag")
+
+    def feed(self, event, session):
+        if session.group == self.victim:
+            if self.flag is None or not Path(self.flag).exists():
+                if self.flag is not None:
+                    Path(self.flag).write_text("died once")
+                os._exit(3)
+        super().feed(event, session)
+
+
+runner.LANES["killer"] = Killer
+"""
+
+
+@pytest.mark.parametrize("once", [False, True])
+def test_dead_worker_retried_once_then_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, once: bool
+) -> None:
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    (mods / "killer_lane_mod.py").write_text(_KILLER, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(mods))
+    src = _corpus(tmp_path / "in", n=8, groups=4)
+    victim = sorted(runner.group_files([src]))[0]
+    params: dict[str, Any] = {"module": "killer_lane_mod", "victim": victim, "label": "k"}
+    if once:
+        params["flag"] = str(tmp_path / "flag")
+    ckpt = tmp_path / "priv" / "run.checkpoint"
+    res = runner.run_parallel([src], [("killer", params)], jobs=2, cutoff=CUTOFF, checkpoint=ckpt)
+    assert res.worker_errors.get("BrokenProcessPool", 0) >= 1
+    if once:
+        assert res.complete and res.sessions == 8
+    else:
+        assert res.failed_groups == {"BrokenProcessPool": 1} and not res.complete
+        assert res.sessions == 6  # every other group was retried and counted
+        doc = json.loads(ckpt.read_text(encoding="utf-8"))
+        assert victim not in doc["done"] and len(doc["done"]) == 3
+
+
+def test_cli_incomplete_run_keeps_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "priv" / "e1.json"
+    ckpt = out.with_name(out.name + ".checkpoint")
+
+    def partial(*_a: Any, checkpoint: Path | None = None, **_k: Any) -> runner.RunResult:
+        assert checkpoint == ckpt
+        ckpt.parent.mkdir(parents=True, exist_ok=True)
+        ckpt.write_text("{}", encoding="utf-8")
+        return runner.RunResult(by_split={}, failed_groups={"BrokenProcessPool": 1})
+
+    monkeypatch.setattr(runner, "run_parallel", partial)
+    args = ["replay", str(tmp_path), "--out", str(out)]
+    assert cli.main([*args, "--quiet"]) == 1
+    captured = capsys.readouterr()
+    assert re.fullmatch(r"report: .+ id: [0-9a-f]{12}\nstatus: incomplete\n", captured.out)
+    assert captured.err == "" and ckpt.exists() and out.exists()
+    assert json.loads(out.read_text(encoding="utf-8"))["run"]["complete"] is False
+    assert cli.main(args) == 1
+    assert "incomplete" in capsys.readouterr().err and ckpt.exists()
+
+
+def test_broken_lane_module_is_not_unknown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "broken_lane_mod.py").write_text("import no_such_dependency_xyz\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with pytest.raises(ModuleNotFoundError):
+        runner.lane_factory("brokenlane", "broken_lane_mod")
+    with pytest.raises(ValueError):
+        runner.lane_factory("nonesuch")

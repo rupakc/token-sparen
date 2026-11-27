@@ -21,6 +21,13 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
   group and copied history (resumed sessions) is de-duplicated over the whole group before the
   dev/test split; sessions from 2026-11-26 on or with a `[token-sparen:` marker in a tool result
   are excluded whole and counted.
+- A resumed session is dated by its own first new record (not its copied history); a session
+  is excluded when any record is dated from the dogfood start on or any line holds the marker
+  (hook context included), together with its subagent transcripts; groups are project
+  directories. A dead worker's groups are retried once alone; still failing, the report is
+  marked incomplete, the checkpoint is kept and the command exits 1 (`--quiet` adds
+  `status: complete|incomplete`). `--resume` replays the first run's snapshot of transcripts
+  and sizes, and refuses a checkpoint of another config or package version.
 - Malformed transcripts never stop a run: lines over 8 MB are skipped in bounded chunks, lines
   that are not UTF-8, not JSON or not an object are skipped, and both are counted; an exception
   in a group is recorded as its type name only.

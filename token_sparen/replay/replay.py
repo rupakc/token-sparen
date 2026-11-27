@@ -40,9 +40,10 @@ evicted and paid, counted in ``evicted``). ``proxy_regrets`` is the sum of value
 **Memory.** One record at a time; per session only counters, the last prompt (<= 2000 chars),
 recent tool categories and paths, and the watched spans' digests.
 
-**Split.** A session's date is its first record ``timestamp`` (else the file's mtime); dates
-before ``date_cutoff`` are ``dev``, the rest ``test``; sessions from ``DOGFOOD_START`` on, or with
-a ``[token-sparen:`` marker in a tool result, are excluded whole.
+**Split.** A session's date is the ``timestamp`` of its first record that is not copied history
+(else its first record, else the file's mtime); dates before ``date_cutoff`` are ``dev``, the rest
+``test``; sessions with any record from ``DOGFOOD_START`` on, or any ``[token-sparen:`` marker,
+are excluded whole with their subagent files (``runner``).
 
 **Runs.** ``run`` drives ``runner.run_parallel`` (groups by project directory, chronological
 order and id de-duplication per group, bounded reads, optional processes and checkpoint); this
@@ -430,6 +431,11 @@ class RunIds:
             return True
         self._ids.add(d)
         return True
+
+    def has(self, key: str) -> bool:
+        """True if ``key`` was recorded (nothing is added)."""
+        d = hashlib.blake2b(key.encode("utf-8", "surrogatepass"), digest_size=8).digest()
+        return d in self._ids
 
 
 _SEP = re.compile(r"[/\\]")
@@ -917,6 +923,12 @@ class CompressionLane:
                 acc.sessions += 1
         self._current, self._sessions = None, []
 
+    def abort_session(self, session: SessionInfo) -> None:
+        """The runner failed mid-session: count it failed (partial sums stay, as before)."""
+        if session is self._current:
+            self._failed = True
+            self.end_session(session)
+
     def report(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
         for part, by_name in self.accs.items():
@@ -1019,7 +1031,9 @@ def summary_lines(rep: ReplayReport) -> list[str]:
             f"[run] files {r['files']}, sessions {r['sessions']}, "
             f"excluded_dogfood {r['excluded_dogfood']}, malformed_lines {r['malformed_lines']}, "
             f"oversize_lines {r['oversize_lines']}, skipped_records {r['skipped_records']}, "
-            f"groups {r['groups']} (resumed {r['groups_resumed']}), worker_errors {errors}"
+            f"sessions_failed {r.get('sessions_failed', 0)}, "
+            f"groups {r['groups']} (resumed {r['groups_resumed']}), worker_errors {errors}, "
+            f"complete {str(r.get('complete', True)).lower()}"
         )
     for lane in rep.lanes:
         lines.append(f"[lane {lane}] see the report")

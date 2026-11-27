@@ -1,43 +1,62 @@
 """E1 at real-data scale: parallel, resumable, contamination-safe replay runs with lanes.
 
-**Groups.** Transcripts are grouped by their parent directory (one Claude Code project
-directory, or one session's subagent directory); the group key is the first 16 hex of the
-sha256 of that directory's path, so neither reports nor checkpoints hold a path. One worker
-replays one group: its files in chronological order (first record ``timestamp``, else the
-file's mtime; ties by file name), with one ``RunIds`` de-duplication over the whole group
-*before* split attribution, so a resumed session's copied history is counted once, in the
-session that first held it, whatever split the resume falls in.
+**Groups.** A transcript's group is the top-level directory under the input root it was found
+in (one Claude Code project directory); files directly in the root, and a session's own
+directory ``<root>/<id>/`` next to ``<root>/<id>.jsonl`` (its ``subagents/``), belong to the
+root's group. A file given directly belongs to its parent directory's group. The key is the
+first 16 hex of the sha256 of the group directory's path, so neither reports nor checkpoints
+hold a path. One worker replays one group with one ``RunIds`` de-duplication over the whole
+group *before* split attribution.
 
-**Splits and contamination.** A session's day is its first record's timestamp: before
-``cutoff`` it is ``dev``, else ``test``. A session whose day is on or after ``dogfood_start`` or
-that holds any tool result with a ``[token-sparen:`` marker (it ran with the plugin on) is
-excluded whole (``excluded_dogfood``); the decision is made by a pre-scan of the file before any
-lane sees an event. ``split="dev"`` never feeds a test session; ``split="test"`` still reads the
-dev sessions (their ids de-duplicate later copies) but feeds them only to lanes with
-``history = True``.
+**Order and dating.** A pre-scan reads every file of the group (bounded, see below). Files are
+replayed in order of (first record timestamp, last record timestamp, name): a resume starts
+with its original's copied history (same timestamps) but ends later. A session's day is the
+timestamp of its first record that is *not* copied history, i.e. whose id (``m:`` assistant
+message id, ``t:`` tool-use ids, else ``u:`` record uuid) the group has not seen yet; a
+session made only of copies keeps its first timestamp. Before ``cutoff`` it is ``dev``, else
+``test``.
+
+**Contamination.** A session is excluded whole (``excluded_dogfood``) when any of its records
+has a timestamp on or after ``dogfood_start`` or any line holds the raw ``[token-sparen:``
+marker (tool results, hook context, attachments, system records, prompts alike). Exclusion
+spreads between a session and its subagent files, both ways: files are linked by their file
+stem, the last ``sessionId`` they record and any directory of their path named like a
+session file of the group. The decision is made before any lane sees an event.
+``split="dev"`` never feeds a test session; ``split="test"`` still reads the dev sessions
+(their ids de-duplicate later copies) but feeds them only to lanes with ``history = True``.
 
 **Malformed data.** Lines are read with a bounded ``readline``: a line over ``MAX_LINE_BYTES``
-is skipped in chunks (``oversize_lines``), a line that is not UTF-8, not JSON or not an object
-(a truncated last line included) is skipped (``malformed_lines``), and records of a type the
-replay does not consume are counted (``skipped_records``). Nothing of their content is kept.
+is skipped in chunks (``oversize_lines``; the old unbounded reader kept them), a line that is
+not UTF-8, not JSON or not an object (a truncated last line included) is skipped
+(``malformed_lines``), and records of a type the replay does not consume are counted
+(``skipped_records``). An exception while replaying one session counts ``sessions_failed`` and
+the group goes on.
 
 **Lanes.** A lane (``Lane``) is built inside the worker from a picklable ``LaneSpec`` =
-``(name, params)`` by the ``LANES`` registry (a missing name is looked up once as the module
-``token_sparen.replay.<name>_lane``, which registers itself on import). ``params`` may hold
-``overlay`` (config keys applied over the loaded config), ``seed`` and ``label`` (the report key,
-default the name). A lane's ``report()`` maps a split to a mergeable dict; reports of different
-groups are combined by ``merge_reports``. The default merge adds numbers (exactly: floats are
-summed as fractions, so a run's figures do not depend on scheduling or resumes), ORs booleans
-and merges dicts key by key; a lane may register its own in ``MERGERS``.
+``(name, params)`` by the ``LANES`` registry. A worker process only knows lanes registered at
+import time: a missing name is looked up once as the module ``token_sparen.replay.<name>_lane``
+(or ``params["module"]``), which registers itself on import; a lane registered at run time in
+the parent exists only for ``jobs=1``. ``params`` may hold ``overlay`` (config keys applied over
+the loaded config), ``seed`` and ``label`` (the report key, default the name). A lane's
+``report()`` maps a split to a mergeable dict; reports of different groups are combined by
+``merge_reports``. The default merge adds numbers exactly (floats summed as fractions, so a
+run's figures depend neither on scheduling nor on resumes), ORs booleans and merges dicts key by
+key. A lane may register its own merge in ``MERGERS``; that one runs on plain floats, so its
+parallel results may differ from serial ones at rounding level.
 
-**Failures.** An exception in a group is recorded as its type name only
-(``worker_errors[type] += 1``) and the group contributes nothing; a resumed run retries it.
+**Failures.** A group whose lanes raise contributes nothing and is recorded by exception type
+only. A worker process that dies (``BrokenProcessPool``, e.g. killed for memory) fails every
+pending group of its pool: each is retried once, alone, in a fresh process. Groups still
+failing are counted in ``failed_groups`` (type -> count) and the run is incomplete
+(``RunResult.complete``); a resumed run retries them.
 
-**Checkpoint.** After each finished group the whole checkpoint (merged state, counters, finished
-group keys with a digest of their files' names, sizes and mtimes) is rewritten with
-``report.write_private``. A run given an existing checkpoint resumes from it: finished groups
-are skipped; a checkpoint of a different run, or a finished group whose files changed, raises
-``CheckpointError``.
+**Checkpoint.** The checkpoint is written at the start (a snapshot of every file in scope with
+its size) and rewritten whole with ``report.write_private`` after each finished group (merged
+state, counters, finished group keys). A run given an existing checkpoint resumes: finished
+groups are skipped and the snapshot is replayed exactly (files added since are ignored, a file
+that grew is read only up to its recorded size, a vanished file is skipped). A checkpoint whose
+fingerprint (lane specs, effective config, package version, cutoff, dogfood start, split, group
+selection) differs raises ``CheckpointError``.
 """
 
 from __future__ import annotations
@@ -51,21 +70,22 @@ import os
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import Future, ProcessPoolExecutor, as_completed
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Protocol
 
+import token_sparen
 from token_sparen.config import Config, load_config, redacted_logs
 from token_sparen.replay import replay
 from token_sparen.replay.report import write_private
 from token_sparen.transcript import (
+    SYNTHETIC_MODEL,
     SessionEvent,
     ToolResultRecord,
     events_from_records,
-    tool_result_texts,
 )
 
 Split = replay.Split
@@ -78,11 +98,19 @@ MAX_LINE_BYTES = 8 * 1024 * 1024
 MARKER = "[token-sparen:"
 _MARKER_BYTES = MARKER.encode()
 _CHUNK = 1024 * 1024
-HEAD_RECORDS = 50  # the first timestamp / cwd is looked for in this many records
+HEAD_RECORDS = 50  # the cwd is looked for in this many records
 CONSUMED_TYPES = frozenset({"user", "assistant", "system"})
-_COUNTERS = ("sessions", "excluded_dogfood", "malformed_lines", "oversize_lines", "skipped_records")
+_COUNTERS = (
+    "sessions",
+    "sessions_failed",
+    "excluded_dogfood",
+    "malformed_lines",
+    "oversize_lines",
+    "skipped_records",
+)
 _FRACTION = "__fraction__"
 _NAME = re.compile(r"[a-z][a-z0-9_]*")
+_DEAD = "dead"  # a result whose worker process died
 
 
 class CheckpointError(ValueError):
@@ -102,8 +130,9 @@ class SessionInfo:
 
 
 class Lane(Protocol):
-    """One measurement over the replayed sessions. Optional attribute ``history = True``: the
-    lane is also fed sessions of a split the run does not report (it needs the full history)."""
+    """One measurement over the replayed sessions (see the module docstring for registration,
+    merging and the optional ``history = True`` attribute: the lane is also fed sessions of a
+    split the run does not report)."""
 
     def feed(self, event: Event, session: SessionInfo) -> None: ...
 
@@ -125,17 +154,25 @@ LANES: dict[str, LaneFactory] = {"compression": _compression}
 MERGERS: dict[str, Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]] = {}
 
 
-def lane_factory(name: str) -> LaneFactory:
-    """The registered factory of lane ``name`` (importing its module once if needed)."""
-    if name not in LANES and _NAME.fullmatch(name):
+def lane_factory(name: str, module: str | None = None) -> LaneFactory:
+    """The registered factory of lane ``name``, importing ``module`` (default
+    ``token_sparen.replay.<name>_lane``) once if it is not registered yet."""
+    if name not in LANES and (module or _NAME.fullmatch(name)):
+        target = module or f"token_sparen.replay.{name}_lane"
         try:
-            importlib.import_module(f"token_sparen.replay.{name}_lane")
-        except ImportError:
-            pass
+            importlib.import_module(target)
+        except ModuleNotFoundError as exc:
+            if exc.name != target:
+                raise  # the lane module exists but one of its own imports is broken
     factory = LANES.get(name)
     if factory is None:
         raise ValueError(f"unknown lane {name!r}: one of {', '.join(sorted(LANES))}")
     return factory
+
+
+def _module(params: Mapping[str, Any]) -> str | None:
+    value = params.get("module")
+    return value if isinstance(value, str) and value else None
 
 
 # --------------------------------------------------------------------------- merging
@@ -224,43 +261,54 @@ class Stats:
     malformed_lines: int = 0
     oversize_lines: int = 0
     skipped_records: int = 0
-    oversize_marked: int = 0  # oversize lines that held the dogfood marker
+    marked: int = 0  # lines (oversize ones included) holding the dogfood marker
 
 
-def iter_lines(path: Path, stats: Stats) -> Iterator[bytes]:
-    """Raw lines of ``path``; a line longer than ``MAX_LINE_BYTES`` is skipped in bounded chunks
-    (counted, and checked for the dogfood marker on the way). A read error ends the file."""
+def iter_lines(path: Path, stats: Stats, size: int | None = None) -> Iterator[bytes]:
+    """Raw lines of the first ``size`` bytes of ``path`` (all of it when None); a line longer
+    than ``MAX_LINE_BYTES`` is skipped in bounded chunks (counted, and checked for the dogfood
+    marker on the way). A read error ends the file."""
     limit = MAX_LINE_BYTES
+    left = size if size is not None else -1
+
+    def room(n: int) -> int:
+        return n if left < 0 else min(n, left)
+
     try:
         fh = path.open("rb")
     except OSError:
         return
     with fh:
-        while True:
+        while left != 0:
             try:
-                raw = fh.readline(limit + 1)
+                raw = fh.readline(room(limit + 1))
             except (OSError, ValueError):
                 return
             if not raw:
                 return
+            if left > 0:
+                left -= len(raw)
             if len(raw) > limit and not raw.endswith(b"\n"):
                 marked = _MARKER_BYTES in raw
                 tail = raw[-len(_MARKER_BYTES) :]
-                raw = b""
-                while True:
+                while left != 0:
                     try:
-                        chunk = fh.readline(_CHUNK)
+                        chunk = fh.readline(room(_CHUNK))
                     except (OSError, ValueError):
                         return
                     if not chunk:
                         break
+                    if left > 0:
+                        left -= len(chunk)
                     marked = marked or _MARKER_BYTES in tail + chunk
                     tail = chunk[-len(_MARKER_BYTES) :]
                     if chunk.endswith(b"\n"):
                         break
                 stats.oversize_lines += 1
-                stats.oversize_marked += marked
+                stats.marked += marked
                 continue
+            if _MARKER_BYTES in raw:
+                stats.marked += 1
             yield raw
 
 
@@ -279,24 +327,16 @@ def _parse(raw: bytes, stats: Stats) -> dict[str, Any] | None:
     return rec
 
 
-def iter_records(path: Path, stats: Stats) -> Iterator[dict[str, Any]]:
-    """Records of ``path`` (bounded, counted; see the module docstring)."""
-    for raw in iter_lines(path, stats):
+def iter_records(path: Path, stats: Stats, size: int | None = None) -> Iterator[dict[str, Any]]:
+    """Records of the first ``size`` bytes of ``path`` (bounded, counted; see the module
+    docstring)."""
+    for raw in iter_lines(path, stats, size):
         rec = _parse(raw, stats)
         if rec is None:
             continue
         if rec.get("type") not in CONSUMED_TYPES:
             stats.skipped_records += 1
         yield rec
-
-
-@dataclass(frozen=True)
-class _Scan:
-    path: Path
-    start: float  # sort key: POSIX seconds of the first timestamp (else mtime)
-    day: date
-    cwd: str | None
-    dogfood: bool
 
 
 def _when(value: Any) -> datetime | None:
@@ -309,44 +349,128 @@ def _when(value: Any) -> datetime | None:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
-def _marked(rec: dict[str, Any]) -> bool:
-    return any(MARKER in text for text in tool_result_texts(rec))
+def _stamp(dt: datetime) -> float:
+    try:
+        return dt.timestamp()
+    except (OverflowError, ValueError, OSError):
+        return float("-inf")
 
 
-def scan(path: Path) -> _Scan:
-    """Pre-scan: first timestamp and cwd (first ``HEAD_RECORDS`` records) and the dogfood
-    marker (whole file; only lines holding the marker bytes are decoded past the head)."""
+@dataclass(frozen=True)
+class _Scan:
+    path: Path
+    size: int
+    first: float  # sort keys: POSIX seconds of the first and last timestamps (else mtime)
+    last: float
+    first_day: date
+    max_day: date | None  # latest record day (any record, copied history included)
+    cwd: str | None
+    session_id: str | None  # the last ``sessionId`` recorded (a resume's own id)
+    marked: bool
+
+
+def scan(path: Path, size: int | None = None) -> _Scan:
+    """Pre-scan of one transcript: first / last / latest timestamp, cwd, last session id and
+    whether any line holds the dogfood marker."""
     stats = Stats()
     first: datetime | None = None
+    last: datetime | None = None
+    latest: datetime | None = None
     cwd: str | None = None
-    seen = 0
-    dogfood = False
-    for raw in iter_lines(path, stats):
-        head = seen < HEAD_RECORDS
-        if not head and _MARKER_BYTES not in raw:
-            continue
-        rec = _parse(raw, stats)
-        if rec is None:
-            continue
-        if head:
-            seen += 1
-            first = first or _when(rec.get("timestamp"))
+    sid: str | None = None
+    for n, rec in enumerate(iter_records(path, stats, size)):
+        when = _when(rec.get("timestamp"))
+        if when is not None:
+            first = first or when
+            last = when
+            latest = when if latest is None or when > latest else latest
+        if n < HEAD_RECORDS and cwd is None:
             value = rec.get("cwd")
-            cwd = cwd or (value if isinstance(value, str) and value else None)
-        if _MARKER_BYTES in raw and _marked(rec):
-            dogfood = True
-            break
-    dogfood = dogfood or stats.oversize_marked > 0
-    if first is None:
+            cwd = value if isinstance(value, str) and value else None
+        value = rec.get("sessionId")
+        if isinstance(value, str) and value:
+            sid = value
+    if first is None or last is None:
         try:
-            first = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+            first = last = datetime.fromtimestamp(path.stat().st_mtime, UTC)
         except OSError:
-            first = datetime.min.replace(tzinfo=UTC)
-    try:
-        start = first.timestamp()
-    except (OverflowError, ValueError, OSError):
-        start = float("-inf")
-    return _Scan(path, start, first.date(), cwd, dogfood)
+            first = last = datetime.min.replace(tzinfo=UTC)
+    if size is None:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+    return _Scan(
+        path,
+        size,
+        _stamp(first),
+        _stamp(last),
+        first.date(),
+        latest.date() if latest is not None else None,
+        cwd,
+        sid,
+        stats.marked > 0,
+    )
+
+
+def _has_result(rec: Mapping[str, Any]) -> bool:
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+    )
+
+
+def _identity(rec: Mapping[str, Any]) -> list[str]:
+    """The de-duplication keys of a record (empty: it says nothing about being copied)."""
+    msg = rec.get("message")
+    msg = msg if isinstance(msg, dict) else {}
+    if rec.get("type") == "assistant":
+        mid = msg.get("id")
+        ok = isinstance(mid, str) and msg.get("model") != SYNTHETIC_MODEL
+        return [f"m:{mid}"] if ok else []
+    if rec.get("type") != "user":
+        return []
+    content = msg.get("content")
+    if _has_result(rec) and isinstance(content, list):
+        return [
+            f"t:{b['tool_use_id']}"
+            for b in content
+            if isinstance(b, dict)
+            and b.get("type") == "tool_result"
+            and isinstance(b.get("tool_use_id"), str)
+        ]
+    uid = rec.get("uuid")
+    return [f"u:{uid}"] if isinstance(uid, str) and uid else []
+
+
+def _with_uuids(records: Iterable[dict[str, Any]], ids: replay.RunIds) -> Iterator[dict[str, Any]]:
+    """Records unchanged; user records without a tool result register their uuid (``u:``)."""
+    for rec in records:
+        if rec.get("type") == "user" and not _has_result(rec):
+            uid = rec.get("uuid")
+            if isinstance(uid, str) and uid:
+                ids.add(f"u:{uid}")
+        yield rec
+
+
+def session_day(sc: _Scan, ids: replay.RunIds) -> date:
+    """The day of the session's first record of its own chain that the group has not seen
+    (not copied history); a session of copies only keeps its first day."""
+    chain: bool | None = None
+    for rec in iter_records(sc.path, Stats(), sc.size):
+        if rec.get("type") not in ("user", "assistant"):
+            continue
+        side = bool(rec.get("isSidechain"))
+        chain = side if chain is None else chain
+        if side != chain:
+            continue
+        keys = _identity(rec)
+        if keys and not all(ids.has(k) for k in keys):
+            when = _when(rec.get("timestamp"))
+            if when is not None:
+                return when.date()
+    return sc.first_day
 
 
 # --------------------------------------------------------------------------- groups
@@ -359,28 +483,61 @@ def group_key(directory: Path) -> str:
     ]
 
 
+def _group_dir(root: Path, f: Path) -> Path:
+    parts = f.relative_to(root).parts
+    if len(parts) == 1 or (root / f"{parts[0]}.jsonl").is_file():
+        return root  # in the root, or in a root session's own directory (its subagents)
+    return root / parts[0]
+
+
 def group_files(paths: Iterable[Path]) -> dict[str, list[Path]]:
-    """Transcripts (files as given; directories recursively, ``*.jsonl``) by group key."""
+    """Transcripts by group key (see the module docstring): directories recursively
+    (``*.jsonl``), files as given."""
     out: dict[str, list[Path]] = {}
     seen: set[Path] = set()
-    for f in replay.iter_transcripts(paths):
-        a = f.absolute()
-        if a in seen:
+    for p in paths:
+        p = Path(os.path.expanduser(str(p))).absolute()
+        if p.is_dir():
+            pairs = [(f, _group_dir(p, f)) for f in sorted(p.rglob("*.jsonl")) if f.is_file()]
+        elif p.is_file():
+            pairs = [(p, p.parent)]
+        else:
             continue
-        seen.add(a)
-        out.setdefault(group_key(a.parent), []).append(a)
+        for f, gdir in pairs:
+            if f not in seen:
+                seen.add(f)
+                out.setdefault(group_key(gdir), []).append(f)
     return out
 
 
-def _signature(files: Sequence[Path]) -> str:
-    h = hashlib.sha256()
-    for f in sorted(files, key=lambda p: p.name):
-        try:
-            st = f.stat()
-            h.update(f"{f.name}\0{st.st_size}\0{st.st_mtime_ns}\n".encode("utf-8", "replace"))
-        except OSError:
-            h.update(f"{f.name}\0-\n".encode("utf-8", "replace"))
-    return h.hexdigest()[:16]
+def _file_key(path: Path) -> str:
+    return hashlib.sha256(str(path.absolute()).encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
+def _excluded(scans: Sequence[_Scan], dogfood_start: date) -> set[Path]:
+    """Files excluded as dogfood, spread over linked files (a session and its subagents)."""
+    stems = {sc.path.stem for sc in scans}
+    links: dict[Path, set[str]] = {}
+    for sc in scans:
+        keys = {sc.path.stem, *(p.name for p in sc.path.parents if p.name in stems)}
+        if sc.session_id:
+            keys.add(sc.session_id)
+        links[sc.path] = keys
+    out = {
+        sc.path
+        for sc in scans
+        if sc.marked or (sc.max_day is not None and sc.max_day >= dogfood_start)
+    }
+    tainted: set[str] = set().union(*(links[p] for p in out)) if out else set()
+    changed = bool(out)
+    while changed:
+        changed = False
+        for sc in scans:
+            if sc.path not in out and links[sc.path] & tainted:
+                out.add(sc.path)
+                tainted |= links[sc.path]
+                changed = True
+    return out
 
 
 # --------------------------------------------------------------------------- worker
@@ -389,9 +546,9 @@ def _signature(files: Sequence[Path]) -> str:
 @dataclass(frozen=True)
 class _Task:
     key: str
-    files: tuple[str, ...]
+    files: tuple[tuple[str, int], ...]  # (path, size to read)
     specs: tuple[LaneSpec, ...]
-    cfg: Config | None
+    cfg: Config
     cutoff: date
     dogfood_start: date
     split: str
@@ -431,34 +588,64 @@ def _label(spec: LaneSpec) -> str:
     return label if isinstance(label, str) else spec[0]
 
 
+def _abort(lanes: Iterable[Lane], info: SessionInfo) -> None:
+    for lane in lanes:
+        abort = getattr(lane, "abort_session", None)
+        if abort is None:
+            continue
+        try:
+            abort(info)
+        except Exception:  # noqa: BLE001, S110 - the session is already counted as failed
+            pass
+
+
+def _replay_session(
+    sc: _Scan, info: SessionInfo, fed: Sequence[Lane], ids: replay.RunIds, stats: Stats
+) -> None:
+    records = _with_uuids(iter_records(sc.path, stats, sc.size), ids)
+    for ev in events_from_records(records, is_new_id=ids.add):
+        if isinstance(ev, ToolResultRecord):
+            ev.duplicate = not ids.add(f"t:{ev.tool_use_id}")
+        for lane in fed:
+            lane.feed(ev, info)
+    for lane in fed:
+        lane.end_session(info)
+
+
 def _replay_group(task: _Task, counters: dict[str, int]) -> dict[str, dict[str, Any]]:
-    base = task.cfg if task.cfg is not None else load_config(Path.cwd(), os.environ)
     lanes: list[tuple[str, Lane]] = []
     for name, params in task.specs:
-        cfg = apply_overlay(base, params.get("overlay"))
-        lanes.append((_label((name, params)), lane_factory(name)(cfg, dict(params))))
+        cfg = apply_overlay(task.cfg, params.get("overlay"))
+        factory = lane_factory(name, _module(params))
+        lanes.append((_label((name, params)), factory(cfg, dict(params))))
     history = [lane for _, lane in lanes if getattr(lane, "history", False)]
-    scans = sorted((scan(Path(f)) for f in task.files), key=lambda s: (s.start, s.path.name))
-    run_ids = replay.RunIds()
+    scans = sorted(
+        (scan(Path(f), size) for f, size in task.files),
+        key=lambda s: (s.first, s.last, s.path.name),
+    )
+    excluded = _excluded(scans, task.dogfood_start)
+    ids = replay.RunIds()
     stats = Stats()
     for index, sc in enumerate(scans):
-        if sc.dogfood or sc.day >= task.dogfood_start:
+        if sc.path in excluded:
             counters["excluded_dogfood"] += 1
             continue
-        split = "dev" if sc.day < task.cutoff else "test"
-        reported = task.split in ("all", split)
-        if task.split == "dev" and not reported:
-            continue  # later than every dev session: needed by nothing reported
-        fed = [lane for _, lane in lanes] if reported else history
-        info = SessionInfo(task.key, index, split, sc.day, sc.cwd, run_ids)
-        for ev in events_from_records(iter_records(sc.path, stats), is_new_id=run_ids.add):
-            if isinstance(ev, ToolResultRecord):
-                ev.duplicate = not run_ids.add(f"t:{ev.tool_use_id}")
-            for lane in fed:
-                lane.feed(ev, info)
-        for lane in fed:
-            lane.end_session(info)
-        counters["sessions"] += reported
+        fed: list[Lane] = []
+        info: SessionInfo | None = None
+        try:
+            day = session_day(sc, ids)
+            split = "dev" if day < task.cutoff else "test"
+            reported = task.split in ("all", split)
+            if task.split == "dev" and not reported:
+                continue  # a test session: nothing reported needs it
+            fed = [lane for _, lane in lanes] if reported else history
+            info = SessionInfo(task.key, index, split, day, sc.cwd, ids)
+            _replay_session(sc, info, fed, ids, stats)
+            counters["sessions"] += reported
+        except Exception:  # noqa: BLE001 - one bad session never stops the group (no details)
+            counters["sessions_failed"] += 1
+            if info is not None:
+                _abort(fed, info)
     counters["malformed_lines"] += stats.malformed_lines
     counters["oversize_lines"] += stats.oversize_lines
     counters["skipped_records"] += stats.skipped_records
@@ -483,6 +670,16 @@ def _work_group(task: _Task) -> dict[str, Any]:
     return {"key": task.key, "error": None, "state": state, "counters": counters}
 
 
+def _isolated(task: _Task) -> dict[str, Any]:
+    """Retry of a group whose worker died: alone, in a fresh process."""
+    ctx = multiprocessing.get_context("spawn")
+    try:
+        with ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool:
+            return pool.submit(_work_group, task).result()
+    except Exception as exc:  # noqa: BLE001 - a dead worker: type only
+        return {"key": task.key, "error": type(exc).__name__, _DEAD: True}
+
+
 # --------------------------------------------------------------------------- parent
 
 
@@ -493,24 +690,34 @@ class RunResult:
     by_split: dict[str, dict[str, dict[str, Any]]]
     files: int = 0
     sessions: int = 0
+    sessions_failed: int = 0
     excluded_dogfood: int = 0
     malformed_lines: int = 0
     oversize_lines: int = 0
     skipped_records: int = 0
-    worker_errors: dict[str, int] = field(default_factory=dict)
+    worker_errors: dict[str, int] = field(default_factory=dict)  # every failure, retries too
+    failed_groups: dict[str, int] = field(default_factory=dict)  # groups that added nothing
     groups: int = 0
     groups_resumed: int = 0
     wall_s: float = 0.0
 
+    @property
+    def complete(self) -> bool:
+        """Every group in scope contributed (nothing to retry with a resume)."""
+        return not self.failed_groups
+
     def counters(self) -> dict[str, Any]:
         return {
+            "complete": self.complete,
             "files": self.files,
             "sessions": self.sessions,
+            "sessions_failed": self.sessions_failed,
             "excluded_dogfood": self.excluded_dogfood,
             "malformed_lines": self.malformed_lines,
             "oversize_lines": self.oversize_lines,
             "skipped_records": self.skipped_records,
             "worker_errors": dict(sorted(self.worker_errors.items())),
+            "failed_groups": dict(sorted(self.failed_groups.items())),
             "groups": self.groups,
             "groups_resumed": self.groups_resumed,
             "wall_s": round(self.wall_s, 3),
@@ -521,15 +728,16 @@ class RunResult:
 
 
 class _Merged:
-    """Exact running merge of finished groups (the checkpoint body)."""
+    """Exact running merge of finished groups and the run's snapshot (the checkpoint body)."""
 
     def __init__(self, names: Mapping[str, str]) -> None:
         self.names = names  # label -> lane name
         self.state: dict[str, dict[str, Any]] = {}
         self.counters = dict.fromkeys(_COUNTERS, 0)
-        self.done: dict[str, str] = {}
+        self.done: list[str] = []
+        self.snapshot: dict[str, dict[str, int]] = {}  # group -> file key -> size
 
-    def absorb(self, key: str, sig: str, res: Mapping[str, Any]) -> None:
+    def absorb(self, key: str, res: Mapping[str, Any]) -> None:
         for part, lanes in res["state"].items():
             into = self.state.setdefault(part, {})
             for label, rep in lanes.items():
@@ -542,25 +750,34 @@ class _Merged:
                     into[label] = _merge(into.get(label), _exact(rep))
         for k in _COUNTERS:
             self.counters[k] += int(res["counters"].get(k, 0))
-        self.done[key] = sig
+        self.done.append(key)
 
     def dump(self, fingerprint: str) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": 2,
             "kind": "e1-checkpoint",
             "fingerprint": fingerprint,
-            "done": dict(sorted(self.done.items())),
+            "snapshot": self.snapshot,
+            "done": sorted(self.done),
             "counters": self.counters,
             "state": _encode(self.state),
         }
 
-    def load(self, doc: Any, fingerprint: str, sigs: Mapping[str, str]) -> None:
+    def load(self, doc: Any, fingerprint: str) -> None:
         if not isinstance(doc, dict) or doc.get("fingerprint") != fingerprint:
-            raise CheckpointError("the checkpoint belongs to a different run (start afresh)")
-        done = doc.get("done")
-        if not isinstance(done, dict) or any(sigs.get(k) != v for k, v in done.items()):
-            raise CheckpointError("transcripts changed since the checkpoint (start afresh)")
-        self.done = {str(k): str(v) for k, v in done.items()}
+            raise CheckpointError(
+                "the checkpoint belongs to a different run (lanes, config, package version, "
+                "dates, split or group selection differ)"
+            )
+        snapshot, done = doc.get("snapshot"), doc.get("done")
+        if not isinstance(snapshot, dict) or not isinstance(done, list):
+            raise CheckpointError("the checkpoint is incomplete")
+        self.snapshot = {
+            str(g): {str(f): int(s) for f, s in files.items()}
+            for g, files in snapshot.items()
+            if isinstance(files, dict)
+        }
+        self.done = [str(k) for k in done]
         self.state = _decode(doc.get("state") or {})
         counters = doc.get("counters") or {}
         self.counters = {k: int(counters.get(k, 0)) for k in _COUNTERS}
@@ -587,13 +804,17 @@ class _Merged:
 
 def _fingerprint(
     specs: Sequence[LaneSpec],
+    cfg: Config,
     cutoff: date,
     dogfood_start: date,
     split: str,
     groups: set[str] | None,
 ) -> str:
+    config = json.dumps(cfg.data, sort_keys=True, default=repr)
     body = {
-        "version": 1,
+        "version": 2,
+        "package": token_sparen.__version__,
+        "config": hashlib.sha256(config.encode()).hexdigest(),
         "specs": [[n, p] for n, p in specs],
         "cutoff": cutoff.isoformat(),
         "dogfood_start": dogfood_start.isoformat(),
@@ -603,6 +824,18 @@ def _fingerprint(
     }
     text = json.dumps(body, sort_keys=True, default=repr)
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _snapshot(found: Mapping[str, Sequence[Path]]) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    for key, files in found.items():
+        row = out.setdefault(key, {})
+        for f in files:
+            try:
+                row[_file_key(f)] = f.stat().st_size
+            except OSError:
+                continue
+    return out
 
 
 def run_parallel(
@@ -619,86 +852,109 @@ def run_parallel(
 ) -> RunResult:
     """Replay ``paths`` (files or directories) through the lanes ``specs``, one group per
     worker task on ``jobs`` processes (1 = in this process). ``groups`` selects group keys;
-    ``split`` limits what is reported; ``cfg`` (picklable) replaces the config each worker
-    would load. With ``checkpoint``, finished groups are recorded and an existing checkpoint
-    resumes."""
+    ``split`` limits what is reported; ``cfg`` (picklable) is the config every worker uses
+    (default: loaded once here). With ``checkpoint``, the run's snapshot and finished groups are
+    recorded and an existing checkpoint resumes."""
     if split not in ("dev", "test", "all"):
         raise ValueError(f"unknown split {split!r}")
     if not isinstance(jobs, int) or jobs < 1:
         raise ValueError("jobs must be >= 1")
     names: dict[str, str] = {}
-    for name, _params in specs:
-        lane_factory(name)
-        label = _label((name, _params))
+    for name, params in specs:
+        lane_factory(name, _module(params))
+        label = _label((name, params))
         if label in names:
             raise ValueError(f"lane {label!r} given twice (set a distinct 'label')")
         names[label] = name
     started = time.perf_counter()
+    base = cfg if cfg is not None else load_config(Path.cwd(), os.environ)
+    fingerprint = _fingerprint(specs, base, cutoff, dogfood_start, split, groups)
     found = group_files(paths)
     if groups is not None:
         found = {k: v for k, v in found.items() if k in groups}
-    sigs = {k: _signature(v) for k, v in found.items()}
     merged = _Merged(names)
-    fingerprint = _fingerprint(specs, cutoff, dogfood_start, split, groups)
     resumed = 0
     if checkpoint is not None and checkpoint.is_file():
         try:
             doc = json.loads(checkpoint.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            raise CheckpointError("the checkpoint is unreadable (start afresh)") from None
-        merged.load(doc, fingerprint, sigs)
+            raise CheckpointError("the checkpoint is unreadable") from None
+        merged.load(doc, fingerprint)
         resumed = len(merged.done)
+    else:
+        merged.snapshot = _snapshot(found)
+        if checkpoint is not None:
+            write_private(checkpoint, merged.dump(fingerprint))
+    by_key = {key: {_file_key(f): f for f in found.get(key, [])} for key in merged.snapshot}
+    finished = set(merged.done)
     tasks = [
         _Task(
             key,
-            tuple(str(f) for f in found[key]),
+            tuple(
+                (str(by_key[key][fk]), size)
+                for fk, size in sorted(merged.snapshot[key].items())
+                if fk in by_key[key]
+            ),
             tuple((n, dict(p)) for n, p in specs),
-            cfg,
+            base,
             cutoff,
             dogfood_start,
             split,
         )
-        for key in sorted(found)
-        if key not in merged.done
+        for key in sorted(merged.snapshot)
+        if key not in finished
     ]
     errors: dict[str, int] = {}
+    failed: dict[str, int] = {}
 
-    def finish(res: Mapping[str, Any]) -> None:
+    def finish(res: Mapping[str, Any], final: bool) -> bool:
+        """Absorb a group result; False if it is a dead worker to retry."""
         if res.get("error"):
             name = str(res["error"])
             errors[name] = errors.get(name, 0) + 1
-            return
-        key = str(res["key"])
-        merged.absorb(key, sigs[key], res)
+            if res.get(_DEAD) and not final:
+                return False
+            failed[name] = failed.get(name, 0) + 1
+            return True
+        merged.absorb(str(res["key"]), res)
         if checkpoint is not None:
             write_private(checkpoint, merged.dump(fingerprint))
+        return True
 
     if jobs == 1 or len(tasks) <= 1:
         for task in tasks:
-            finish(_work_group(task))
+            finish(_work_group(task), final=True)
     else:
+        retry: list[_Task] = []
         ctx = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(max_workers=min(jobs, len(tasks)), mp_context=ctx) as pool:
-            futures: dict[Future[dict[str, Any]], str] = {
-                pool.submit(_work_group, task): task.key for task in tasks
+            futures: dict[Future[dict[str, Any]], _Task] = {
+                pool.submit(_work_group, task): task for task in tasks
             }
             for fut in as_completed(futures):
                 try:
                     res = fut.result()
                 except Exception as exc:  # noqa: BLE001 - a dead worker: type only
-                    res = {"key": futures[fut], "error": type(exc).__name__}
-                finish(res)
+                    res = {"key": futures[fut].key, "error": type(exc).__name__, _DEAD: True}
+                if not finish(res, final=False):
+                    retry.append(futures[fut])
+        if retry:
+            with ThreadPoolExecutor(max_workers=min(jobs, len(retry))) as threads:
+                for res in threads.map(_isolated, sorted(retry, key=lambda t: t.key)):
+                    finish(res, final=True)
     c = merged.counters
     return RunResult(
         by_split=merged.result(split),
-        files=sum(len(v) for v in found.values()),
+        files=sum(len(v) for v in merged.snapshot.values()),
         sessions=c["sessions"],
+        sessions_failed=c["sessions_failed"],
         excluded_dogfood=c["excluded_dogfood"],
         malformed_lines=c["malformed_lines"],
         oversize_lines=c["oversize_lines"],
         skipped_records=c["skipped_records"],
         worker_errors=errors,
-        groups=len(found),
+        failed_groups=failed,
+        groups=len(merged.snapshot),
         groups_resumed=resumed,
         wall_s=time.perf_counter() - started,
     )
