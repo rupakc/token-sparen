@@ -196,6 +196,15 @@ def test_latency_sampled_log(tmp_path: Path) -> None:
     assert not (tmp_path / "b" / "home" / "logs" / "latency.jsonl").exists()
 
 
+def test_kill_switch_writes_no_latency_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``TOKEN_SPAREN_DISABLE=1``: the hook is a no-op and writes nothing, not even the sampled
+    latency line (found by the M3 integration test)."""
+    monkeypatch.setattr(entry, "DEFAULT_SAMPLE_RATE", 1.0)
+    rc, out = _run("PostToolUse", _bash_payload(), _env(tmp_path, TOKEN_SPAREN_DISABLE="1"))
+    assert rc == 0 and json.loads(out) == {}
+    assert not (tmp_path / "home").exists()
+
+
 def test_store_busy_fail_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def busy(event: Event, cfg: Config) -> Action:
         raise jsonstore.StoreBusy("lock")

@@ -22,7 +22,7 @@ testing/`; `learn/` holds policy, decision log, engine, regret, `overlay` (sessi
 and `ope`; `replay/` holds E1 and the private report writer), `token_sparen/params/defaults.toml`
 (all tunables), `hooks/`, `skills/token-sparen/` (the plugin's `/token-sparen` skill; no
 `commands/`), `evals/e2/` (fact-preservation suite), `tests/` (mirrors the package, synthetic
-fixtures only), `scripts/`. `facts/` (M3) holds the repo-fact sanitiser and the fold-time miners (`facts.json`); injection is not wired yet.
+fixtures only), `scripts/`. `facts/` (M3) holds the repo-fact sanitiser, the fold-time miners (`facts.json`), the per-fact lifecycle bandit and SessionStart injection.
 
 ## Commands (use the repo `.venv`; all must pass before a commit)
 ```

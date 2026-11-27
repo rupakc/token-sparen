@@ -5,57 +5,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code plugin) and M2
-(learning, offline evaluation, quality-first defaults and config safety). M3 is in progress.
+Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones M0
+(foundations), M1 (Claude Code plugin), M2 (learning, offline evaluation, quality-first defaults
+and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`
+for M3); the package version stays a development version until the first release.
 
-### Added
-- Failure-loop guard (spec 6.11, decision point `loopguard`, medium tier): within one turn and
-  per agent (`agent_id`), the same failure fingerprint (tool + command head or file + most
-  specific error line; for pytest/jest/go test/cargo test reports a hash of the whole sorted failing-test id set and its size
-  plus the first failure's error line; bare `Exit code N` failures and test-run summary lines
-  never count) `k` times (learned
-  arm: patient 5, standard 3, eager 2; safe arm patient), or the same edit made and undone twice
-  (A -> B -> A -> B), adds one redirect line as `additionalContext` (PostToolUse and
-  PostToolUseFailure; the tool output is never touched), with its own wording for edits; at most
-  one per agent and turn, a second detection is a terminal notice only. The decision is logged at
-  the first repeat for every arm. Reward: savings 1 only for a redirect delivered at >= 3
-  occurrences after which the error does not recur in the agent's next 5 tool calls, else 0;
-  regret 1 on a user interrupt or a next prompt saying stop/undo/revert/that's wrong/no, don't.
-  Error-loop triggers also flag this turn's error-bearing compressions to the regret detector
-  (0.5). `[loopguard] enabled`, `min_k` (a project may only switch it off or raise it),
-  `watch_calls`. Bounded per-turn state (hashes only) in the session overlay.
-- Opt-in learned tool pruning (`token-sparen prune status|enable|disable|restore <tool>|restore
-  --all`): MCP servers none of whose tools was ever used are denied in the checkout's
-  `.claude/settings.local.json` after >= 3 sessions / 15 prompts and a high-tier regret bound,
-  only while the project is idle (session starts, prompts and tool calls count as activity).
-  Savings are modest (unused servers' tool names and instructions) and reported as a count only.
-  Built-ins only with `[prune] builtins = true` in the user's config.toml and an SDK init record.
-  Enabling needs `prune enable` or the user's config.toml (never env or a project file) and seeds
-  tools used in the last 60 days of transcripts. Owned rules only, tracked per settings-file real
-  path (sibling clones and worktrees), one backup, stamp re-check, strict JSON (duplicate keys
-  refused, with a notice), tracked files refused, `.gitignore` warning. SessionStart line with
-  the restore command (plugin launcher when needed; `prune restore` pre-approved in the skill),
-  truncated to its own budget; immediate restore (regret 1.0, kept for good) on a ToolSearch
-  query, a direct call, a `PermissionDenied` event, a user prompt naming it (exact or multi-word)
-  or a fold-time attempt. `⊘ N` statusline segment and `stats` count.
-- Repository bootstrap: package skeleton, CLI `--version`, CI, deny-list check, MIT licence and
-  NOTICE.
-- Core: canonical events and actions, layered config (defaults, user, project, environment,
-  per-session), token estimation, transcript usage parser, atomic file-locked JSON/JSONL store.
-- Recoverable compression: full output saved to `<project>/.token-sparen/outputs/<id>.txt`
-  (git-ignored, 14-day TTL, size caps) and a `[token-sparen: kept X of Y lines ...]` marker.
-- Compressors with deterministic golden tests: text (head/tail, error pinning, repeated-line
-  folding, prompt-relevance), JSON, diff, stack trace, test report, compiler, build log, search,
-  Perplexity-style results and logs, with a content-type router.
-- E2 fact-preservation suite (51 cases at 3 compression levels, 153 case-level runs) run in CI.
-- Claude Code plugin: fail-open hook entry (`hooks/run.py`), manifest, `/token-sparen` skill.
-- Mechanisms: compression on PostToolUse (including structured Agent/Task results), a
-  tail-biased pre-trim arm, PreToolUse guards for unbounded scans, read de-duplication, budget
-  governor with burn projection and notices, opt-in hard stop, task-boundary `/compact` advice,
-  PreCompact recovery-path preservation, subagent brief arm (off by default).
-- Live statusline (opt-in install/uninstall that composes with an existing statusline, backs up
-  settings and restores the original exactly).
-- M3 start: repository-fact sanitiser (facts are data, never instructions: allow-listed
+### M3: cross-session learning (0.3.0 milestone)
+
+Three mechanisms that learn across sessions of one project, each with its own off switch:
+repository facts (`token-sparen facts disable`, `[facts] enabled = false`), opt-in tool pruning
+(off unless `token-sparen prune enable`; `prune disable` reverts every rule) and the failure-loop
+guard (`[loopguard] enabled = false`). `TOKEN_SPAREN_DISABLE=1` turns all of them off with
+everything else. No savings figures are claimed for them yet.
+
+#### Added
+- Repository-fact sanitiser (facts are data, never instructions: allow-listed
   characters, no URLs, shell operators, instruction words, secrets or outside paths; fixed
   render templates) and deterministic miners run at fold time over the session transcript
   (command alias, required env var name, test command, build-first, generated dir) into
@@ -82,6 +46,74 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code 
   the fact's (>= 2 runs while it never ran) contradicts it. Any option whose name ends with a
   credential word (`--dbpassword`, `--sshkey`, `--npmtoken`) or contains `bearer` is treated
   as a secret.
+- Opt-in learned tool pruning (`token-sparen prune status|enable|disable|restore <tool>|restore
+  --all`): MCP servers none of whose tools was ever used are denied in the checkout's
+  `.claude/settings.local.json` after >= 3 sessions / 15 prompts and a high-tier regret bound,
+  only while the project is idle (session starts, prompts and tool calls count as activity).
+  Savings are modest (unused servers' tool names and instructions) and reported as a count only.
+  Built-ins only with `[prune] builtins = true` in the user's config.toml and an SDK init record.
+  Enabling needs `prune enable` or the user's config.toml (never env or a project file) and seeds
+  tools used in the last 60 days of transcripts. Owned rules only, tracked per settings-file real
+  path (sibling clones and worktrees), one backup, stamp re-check, strict JSON (duplicate keys
+  refused, with a notice), tracked files refused, `.gitignore` warning. SessionStart line with
+  the restore command (plugin launcher when needed; `prune restore` pre-approved in the skill),
+  truncated to its own budget; immediate restore (regret 1.0, kept for good) on a ToolSearch
+  query, a direct call, a `PermissionDenied` event, a user prompt naming it (exact or multi-word)
+  or a fold-time attempt. `⊘ N` statusline segment and `stats` count.
+- Failure-loop guard (spec 6.11, decision point `loopguard`, medium tier): within one turn and
+  per agent (`agent_id`), the same failure fingerprint (tool + command head or file + most
+  specific error line; for pytest/jest/go test/cargo test reports a hash of the whole sorted failing-test id set and its size
+  plus the first failure's error line; bare `Exit code N` failures and test-run summary lines
+  never count) `k` times (learned
+  arm: patient 5, standard 3, eager 2; safe arm patient), or the same edit made and undone twice
+  (A -> B -> A -> B), adds one redirect line as `additionalContext` (PostToolUse and
+  PostToolUseFailure; the tool output is never touched), with its own wording for edits; at most
+  one per agent and turn, a second detection is a terminal notice only. The decision is logged at
+  the first repeat for every arm. Reward: savings 1 only for a redirect delivered at >= 3
+  occurrences after which the error does not recur in the agent's next 5 tool calls, else 0;
+  regret 1 on a user interrupt or a next prompt saying stop/undo/revert/that's wrong/no, don't.
+  Error-loop triggers also flag this turn's error-bearing compressions to the regret detector
+  (0.5). `[loopguard] enabled`, `min_k` (a project may only switch it off or raise it),
+  `watch_calls`. Bounded per-turn state (hashes only) in the session overlay.
+
+#### Fixed
+- With `TOKEN_SPAREN_DISABLE=1` a hook no longer writes its sampled line to
+  `logs/latency.jsonl`: the kill switch now writes nothing at all.
+
+#### Security
+- Tool pruning is the second settings write after the statusline: it needs an explicit opt-in
+  (`prune enable` or the user's own `config.toml`; never an environment variable or a project
+  file), touches only `permissions.deny` in the checkout's `.claude/settings.local.json`, keeps
+  one backup and reverts exactly the rules it wrote.
+
+#### Tests
+- End-to-end cross-session tests through the real hook entry point and `token-sparen fold`
+  (`tests/integration/test_cross_session.py`): a missing-command fact learned over three sessions
+  and injected at the fourth session start, the full pruning cycle (opt-in, evidence, idle gap,
+  deny rule, restore on attempted use), the loop guard (one redirect at the third identical
+  failing test run, tool output untouched, rewarded at the next prompt) and the kill switch (no
+  output and no file written by any hook).
+
+### M0 to M2
+
+#### Added
+- Repository bootstrap: package skeleton, CLI `--version`, CI, deny-list check, MIT licence and
+  NOTICE.
+- Core: canonical events and actions, layered config (defaults, user, project, environment,
+  per-session), token estimation, transcript usage parser, atomic file-locked JSON/JSONL store.
+- Recoverable compression: full output saved to `<project>/.token-sparen/outputs/<id>.txt`
+  (git-ignored, 14-day TTL, size caps) and a `[token-sparen: kept X of Y lines ...]` marker.
+- Compressors with deterministic golden tests: text (head/tail, error pinning, repeated-line
+  folding, prompt-relevance), JSON, diff, stack trace, test report, compiler, build log, search,
+  Perplexity-style results and logs, with a content-type router.
+- E2 fact-preservation suite (51 cases at 3 compression levels, 153 case-level runs) run in CI.
+- Claude Code plugin: fail-open hook entry (`hooks/run.py`), manifest, `/token-sparen` skill.
+- Mechanisms: compression on PostToolUse (including structured Agent/Task results), a
+  tail-biased pre-trim arm, PreToolUse guards for unbounded scans, read de-duplication, budget
+  governor with burn projection and notices, opt-in hard stop, task-boundary `/compact` advice,
+  PreCompact recovery-path preservation, subagent brief arm (off by default).
+- Live statusline (opt-in install/uninstall that composes with an existing statusline, backs up
+  settings and restores the original exactly).
 - CLI: `stats`, `show`, `run`, `doctor`, `session disable|enable`, `config set`,
   `statusline`, `extensions`, `fold`, `replay`, `ope`, `facts`, `prune`.
 - Trusted extension loading (entry points and content-hash-trusted drop-ins), a compressor
@@ -121,7 +153,7 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code 
   `false/0/no/off`, including `TOKEN_SPAREN_DISABLE`.
 - Requires Claude Code >= 2.1.121 (`engines` in the plugin manifest; tested with 2.1.332).
 
-### Changed
+#### Changed
 - Quality-first compression defaults (maintainer decision after replaying real sessions; check
   it on your own with `token-sparen replay --policy static` against `default`): file
   contents (the Read tool and shell commands that print a file, such as `cat`, `head`, `tail`,
@@ -147,7 +179,7 @@ Pre-release (`0.1.0.dev0`). Covers milestones M0 (foundations), M1 (Claude Code 
 - `doctor` suggests `py -3`/`python` on Windows when `python3` is missing.
 - All text I/O is explicit UTF-8; `run` output is byte-exact.
 
-### Security
+#### Security
 - Extension trust is explicit and content-based; symlinked, foreign-owned and world-writable
   drop-ins are skipped; trust is documented as full code execution as the user.
 - The slash command has least-privilege tool permissions.

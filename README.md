@@ -191,6 +191,8 @@ A trimmed result ends with a marker:
 | All trimming of tool output | `[learn.hold] compression = true` in `~/.token-sparen/config.toml` (any truthy spelling: `true`, `1`, `yes`, `on`). It keeps compression and the learned pre-trim at their safe arm, whether learning is on or off, so nothing is trimmed. For one session only: `token-sparen config set learn.hold.compression true`. A project's `token-sparen.toml` may set it too. Config-only alternative: `[compression] allow_ctypes = []` (no content type may be trimmed). Guards and read de-duplication stay on |
 | Read pointers only | `[learn.hold] read_dedupe = true` or `read_dedupe.enabled = false` |
 | Learned repository facts | `token-sparen facts disable` (this project; `facts enable` undoes it), `[facts] enabled = false` (everywhere; a project's `token-sparen.toml` may set it too), or `token-sparen facts forget <id>` for one fact (see [Learned repository facts](#learned-repository-facts)) |
+| Failure-loop guard | `[loopguard] enabled = false` (a project's `token-sparen.toml` may set it too). `[learn.hold] loopguard = true` does not switch it off, it only keeps the most patient setting |
+| Tool pruning | off unless you opted in; `token-sparen prune disable` opts out and removes every rule token-sparen wrote, `prune restore <tool>` gives one tool back, and a project's `token-sparen.toml` may set `[prune] allow = false` (see [Tool pruning](#tool-pruning-opt-in)) |
 | Blocking, notices, other mechanisms | `guards.enabled`, `governor.enabled`, `boundary.enabled` or `subagent.enabled` set to `false` |
 | Uninstall | `claude plugin uninstall token-sparen@token-sparen`; run `token-sparen statusline uninstall` first if you installed the statusline |
 
@@ -227,7 +229,7 @@ Everything stays on your machine, but some of it is plain text you should know a
     **only as hashes** (not plain text) and up to 32 **file paths** it mentions, used to notice when
     a trim hurt), `sessions/pending/<id>.json` (the learner's decisions awaiting their reward: ids,
     bucket labels, arms, times), `last_active.json`
-    (the project's most recent session id), `savings_scale.json` (numbers only: recent savings
+    (the project's most recent session id and when it was last active), `savings_scale.json` (numbers only: recent savings
     sizes per bucket), `floor_warned.json`, `posteriors.json` and `breaker.json` (numbers only:
     learned evidence per bucket and recent regret values per decision point), `pending.json`
     (ids of sessions waiting to be folded) and `pretrim.json`
@@ -416,6 +418,20 @@ sessions it missed are folded at the next session start. A circuit breaker pause
 for the project for 3 sessions when the learner's recent trims clearly caused re-reads at more than
 twice the target rate, and tells you once. The starting values of the learner's priors are
 hand-set for now.
+
+### Across sessions: facts, tool pruning, loop guard
+
+Three mechanisms learn from earlier sessions of the same project. None of them uses an LLM, and
+there are no measured savings figures for them yet.
+
+| Mechanism | What it does | Default | Switch off |
+|---|---|---|---|
+| [Learned repository facts](#learned-repository-facts) | at session start, a short labelled block of things earlier sessions found out (a working spelling of a missing command, the test command, a required variable name) | on (injects only well-evidenced facts) | `token-sparen facts disable` or `[facts] enabled = false` |
+| [Tool pruning](#tool-pruning-opt-in) | denies MCP servers this project never uses, in the checkout's `.claude/settings.local.json`; any attempt to use one restores it at once | **off** (opt-in) | `token-sparen prune disable` (also reverts every rule) |
+| Failure-loop guard ([details](#what-changes-in-your-session)) | one redirect line when the same error repeats within a turn | on | `[loopguard] enabled = false` |
+
+`TOKEN_SPAREN_DISABLE=1` switches all three off along with everything else: every hook then
+returns "no change" and writes nothing.
 
 ### Tool pruning (opt-in)
 

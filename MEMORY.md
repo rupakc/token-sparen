@@ -1377,3 +1377,27 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - A test report's fingerprint uses the number of distinct failing ids and a hash of the **whole**
   sorted set (the first-20 cap made fixing tests that sort after the 20th invisible). Nothing is
   stored but the hash; parse work stays bounded by the 8000 + 4000 character scan.
+
+## 2026-11-27 Task 29: M3 integration tests and docs
+- End-to-end tests (`tests/integration/test_cross_session.py`) drive `entry.main` with synthetic
+  payloads and fold through `token-sparen fold` (as the SessionEnd spawn does), in a temporary
+  state root, project and Claude config dir.
+- A `command_alias` fact needs **3** sessions of evidence before it is active under the
+  production rules (bootstrap rule; with 2 sessions the lcb rule also needs a third
+  confirmation), so the facts test learns over three sessions and asserts injection at the
+  fourth session start (and nothing after two). Thresholds were not lowered; only the withhold
+  floor is set to 0 in that test so the injecting session is not a baseline draw.
+- The loop-guard test fixes the real Engine's draw at the `loopguard` point to `standard`
+  (monkeypatched `Engine.choose`); decision logging, pending entry and reward stay real.
+- Pruning in the test needs 100 prompts per session (the high-tier ucb gate needs about 300
+  unused prompts); rules are applied at the next session start after an idle gap, the deferred
+  path.
+- Bug found and fixed: with `TOKEN_SPAREN_DISABLE=1` the entry still wrote its sampled
+  `logs/latency.jsonl` line. The kill switch now writes nothing at all (unit test in
+  `tests/adapters/claude/test_entry.py`). A per-session or config disable still samples latency
+  (the hook did run to read that config).
+- CHANGELOG: M3 is a sub-section of `[Unreleased]` labelled as the 0.3.0 milestone (git tag
+  `v0.3.0-m3`); the package version stays `0.1.0.dev0` until the first release (not bumped in
+  this task).
+- README: an "Across sessions" overview table (facts, pruning, loop guard, each with its off
+  switch) and off-switch rows for the loop guard and pruning in "Turning it off".

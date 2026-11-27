@@ -511,7 +511,8 @@ def main(
         out.write(NOOP)
         log_error(env, "claude.entry", f"{event_name}: {type(exc).__name__}: {exc}")
     try:
-        _log_latency(env, cfg, event_name, dog.elapsed_ms(), outcome)
+        if not _disabled(env):  # the kill switch writes nothing at all
+            _log_latency(env, cfg, event_name, dog.elapsed_ms(), outcome)
     finally:
         dog.cancel()
     return 0
