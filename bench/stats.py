@@ -11,7 +11,8 @@ statistic sees. Stdlib only; every resampling takes an explicit seed.
 - Quality (confirmatory; ruling M5-T9 and its review rulings I1/I2): `gate_decision` on exactly
   one pre-specified seed per task (`GATE_SEED` = 0; other seeds never enter): lower bound =
   min(task-cluster percentile bootstrap, Tango score) > −5 pp, after the exclusion rule
-  (task-level exclusions dropped; a net excess of token-sparen-only exclusions imputed as
+  (task-level exclusions dropped; the excess of token-sparen-only exclusions on tasks the
+  baseline resolved over baseline-only exclusions on tasks token-sparen resolved is imputed as
   token-sparen failures; see `gate_decision`).
 - Alongside, per seed: `mcnemar_conditional_exact` (Clopper–Pearson on the discordant pairs,
   mapped to the difference scale; labelled "conditional exact").
@@ -218,7 +219,8 @@ def resolved_diff(
 # Review ruling I1: exactly one pre-specified seed per task enters the gate (majority outcomes
 # over several seeds shrink the difference and broke the type-I guarantee); other seeds are
 # descriptive only. Review ruling I2 and its re-review ruling: exclusions are attributed to an
-# arm; one-sided ones are re-run first, then only the arm's net excess is imputed (`gate_decision`).
+# arm; one-sided ones are re-run first, then only the arm's excess of exclusions that can move
+# the difference is imputed (`gate_decision`).
 
 GATE_SEED = 0
 GATE_METHOD = "min(bootstrap-percentile-task-cluster, tango-score), seed 0"
@@ -384,12 +386,12 @@ class GateCheck:
     """Confirmatory decision (re-review ruling of M5 Task 9). ``passed`` = no one-sided
     exclusion still pending re-runs AND the lower bound of ``estimate`` > margin."""
 
-    estimate: Estimate  # decisive: observed pairs + the imputed net excess
+    estimate: Estimate  # decisive: observed pairs + the imputed excess
     observed: Estimate  # observed pairs only (descriptive)
     excluded_arm: int  # tasks excluded for the arm only (gate seed, after retries)
     excluded_ref: int  # tasks excluded for the reference only
     excluded_both: int  # task-level exclusions (dropped)
-    imputed: tuple[str, ...]  # arm-only tasks imputed as arm failures (the net excess)
+    imputed: tuple[str, ...]  # arm-only, reference-resolved tasks imputed as arm failures
     pending: int  # one-sided exclusions not yet re-run to their retry limit
     min_tasks: int
     passed: bool
@@ -409,13 +411,13 @@ def gate_decision(
     alpha: float = 0.05,
     seed: int = 0,
 ) -> GateCheck:
-    """Exclusion rule (re-review ruling, replaces the balance tolerance). ``*_excluded`` = tasks
-    whose gate-seed key of that arm has no graded final outcome after the scheduler's re-runs.
-    Task-level exclusions (both arms) are dropped. Of the one-sided ones, only the net excess of
-    the arm is penalised: k = max(0, arm-only − reference-only) arm-only tasks count as arm
-    failures, chosen where the reference resolved first (then where it did not: a concordant
-    failure); every other one-sided exclusion is dropped (a reference excess is never rewarded).
-    No tolerance. ``pending`` > 0 (one-sided exclusions still to re-run) blocks a pass."""
+    """Exclusion rule (re-review rulings, round 3). ``*_excluded`` = tasks whose gate-seed key
+    of that arm has no graded final outcome after the scheduler's re-runs. Task-level exclusions
+    (both arms) are dropped. Of the one-sided ones only those that can move the difference
+    count: k = max(0, |arm-only where the reference resolved| − |reference-only where the arm
+    resolved|), and k of the former are imputed as arm failures (first k by task id); every
+    other one-sided exclusion is dropped (a reference excess is never rewarded). No tolerance.
+    ``pending`` > 0 (one-sided exclusions still to re-run) blocks a pass."""
     arm_x, base_x = set(arm_excluded), set(base_excluded)
     arm_only, base_only = arm_x - base_x, base_x - arm_x
     a_out = {t: v for t, v in _gate_outcomes(arm, gate_seed).items() if t not in arm_x}
@@ -424,9 +426,9 @@ def gate_decision(
     arm_runs = {t: {gate_seed: v} for t, v in a_out.items()}
     base_runs = {t: {gate_seed: v} for t, v in b_out.items()}
     observed = ni_gate(arm_runs, base_runs, **kw)
-    excess = max(0, len(arm_only) - len(base_only))
-    candidates = sorted((t for t in arm_only if t in b_out), key=lambda t: (not b_out[t], t))
-    imputed = tuple(sorted(candidates[:excess]))
+    harmful = sorted(t for t in arm_only if b_out.get(t) is True)
+    offsets = sum(1 for t in base_only if a_out.get(t) is True)
+    imputed = tuple(harmful[: max(0, len(harmful) - offsets)])
     estimate = observed
     if imputed:
         arm_runs.update({t: {gate_seed: False} for t in imputed})
@@ -440,7 +442,7 @@ def gate_decision(
     if not non_inferior(estimate, margin):
         reasons.append(f"lower bound {estimate.lo:.4f} <= margin {margin}")
     if imputed:
-        reasons.append(f"net excess of {len(imputed)} arm-only exclusion(s) imputed as failures")
+        reasons.append(f"excess of {len(imputed)} arm-only exclusion(s) imputed as failures")
     return GateCheck(
         estimate=estimate,
         observed=observed,
@@ -565,11 +567,14 @@ class Summary:
         exclusions of the two arms at that seed; one-sided ``incomplete`` keys are pending."""
         ref = vs or self.reference
         pending, _ = self.one_sided(arm, vs, seed=gate_seed)
+        waiting = {(e.arm, e.instance_id) for e in pending}  # not imputed while re-runs are due
+        arm_x = {t for t in self.excluded(arm, seed=gate_seed) if (arm, t) not in waiting}
+        ref_x = {t for t in self.excluded(ref, seed=gate_seed) if (ref, t) not in waiting}
         return gate_decision(
             self.resolved(arm),
             self.resolved(ref),
-            arm_excluded=self.excluded(arm, seed=gate_seed),
-            base_excluded=self.excluded(ref, seed=gate_seed),
+            arm_excluded=arm_x,
+            base_excluded=ref_x,
             pending=len(pending),
             gate_seed=gate_seed,
             **kw,
@@ -583,7 +588,7 @@ class Summary:
     ) -> tuple[list[Exclusion], list[Exclusion]]:
         """One-sided exclusions of the pair at ``seed`` (the other arm has no exclusion there):
         (pending, final). Pending = ``incomplete`` keys the scheduler must still re-run; final =
-        ``unrunnable`` / ``ungraded`` after retries — what the gate's net-excess rule sees."""
+        ``unrunnable`` / ``ungraded`` after retries — what the gate's exclusion rule sees."""
         ref = vs or self.reference
         a, b = self.excluded(arm, seed=seed), self.excluded(ref, seed=seed)
         one = (a - b) | (b - a)
@@ -676,6 +681,7 @@ def summarise(
     *,
     stage: str,
     reference: str = "baseline",
+    excluded: Iterable[Mapping[str, Any]] | None = None,
 ) -> Summary:
     """Final graded runs of one stage.
 
@@ -685,7 +691,12 @@ def summarise(
     RunKey id → resolved (None = harness error). A key's final outcome is its last
     non-invalidated ``end`` with status ok or agent_fail (``invalidate`` with a ``key`` reopens
     it; with ``from``/``to`` it reopens ends whose ``at`` lies in that range — an end without
-    ``at`` then raises). Every key without a graded final outcome is an `Exclusion`."""
+    ``at`` then raises). Every key without a graded final outcome is an `Exclusion`.
+
+    ``excluded`` = `bench.ledger.Ledger.excluded_after_retries` (``key``, ``cause``): when given,
+    only those keys are ``unrunnable`` and any other key without a final outcome is
+    ``incomplete`` (pending re-runs); without it, a key with any infra failure counts as
+    unrunnable. `summarise_ledger` wires the ledger, its exclusions and its grades."""
     ends: dict[tuple[str, int, str], list[Mapping[str, Any]]] = {}
     key_ids: dict[tuple[str, int, str], str] = {}
     infra_sub: dict[tuple[str, int, str], str] = {}
@@ -722,6 +733,13 @@ def summarise(
             counts["invalidated"] += 1
             ends[k] = []
 
+    if excluded is not None:
+        given: dict[tuple[str, int, str], str] = {}
+        for ex in excluded:
+            parsed_ex = _parse_key(ex.get("key"))
+            if parsed_ex is not None and parsed_ex[0] == stage:
+                given[parsed_ex[1:]] = str(ex.get("cause") or "unknown")
+        infra_sub = given
     exclusions: list[Exclusion] = []
     rows: list[RunRow] = []
     for k in sorted(ends):
@@ -781,4 +799,27 @@ def summarise(
             **counts,
         },
         excluded_by_arm={a: len(t) for a, t in sorted(by_arm.items())},
+    )
+
+
+def summarise_ledger(
+    ledger: Any,
+    *,
+    stage: str,
+    reference: str = "baseline",
+    grades: Mapping[str, bool | None] | None = None,
+) -> Summary:
+    """`summarise` over a `bench.ledger.Ledger`: its records, `excluded_after_retries(stage)`
+    as the exclusion source and (unless ``grades`` is given) the stage's grades from
+    `bench.grade.load_grades` next to the ledger."""
+    from bench.grade import grades_path, load_grades
+
+    if grades is None:
+        grades = load_grades(grades_path(ledger), stage=stage)
+    return summarise(
+        ledger.records(),
+        grades,
+        stage=stage,
+        reference=reference,
+        excluded=ledger.excluded_after_retries(stage),
     )

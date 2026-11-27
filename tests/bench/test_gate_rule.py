@@ -1,9 +1,10 @@
-"""Exclusion rule of the confirmatory gate (re-review ruling N1/N2 of M5 Task 9).
+"""Exclusion rule of the confirmatory gate (M5 Task 9 re-review rulings, round 3).
 
-One-sided exclusions are re-run first by the scheduler; what remains after retries: the net
-excess k = token-sparen-only − baseline-only (if > 0) is imputed as k token-sparen failures on
-tasks where the baseline resolved; every other one-sided or task-level exclusion is dropped. No
-tolerance."""
+One-sided exclusions are re-run first by the scheduler; of what remains after retries only the
+exclusions that can move the difference count: k = max(0, |token-sparen-only on tasks the
+baseline resolved| − |baseline-only on tasks token-sparen resolved|); k of those token-sparen
+exclusions are imputed as token-sparen failures; every other one-sided or task-level exclusion
+is dropped. No tolerance."""
 
 from __future__ import annotations
 
@@ -41,7 +42,9 @@ def _margin_true(
     return arm, base, harmed
 
 
-def _excluded_pass_rate(n: int, mode: str, *, sims: int = SIMS, seed: int = 0) -> float:
+def _excluded_pass_rate(
+    n: int, mode: str, *, sims: int = SIMS, seed: int = 0, n_boot: int = 500, noise: float = 0.05
+) -> float:
     rng = random.Random(seed)
     passed = 0
     for k in range(sims):
@@ -54,15 +57,15 @@ def _excluded_pass_rate(n: int, mode: str, *, sims: int = SIMS, seed: int = 0) -
             for t in arm:
                 if t in harmed and rng.random() < 0.5:
                     ax.add(t)
-                if rng.random() < 0.05:
+                if rng.random() < noise:
                     ax.add(t)
-                if rng.random() < 0.05:
+                if rng.random() < noise:
                     bx.add(t)
         for t in ax:
             arm[t] = {0: None}
         for t in bx:
             base[t] = {0: None}
-        g = stats.gate_decision(arm, base, arm_excluded=ax, base_excluded=bx, n_boot=500, seed=k)
+        g = stats.gate_decision(arm, base, arm_excluded=ax, base_excluded=bx, n_boot=n_boot, seed=k)
         passed += g.passed
     return passed / sims
 
@@ -79,6 +82,14 @@ def test_type_one_error_with_informative_exclusions() -> None:
     assert _excluded_pass_rate(80, "inform", seed=1) <= TOL
 
 
+def test_type_one_error_informative_plus_random_n150() -> None:
+    """Re-review 2: informative + 10 % random exclusions per arm at n = 150 (0.033 under the
+    round-2 net excess, ≈ +3.5 SD). Deterministic; tolerance nominal + 3 MC SD (1200 sims)."""
+    sims = 1200
+    rate = _excluded_pass_rate(150, "inform", sims=sims, seed=5, n_boot=300, noise=0.10)
+    assert rate <= 0.025 + 3 * (0.025 * 0.975 / sims) ** 0.5
+
+
 def _all(n: int, value: bool, prefix: str = "t") -> dict[str, dict[int, bool | None]]:
     return {f"{prefix}{i}": {0: value} for i in range(n)}
 
@@ -86,23 +97,25 @@ def _all(n: int, value: bool, prefix: str = "t") -> dict[str, dict[int, bool | N
 def test_net_excess_imputed_on_baseline_resolved_tasks() -> None:
     arm = _all(150, True)
     base = _all(150, True)
-    # 3 token-sparen-only exclusions (baseline: 2 resolved, 1 not), 1 baseline-only exclusion
+    # 3 token-sparen-only exclusions (baseline: 2 resolved, 1 not); baseline-only exclusions:
+    # y0 where token-sparen resolved (offsets one), y1 where it failed (cannot offset)
     for t, b in (("x0", True), ("x1", False), ("x2", True)):
         arm[t], base[t] = {0: None}, {0: b}
     arm["y0"], base["y0"] = {0: True}, {0: None}
+    arm["y1"], base["y1"] = {0: False}, {0: None}
     # 1 task-level exclusion
     arm["z0"], base["z0"] = {0: None}, {0: None}
     g = stats.gate_decision(
         arm,
         base,
         arm_excluded={"x0", "x1", "x2", "z0"},
-        base_excluded={"y0", "z0"},
+        base_excluded={"y0", "y1", "z0"},
         n_boot=300,
     )
-    assert (g.excluded_arm, g.excluded_ref, g.excluded_both) == (3, 1, 1)
-    assert g.imputed == ("x0", "x2")  # net excess 2, both where the baseline resolved
-    assert g.estimate.n == 152  # 150 observed + 2 imputed; y0, x1, z0 dropped
-    assert g.estimate.point == pytest.approx(-2 / 152)
+    assert (g.excluded_arm, g.excluded_ref, g.excluded_both) == (3, 2, 1)
+    assert g.imputed == ("x0",)  # k = |{x0, x2}| − |{y0}| = 1, on a baseline-resolved task
+    assert g.estimate.n == 151  # 150 observed + 1 imputed; the other exclusions dropped
+    assert g.estimate.point == pytest.approx(-1 / 151)
     assert g.observed.n == 150
     assert g.observed.point == 0.0
 
@@ -116,14 +129,30 @@ def test_no_tolerance_one_excess_is_imputed() -> None:
     assert g.estimate.point == pytest.approx(-1 / 201)
 
 
-def test_excess_without_baseline_resolved_counts_as_concordant_failure() -> None:
+def test_exclusions_that_cannot_move_the_difference_are_not_counted() -> None:
+    """A token-sparen-only exclusion where the baseline failed carries no discordance (not
+    imputed), and a baseline-only exclusion where token-sparen failed cannot offset one that
+    does (the round-2 net excess let it cancel)."""
     arm = _all(150, True)
     base = _all(150, True)
     arm["x0"], base["x0"] = {0: None}, {0: False}
     g = stats.gate_decision(arm, base, arm_excluded={"x0"}, n_boot=300)
-    assert g.imputed == ("x0",)
-    assert g.estimate.n == 151
-    assert g.estimate.point == 0.0  # both fail: concordant
+    assert g.imputed == ()
+    assert g.estimate.n == 150
+    # 3 harmful token-sparen-only exclusions, 3 baseline-only exclusions on token-sparen failures
+    arm, base = _all(150, True), _all(150, True)
+    for i in range(3):
+        arm[f"x{i}"], base[f"x{i}"] = {0: None}, {0: True}
+        arm[f"y{i}"], base[f"y{i}"] = {0: False}, {0: None}
+    g = stats.gate_decision(
+        arm,
+        base,
+        arm_excluded={f"x{i}" for i in range(3)},
+        base_excluded={f"y{i}" for i in range(3)},
+        n_boot=300,
+    )
+    assert g.imputed == ("x0", "x1", "x2")
+    assert g.estimate.point == pytest.approx(-3 / 153)
 
 
 def test_baseline_excess_is_dropped_not_rewarded() -> None:
@@ -235,3 +264,50 @@ def test_flip_model_screening_exclusion_rates() -> None:
     assert m.task_rate == pytest.approx(2 / 20)
     assert m.one_sided_rate == pytest.approx(2 / (2 * 20))  # per arm
     assert m.rate == pytest.approx(8 / 16)  # baseline resolved rate on paired tasks
+
+
+def test_summarise_ledger_uses_excluded_after_retries(tmp_path: Any) -> None:
+    """The exclusion source is `Ledger.excluded_after_retries`: a key with infra failures but
+    retries left is pending (``incomplete``), not an exclusion the gate imputes."""
+    from bench.grade import grades_path
+    from bench.ledger import Ledger, RunKey
+
+    header = {
+        "campaign": "c",
+        "stage": "confirmation",
+        "harness_commit": "0" * 40,
+        "plugin_hash": "a" * 64,
+        "plugin_ref": "v1.0.0-rc1",
+        "pins": {},
+        "model": "m",
+        "claude_code_version": "2.0.0",
+    }
+    led = Ledger(tmp_path / "ledger.jsonl", header=header)
+    grade_lines = []
+    for i in range(100):
+        for arm in ("baseline", "token-sparen"):
+            key = RunKey("c", "confirmation", arm, 0, f"r__r-{i}").id
+            if arm == "token-sparen" and i < 2:
+                attempts = 3 if i == 0 else 1  # r-0 unrunnable after retries, r-1 still pending
+                for _ in range(attempts):
+                    led.append({"kind": "end", "key": key, "status": "infra_fail", "sub": "api"})
+                continue
+            led.append({"kind": "end", "key": key, "status": "ok", "run_cost": 1.0})
+            grade_lines.append(
+                {"kind": "grade", "stage": "confirmation", "key": key, "resolved": True}
+            )
+    import json
+
+    grades_path(led).write_text(
+        "".join(json.dumps(g) + "\n" for g in grade_lines), encoding="utf-8"
+    )
+    s = stats.summarise_ledger(led, stage="confirmation")
+    by_reason = {(e.instance_id, e.reason, e.cause) for e in s.exclusions}
+    assert by_reason == {("r__r-0", "unrunnable", "api"), ("r__r-1", "incomplete", None)}
+    pending, final = s.one_sided()
+    assert [e.instance_id for e in pending] == ["r__r-1"]
+    assert [e.instance_id for e in final] == ["r__r-0"]
+    g = s.gate(n_boot=200)
+    assert g.pending == 1
+    assert g.imputed == ("r__r-0",)
+    assert not g.passed

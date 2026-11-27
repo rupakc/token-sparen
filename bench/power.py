@@ -10,7 +10,7 @@ pre-specified seed per task, min of the task-cluster percentile bootstrap and th
 lower bound > margin) under a true difference of 0 (or ``true_diff``). Review ruling I1: extra
 seeds never enter the gate, so confirmation plans with 1 seed. `power` also simulates
 exclusions at the screening rates (one-sided per arm and task-level, separately) and the gate's
-net-excess rule (re-review ruling), so `plan` reports power under the rule actually applied.
+exclusion rule (re-review rulings), so `plan` reports power under the rule actually applied.
 Field names of `PowerPlan.as_e4` are the ``power`` object of ``bench/e4.schema.json``.
 """
 
@@ -121,8 +121,9 @@ def power(
     descriptive and cannot change the result. Deterministic tasks are concordant pairs
     (resolved in both arms with probability ``rate``). Exclusions: with ``task_rate`` a task is
     dropped in both arms; otherwise each arm's key is excluded with ``one_sided_rate``
-    independently; then the rule of `bench.stats.gate_decision` (net excess of arm-only
-    exclusions imputed as arm failures, reference-resolved first; the rest dropped). Resampling
+    independently; then the rule of `bench.stats.gate_decision` (arm-only exclusions where
+    the reference resolved, minus reference-only ones where the arm resolved, imputed as arm
+    failures; the rest dropped). Resampling
     is the same ``choices`` scheme as `bench.stats.percentile`."""
     if not 0 <= f <= 1 or n_tasks < MIN_TASKS or seeds < 1:
         raise ValueError(f"need 0 <= f <= 1, n_tasks >= 2, seeds >= 1 (f={f}, n={n_tasks})")
@@ -135,7 +136,7 @@ def power(
     passed = 0
     for _ in range(n_sim):
         values: list[int] = []
-        arm_only = base_only = arm_only_ref_resolved = 0
+        harmful = offsets = 0
         for _ in range(n_tasks):
             if rng.random() < f:
                 x, y = rng.random() < p_arm, rng.random() < 0.5
@@ -148,16 +149,13 @@ def power(
                 if ax and bx:
                     continue
                 if ax:
-                    arm_only += 1
-                    arm_only_ref_resolved += y
+                    harmful += y
                     continue
                 if bx:
-                    base_only += 1
+                    offsets += x
                     continue
             values.append(x - y)
-        excess = max(0, arm_only - base_only)
-        hit = min(excess, arm_only_ref_resolved)
-        values += [-1] * hit + [0] * (excess - hit)
+        values += [-1] * max(0, harmful - offsets)
         n_eff = len(values)
         if n_eff < MIN_TASKS:
             continue
