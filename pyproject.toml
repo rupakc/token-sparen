@@ -16,7 +16,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov", "hypothesis", "ruff", "mypy", "build", "twine", "setuptools>=77"]
 # docs-only: builds the static site (scripts/build_site.py); never a runtime dependency
-docs = ["Markdown==3.10.2"]
+docs = ["Markdown==3.11.3"]
 
 [project.scripts]
 token-sparen = "token_sparen.cli:main"
