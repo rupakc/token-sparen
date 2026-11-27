@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +59,7 @@ def _observe(log: Log, tmp_path: Path, *facts: Fact) -> dict[str, Obs]:
 
 
 ALIAS = _fact("command_alias", "pytest", "python -m pytest")
-TESTS = _fact("test_command", "tests", "python -m pytest -q")
+TESTS = _fact("test_command", "tests", "python -m pytest")
 ENV = _fact("requires_env", "make run", "DATABASE_URL")
 BUILD = _fact("build_first", "npm test", "npm run build")
 GEN = _fact("generated_dir", "generated", "dist")
@@ -66,7 +68,8 @@ GEN = _fact("generated_dir", "generated", "dist")
 # --------------------------------------------------------------------------- activation
 def test_activation_after_confirmations() -> None:
     """Each distinct confirming session (the miner re-derived the waste -> fix pattern while
-    the fact was not injected) is a success; Beta(1, 1) + 3 successes clears lcb(0.1) > 0.55."""
+    the fact was not injected) adds to ``truth``; Beta(1 + 3, 1) clears lcb(0.1) > 0.55. The
+    injection effect is untouched (fix wave B, M4)."""
     f = _fact("command_alias", "pytest", "python -m pytest", n=1)
     fid = fact_id(f)
     table = _table(f)
@@ -78,7 +81,7 @@ def test_activation_after_confirmations() -> None:
     _add_session(table, fid, "c" * 16)
     lifecycle.apply_session(table, shown=(), withheld={}, obs={}, mined={fid}, settings=S)
     assert table[fid]["status"] == "active"  # Beta(4, 1): lcb(0.1) = 0.56
-    assert lifecycle.effect(table[fid]).mean == pytest.approx(0.8)
+    assert table[fid]["truth"] == 3 and lifecycle.effect(table[fid]) == Beta(1.0, 1.0)
 
 
 def test_frequency_kinds_need_five_sessions_and_an_observed_waste_event() -> None:
@@ -111,7 +114,7 @@ def test_waste_events_are_counted_for_candidates() -> None:
 
 def test_activate_lcb_is_configurable() -> None:
     f = _fact("command_alias", "pytest", "python -m pytest", n=2)
-    table = _table(f, effect=[3.0, 1.0, 2.0])
+    table = _table(f, truth=2)
     strict = Settings(activate_lcb=0.9)
     lifecycle.apply_session(table, shown=(), withheld={}, obs={}, mined=set(), settings=strict)
     assert table[fact_id(f)]["status"] == "candidate"
@@ -366,7 +369,7 @@ def test_fold_applies_the_session_outcome_once(tmp_path: Path) -> None:
     home = tmp_path / "home"
     fid = fact_id(ALIAS)
     _store(home).parent.mkdir(parents=True)
-    doc = {"version": 1, "facts": _table(ALIAS, status="active", effect=[4.0, 1.0, 3.0])}
+    doc = {"version": 1, "facts": _table(ALIAS, status="active", effect=[4.0, 1.0, 3.0], truth=3)}
     _store(home).write_text(json.dumps(doc), encoding="utf-8")
     tr = Log().prompt().bash("python -m pytest -q", "3 passed").write(tmp_path / "s.jsonl")
     _overlay(home, "s1", tr, {"shown": {fid: 0.9}, "withheld": {}})
@@ -411,7 +414,7 @@ def test_failed_mining_keeps_the_session_log_for_the_next_fold(
     home = tmp_path / "home"
     fid = fact_id(ALIAS)
     _store(home).parent.mkdir(parents=True)
-    doc = {"version": 1, "facts": _table(ALIAS, status="active", effect=[4.0, 1.0, 3.0])}
+    doc = {"version": 1, "facts": _table(ALIAS, status="active", effect=[4.0, 1.0, 3.0], truth=3)}
     _store(home).write_text(json.dumps(doc), encoding="utf-8")
     tr = Log().prompt().bash("python -m pytest -q", "3 passed").write(tmp_path / "s.jsonl")
     _overlay(home, "s1", tr, {"shown": {fid: 0.9}, "withheld": {}})
@@ -434,7 +437,7 @@ def test_failed_mining_keeps_the_session_log_for_the_next_fold(
 
 
 # --------------------------------------------------------------------------- fix round 1
-PYTEST = _fact("test_command", "tests", "python -m pytest -q")
+PYTEST = _fact("test_command", "tests", "python -m pytest")
 
 
 def _tox_session() -> Log:
@@ -566,7 +569,7 @@ def test_frequency_facts_go_stale() -> None:
 
 def test_fold_observes_frequency_candidates(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    cand = _fact("test_command", "tests", "python -m pytest -q", n=4)
+    cand = _fact("test_command", "tests", "python -m pytest", n=4)
     fid = fact_id(cand)
     _store(home).parent.mkdir(parents=True)
     doc = {"version": 1, "facts": _table(cand)}
@@ -709,3 +712,138 @@ def test_regenerated_ignores_lint_and_typecheck(tmp_path: Path) -> None:
 )
 def test_runner_identity(cmd: str, name: str) -> None:
     assert lifecycle.runner(cmd) == name
+
+
+# --------------------------------------------------------------------------- fix wave B
+def test_confirmations_count_as_truth_never_as_effect() -> None:
+    """M4: waste observed without injection says the fact is true, not that injecting it
+    helps: it goes to ``truth`` (gates activation), ``effect`` keeps its prior."""
+    f = _fact("command_alias", "pytest", "python -m pytest", n=2)
+    fid = fact_id(f)
+    table = _table(f)
+    for _ in range(2):
+        lifecycle.apply_session(table, shown=(), withheld={}, obs={}, mined={fid}, settings=S)
+    assert table[fid]["truth"] == 2 and lifecycle.effect(table[fid]) == Beta(1.0, 1.0)
+
+
+def test_effect_ucb_retires_after_eight_injected_relevant_sessions() -> None:
+    """M4 horizon: once >= 8 injected relevant sessions, the effect posterior alone retires
+    a fact whose ucb(0.9) does not clear the (withheld, else prior) baseline + margin."""
+    f = ALIAS
+    fid = fact_id(f)
+    meh = [5.0, 5.0, 8.0]  # 4 of 8 injected sessions still wasted: ucb(0.9) ~ 0.70
+    table = _table(f, status="active", effect=meh, truth=3)
+    lifecycle.apply_session(table, shown=(), withheld={}, obs={}, mined=set(), settings=S)
+    assert table[fid]["status"] == "active"  # 0.70 > 0.5 + 0.1
+    low = _table(f, status="active", effect=[3.5, 6.5, 8.0], truth=3)  # ucb ~ 0.53
+    lifecycle.apply_session(low, shown=(), withheld={}, obs={}, mined=set(), settings=S)
+    assert low[fid]["status"] == "retired"
+    early = _table(f, status="active", effect=[2.5, 4.5, 5.0], truth=3)  # same mean, n = 5
+    lifecycle.apply_session(early, shown=(), withheld={}, obs={}, mined=set(), settings=S)
+    assert early[fid]["status"] == "active"
+
+
+def test_migrate_moves_legacy_confirmations_into_truth() -> None:
+    cand = _fact("command_alias", "pytest", "python -m pytest", n=2)
+    act = _fact("requires_env", "make run", "DATABASE_URL", n=6)
+    tc = _fact("test_command", "tests", "pytest", n=6)
+    done = _fact("build_first", "npm test", "npm run build", n=4)
+    table = _table(cand, effect=[3.0, 1.0, 2.0])
+    table.update(_table(act, status="active", effect=[9.0, 2.0, 9.0]))
+    table.update(_table(tc, status="active", effect=[4.0, 1.0, 3.0]))
+    table.update(_table(done, status="active", effect=[4.0, 1.0, 3.0], truth=3))
+    table["junk"] = "x"
+    table["bad"] = {"kind": "command_alias", "effect": "nope", "sessions": 3}
+    lifecycle.migrate(table)
+    assert table[fact_id(cand)]["truth"] == 2
+    assert lifecycle.effect(table[fact_id(cand)]) == Beta(1.0, 1.0, 0.0)
+    assert table[fact_id(act)]["truth"] == 3  # at most the 3 confirmations that activate
+    assert lifecycle.effect(table[fact_id(act)]).to_list() == [6.0, 2.0, 6.0]
+    assert table[fact_id(tc)]["truth"] == 0  # frequency kinds never had confirmations
+    assert lifecycle.effect(table[fact_id(tc)]).to_list() == [4.0, 1.0, 3.0]
+    assert lifecycle.effect(table[fact_id(done)]).to_list() == [4.0, 1.0, 3.0]  # already new
+    assert table["bad"]["truth"] == 0
+    before = json.dumps(table, sort_keys=True)
+    lifecycle.migrate(table)
+    assert json.dumps(table, sort_keys=True) == before  # idempotent
+
+
+def _git_repo(tmp_path: Path, ignore: str = "") -> Path:
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / ".gitignore").write_text(ignore, encoding="utf-8")
+    return root
+
+
+def _observe_in(log: Log, tmp_path: Path, root: Path, *facts: Fact) -> dict[str, Obs]:
+    path = log.write(tmp_path / "obs.jsonl")
+    obs = Observer({fact_id(f): f for f in facts}, str(root))
+    for call in iter_tool_results(path):
+        obs.feed(call)
+    return obs.results()
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_edit_under_a_tracked_marker_less_dir_contradicts_generated_dir(tmp_path: Path) -> None:
+    root = _git_repo(tmp_path, "dist/\n")
+    build = _fact("generated_dir", "generated", "build")
+    dist = _fact("generated_dir", "generated", "dist")
+    for rel, text in (("build/x.sh", "echo hi\n"), ("dist/a.js", "x\n")):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    log = Log().prompt()
+    log.call("Edit", {"file_path": str(root / "build/x.sh")})
+    log.call("Edit", {"file_path": str(root / "dist/a.js")})
+    got = _observe_in(log, tmp_path, root, build, dist)
+    assert got[fact_id(build)].contradicted
+    assert not got[fact_id(dist)].contradicted  # ignored: generated
+    # the fact is retired on the first contradiction, whether shown, withheld or a candidate
+    for shown, withheld, st in (({fact_id(build)}, {}, "active"), ((), {}, "candidate")):
+        table = _table(build, status=st, truth=0)
+        o = {fact_id(build): got[fact_id(build)]}
+        lifecycle.apply_session(
+            table, shown=shown, withheld=withheld, obs=o, mined=set(), settings=S
+        )
+        assert table[fact_id(build)]["status"] == "retired"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_unedited_generated_dir_fact_is_reverified_at_fold(tmp_path: Path) -> None:
+    """A legacy fact mined from edits alone is re-checked even when no edit happens (the
+    injected fact itself stops the agent from editing there)."""
+    root = _git_repo(tmp_path)
+    (root / "gen").mkdir()
+    (root / "gen" / "api.go").write_text("package gen\n", encoding="utf-8")
+    (root / "out").mkdir()
+    (root / "out" / "a.py").write_text("# @generated\n", encoding="utf-8")
+    gen = _fact("generated_dir", "generated", "gen")
+    out = _fact("generated_dir", "generated", "out")
+    got = _observe_in(Log().prompt().bash("ls"), tmp_path, root, gen, out)
+    assert got[fact_id(gen)].contradicted and not got[fact_id(gen)].relevant
+    assert not got[fact_id(out)].contradicted
+
+
+def test_generated_dir_without_git_is_never_contradicted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*_a: object, **_k: object) -> None:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(miners.subprocess, "run", broken)
+    root = tmp_path / "plain"
+    (root / "build").mkdir(parents=True)
+    (root / "build" / "x.sh").write_text("echo\n", encoding="utf-8")
+    log = Log().prompt().call("Edit", {"file_path": str(root / "build/x.sh")})
+    got = _observe_in(log, tmp_path, root, _fact("generated_dir", "generated", "build"))
+    assert not next(iter(got.values())).contradicted
+
+
+def test_narrow_and_full_runs_are_one_runner_for_a_normalised_fact(tmp_path: Path) -> None:
+    """M3: the fact is the runner invocation; a focused run of it is still its own runner."""
+    fact = _fact("test_command", "tests", "pytest")
+    fid = fact_id(fact)
+    log = Log().prompt().bash("pytest tests/unit -q --no-cov", "3 passed")
+    assert _observe(log, tmp_path, fact)[fid] == Obs(relevant=True, waste=False)
+    gone = Log().prompt().bash("pytest -q", "usage: pytest [options]", err=True)
+    assert _observe(gone, tmp_path, fact)[fid].contradicted

@@ -274,6 +274,34 @@ opt-in) the record is adopted (re-keyed) and its lease continues; otherwise its 
 restored (no regret) with a notice at the next SessionStart. A settings file that is a symbolic
 link, or inside a linked `.claude` folder, is never written.
 
+**2026-11-27 (M3 fix wave B, repository facts).** §6.8 as built after the M3 review (M2, M3, M4,
+minors 1-2); the §6.8 body is rewritten in wave C. (1) `generated_dir` needs positive evidence
+of generation, checked at fold time: `git check-ignore` reports the directory ignored, or every
+edited file there carries a generated marker (`DO NOT EDIT`, `@generated`, `auto-generated`,
+`Code generated`, case-insensitive) in its first 5 lines. Edits alone never mine it; git missing,
+failing or timing out (2 s) counts as not ignored. It is contradicted (retired on the first
+contradiction, whether injected, withheld or a candidate) when git positively says the directory
+is not ignored and a file there lacks the marker; the check runs every fold the fact is in play,
+with the edited files or a sample of the directory, because an injected label suppresses the very
+edits that would expose it. (2) `test_command` stores the runner invocation only, from a
+data-driven table (`python -m pytest`, `pytest`, `tox`, `nox`, `npm|pnpm|yarn test`, `npm|pnpm|
+yarn run test`, `npx jest|vitest`, `cargo test`, `go test ./...`, `make test`, `gradle(w) test`,
+`mvn test`, `dotnet test`, `bundle exec rspec`, `rake test`; one `cd <dir> &&` prefix and a
+`uv|poetry|pipenv|pdm|hatch run` launcher kept, every path, test id and option dropped);
+anything else, pipelines and command lists included, gives no fact. Stored values that are not
+an invocation are never offered and are re-normalised at the next fold (sessions unioned into
+an existing fact, else moved with their lifecycle) or retired. (3) Confirmations (the waste ->
+fix pattern re-mined while not injected) add to a separate `truth` count that gates activation
+(`Beta(1 + truth, 1).lcb(0.1) > activate_lcb`); `effect` holds injected sessions only. Legacy
+entries move their confirmations out of `effect` (all for a candidate, at most 3 for an active
+fact). New retirement rule: after >= 8 injected relevant sessions, `effect.ucb(0.9) <
+baseline.mean + 0.1` (prior baseline 0.5 until withheld sessions exist); the withheld-baseline
+rule and `withhold_floor = 0.1` are unchanged. (4) `build_first` is credited only when the build
+is the tool call immediately before the passing test: any other tool call resets it, an edit
+also clears the earlier failures (the edit may be the fix), and lint / type-check commands are
+not builds. (5) In-project absolute paths in a candidate are made project-relative (POSIX)
+before it is stored; outside paths are rejected as before.
+
 ---
 
 ## 1. Intent and why

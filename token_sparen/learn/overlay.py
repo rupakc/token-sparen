@@ -547,13 +547,15 @@ def _mine_facts(
         observer = lifecycle.Observer(lifecycle.in_play(doc, {*shown, *withheld}), root)
         found = miners.mine_transcript(path, sid, project_dir=root, env=env, tap=observer.feed)
         settings = lifecycle.settings(params)
+        obs = observer.results()  # may ask git: before the facts.json lock is taken
 
         def after(table: dict[str, Any], fresh: set[str]) -> None:
+            lifecycle.migrate(table)
             lifecycle.apply_session(
                 table,
                 shown=shown,
                 withheld=withheld,
-                obs=observer.results(),
+                obs=obs,
                 mined=fresh,
                 settings=settings,
                 now=now,

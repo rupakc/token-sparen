@@ -521,15 +521,23 @@ transcript for these patterns (fixed detectors, no LLM) and keeps them in the pr
 `facts.json`. A fact is injected only once it is well evidenced: a missing-command spelling,
 a required variable or a build step after 3 sessions that showed the failure and its fix; a test
 command or generated directory after 5 sessions and at least one observed failure it would have
-prevented. Only one test command is active at a time. A fact is retired for good when it looks
+prevented. A test command is stored as the runner invocation only (`pytest`, `python -m pytest`,
+`npm test`, `cargo test`, `go test ./...`, `make test`, ...: paths, test ids and options such as
+`-k` or `--no-cov` are dropped, and a command that matches no known runner gives no fact), so a
+focused run never becomes "the" test command. A directory counts as generated only when git
+ignores it or the edited files carry a generated marker (`DO NOT EDIT`, `@generated`,
+`auto-generated`, `Code generated`) in their first 5 lines; editing files there is never
+evidence on its own. Only one test command is active at a time. A fact is retired for good when it looks
 wrong (its command fails with "not found" or a usage error after it was injected, or another
-test runner replaced it: a required variable or build step on the first such session, other
-facts on the second; different spellings of the same runner, such as `python -m pytest` and
+test runner replaced it, or a "generated" directory turns out to be tracked by git with files
+lacking a marker: a required variable, build step or generated directory on the first such
+session, other facts on the second; different spellings of the same runner, such as `python -m pytest` and
 `uv run pytest`, count as one, and a session whose tests merely failed tells nothing about a
 test command), when it
 looks unneeded (the original command works again in two sessions; tests passed without the build
 in sessions where the fact was left out, on two different days), when sessions show it does not prevent the failure it
-targets or that sessions without it do as well, and, for test commands and generated
+targets or that sessions without it do as well (judged only on sessions where it was injected;
+after 8 such sessions without waiting for enough sessions without it), and, for test commands and generated
 directories, when it has not been seen for 10 relevant sessions or 30 days. In about one in ten
 sessions (`[facts] withhold_floor = 0.1`) an active fact is deliberately left out, so its effect
 can be measured against sessions without it.

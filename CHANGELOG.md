@@ -102,6 +102,19 @@ everything else. No savings figures are claimed for them yet.
 - Tool pruning refreshes its backup when it starts with no rule of its own in the file, and a
   restore after an interrupted write also removes the containers that write created.
 - The prune restore message no longer claims the tool is available mid-session.
+- Repository facts: a directory is labelled generated only when git ignores it or the edited
+  files carry a generated marker (`DO NOT EDIT`, `@generated`, ...) in their first 5 lines;
+  hand-edited files are no longer evidence, and a tracked directory without markers retires
+  the fact.
+- Repository facts: the test command is stored as the runner invocation only (`pytest`,
+  `npm test`, `go test ./...`, ...), never a focused run with paths, test ids or options such
+  as `-k` or `--no-cov`; stored narrowed commands are re-normalised or retired.
+- Repository facts: sessions that only confirm a fact is true no longer count as evidence that
+  injecting it helps (separate `truth` count for activation); after 8 injected sessions a fact
+  that is not clearly helping is retired.
+- Repository facts: a build step is no longer credited when an edit or a lint / type-check ran
+  between the failing and the passing test; in-project absolute paths are stored
+  project-relative instead of being dropped.
 
 #### Security
 - Tool pruning is the second settings write after the statusline: it needs an explicit opt-in

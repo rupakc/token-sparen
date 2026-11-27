@@ -1,9 +1,10 @@
 """Fact lifecycle as a bandit (spec section 6.8): candidate -> active -> retired.
 
 Each stored fact carries a Beta posterior ``effect`` over "injecting this fact prevents the
-waste it targets, in sessions where it is relevant", a ``baseline`` Beta over "the waste is
-absent when the fact is withheld", a ``status`` and counters (``contradictions``, ``unneeded``,
-``waste_events``, ``stale``), all in ``facts.json``, prior Beta(1, 1). A wrong fact costs
+waste it targets, in sessions where it is relevant" (injected sessions only), a ``baseline``
+Beta over "the waste is absent when the fact is withheld", a ``status`` and counters
+(``truth``, ``contradictions``, ``unneeded``, ``waste_events``, ``stale``), all in
+``facts.json``, prior Beta(1, 1). A wrong fact costs
 quality, so facts activate on solid evidence and retire fast.
 
 **Session outcome** (applied once per fold, ``apply_session``). Only relevant sessions count:
@@ -33,13 +34,17 @@ generated_dir  wrote under the directory     >= 2 writes under it, or a write fo
   session overlay with its propensity): ``baseline`` += the same reward; the effect estimate is
   ``effect.mean - baseline.mean``;
 - a candidate that the miners re-derived with new session evidence (not injected) is a
-  **confirmation**: ``effect`` += 1, for the waste -> fix kinds only (command_alias,
-  requires_env, build_first);
+  **confirmation**: ``truth`` += 1 (the fact is true; it says nothing about what injecting
+  it does, so ``effect`` is untouched), for the waste -> fix kinds only (command_alias,
+  requires_env, build_first). ``migrate`` moves the confirmations a legacy entry (no
+  ``truth`` field) had put into ``effect``;
 - a **contradiction** (counted only when injected; reward 0): command_alias / test_command /
   build_first - the fact's value command fails with not-found or a usage error; test_command
   also - replaced: another normalised runner succeeded while the fact's own runner never ran;
   requires_env - the subject ran successfully without the variable being set by the command
-  or an earlier ``export``;
+  or an earlier ``export``; generated_dir (counted whenever observed, injected or not, and
+  re-checked every fold it is in play, edited or not) - git says the directory is not ignored
+  and a file there (an edited one, else a sample) lacks a generated marker;
 - **unneeded**: command_alias - the subject itself ran successfully (injected or withheld
   sessions; retire at 2); build_first - the tests passed before any build, counted only in
   withheld sessions and retiring once seen on 2 distinct UTC days;
@@ -51,17 +56,19 @@ generated_dir  wrote under the directory     >= 2 writes under it, or a write fo
 
 **Transitions** (every fold, every fact):
 
-- candidate -> active: >= 2 distinct sessions of evidence and either ``effect.lcb(0.1) >
-  [facts] activate_lcb`` (0.55: Beta(1, 1) + 3 confirmations) or, the **bootstrap rule**,
+- candidate -> active: >= 2 distinct sessions of evidence and either ``Beta(1 + truth,
+  1).lcb(0.1) > [facts] activate_lcb`` (0.55: 3 confirmations) or, the **bootstrap rule**,
   while no withheld baseline exists, >= 3 sessions of evidence. The frequency kinds
   (test_command, generated_dir: mined from counts, not from a fix) have no confirmations, so
   the lcb rule is unreachable for them as candidates (their posterior moves only once
   injected); they additionally need >= 5 sessions and >= 1 observed waste event. For the
   confirming kinds both rules agree at 3 sessions;
 - one active test_command per subject: activating one retires the others;
-- active -> retired: contradictions >= 1 (requires_env, build_first: high stakes) / >= 2
-  (others); unneeded as above; ``effect.ucb(0.9) < [facts] retire_ucb`` (0.4); a baseline of >= 3
-  withheld relevant sessions with ``baseline.mean >= effect.mean - 0.1`` (it does not help);
+- active -> retired: contradictions >= 1 (requires_env, build_first, generated_dir: high
+  stakes) / >= 2 (others); unneeded as above; ``effect.ucb(0.9) < [facts] retire_ucb`` (0.4); a
+  baseline of >= 3 withheld relevant sessions with ``baseline.mean >= effect.mean - 0.1`` (it
+  does not help); after >= 8 injected relevant sessions (``effect.n``), ``effect.ucb(0.9) <
+  baseline.mean + 0.1`` (the baseline is its prior 0.5 until withheld sessions are seen);
   frequency kinds also after 10 stale sessions or 30 days since last mined. Retirement is
   final (``facts forget`` removes the fact; it is then never re-learned).
 """
@@ -93,7 +100,9 @@ ACTIVATE_Q = 0.1
 RETIRE_Q = 0.9
 BOOTSTRAP_SESSIONS = 3
 CONFIRMING = frozenset({"command_alias", "requires_env", "build_first"})
-HIGH_STAKES = frozenset({"requires_env", "build_first"})
+# Retire on the first contradiction: a wrong env / build step, or a hand-written directory
+# labelled generated (the agent would avoid files it must edit).
+HIGH_STAKES = frozenset({"requires_env", "build_first", "generated_dir"})
 RETIRE_AFTER = {True: 1, False: 2}  # contradictions, by high stakes
 UNNEEDED_AFTER = 2  # sessions showing the fact was not needed (alias, build_first)
 UNNEEDED_DAYS = 2  # build_first: withheld unneeded sessions on this many distinct UTC days
@@ -104,6 +113,7 @@ FREQUENCY_WASTE = 1  # ... and observed waste events
 EXCLUSIVE = frozenset({"test_command"})  # one active fact per (kind, subject)
 BASELINE_N = 3  # withheld relevant sessions before the baseline can retire a fact
 BASELINE_MARGIN = 0.1  # retire when baseline.mean >= effect.mean - this
+EFFECT_HORIZON = 8  # injected relevant sessions after which the effect ucb alone can retire
 STALE_SESSIONS = 10  # relevant sessions without new evidence (frequency kinds)
 STALE_SECONDS = 30 * 86400.0  # ... or this long since the fact was last mined
 MAX_WITHHOLD = 0.5
@@ -190,6 +200,12 @@ def _days(entry: Mapping[str, Any]) -> list[int]:
     return [d for d in raw if isinstance(d, int) and not isinstance(d, bool)]
 
 
+def truth(entry: Mapping[str, Any]) -> int:
+    """Confirmations: sessions where the miners re-derived the fact while it was not injected
+    (the waste happened and was fixed). Gates activation, never the injection effect."""
+    return _count(entry, "truth")
+
+
 def _evidence(entry: Mapping[str, Any]) -> int:
     raw = entry.get("sessions")
     return len({s for s in raw if isinstance(s, str)}) if isinstance(raw, list) else 0
@@ -247,7 +263,10 @@ def apply_session(
             if o.relevant:
                 entry["baseline"] = _observe(baseline(entry), o.reward).to_list()
         elif st == "candidate" and fid in mined and kind in CONFIRMING:
-            entry["effect"] = _observe(effect(entry), 1.0).to_list()
+            entry["truth"] = truth(entry) + 1  # the fact is true; says nothing about injecting
+        if o.contradicted and kind == "generated_dir" and fid not in shown and st != "retired":
+            entry["contradictions"] = _count(entry, "contradictions") + 1  # a hand-written dir
+        entry.setdefault("truth", truth(entry))
         if o.unneeded and kind == "build_first":
             if fid in withheld and now is not None:  # injected sessions may owe it to the fact
                 days = _days(entry)
@@ -303,6 +322,8 @@ def _transition(entry: Mapping[str, Any], st: Status, s: Settings, now: float | 
         base = baseline(entry)
         if base.n >= BASELINE_N and base.mean >= post.mean - BASELINE_MARGIN:
             return "retired"  # withheld sessions do as well: the fact does not help
+        if post.n >= EFFECT_HORIZON and post.ucb(RETIRE_Q) < base.mean + BASELINE_MARGIN:
+            return "retired"  # enough injected sessions: not clearly better than without
         if kind in FREQUENCY:
             if _count(entry, "stale") >= STALE_SESSIONS:
                 return "retired"
@@ -318,7 +339,28 @@ def _transition(entry: Mapping[str, Any], st: Status, s: Settings, now: float | 
         return "candidate"
     if baseline(entry).n == 0 and n >= BOOTSTRAP_SESSIONS:
         return "active"
-    return "active" if post.lcb(ACTIVATE_Q) > s.activate_lcb else "candidate"
+    confirmed = Beta(PRIOR.a + truth(entry), PRIOR.b)
+    return "active" if confirmed.lcb(ACTIVATE_Q) > s.activate_lcb else "candidate"
+
+
+def migrate(table: dict[str, Any]) -> None:
+    """Legacy entries (no ``truth`` field) put confirmations into ``effect``: move them out
+    (in place, idempotent). A candidate's effect successes were all confirmations; an active
+    fact had at most ``BOOTSTRAP_SESSIONS`` of them (both activation rules fire by then), so at
+    most that many successes are moved (when unsure, the effect gets more pessimistic)."""
+    for entry in table.values():
+        if not isinstance(entry, dict) or "truth" in entry:
+            continue
+        post = effect(entry)
+        moved = 0
+        if entry.get("kind") in CONFIRMING and isinstance(entry.get("effect"), list):
+            limit = _evidence(entry)
+            if status(entry) != "candidate":
+                limit = min(limit, BOOTSTRAP_SESSIONS)
+            moved = max(0, min(limit, int(post.a - PRIOR.a + 1e-9), int(post.n)))
+        if moved:
+            entry["effect"] = Beta(post.a - moved, post.b, post.n - moved).to_list()
+        entry["truth"] = moved
 
 
 # --------------------------------------------------------------------------- selection
@@ -342,13 +384,27 @@ def active(doc: Mapping[str, Any]) -> Iterator[tuple[str, Fact]]:
     facts = doc.get("facts")
     ranked: list[tuple[float, float, str, dict[str, Any]]] = []
     for fid, raw in facts.items() if isinstance(facts, dict) else ():
-        if isinstance(fid, str) and isinstance(raw, dict) and status(raw) == "active":
+        if (
+            isinstance(fid, str)
+            and isinstance(raw, dict)
+            and status(raw) == "active"
+            and current(raw)
+        ):
             ranked.append((-_when(raw), -effect(raw).mean, fid, raw))
     ranked.sort(key=lambda r: (r[0], r[1], r[2]))
     for _, _, fid, raw in ranked:
         fact = miners.parse_entry(raw)
         if fact is not None and fact_id(fact) == fid:
             yield fid, fact
+
+
+def current(raw: Mapping[str, Any]) -> bool:
+    """False for a stored test_command whose value is not a runner invocation (a narrowed
+    command stored before fix wave B): never offered until a fold re-normalises it."""
+    if raw.get("kind") != "test_command":
+        return True
+    value = raw.get("value")
+    return isinstance(value, str) and miners.test_invocation(value) == value
 
 
 def select(
@@ -388,84 +444,9 @@ def _missing(text: str) -> bool:
     return _USAGE.search(err) is not None
 
 
-_CD = re.compile(r"cd (\S+) && (.+)")
-_INTERPRETER = re.compile(r"(?:.*/)?(?:python(?:3(?:\.\d+)?)?|py)")
-_LAUNCH_PREFIXES: tuple[tuple[str, ...], ...] = (
-    ("uv", "run"),
-    ("poetry", "run"),
-    ("pipenv", "run"),
-    ("pdm", "run"),
-    ("hatch", "run"),
-    ("pnpm", "exec"),
-    ("yarn", "exec"),
-    ("npm", "exec"),
-    ("npx",),
-    ("bunx",),
-    ("yarn",),
-)
-_SCRIPT_RUNNERS = frozenset({"npm", "pnpm", "yarn", "bun"})
-NPM_TEST = "npm-test-script"
-# Lint / type-check commands are build-family but never regenerate files.
-_CHECKERS = frozenset({"ruff", "mypy", "flake8", "eslint", "pyright", "pylint", "prettier"})
-_TASK_RUNNERS = frozenset({"make", "just", "task"})
-_LINTISH = re.compile(
-    r"(?:^|[:_.-])(?:lint|typecheck|type-check|check|clippy|format|fmt|vet|style)(?:$|[:_.-])"
-)
-
-
-def runner(norm: str) -> str:
-    """The normalised program of a command, independent of how it was launched and of its
-    options, files and run directory: interpreter, ``python -m``, ``uv run``/``poetry run``/
-    ``pipenv run``, ``npx``/``pnpm exec``/``yarn`` and paths are stripped (``pytest`` for
-    ``.venv/bin/python -m pytest -q``); ``npm test``/``npm run test``/``pnpm test``/``yarn
-    test`` are one ``npm-test-script``."""
-    m = _CD.fullmatch(norm)
-    words = _words(m.group(2) if m is not None else norm)
-    if len(words) >= 2 and words[0] in _SCRIPT_RUNNERS:
-        if words[1] == "test" or words[1:3] == ["run", "test"]:
-            return NPM_TEST
-    changed = True
-    while changed and words:
-        changed = False
-        if _INTERPRETER.fullmatch(words[0]):
-            words = words[2:] if words[1:2] == ["-m"] else words[1:]
-            changed = True
-            continue
-        for pre in _LAUNCH_PREFIXES:
-            if len(words) > len(pre) and tuple(words[: len(pre)]) == pre:
-                if pre == ("yarn",) and words[1] in {"run", "test"}:
-                    continue
-                words = words[len(pre) :]
-                changed = True
-                break
-    if not words:
-        return ""
-    if len(words) >= 2 and words[0] in _SCRIPT_RUNNERS and words[1:3] == ["run", "test"]:
-        return NPM_TEST
-    return posixpath.basename(words[0])
-
-
-def _checker(norm: str) -> bool:
-    """A lint, format or type-check run: ruff, mypy, ``tsc --noEmit``, ``black --check``,
-    ``cargo clippy``/``fmt``, ``go vet``/``fmt``, and npm/pnpm/yarn/bun scripts or make/just/
-    task targets named like lint, typecheck, check, format, fmt, vet, style."""
-    prog = runner(norm)
-    m = _CD.fullmatch(norm)
-    words = _words(m.group(2) if m is not None else norm)
-    if prog in _CHECKERS:
-        return True
-    if (prog == "tsc" and "--noEmit" in words) or (prog == "black" and "--check" in words):
-        return True
-    head = words[0] if words else ""
-    args = [w for w in words[1:] if not w.startswith("-")]
-    if head in {"cargo", "go"}:
-        return bool(args) and args[0] in {"clippy", "fmt", "vet"}
-    if head in _SCRIPT_RUNNERS:
-        script = args[1:2] if args[:1] == ["run"] else args[:1]
-        return any(_LINTISH.search(a) for a in script)
-    if head in _TASK_RUNNERS:
-        return bool(args) and all(_LINTISH.search(a) for a in args)
-    return False
+NPM_TEST = miners.NPM_TEST
+runner = miners.runner
+_checker = miners.checker
 
 
 @dataclass
@@ -482,6 +463,7 @@ class _State:
     own_ran: bool = False  # test_command: the fact's own runner ran at all
     own_missing: bool = False  # test_command: the own runner failed with not-found / usage
     writes: int = 0  # generated_dir: writes under the directory
+    files: list[str] | None = None  # generated_dir: edited project-relative files
     edited: bool = False  # generated_dir: a write happened (a later build regenerates)
     runs: dict[str, int] | None = None  # test_command: successful runs per normalised runner
 
@@ -516,6 +498,9 @@ class Observer:
                 st = self._state[fid]
                 st.relevant, st.edited = True, True
                 st.writes += 1
+                st.files = st.files or []
+                if rel not in st.files and len(st.files) < miners.GEN_MAX_FILES:
+                    st.files.append(rel)
 
     def _bash(self, cmd: str, ok: bool, text: str) -> None:
         norm = normalize_command(cmd, project_dir=self._root)
@@ -531,7 +516,9 @@ class Observer:
             elif kind == "test_command":
                 if family == "test":
                     self._test(st, fact, norm, ok, missing)
-                if missing and _starts(words, _words(fact.value)):
+                if missing and (
+                    miners.test_invocation(norm) == fact.value or _starts(words, _words(fact.value))
+                ):
                     st.contradicted = True
             elif kind == "generated_dir":
                 if family == "build" and ok and st.edited and not _checker(norm):
@@ -633,9 +620,14 @@ class Observer:
                 if not (waste or st.own_ok or contradicted):
                     out[fid] = Obs(waste_event=st.waste_event)  # neutral
                     continue
-            elif fact.kind == "generated_dir" and st.relevant:
-                repeated = st.writes >= miners.GEN_MIN_PER_SESSION
-                waste = True if repeated or st.waste_event else None  # one write: unknown
+            elif fact.kind == "generated_dir":
+                # Re-verified every fold it is in play (edited or not: an injected label stops
+                # the edits that would expose it): git says tracked and a file lacks a marker.
+                found = miners.generated_evidence(self._root, fact.value, st.files or ())
+                contradicted = contradicted or found is False
+                if st.relevant:
+                    repeated = st.writes >= miners.GEN_MIN_PER_SESSION
+                    waste = True if repeated or st.waste_event else None  # one write: unknown
             out[fid] = Obs(
                 relevant=st.relevant,
                 waste=waste,
@@ -711,6 +703,8 @@ def in_play(doc: Mapping[str, Any], ids: Collection[str]) -> dict[str, Fact]:
     ]
     for fid in [*ids, *watch]:
         raw = facts.get(fid) if isinstance(facts, dict) else None
+        if not isinstance(raw, dict) or not current(raw):
+            continue
         fact = miners.parse_entry(raw)
         if fact is not None and fact_id(fact) == fid:
             out[fid] = fact

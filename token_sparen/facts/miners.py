@@ -16,13 +16,25 @@ candidate facts, each passed through ``sanitize`` before it is kept:
   succeeds in the same turn with ``X=...`` in front of it or after ``export X=...``. The fact is
   the variable **name** only; its value is never read into a fact, and the subject is the
   program + subcommand only (``mysql``, ``make run``), never its options or arguments;
-- ``test_command``: the normalised test-family command with the most successful runs (one
-  ``cd <project-relative dir> && `` prefix allowed);
+- ``test_command``: the runner invocation (``test_invocation``: program + subcommand/module
+  only, from the ``TEST_RUNNERS`` table; every path, test id and option dropped) with the most
+  successful runs (one ``cd <project-relative dir> && `` prefix allowed). A command that
+  matches no table row yields no fact;
 - ``build_first``: a test command that failed earlier succeeds right after a build-family
-  command succeeded (the Bash call immediately before it); both as program + subcommand, and
-  never a side-effect step (push, deploy, release, publish, upload, install);
+  command succeeded (the tool call immediately before it is that Bash call: any other tool
+  call in between, such as the Edit that fixed the test, resets it; lint / type-check
+  commands are not builds); both as program + subcommand, and never a side-effect step (push,
+  deploy, release, publish, upload, install);
 - ``generated_dir``: Write/Edit targets under ``dist|build|generated|gen|out|target|.next|
-  __pycache__`` (relative to the project root) at least ``GEN_MIN_PER_SESSION`` times.
+  __pycache__`` (relative to the project root) at least ``GEN_MIN_PER_SESSION`` times, and
+  positive evidence of generation at fold time: ``git check-ignore`` says the directory is
+  ignored, or every edited file that still exists carries a generated marker (``DO NOT
+  EDIT``, ``@generated``, ``auto-generated``, ``Code generated``) in its first 5 lines. Edits
+  alone are never evidence (they suggest hand-written files); missing git or a git timeout
+  counts as "not ignored".
+
+In-project absolute paths in a candidate are made project-relative (POSIX) before it is
+sanitised and stored; any other absolute path is rejected.
 
 Evidence is a set of session-id digests (blake2b, 8 bytes) per fact in
 ``projects/<key>/facts.json``: ``{"version": 1, "facts": {id: {kind, subject, value, sessions,
@@ -34,12 +46,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import posixpath
 import re
+import subprocess
 import time
 import tomllib
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -63,6 +77,12 @@ GEN_MIN_PER_SESSION = 2
 MAX_KEYS = 2000  # distinct commands / directories counted per session
 ERROR_SCAN_CHARS = 4000  # error text scanned at each end of an output
 GEN_DIRS = frozenset({"dist", "build", "generated", "gen", "out", "target", ".next", "__pycache__"})
+GEN_MARKER_LINES = 5  # a generated marker must appear in the first lines of a file
+GEN_MARKER_BYTES = 4096
+GEN_MARKER = re.compile(r"(?i:do not edit|@generated|auto-generated|code generated)")
+GEN_MAX_FILES = 20  # files sampled per directory for markers
+GEN_MAX_DIRS = 8  # directories checked with git per fold
+GIT_TIMEOUT_S = 2.0
 _EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
 _SHELL_CHARS = re.compile(r"""[;&|<>()$`'"\\*?{}\[\]!#~]""")
 _NOT_FOUND = (
@@ -297,6 +317,241 @@ def _gen_dir(path: str, project_dir: str | None) -> str | None:
     return None
 
 
+# --------------------------------------------------------------------------- test runners
+# Recognised test-runner invocations (program + subcommand / module), data-driven: a test
+# command's fact value is the matching row as written (the program token keeps its spelling,
+# ``.venv/bin/pytest``, ``./gradlew``); every other argument is dropped. A row token starting
+# with ``./`` (``go test ./...``) must appear among the remaining arguments instead of in place.
+# The first token matches by basename; ``python`` matches any interpreter spelling.
+TEST_RUNNERS: tuple[tuple[str, ...], ...] = (
+    ("python", "-m", "pytest"),
+    ("pytest",),
+    ("tox",),
+    ("nox",),
+    ("npm", "test"),
+    ("npm", "run", "test"),
+    ("pnpm", "test"),
+    ("pnpm", "run", "test"),
+    ("yarn", "test"),
+    ("yarn", "run", "test"),
+    ("npx", "jest"),
+    ("npx", "vitest"),
+    ("cargo", "test"),
+    ("go", "test", "./..."),
+    ("make", "test"),
+    ("gradle", "test"),
+    ("gradlew", "test"),
+    ("mvn", "test"),
+    ("dotnet", "test"),
+    ("bundle", "exec", "rspec"),
+    ("rake", "test"),
+)
+# Environment launchers kept in front of a runner (``uv run pytest``).
+TEST_LAUNCHERS: tuple[tuple[str, ...], ...] = (
+    ("uv", "run"),
+    ("poetry", "run"),
+    ("pipenv", "run"),
+    ("pdm", "run"),
+    ("hatch", "run"),
+)
+_CD_PREFIX = re.compile(r"cd (\S+) && (.+)")
+_CONTROL = re.compile(r"[;&|<>`$]")
+
+
+def _runner_match(words: list[str]) -> list[str] | None:
+    if not words:
+        return None
+    base = posixpath.basename(words[0])
+    name = "python" if _PYTHON.fullmatch(base) else base
+    for row in TEST_RUNNERS:
+        if row[0] != name:
+            continue
+        fixed = [t for t in row[1:] if not t.startswith("./")]
+        anywhere = [t for t in row[1:] if t.startswith("./")]
+        if words[1 : 1 + len(fixed)] != fixed:
+            continue
+        rest = words[1 + len(fixed) :]
+        if all(t in rest for t in anywhere):
+            return [words[0], *fixed, *anywhere]
+    return None
+
+
+def test_invocation(norm: str) -> str | None:
+    """The runner invocation of a (normalised) test command, or None when it matches no
+    ``TEST_RUNNERS`` row: ``pytest tests/unit -q --no-cov`` -> ``pytest``, ``go test -v
+    ./...`` -> ``go test ./...``; one leading ``cd <dir> && `` and a ``TEST_LAUNCHERS`` prefix
+    are kept."""
+    m = _CD_PREFIX.fullmatch(norm)
+    rest = m.group(2) if m is not None else norm
+    if _CONTROL.search(rest):
+        return None  # a pipeline or command list: not one plain test run
+    words = [w for w in rest.split(" ") if w]
+    head: list[str] = []
+    for pre in TEST_LAUNCHERS:
+        if tuple(words[: len(pre)]) == pre:
+            head, words = list(pre), words[len(pre) :]
+            break
+    found = _runner_match(words)
+    if found is None:
+        return None
+    value = " ".join([*head, *found])
+    return f"cd {m.group(1)} && {value}" if m is not None else value
+
+
+def _words(cmd: str) -> list[str]:
+    return [w for w in cmd.split(" ") if w]
+
+
+_INTERPRETER = re.compile(r"(?:.*/)?(?:python(?:3(?:\.\d+)?)?|py)")
+_LAUNCH_PREFIXES: tuple[tuple[str, ...], ...] = (
+    ("uv", "run"),
+    ("poetry", "run"),
+    ("pipenv", "run"),
+    ("pdm", "run"),
+    ("hatch", "run"),
+    ("pnpm", "exec"),
+    ("yarn", "exec"),
+    ("npm", "exec"),
+    ("npx",),
+    ("bunx",),
+    ("yarn",),
+)
+_SCRIPT_RUNNERS = frozenset({"npm", "pnpm", "yarn", "bun"})
+NPM_TEST = "npm-test-script"
+# Lint / type-check commands are build-family but never regenerate files.
+_CHECKERS = frozenset({"ruff", "mypy", "flake8", "eslint", "pyright", "pylint", "prettier"})
+_TASK_RUNNERS = frozenset({"make", "just", "task"})
+_LINTISH = re.compile(
+    r"(?:^|[:_.-])(?:lint|typecheck|type-check|check|clippy|format|fmt|vet|style)(?:$|[:_.-])"
+)
+
+
+def runner(norm: str) -> str:
+    """The normalised program of a command, independent of how it was launched and of its
+    options, files and run directory: interpreter, ``python -m``, ``uv run``/``poetry run``/
+    ``pipenv run``, ``npx``/``pnpm exec``/``yarn`` and paths are stripped (``pytest`` for
+    ``.venv/bin/python -m pytest -q``); ``npm test``/``npm run test``/``pnpm test``/``yarn
+    test`` are one ``npm-test-script``."""
+    m = _CD_PREFIX.fullmatch(norm)
+    words = _words(m.group(2) if m is not None else norm)
+    if len(words) >= 2 and words[0] in _SCRIPT_RUNNERS:
+        if words[1] == "test" or words[1:3] == ["run", "test"]:
+            return NPM_TEST
+    changed = True
+    while changed and words:
+        changed = False
+        if _INTERPRETER.fullmatch(words[0]):
+            words = words[2:] if words[1:2] == ["-m"] else words[1:]
+            changed = True
+            continue
+        for pre in _LAUNCH_PREFIXES:
+            if len(words) > len(pre) and tuple(words[: len(pre)]) == pre:
+                if pre == ("yarn",) and words[1] in {"run", "test"}:
+                    continue
+                words = words[len(pre) :]
+                changed = True
+                break
+    if not words:
+        return ""
+    if len(words) >= 2 and words[0] in _SCRIPT_RUNNERS and words[1:3] == ["run", "test"]:
+        return NPM_TEST
+    return posixpath.basename(words[0])
+
+
+def checker(norm: str) -> bool:
+    """A lint, format or type-check run: ruff, mypy, ``tsc --noEmit``, ``black --check``,
+    ``cargo clippy``/``fmt``, ``go vet``/``fmt``, and npm/pnpm/yarn/bun scripts or make/just/
+    task targets named like lint, typecheck, check, format, fmt, vet, style."""
+    prog = runner(norm)
+    m = _CD_PREFIX.fullmatch(norm)
+    words = _words(m.group(2) if m is not None else norm)
+    if prog in _CHECKERS:
+        return True
+    if (prog == "tsc" and "--noEmit" in words) or (prog == "black" and "--check" in words):
+        return True
+    head = words[0] if words else ""
+    args = [w for w in words[1:] if not w.startswith("-")]
+    if head in {"cargo", "go"}:
+        return bool(args) and args[0] in {"clippy", "fmt", "vet"}
+    if head in _SCRIPT_RUNNERS:
+        script = args[1:2] if args[:1] == ["run"] else args[:1]
+        return any(_LINTISH.search(a) for a in script)
+    if head in _TASK_RUNNERS:
+        return bool(args) and all(_LINTISH.search(a) for a in args)
+    return False
+
+
+# --------------------------------------------------------------------------- generated dirs
+def _git(root: str, *args: str) -> int | None:
+    """Return code of a git command in ``root``; None when git is missing, fails to start or is
+    slower than ``GIT_TIMEOUT_S``. Repository-location variables are dropped so ``root``
+    decides."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        proc = subprocess.run(
+            ["git", "-C", root, *args],
+            capture_output=True,
+            timeout=GIT_TIMEOUT_S,
+            check=False,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.returncode
+
+
+def git_ignored(root: str, rel_dir: str) -> bool | None:
+    """True / False when ``git check-ignore`` says the project-relative directory is / is not
+    ignored; None when git cannot tell (missing, timeout, not a repository)."""
+    code = _git(root, "check-ignore", "-q", "--", rel_dir.rstrip("/") + "/")
+    return True if code == 0 else False if code == 1 else None
+
+
+def _has_marker(path: Path) -> bool | None:
+    """A generated marker in the first ``GEN_MARKER_LINES`` lines; None if unreadable."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        with path.open("rb") as fh:
+            head = fh.read(GEN_MARKER_BYTES)
+    except OSError:
+        return None
+    lines = head.decode("utf-8", errors="replace").splitlines()[:GEN_MARKER_LINES]
+    return any(GEN_MARKER.search(line) for line in lines)
+
+
+def _sample(root: str, rel_dir: str) -> list[str]:
+    """Up to ``GEN_MAX_FILES`` project-relative files under the directory (no symlinks)."""
+    out: list[str] = []
+    base = Path(root) / rel_dir
+    for here, dirs, files in os.walk(base, followlinks=False):
+        dirs.sort()
+        for name in sorted(files):
+            out.append(posixpath.join(rel_dir, Path(here).relative_to(base).as_posix(), name))
+            if len(out) >= GEN_MAX_FILES:
+                return [posixpath.normpath(p) for p in out]
+    return [posixpath.normpath(p) for p in out]
+
+
+def generated_evidence(root: str | None, rel_dir: str, files: Iterable[str]) -> bool | None:
+    """Positive evidence that ``rel_dir`` holds generated files: True when git ignores it or
+    every existing file of ``files`` (project-relative; the directory's own files when empty)
+    carries a generated marker; False when git positively says it is not ignored and a file
+    lacks the marker (hand-written: a contradiction); None when nothing can be said."""
+    if root is None or not os.path.isabs(root):
+        return None
+    ignored = git_ignored(root, rel_dir)
+    if ignored:
+        return True
+    names = list(files)[:GEN_MAX_FILES] or _sample(root, rel_dir)
+    marks = [m for m in (_has_marker(Path(root) / n) for n in names) if m is not None]
+    if marks and all(marks):
+        return True
+    if ignored is False and marks:
+        return False
+    return None
+
+
 def _bump(counter: Counter[str], key: str) -> None:
     if key in counter or len(counter) < MAX_KEYS:
         counter[key] += 1
@@ -323,6 +578,7 @@ class _Miner:
     prev: tuple[str, bool, str] | None = None  # previous Bash call: (norm, ok, family)
     tests_ok: Counter[str] = field(default_factory=Counter)
     gen: Counter[str] = field(default_factory=Counter)
+    gen_files: dict[str, list[str]] = field(default_factory=dict)  # dir -> edited files
     declared: set[str] | None = None  # declared_packages, read on first need
 
     def _allowed_launch(self, head: list[str], program: str) -> bool:
@@ -349,12 +605,19 @@ class _Miner:
             cmd = call.input.get("command")
             if isinstance(cmd, str):
                 new = self._bash(cmd, not call.is_error, call.text)
-        elif call.tool_name in _EDIT_TOOLS:
+        else:
+            self.prev = None  # build_first: only a build immediately before the test counts
+        if call.tool_name in _EDIT_TOOLS:
+            self.failed_tests.clear()  # the edit may be the fix: a later pass proves no build
             target = call.input.get("file_path") or call.input.get("notebook_path")
             if isinstance(target, str):
                 where = _gen_dir(target, self.project_dir)
                 if where is not None:
                     _bump(self.gen, where)
+                    files = self.gen_files.setdefault(where, [])
+                    rel = _relative(target, self.project_dir)
+                    if rel is not None and rel not in files and len(files) < GEN_MAX_FILES:
+                        files.append(rel)
         for a in self.aliases:
             a.left -= 1
         self.aliases = [a for a in self.aliases if a.left > 0]
@@ -369,11 +632,13 @@ class _Miner:
         if ok:
             self._alias_ok(norm, words)
             self._env_ok(cmd)
+            invocation = test_invocation(norm)
+            if invocation is not None:
+                _bump(self.tests_ok, invocation)
             if fam == "test":
-                _bump(self.tests_ok, norm)
                 if norm in self.failed_tests and self.prev is not None:
                     pnorm, pok, pfam = self.prev
-                    if pok and pfam == "build":
+                    if pok and pfam == "build" and not checker(pnorm):
                         self.emit("build_first", _program(norm), _program(pnorm))
                 self.failed_tests.discard(norm)
         else:
@@ -432,10 +697,26 @@ class _Miner:
         if safe:
             best = max(safe, key=lambda c: self.tests_ok[c])  # first seen wins a tie
             out.append(("test_command", "tests", best))
+        checked = 0
         for where, n in self.gen.items():
-            if n >= GEN_MIN_PER_SESSION:
+            if n < GEN_MIN_PER_SESSION or checked >= GEN_MAX_DIRS:
+                continue
+            checked += 1
+            if generated_evidence(self.project_dir, where, self.gen_files.get(where, ())):
                 out.append(("generated_dir", "generated", where))
         return out
+
+
+def relativise(text: str, project_dir: str | None) -> str:
+    """In-project absolute paths in a fact field made project-relative (POSIX); anything else
+    is left for ``sanitize`` to judge (an outside absolute path is still rejected)."""
+    if project_dir is None:
+        return text
+    root = posixpath.normpath(project_dir.replace("\\", "/"))
+    if not root.startswith("/") or root == "/":
+        return text
+    pat = re.compile(r"(?:^|(?<=[ =:@+]))" + re.escape(root.rstrip("/") + "/"))
+    return pat.sub("", text)
 
 
 def mine_calls(
@@ -448,10 +729,21 @@ def mine_calls(
             miner.feed(call)
     ev = frozenset({session_digest(session_id)})
     out: list[Fact] = []
-    for kind, subject, value in miner.finish():
-        fact = sanitize(Fact(kind, subject, value, ev), project_dir=project_dir)
+    for kind, subject, value in _relativised(miner.finish(), project_dir):
+        fact = sanitize(Fact(kind, subject, value, ev))
         if fact is not None:
             out.append(fact)
+    return out
+
+
+def _relativised(
+    found: list[tuple[FactKind, str, str]], project_dir: str | None
+) -> list[tuple[FactKind, str, str]]:
+    out: list[tuple[FactKind, str, str]] = []
+    for kind, subject, value in found:
+        item = (kind, relativise(subject, project_dir), relativise(value, project_dir))
+        if item not in out:
+            out.append(item)
     return out
 
 
@@ -565,6 +857,7 @@ def record(
             if isinstance(raw_forgotten, list)
             else []
         )
+        _renormalise(table, forgotten)
         fresh: set[str] = set()
         for fact in facts:
             safe = sanitize(fact)
@@ -617,6 +910,45 @@ def record(
 
     jsonstore.update(pdir / FACTS_FILE, fn, {}, env, timeout=timeout)
     return written[0]
+
+
+def _renormalise(table: dict[str, Any], forgotten: Collection[str] = ()) -> None:
+    """Stored test_command facts whose value is not a runner invocation (stored before fix
+    wave B) are moved to the invocation (in place): sessions are unioned into an existing
+    entry, which keeps its own lifecycle; otherwise the entry moves with its lifecycle. A value
+    with no invocation, or one that fails the sanitiser, is retired; one whose invocation was
+    forgotten is dropped."""
+    for fid in list(table):
+        entry = table.get(fid)
+        if not isinstance(entry, dict) or entry.get("kind") != "test_command":
+            continue
+        value, subject = entry.get("value"), entry.get("subject")
+        if not isinstance(value, str) or not isinstance(subject, str):
+            continue
+        inv = test_invocation(value)
+        if inv == value:
+            continue
+        new = sanitize(Fact("test_command", subject, inv, frozenset())) if inv else None
+        if new is None:
+            entry["status"] = "retired"
+            continue
+        del table[fid]
+        nid = fact_id(new)
+        if nid in forgotten:
+            continue
+        raw = entry.get("sessions")
+        sessions = [s for s in raw if isinstance(s, str)] if isinstance(raw, list) else []
+        target = table.get(nid)
+        if isinstance(target, dict):
+            old = target.get("sessions")
+            have = [s for s in old if isinstance(s, str)] if isinstance(old, list) else []
+            merged = [*have, *(s for s in sessions if s not in have)]
+            target["sessions"] = merged[-MAX_SESSIONS:]
+            target["last_seen"] = max(
+                _num(target.get("last_seen"), 0.0), _num(entry.get("last_seen"), 0.0)
+            )
+        else:
+            table[nid] = {**entry, "value": inv, "sessions": sessions[-MAX_SESSIONS:]}
 
 
 # --------------------------------------------------------------------------- shared

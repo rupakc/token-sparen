@@ -1427,3 +1427,32 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   current key is active (user-wide opt-in), in which case it is re-keyed. Symlinked settings file
   or `.claude` folder: never written. Open minors: registry lock held across first-time seed();
   `/clear` SessionEnd->SessionStart idle race; m1; m4.
+
+## 2026-11-27 M3 fix wave B: repository facts (controller rulings on review M2, M3, M4, minors 1/2)
+- generated_dir: positive evidence only (git check-ignore at fold, 2 s timeout, GIT_* location
+  vars dropped; or every edited file has a generated marker in its first 5 lines). Builder
+  calls: the two signals are independent (no git -> markers can still decide; missing git alone
+  is never "ignored"); the dir-name filter (`GEN_DIRS`) and >= 2 edits per session are kept.
+  Contradiction = git says not ignored AND a file lacks the marker; counted whenever observed
+  (not only injected), retires on the first (generated_dir joins HIGH_STAKES), re-checked every
+  fold the fact is in play even without edits (a sample of up to 20 files) because injection
+  suppresses the exposing edits. Observer git calls run before the facts.json lock.
+- test_command = runner invocation from the `miners.TEST_RUNNERS` table (+ kept `cd` prefix and
+  uv/poetry/pipenv/pdm/hatch launcher; program token kept as written, e.g. `.venv/bin/pytest`).
+  Pipelines/command lists give no fact. Lifecycle still judges by `runner()` equivalence (now on
+  a normalised value); not-found/usage contradiction also matches on invocation equality.
+  Migration: `active()`/`in_play` skip non-invocation values; `record()` re-normalises them
+  (merge into existing id keeps that entry's lifecycle; else moves with its lifecycle) or
+  retires them.
+- M4: `truth` counter (confirmations) gates activation via Beta(1 + truth, 1).lcb(0.1) >
+  activate_lcb; effect = injected only. Interpretation of "ucb rule on effect alone once >= 8":
+  after effect.n >= 8, retire when effect.ucb(0.9) < baseline.mean + 0.1 (baseline prior 0.5
+  when no withheld sessions). Legacy migration (`lifecycle.migrate`, entries with no `truth`):
+  candidates move all effect successes to truth; active facts move at most 3 (more pessimistic
+  when unsure).
+- build_first: any non-Bash call resets `prev`; an Edit-family call also clears the failed-test
+  set (the goldfish flow has the build directly before the test, so resetting prev alone would
+  not fix it); checkers excluded (`runner`/`checker` moved to miners, aliased in lifecycle).
+- In-project absolute paths relativised in `mine_calls` before sanitise (sanitised without
+  project_dir there, i.e. exactly as `record()` will).
+
