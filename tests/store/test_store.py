@@ -267,3 +267,28 @@ def test_lock_poll_backs_off_exponentially(tmp_path: Path, monkeypatch: pytest.M
 
 def test_lock_jitter_in_unit_interval() -> None:
     assert all(0.0 < jsonstore._jitter() <= 1.0 for _ in range(200))
+
+
+def test_non_utf8_file_is_corrupt_not_a_crash(tmp_path: Path) -> None:
+    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
+    p = tmp_path / "s.json"
+    p.write_bytes(b'{"n": "\xff\xfe"}')
+    assert jsonstore.read(p, {"n": 0}, env) == {"n": 0}
+    assert jsonstore.update(p, _incr, {"n": 0}, env) == {"n": 1}
+    assert json.loads(p.read_text(encoding="utf-8")) == {"n": 1}
+    assert any(q.name.startswith("s.json.corrupt-") for q in tmp_path.iterdir())
+
+
+def test_default_is_never_mutated(tmp_path: Path) -> None:
+    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
+    default: dict = {"arms": {}}
+
+    def add(d: dict) -> dict:
+        d["arms"]["x"] = 1
+        return d
+
+    jsonstore.update(tmp_path / "a.json", add, default, env)
+    assert default == {"arms": {}}
+    assert jsonstore.read(tmp_path / "b.json", default, env) == {"arms": {}}
+    jsonstore.read(tmp_path / "b.json", default, env)["arms"]["y"] = 2
+    assert default == {"arms": {}}

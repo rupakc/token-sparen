@@ -66,3 +66,21 @@ def test_agents_and_memory_exist() -> None:
     assert (ROOT / "AGENTS.md").read_text(encoding="utf-8").strip()
     memory = (ROOT / "MEMORY.md").read_text(encoding="utf-8")
     assert "2026-11-25" in memory and "3.11" in memory
+
+
+def test_build_backend_supports_spdx_license() -> None:
+    import tomllib
+
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert isinstance(data["project"]["license"], str)  # PEP 639 SPDX expression
+    assert "setuptools>=77" in data["build-system"]["requires"]  # first release supporting it
+
+
+def test_gitignore_covers_env_files() -> None:
+    lines = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert ".env" in lines and ".env.*" in lines
+
+
+def test_ci_token_is_read_only() -> None:
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "\npermissions:\n  contents: read\n" in ci

@@ -1678,3 +1678,10 @@ and the two new issues they found.
   gate size; cost vs counterfactual re-send floors; 1M latch never cleared on a model switch;
   marker-exclusion bias (documented); "production policy" is the cold-start engine
   (documented); ledger path follows `TOKEN_SPAREN_HOME`.
+
+## 2026-11-27 Pre-1.0 minors triage
+- Correction to the M1 `save_deadline_ms` entry ("the watchdog never leaves orphan recovery
+  files"): the deadline prevents starting a save late, but a watchdog `os._exit` during a write
+  can still leave `<id>.txt.tmp-*` behind. `prune_outputs` now deletes such temporary files once
+  they are older than one hour, and the 200-file cap counts only files it keeps (files removed
+  by the byte cap no longer count toward it).

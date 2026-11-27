@@ -249,11 +249,14 @@ def _marker_len_ref(project_dir: Path) -> recovery.RecoveryRef:
 @dataclass(frozen=True)
 class Candidate:
     """A compression the never-larger rule accepts: ``result`` of ``source`` (the persisted full
-    output or the preview); ``tokens_after`` counts the body plus a marker of the real length."""
+    output or the preview); ``tokens_after`` counts the body plus a marker of the real length;
+    ``total_lines`` is the marker's total (the full output's line count when the preview was
+    trimmed, since the recovery file holds the full output)."""
 
     result: CompressResult
     source: str
     tokens_after: int
+    total_lines: int
 
 
 def est_type(ctype: str) -> str:
@@ -284,10 +287,13 @@ def pick_candidate(
         result = compressor.compress(source, level, ctx)
         if result.lossless or result.kept_lines >= result.total_lines:
             continue
-        probe = f"{result.text}\n{recovery.marker(result.kept_lines, result.total_lines, stand_in)}"
+        total = result.total_lines
+        if full is not None and source is not full:
+            total = max(total, full.count("\n") + (0 if full.endswith("\n") else 1))
+        probe = f"{result.text}\n{recovery.marker(result.kept_lines, total, stand_in)}"
         after = estimate_tokens(probe, est)
         if len(probe) <= len(preview) and after <= max_after:
-            return Candidate(result, source, after)
+            return Candidate(result, source, after, total)
     return None
 
 
@@ -430,7 +436,7 @@ def handle_post_tool(
         log_error(env, "compression", "save deadline exceeded; output left untouched")
         return no_op()
     ref = recovery.save_full(event.project_dir, full if full is not None else preview)
-    body = f"{chosen.text}\n{recovery.marker(chosen.kept_lines, chosen.total_lines, ref)}"
+    body = f"{chosen.text}\n{recovery.marker(chosen.kept_lines, picked.total_lines, ref)}"
     if len(body) > len(preview):  # hard invariant: never more than the model would have seen
         log_error(env, "compression", "replacement longer than preview; output left untouched")
         return no_op()

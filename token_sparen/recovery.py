@@ -15,6 +15,8 @@ from token_sparen.store.jsonstore import replace_with_retry
 
 _ID_LEN = 12
 _FILE_RE = re.compile(r"^([0-9a-f]{12})\.txt$")
+_TMP_RE = re.compile(r"^[0-9a-f]{12}\.txt\.tmp-\d+-[0-9a-f]+$")
+_TMP_STALE_S = 3600.0
 _DAY_S = 86400.0
 
 
@@ -73,30 +75,40 @@ def prune_outputs(
     max_files: int = 200,
     max_bytes: int = 100_000_000,
 ) -> None:
-    """Delete expired files, then oldest-first (LRU by mtime) until count and size fit."""
+    """Delete expired files, then oldest-first (LRU by mtime) until count and size fit. Also
+    deletes temporary files older than an hour (a write the hook watchdog cut short)."""
     out = _root(project_dir) / "outputs"
     entries: list[tuple[float, int, Path]] = []
+    now = time.time()
     try:
         for p in out.iterdir():
-            if not _FILE_RE.match(p.name):
+            tmp = _TMP_RE.match(p.name) is not None
+            if not tmp and not _FILE_RE.match(p.name):
                 continue
             try:
                 st = p.stat()
             except OSError:
                 continue
-            if p.is_file():
-                entries.append((st.st_mtime, st.st_size, p))
+            if not p.is_file():
+                continue
+            if tmp:
+                if st.st_mtime < now - _TMP_STALE_S:
+                    with contextlib.suppress(OSError):
+                        p.unlink()
+                continue
+            entries.append((st.st_mtime, st.st_size, p))
     except OSError:
         return
-    cutoff = time.time() - ttl_days * _DAY_S
+    cutoff = now - ttl_days * _DAY_S
     entries.sort(key=lambda e: e[0], reverse=True)  # newest first
-    total = 0
-    for i, (mtime, size, p) in enumerate(entries):
-        total += size
-        if mtime < cutoff or i >= max_files or total > max_bytes:
-            total -= size
+    total = kept = 0
+    for mtime, size, p in entries:
+        if mtime < cutoff or kept >= max_files or total + size > max_bytes:
             with contextlib.suppress(OSError):
                 p.unlink()
+            continue
+        total += size
+        kept += 1
 
 
 def is_recovery_read(project_dir: Path, read_path: Path) -> str | None:

@@ -107,6 +107,23 @@ def test_json_invalid_falls_back(bad: str) -> None:
     assert JsonCompressor().compress(bad, STANDARD, NO_CTX) == want
 
 
+def test_json_numbers_keep_their_source_spelling() -> None:
+    nums = ["1.0000000000000001", "12345678901234567890.5", "1e400", "-0.0", "0.10", "2E-3"]
+    rows = ", ".join(f'{{"v": {n}}}' for n in nums)
+    doc = f'{{"head": [{rows}], "tail": [{", ".join(["0"] * 50)}]}}'
+    res = JsonCompressor().compress(doc, AGGRESSIVE, NO_CTX)
+    assert not res.lossless
+    for n in nums[:2]:  # the first k items of a list are shown verbatim
+        assert f'"v": {n}' in res.text
+    assert "Infinity" not in res.text
+
+
+def test_json_duplicate_keys_fall_back_to_text() -> None:
+    doc = '{"a": 1, "a": 2, ' + ", ".join(f'"k{i}": {i}' for i in range(80)) + "}"
+    want = TextCompressor().compress(doc, STANDARD, NO_CTX)
+    assert JsonCompressor().compress(doc, STANDARD, NO_CTX) == want
+
+
 def test_json_deep_nesting_does_not_raise() -> None:
     doc = "[" * 5000 + "]" * 5000
     res = JsonCompressor().compress(doc, STANDARD, NO_CTX)

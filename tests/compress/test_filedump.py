@@ -297,3 +297,53 @@ def test_not_a_file_dump_round3(cmd: str) -> None:
 )
 def test_file_reading_tool_names_round3(name: str) -> None:
     assert filedump.is_file_tool(name) is True
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        'grep -E "" src/a.py',
+        "grep -E . src/a.py",
+        "egrep -E '^' src/a.py",
+        "grep -T '' a.py",
+        "rg -E utf-8 '' src",
+        "ssh h <<EOF\ncat /etc/hosts\nEOF",
+        "cat <<'EOF' | python3\nprint(open('a.py').read())\nEOF",
+        "cat <<EOF | bash\ncat a.py\nEOF",
+        "chrt 10 cat a.py",
+        "chrt -r 10 cat a.py",
+        "numactl -N0 cat a.py",
+        "numactl --cpunodebind=0 cat a.py",
+        "numactl -N 0 -m 0 cat a.py",
+        "firejail --quiet cat a.py",
+        "unshare -r cat a.py",
+        "ssh host python3 - <<'EOF'\nprint(open('/etc/app.conf').read())\nEOF",
+        "ssh -T host python3 <<'EOF'\nimport sys\nsys.stdout.write(open('a.py').read())\nEOF",
+        "numactl --cpunodebind 0 cat a.py",
+        "numactl --membind 0 -- cat a.py",
+        "unshare --map-user 0 cat a.py",
+        "cat <<EOF | sudo python3\nprint(open('a.py').read())\nEOF",
+        "cat <<EOF | env python3\nprint(open('a.py').read())\nEOF",
+        "cat <<EOF | sed 's/x/y/' | python3\nprint(open('a.py').read())\nEOF",
+    ],
+)
+def test_file_dump_minors(cmd: str) -> None:
+    assert filedump.is_file_dump(cmd) is True
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "grep -E 'foo|bar' src/a.py",
+        "rg -E utf-8 foo src",
+        "ssh h <<EOF\nuptime\nEOF",
+        "cat <<EOF | python3\nprint(1)\nEOF",
+        "chrt 10 pytest -q",
+        "numactl -N 0 make",
+        "unshare -r true",
+        "ssh host python3 - <<'EOF'\nprint(1)\nEOF",
+        "cat <<EOF | sudo python3\nprint(1)\nEOF",
+    ],
+)
+def test_not_a_file_dump_minors(cmd: str) -> None:
+    assert filedump.is_file_dump(cmd) is False
