@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import tomllib
 from html.parser import HTMLParser
@@ -11,7 +12,13 @@ import pytest
 import sampleoutputs
 
 from scripts import build_claude_tree
-from scripts import build_site as bs
+
+# Markdown is the docs-only extra: with just `.[dev]` this module is skipped. The CI `docs` job
+# installs `.[dev,docs]` and sets the variable below so a missing install fails, not skips.
+if not os.environ.get("TOKEN_SPAREN_REQUIRE_DOCS"):
+    pytest.importorskip("markdown")
+
+from scripts import build_site as bs  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
