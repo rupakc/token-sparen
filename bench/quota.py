@@ -2,7 +2,8 @@
 
 Owner rulings: never start a run when the weekly utilization is >= 60 % or could cross it with
 the next run (projection: last weekly % + (runs since that reading + 1) x the max observed
-per-run weekly use; `QuotaPolicy.run_weekly_pct` until two readings bracket a run), or a weekly
+per-run weekly use, never below `QuotaPolicy.run_weekly_pct` = 2.5 % until Task 13 has
+calibrated `UTILIZATION_UNIT`; rulings N1/N2), or a weekly
 limit was rejected (stop, exit 3; never sleep through a weekly reset: the owner decides); a
 five-hour reading >= 85 % or a rejected five-hour limit waits until its ``resets_at`` (with
 ``--wait``, else exit 4); at most ``max_runs_per_window`` runs start per five-hour window.
@@ -77,7 +78,7 @@ class QuotaPolicy:
     max_runs_per_window: int = 4
     max_reading_age_s: float = FIVE_HOURS_S  # an older weekly reading is unknown
     rate_backoff_s: float = 3600.0  # a rejection without a reset blocks this long at most
-    run_weekly_pct: float = 1.0  # per-run weekly use until one is observed (Task 13)
+    run_weekly_pct: float = 2.5  # per-run weekly floor until calibrated (ruling N1)
 
 
 class QuotaDecision(NamedTuple):
@@ -221,8 +222,11 @@ def window_bounds(readings: Sequence[QuotaReading], now: float) -> tuple[float, 
 def per_run_weekly_pct(
     readings: Sequence[QuotaReading], starts: Sequence[float], policy: QuotaPolicy
 ) -> float:
-    """The max observed weekly % per run: over consecutive known weekly readings of the same
-    weekly window with runs started between them; `QuotaPolicy.run_weekly_pct` if none."""
+    """The per-run weekly % used by the projection. Observed = the max delta per run over
+    consecutive known weekly readings of the same weekly window with runs started between them.
+    Until calibration (`UTILIZATION_UNIT` unset): max(`QuotaPolicy.run_weekly_pct`, observed),
+    so equal readings never make it 0 (ruling N2); after calibration: the max observed, or the
+    default while nothing is observed yet."""
     known = sorted(
         (r for r in readings if r.kind == "weekly" and r.utilization_pct is not None),
         key=lambda r: r.at,
@@ -236,6 +240,8 @@ def per_run_weekly_pct(
         delta = b.utilization_pct - a.utilization_pct
         if runs and delta >= 0:
             best = max(best or 0.0, delta / runs)
+    if UTILIZATION_UNIT is None:
+        return max(policy.run_weekly_pct, best or 0.0)
     return policy.run_weekly_pct if best is None else best
 
 

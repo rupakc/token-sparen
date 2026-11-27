@@ -84,16 +84,41 @@ def test_uncalibrated_stream_events_are_only_logged() -> None:
 
 
 def test_projected_usage_never_crosses_the_weekly_stop() -> None:
-    """Minor ruling: pause if the next run could cross 60 %, by the max observed per-run use."""
-    reading = _r("weekly", 57.5, at=NOW - 600, resets=NOW + 72 * H)
+    """Pause if the next run could cross 60 %, by the per-run estimate (ruling N2)."""
+    reading = _r("weekly", 55.0, at=NOW - 600, resets=NOW + 72 * H)
     five = _ok()[1]
-    assert qt.decide([reading, five], POLICY, NOW, 0, starts=()).go  # default 1 % per run
-    starts = [NOW - 500, NOW - 400]  # two runs since: 57.5 + 3 * 1.0 >= 60
+    assert qt.decide([reading, five], POLICY, NOW, 0, starts=()).go  # 55 + 2.5 < 60
+    starts = [NOW - 500]  # one run since: 55 + 2 * 2.5 >= 60
     assert qt.decide([reading, five], POLICY, NOW, 0, starts=starts).reason == "weekly"
     early = _r("weekly", 40.0, at=NOW - 5000, resets=NOW + 72 * H)
-    observed = [NOW - 4000]  # one run moved 40 -> 57.5: 17.5 % per run
-    assert qt.per_run_weekly_pct([early, reading], observed, POLICY) == 17.5
+    observed = [NOW - 4000]  # one run moved 40 -> 55: 15 % per run
+    assert qt.per_run_weekly_pct([early, reading], observed, POLICY) == 15.0
     assert qt.decide([early, reading, five], POLICY, NOW, 0, starts=observed).reason == "weekly"
+
+
+def test_uncalibrated_default_is_2_5_and_never_lowered() -> None:
+    """Rulings N1/N2: 2.5 % per run until calibration; equal readings never make it 0."""
+    assert POLICY.run_weekly_pct == 2.5
+    a = _r("weekly", 40.0, at=NOW - 5000, resets=NOW + 72 * H)
+    b = _r("weekly", 40.0, at=NOW - 100, resets=NOW + 72 * H)
+    assert qt.per_run_weekly_pct([a, b], [NOW - 4000, NOW - 3000], POLICY) == 2.5
+    c = _r("weekly", 44.0, at=NOW - 100, resets=NOW + 72 * H)
+    assert qt.per_run_weekly_pct([a, c], [NOW - 4000], POLICY) == 4.0  # observed 4 % raises it
+    small = _r("weekly", 41.0, at=NOW - 100, resets=NOW + 72 * H)
+    assert qt.per_run_weekly_pct([a, small], [NOW - 4000], POLICY) == 2.5
+
+
+def test_calibrated_estimate_is_the_max_observed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qt, "UTILIZATION_UNIT", "fraction")
+    a = _r("weekly", 40.0, at=NOW - 5000, resets=NOW + 72 * H)
+    small = _r("weekly", 41.0, at=NOW - 100, resets=NOW + 72 * H)
+    assert qt.per_run_weekly_pct([a, small], [NOW - 4000], POLICY) == 1.0
+    assert qt.per_run_weekly_pct([a], [], POLICY) == 2.5  # nothing observed yet
+
+
+def test_59_pct_reading_pauses() -> None:
+    reading = _r("weekly", 59.0, at=NOW - 60, resets=NOW + 72 * H)
+    assert qt.decide([reading, _ok()[1]], POLICY, NOW, 0) == qt.QuotaDecision(False, "weekly", None)
 
 
 def test_future_or_inconsistent_readings_ignored() -> None:

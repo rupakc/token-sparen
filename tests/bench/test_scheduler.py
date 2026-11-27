@@ -921,7 +921,8 @@ def test_one_sided_exclusion_rerun_with_bounded_retries(tmp_path: Path) -> None:
     """Task 9 ruling: a single-arm exclusion gets a fresh, bounded round of attempts before it
     stays excluded; the ledger lists it per key with its cause and rounds."""
     bad = lg.RunKey("c1", "screening", "a", 0, "fake__alpha-1")
-    led = _ledger(tmp_path)
+    led = _ledger(tmp_path, readings=False)
+    _owner(led, weekly=0.0, five=10.0)  # 20 runs x 2.5 % projected stay below 60 %
     backend = ScriptBackend(lambda r: "infra_fail/load" if r.key_id == bad.id else "ok/success")
     keys = [bad, *[k for k in _keys(arms=("a", "b", "c")) if k != bad]]
     assert _run(tmp_path, backend, keys, led, one_sided_retries=2) == "complete"
