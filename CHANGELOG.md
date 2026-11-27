@@ -81,6 +81,18 @@ everything else. No savings figures are claimed for them yet.
   `logs/latency.jsonl`: the kill switch now writes nothing at all.
 - Settings writes now detect a concurrent same-size edit (within mtime resolution) by a content
   digest in the pre-replace stamp, instead of overwriting it.
+- Tool pruning: a process killed between the settings write and its own record no longer
+  leaves a deny rule nothing owns. The rules are journaled in `prune.json` before the write and
+  reconciled on every read, so hooks, `restore --all` and `prune disable` still remove them.
+- Tool pruning writes new deny rules only from a background process (the fold or a spawned
+  `prune apply`), never inside the latency-capped SessionStart hook.
+- Tool pruning no longer grows confident from its own intervention: a pruned server collects no
+  evidence, and each prune is a lease (`[prune] lease_sessions`, default 15; a project may only
+  lower it) after which the server is restored and pruned again only on fresh evidence.
+- Tool pruning does not write `.claude/settings.local.json` when git is missing or times out
+  (tracked status unknown), and refreshes its backup when it starts with no rule of its own in
+  the file.
+- The prune restore message no longer claims the tool is available mid-session.
 
 #### Security
 - Tool pruning is the second settings write after the statusline: it needs an explicit opt-in

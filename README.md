@@ -475,14 +475,20 @@ strict regret bound clears (about 300 unused prompts with the defaults). Never p
 adds a bare `permissions.deny` entry such as `"mcp__server"`, which removes the server's tools
 from the model's context. Because that changes the prompt, rules are written only when the
 project has been idle for at least 60 minutes (no session start, prompt or tool call in any
-session; at a fold, or at the start of the next session before its first request), never
-mid-session.
+session), never mid-session, and only by a background process: the fold, or a `prune apply` that
+the next session start launches after such an idle gap (before you send its first prompt). A
+pruned server collects no evidence while it is pruned (its "unused" would be caused by the
+pruning itself), so each prune is a **lease**: after 15 sessions (`[prune] lease_sessions`; a
+project may only lower it) token-sparen restores it for at least one session to see whether it
+is used, and prunes it again only after fresh unused sessions.
 
 What it writes: only those deny entries, appended to `permissions.deny`; every other key and
 every rule you wrote stays as it is, and a rule you already had is never claimed. Before the
 first change the file is copied once to `settings.local.json.token-sparen.bak`; writes are atomic
 and re-check the file just before replacing it. A file that is not a strict JSON object (comments,
-duplicate keys) or that is tracked by git is never written, and you are told why. If
+duplicate keys), that is tracked by git, or whose git status cannot be checked (git missing or
+too slow) is never written, and you are told why. The backup is refreshed when token-sparen
+starts a new round of rules in a file where it owns none, so it never predates your own edits. If
 `.claude/settings.local.json` is not covered by your `.gitignore`, you are told once
 (token-sparen does not edit `.gitignore`). Sibling clones and worktrees of one repository share
 what was learned, but each checkout's file and rules are tracked separately.
@@ -493,7 +499,8 @@ restore <tool>\` if needed.`, to you and to the model (with the plugin's own lau
 agent searches for a pruned tool with ToolSearch, tries to call it, or you name it in a prompt
 (its exact name such as `mcp__github`, or a multi-word form such as `claude ai gmail`; a single
 common word like "github" does not count), token-sparen removes its rule immediately and tells
-you; the tool is back from the next request and is never pruned again. A rule you delete yourself
+you that it is no longer denied (Claude Code may need a new session to show it again); it is
+never pruned again. A rule you delete yourself
 counts the same way. `restore --all` and `disable` remove exactly the rules token-sparen wrote, in
 every checkout, and the file (and the `.claude` folder) again if token-sparen created them.
 

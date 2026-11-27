@@ -190,6 +190,29 @@ def _make_busy(env: dict[str, str], proj: Path) -> None:
     _make_idle(env, proj, age_s=60)
 
 
+class _Spawned:
+    calls: list[list[str]] = []
+
+    def __init__(self, args: list[str], **kw: Any) -> None:
+        _Spawned.calls.append(list(args))
+
+
+@pytest.fixture
+def spawned(monkeypatch: pytest.MonkeyPatch) -> type[_Spawned]:
+    _Spawned.calls = []
+    monkeypatch.setattr(overlay, "POPEN", _Spawned)
+    return _Spawned
+
+
+def _run_spawned_apply(spawned: type[_Spawned]) -> list[str]:
+    """Run the detached ``prune apply`` SessionStart started, in-process."""
+    calls = [c for c in spawned.calls if "prune" in c and "apply" in c]
+    assert len(calls) == 1, spawned.calls
+    args = calls[0][calls[0].index("prune") :]
+    assert main(args) == 0
+    return args
+
+
 # --------------------------------------------------------------------------- the brief's seven
 def test_disabled_by_default(env: dict[str, str], proj: Path) -> None:
     cfg = load_config(proj, env)
@@ -251,17 +274,19 @@ def test_requires_evidence(env: dict[str, str], proj: Path) -> None:
     assert Beta.from_list(_doc(env, proj)["tools"]["WebFetch"]["r"]).ucb(0.95) <= 0.01
 
 
-def test_idle_gate_defers(env: dict[str, str], proj: Path) -> None:
+def test_idle_gate_defers(env: dict[str, str], proj: Path, spawned: type[_Spawned]) -> None:
     _enable(env, proj)
     _make_busy(env, proj)
     _three(env, proj)
     assert not _local(proj).exists()  # a session was active < 60 min ago: deferred
     assert _doc(env, proj)["pending"] is True
-    # the next session starts after the project was idle >= 60 min: applied before its first
-    # request, so no cached prompt is broken
+    # the next session starts after the project was idle >= 60 min: it spawns the detached
+    # apply (never written inside the hook), before the session's first request
     _make_idle(env, proj)
-    out = _hook(env, "SessionStart", {"source": "startup"})
+    _hook(env, "SessionStart", {"source": "startup"})
+    _run_spawned_apply(spawned)
     assert _deny(proj) == ["WebFetch", "WebSearch"]
+    out = _hook(env, "SessionStart", {"source": "startup"})
     ctx = out["hookSpecificOutput"]["additionalContext"]
     assert (
         "Pruned (unused here): WebFetch, WebSearch — run "
@@ -441,8 +466,12 @@ def test_mtime_race_retries_then_gives_up(
     assert _deny(proj) == ["Bash(sudo *)", "WebFetch", "WebSearch"]  # re-read, edit kept
 
     def always(path: Path) -> None:
+        # a genuine edit every time (a distinct key): a byte-identical rewrite loses no user
+        # edit, so the content-digest stamp rightly treats it as unchanged
+        calls["n"] += 1
         data = json.loads(path.read_text(encoding="utf-8"))
-        path.write_text(json.dumps(data) + " ", encoding="utf-8")
+        data[f"edit{calls['n']}"] = calls["n"]
+        path.write_text(json.dumps(data), encoding="utf-8")
 
     monkeypatch.setattr(settings, "_before_replace", always)
     for sid in ("t1", "t2", "t3"):
@@ -944,3 +973,247 @@ def test_notices_are_shown_in_their_own_checkout(env: dict[str, str], tmp_path: 
     assert "pruned unused tools" not in out_b.get("systemMessage", "")
     out_a = _hook({**env, "CLAUDE_PROJECT_DIR": str(a)}, "SessionStart", {"source": "startup"})
     assert "pruned unused tools: mcp__alpha" in out_a["systemMessage"]
+
+
+# --------------------------------------------------------------------------- fix wave A (M3 review)
+class _Killed(BaseException):
+    """The hook process dies (watchdog ``os._exit``, SIGKILL): nothing after it runs."""
+
+
+def _kill_after_add(monkeypatch: pytest.MonkeyPatch) -> None:
+    real = settings.add_deny_rules
+
+    def add_then_die(path: Path, rules: Any, *a: Any, **kw: Any) -> Any:
+        real(path, rules, *a, **kw)
+        raise _Killed
+
+    monkeypatch.setattr(settings, "add_deny_rules", add_then_die)
+
+
+def _killed_mid_apply(env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable(env, proj)
+    _fold(env, proj, "s1")
+    _fold(env, proj, "s2")
+    with monkeypatch.context() as m:
+        _kill_after_add(m)
+        with pytest.raises(_Killed):
+            _fold(env, proj, "s3")
+    assert _deny(proj) == ["WebFetch", "WebSearch"]  # the settings write happened ...
+    entry_ = _doc(env, proj)["files"][prune.file_key(_local(proj))]
+    assert entry_["owned"] == []  # ... the ownership record did not
+    assert sorted(entry_["pending_add"]) == ["WebFetch", "WebSearch"]  # but the intent did
+
+
+def test_b1_kill_after_settings_write_is_owned_next_run(
+    env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _killed_mid_apply(env, proj, monkeypatch)
+    _fold(env, proj, "s4")
+    doc = _doc(env, proj)
+    entry_ = doc["files"][prune.file_key(_local(proj))]
+    assert sorted(entry_["owned"]) == ["WebFetch", "WebSearch"]
+    assert not entry_.get("foreign") and not entry_.get("pending_add")
+    # in-session recovery works on it
+    out = _hook(env, "PreToolUse", {"tool_name": "WebFetch", "tool_input": {}})
+    assert "WebFetch" in out["systemMessage"] and _deny(proj) == ["WebSearch"]
+
+
+def test_b1_kill_after_settings_write_hooks_and_restore_all(
+    env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _killed_mid_apply(env, proj, monkeypatch)
+    # no fold in between: a hook already treats the journaled rule as ours
+    out = _hook(env, "SessionStart", {"source": "startup"})
+    assert "WebFetch, WebSearch" in out["hookSpecificOutput"]["additionalContext"]
+    out = _hook(env, "UserPromptSubmit", {"prompt": "do a web search"})
+    assert "WebSearch" in out["systemMessage"] and _deny(proj) == ["WebFetch"]
+    assert main(["prune", "restore", "--all", "--project", str(proj)]) == 0
+    assert "WebFetch" not in _deny(proj)
+    assert prune.all_owned(_doc(env, proj)) == []
+
+
+def test_b1_kill_after_settings_write_then_disable(
+    env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _killed_mid_apply(env, proj, monkeypatch)
+    assert main(["prune", "disable", "--project", str(proj)]) == 0
+    assert _deny(proj) == []
+    assert prune.all_owned(_doc(env, proj)) == []
+
+
+def test_b1_a_rule_already_present_is_never_journaled(
+    env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _local(proj).parent.mkdir()
+    _local(proj).write_text('{"permissions": {"deny": ["WebSearch"]}}', encoding="utf-8")
+    _enable(env, proj)
+    _fold(env, proj, "s1")
+    _fold(env, proj, "s2")
+    with monkeypatch.context() as m:
+        _kill_after_add(m)
+        with pytest.raises(_Killed):
+            _fold(env, proj, "s3")
+    entry_ = _doc(env, proj)["files"][prune.file_key(_local(proj))]
+    assert entry_["pending_add"] == ["WebFetch"]  # WebSearch was the user's rule
+    assert main(["prune", "restore", "--all", "--project", str(proj)]) == 0
+    assert _deny(proj) == ["WebSearch"]  # the user's rule stays
+
+
+def test_b1_session_start_never_writes_rules_it_spawns_the_apply(
+    env: dict[str, str], proj: Path, spawned: type[_Spawned]
+) -> None:
+    _enable(env, proj)
+    _make_busy(env, proj)
+    _three(env, proj)
+    assert _doc(env, proj)["pending"] is True
+    _make_idle(env, proj)
+    out = _hook(env, "SessionStart", {"source": "startup"})
+    assert not _local(proj).exists()  # nothing written under the SessionStart watchdog
+    assert "Pruned" not in json.dumps(out)
+    args = _run_spawned_apply(spawned)
+    assert "--idle-checked" in args  # idleness was measured before this session counted
+    assert _deny(proj) == ["WebFetch", "WebSearch"]
+    assert _doc(env, proj)["pending"] is False
+
+
+def test_b1_busy_session_start_spawns_nothing(
+    env: dict[str, str], proj: Path, spawned: type[_Spawned]
+) -> None:
+    _enable(env, proj)
+    _make_busy(env, proj)
+    _three(env, proj)
+    _hook(env, "SessionStart", {"source": "startup"})
+    assert not [c for c in spawned.calls if "apply" in c]
+
+
+def test_b1_apply_cli_without_idle_check_waits_for_idle(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _make_busy(env, proj)
+    _three(env, proj)
+    assert main(["prune", "apply", "--project", str(proj)]) == 0
+    assert not _local(proj).exists()
+    _make_idle(env, proj)
+    assert main(["prune", "apply", "--project", str(proj)]) == 0
+    assert _deny(proj) == ["WebFetch", "WebSearch"]
+
+
+def test_b1_in_hook_fold_never_applies(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _fold(env, proj, "s1")
+    _fold(env, proj, "s2")
+    tr = _transcript(_home(env).parent / "transcripts" / "s3.jsonl", listed=BUILTINS)
+    key = _key(env, proj)
+    ov = session.session_path(_home(env), key, "s3")
+    ov.write_text(
+        json.dumps({"evidence": {}, "transcript": str(tr), "project_dir": str(proj)}), "utf-8"
+    )
+    overlay.fold("s3", key, _home(env), params=load_config(proj, env).data, in_hook=True)
+    assert not _local(proj).exists()
+    assert _doc(env, proj)["pending"] is True
+
+
+# M6: pruned rules accrue no evidence; each prune is a lease
+def test_m6_pruned_rules_accrue_no_evidence(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _three(env, proj)
+    before = _doc(env, proj)["tools"]["WebFetch"]
+    _fold(env, proj, "s4")
+    _fold(env, proj, "s5")
+    assert _doc(env, proj)["tools"]["WebFetch"] == {**before, **{"r": before["r"]}}
+    assert _doc(env, proj)["tools"]["WebFetch"]["s"] == before["s"]
+
+
+def test_m6_lease_restores_then_needs_fresh_evidence(env: dict[str, str], proj: Path) -> None:
+    _user_config(env, "[prune]\nbuiltins = true\nlease_sessions = 2\n")
+    _enable(env, proj)
+    _three(env, proj)
+    assert _deny(proj) == ["WebFetch", "WebSearch"]
+    _fold(env, proj, "l1")
+    assert _deny(proj) == ["WebFetch", "WebSearch"]  # lease: 1 of 2 sessions
+    _fold(env, proj, "l2")
+    assert not _local(proj).exists()  # lease over: restored for at least one session
+    doc = _doc(env, proj)
+    assert "WebFetch" not in doc["kept"]  # no regret: a lease end is not a restore by use
+    out = _hook(env, "SessionStart", {"source": "startup"})
+    assert "lease" in out["systemMessage"]
+    _make_idle(env, proj)  # that session start counted as activity
+    # re-pruned only after fresh evidence from un-pruned sessions (min_sessions = 3)
+    _fold(env, proj, "f1")
+    _fold(env, proj, "f2")
+    assert not _local(proj).exists()
+    _fold(env, proj, "f3")
+    assert _deny(proj) == ["WebFetch", "WebSearch"]
+
+
+def test_m6_tool_used_after_the_lease_is_kept_for_good(env: dict[str, str], proj: Path) -> None:
+    _user_config(env, "[prune]\nbuiltins = true\nlease_sessions = 1\n")
+    _enable(env, proj)
+    _three(env, proj)
+    _fold(env, proj, "l1")
+    assert not _local(proj).exists()
+    _fold(env, proj, "u1", used=["WebFetch"])  # un-pruned session: fresh evidence 1 of 3
+    _fold(env, proj, "f1")
+    _fold(env, proj, "f2")
+    assert _deny(proj) == ["WebSearch"]  # re-pruned on fresh evidence; WebFetch never again
+    assert prune.is_protected("WebFetch", _doc(env, proj))
+
+
+def test_m6_project_may_only_lower_the_lease(env: dict[str, str], proj: Path) -> None:
+    assert policy_for(("prune", "lease_sessions")) == "min"
+    (proj / "token-sparen.toml").write_text("[prune]\nlease_sessions = 4\n", encoding="utf-8")
+    assert load_config(proj, env).get("prune.lease_sessions") == 4
+    (proj / "token-sparen.toml").write_text("[prune]\nlease_sessions = 400\n", encoding="utf-8")
+    assert load_config(proj, env).get("prune.lease_sessions") == 15
+    (proj / "token-sparen.toml").write_text("[prune]\nlease_sessions = 0\n", encoding="utf-8")
+    assert load_config(proj, env).get("prune.lease_sessions") == 15
+
+
+# minor 3: git missing or timing out counts as exposed
+def test_git_unavailable_means_never_write(
+    env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "_git", lambda *a: None)
+    assert settings.git_exposure(proj) == "unknown"
+    _enable(env, proj)
+    _three(env, proj)
+    assert not _local(proj).exists()
+    msg = _hook(env, "SessionStart", {"source": "startup"})["systemMessage"]
+    assert "git" in msg and "did not write" in msg
+
+
+def test_git_timeout_means_unknown(proj: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def slow(*a: Any, **kw: Any) -> Any:
+        raise subprocess.TimeoutExpired("git", settings.GIT_TIMEOUT_S)
+
+    monkeypatch.setattr(subprocess, "run", slow)
+    assert settings.git_exposure(proj) == "unknown"
+
+
+# minor 4: the backup is refreshed at the start of a cycle in which we own no rule there
+def test_stale_backup_is_refreshed_when_we_own_nothing(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _local(proj).parent.mkdir()
+    _local(proj).write_text('{"permissions": {"deny": []}}', encoding="utf-8")
+    backup = _local(proj).with_name("settings.local.json.token-sparen.bak")
+    _three(env, proj)
+    data = json.loads(_local(proj).read_text(encoding="utf-8"))
+    data["env"] = {"LATER": "1"}  # a user edit while our rules are in place
+    _local(proj).write_text(json.dumps(data), encoding="utf-8")
+    assert main(["prune", "restore", "--all", "--project", str(proj)]) == 0
+    assert backup.exists()  # differs from the file: kept (stale now)
+    now = _local(proj).read_text(encoding="utf-8")
+    for sid in ("t1", "t2", "t3"):
+        _fold(env, proj, sid, listed=["Read", "NotebookEdit"])
+    assert _deny(proj) == ["NotebookEdit"]
+    assert backup.read_text(encoding="utf-8") == now  # the backup is the pre-cycle file
+
+
+# minor 9: no claim about mid-session availability
+def test_restore_message_makes_no_mid_session_claim(env: dict[str, str], proj: Path) -> None:
+    _enable(env, proj)
+    _three(env, proj)
+    out = _hook(env, "PreToolUse", {"tool_name": "WebFetch", "tool_input": {}})
+    msg = out["systemMessage"]
+    assert "available again from the next request" not in msg
+    assert f"`WebFetch` is no longer denied in {_local(proj)}" in msg
+    assert "Claude Code may need a new session to show it again." in msg

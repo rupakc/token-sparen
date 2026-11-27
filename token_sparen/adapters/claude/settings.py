@@ -394,7 +394,8 @@ def uninstall_statusline(
 # rules as the statusline write: strict JSON object or refuse, one pristine backup
 # (``settings.local.json.token-sparen.bak``), atomic replace after a stamp re-check (one re-read
 # and retry), symlinks followed. Only ``permissions.deny`` entries are added or removed; every
-# other key keeps its value and order. A file tracked by git is never written.
+# other key keeps its value and order. A file tracked by git is never written, nor one whose
+# git status cannot be checked (git missing or timing out).
 LOCAL_SETTINGS = Path(".claude") / "settings.local.json"
 GIT_TIMEOUT_S = 2.0
 
@@ -420,13 +421,24 @@ def _git(project_dir: Path, *args: str) -> int | None:
 
 
 def git_exposure(project_dir: Path) -> str | None:
-    """``"tracked"``, ``"unignored"`` (in a git work tree, untracked, not ignored) or None."""
+    """``"tracked"``, ``"unignored"`` (in a git work tree, untracked, not ignored), ``"unknown"``
+    (git missing or timed out: treated as exposed, never written) or None (not a work tree, or
+    ignored)."""
     rel = LOCAL_SETTINGS.as_posix()
-    if _git(project_dir, "rev-parse", "--is-inside-work-tree") != 0:
+    inside = _git(project_dir, "rev-parse", "--is-inside-work-tree")
+    if inside is None:
+        return "unknown"
+    if inside != 0:
         return None
-    if _git(project_dir, "ls-files", "--error-unmatch", "--", rel) == 0:
+    tracked = _git(project_dir, "ls-files", "--error-unmatch", "--", rel)
+    if tracked is None:
+        return "unknown"
+    if tracked == 0:
         return "tracked"
-    return "unignored" if _git(project_dir, "check-ignore", "-q", "--", rel) == 1 else None
+    ignored = _git(project_dir, "check-ignore", "-q", "--", rel)
+    if ignored is None:
+        return "unknown"
+    return "unignored" if ignored == 1 else None
 
 
 def _deny_list(data: dict[str, Any]) -> list[Any]:
@@ -445,8 +457,10 @@ def _prune_failure(exc: BaseException) -> WriteResult:
     return WriteResult(False, message=f"{type(exc).__name__}: {exc}")
 
 
-def add_deny_rules(path: Path, rules: Sequence[str]) -> WriteResult:
-    """Append the bare ``rules`` not yet in ``permissions.deny`` (a ``prune.WriteResult``)."""
+def add_deny_rules(path: Path, rules: Sequence[str], fresh_backup: bool = False) -> WriteResult:
+    """Append the bare ``rules`` not yet in ``permissions.deny`` (a ``prune.WriteResult``).
+    ``fresh_backup`` (no rule of ours is in the file): the backup is replaced by the file as it
+    is now, so a backup left by an earlier cycle never holds an older state than the user's."""
     target = _target(path)
     for attempt in (0, 1):
         try:
@@ -467,7 +481,10 @@ def add_deny_rules(path: Path, rules: Sequence[str]) -> WriteResult:
         }
         try:
             backup = target.with_name(target.name + BACKUP_SUFFIX)
-            if existed and not backup.exists():
+            if fresh_backup and not existed:
+                with contextlib.suppress(FileNotFoundError):
+                    backup.unlink()  # stale: there is no file to back up now
+            if existed and (fresh_backup or not backup.exists()):
                 shutil.copy2(target, backup)
             perms = data.setdefault("permissions", {})
             perms["deny"] = [*deny, *new]
@@ -562,8 +579,10 @@ class ClaudeDenyWriter:
     def exposure(self, project_dir: Path) -> str | None:
         return git_exposure(project_dir)
 
-    def add(self, project_dir: Path, rules: Sequence[str]) -> WriteResult:
-        return add_deny_rules(local_settings_path(project_dir), list(rules))
+    def add(
+        self, project_dir: Path, rules: Sequence[str], fresh_backup: bool = False
+    ) -> WriteResult:
+        return add_deny_rules(local_settings_path(project_dir), list(rules), fresh_backup)
 
     def remove(
         self, project_dir: Path, rules: Sequence[str], created: Mapping[str, bool], cleanup: bool

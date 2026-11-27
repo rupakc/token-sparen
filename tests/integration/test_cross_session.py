@@ -22,6 +22,7 @@ from token_sparen.adapters.claude import entry
 from token_sparen.cli import main as cli
 from token_sparen.facts import inject, miners
 from token_sparen.learn import engine as engine_mod
+from token_sparen.learn import overlay
 from token_sparen.learn.engine import pending_path
 from token_sparen.mechanisms import loopguard, prune, tracking
 from token_sparen.store import keycache, session
@@ -222,8 +223,19 @@ def prune_cycle(env: dict[str, str], proj: Path, tmp_path: Path) -> None:
     doc = json.loads((_pdir(env, proj) / prune.PRUNE_FILE).read_text(encoding="utf-8"))
     assert doc["pending"] is True
     make_idle(env, proj)
-    # the next session starts after an idle gap: applied before its first request
-    hook(env, "SessionStart", "p4", source="startup")
+    # the next session starts after an idle gap: it spawns the detached `prune apply` (rules
+    # are never written inside the latency-capped hook), before its first request
+    spawned: list[list[str]] = []
+    real = overlay.POPEN
+    overlay.POPEN = lambda args, **kw: spawned.append(list(args))  # type: ignore[assignment]
+    try:
+        hook(env, "SessionStart", "p4", source="startup")
+    finally:
+        overlay.POPEN = real
+    assert not settings_file(proj).exists()
+    apply = [a[a.index("prune") :] for a in spawned if "prune" in a and "apply" in a]
+    assert apply == [["prune", "apply", "--project", str(proj), "--idle-checked"]]
+    assert cli(apply[0]) == 0
     assert deny(proj) == ["mcp__alpha"]
 
 

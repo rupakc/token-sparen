@@ -127,6 +127,13 @@ def build_parser() -> argparse.ArgumentParser:
     _project_opt(pr_sub.add_parser("status", help="state, pruned tools and candidates"))
     _project_opt(pr_sub.add_parser("enable", help="opt this project in (user action)"))
     _project_opt(pr_sub.add_parser("disable", help="opt out and restore every pruned tool"))
+    ap = pr_sub.add_parser("apply", help="write pending deny rules now if the project is idle")
+    ap.add_argument(
+        "--idle-checked",
+        action="store_true",
+        help="the caller (SessionStart) already found the project idle",
+    )
+    _project_opt(ap)
     rs = pr_sub.add_parser("restore", help="restore <tool> now, or --all (exact revert)")
     rs.add_argument("tool", nargs="?")
     rs.add_argument("--all", action="store_true", help="remove every deny rule we wrote")
@@ -1112,6 +1119,17 @@ def _prune_cmd(args: argparse.Namespace) -> int:
             print("note: this project's token-sparen.toml sets [prune] allow = false")
         if settings.git_exposure(project) == "unignored":
             print(f"warning: {target} is not covered by .gitignore; add it there.")
+        return 0
+    if args.action == "apply":
+        added = prune.apply_pending(
+            home,
+            key,
+            project,
+            params=load_config(project, env).data,
+            env=env,
+            idle_checked=args.idle_checked,
+        )
+        print("token-sparen prune: " + (f"pruned {', '.join(added)}" if added else "nothing to do"))
         return 0
     if args.action == "disable":
         done = prune.disable(home, key, env)

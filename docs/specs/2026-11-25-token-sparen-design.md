@@ -239,6 +239,25 @@ across agents.
 Fix round 3: the failing-test key is the id count plus a hash of the whole sorted id set (no
 first-20 cap).
 
+**2026-11-27 (M3 fix wave A, pruning).** §6.10 as built after the M3 review (B1, M6, minors):
+(1) crash-safe apply: the rules about to be written are journaled in `prune.json`
+(`pending_add`, per settings file, under the store lock) before the settings write and moved to
+`owned` after it; every read of the store reconciles a leftover journal (present in the file ->
+ours, absent -> dropped), and a journaled rule is never recorded as the user's. Only rules absent
+from the file are journaled. (2) New deny rules are written only by a detached process (the
+spawned fold or `token-sparen prune apply`), never inside a latency-capped hook: SessionStart
+only restores (policy revert) and shows notices, and after an idle gap (measured before the
+session counts as active) spawns `prune apply --idle-checked` for `pending` rules; a fold inside
+the SessionStart hook leaves new rules `pending`. (3) Lease: a pruned rule accrues no evidence
+while pruned (its "unused" would be produced by the pruning); each prune is a lease of
+`[prune] lease_sessions` (15) folded sessions of that checkout, after which the rule is restored
+without regret for at least one session and pruned again only on fresh evidence (`min_sessions`
+un-pruned sessions spanning `min_prompts` prompts). A project may only lower `lease_sessions`.
+(4) git missing or timing out counts as exposed: the settings file is not written. (5) The
+`.token-sparen.bak` backup is refreshed at the start of each apply in which token-sparen owns no
+rule in that file. (6) The restore message no longer claims mid-session availability:
+"`X` is no longer denied in <file>; Claude Code may need a new session to show it again."
+
 ---
 
 ## 1. Intent and why

@@ -39,8 +39,23 @@ real path (``files``). Hooks and the fold act on the current checkout's file onl
 
 **When.** Rules change the tool list, which invalidates the prompt cache, so they are written
 only when the project has been idle ``>= idle_minutes`` (``tracking.last_active``: session
-starts, prompts and tool calls of any session, throttled): at fold, or (``pending``) at the next
-session start after such an idle gap, before its first request. Restores never wait.
+starts, prompts and tool calls of any session, throttled), and only by a detached process (the
+fold, or ``prune apply``), never inside a latency-capped hook: a fold that finds the project
+busy, or runs inside a hook, leaves the rules ``pending``; the next session start after an idle
+gap (measured before that session counts as active) spawns ``prune apply --idle-checked``.
+Restores never wait.
+
+**Crash safety.** Before a settings write the rules are journaled in the file's record
+(``pending_add``, written under the store lock); after it they move to ``owned``. Every read of
+the store reconciles a leftover journal (the process was killed in between): a journaled rule
+present in the settings file is ours (``owned``), an absent one is dropped. A journaled rule is
+never classified as the user's (``foreign``). Only rules absent from the file are journaled.
+
+**Lease.** A pruned tool is not in the model's list, so "unused" while pruned is produced by the
+intervention itself: pruned rules accrue no evidence. Each prune is a lease of
+``lease_sessions`` folded sessions of that checkout; then the rule is restored (no regret) for
+at least one session so its use is observed again, and it is pruned again only on fresh
+evidence (``min_sessions`` un-pruned sessions spanning ``min_prompts`` prompts).
 
 **Recovery.** SessionStart shows one line (to the model and the user) naming the pruned tools and
 the restore command (the plugin's own launcher when ``CLAUDE_PLUGIN_ROOT`` is known; pre-approved
@@ -57,7 +72,7 @@ import hashlib
 import os
 import re
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -132,10 +147,12 @@ class DenyWriter(Protocol):
     def settings_file(self, project_dir: Path) -> Path: ...
 
     def exposure(self, project_dir: Path) -> str | None:
-        """``"tracked"`` (never write), ``"unignored"`` (warn) or None."""
+        """``"tracked"`` / ``"unknown"`` (never write), ``"unignored"`` (warn) or None."""
         ...
 
-    def add(self, project_dir: Path, rules: Sequence[str]) -> WriteResult: ...
+    def add(
+        self, project_dir: Path, rules: Sequence[str], fresh_backup: bool = False
+    ) -> WriteResult: ...
 
     def remove(
         self,
@@ -173,6 +190,7 @@ class Settings:
     idle_s: float
     tau: float
     ucb_q: float
+    lease: int = 15
 
 
 def _real(raw: object, default: float, lo: float, hi: float) -> float:
@@ -199,6 +217,7 @@ def settings(params: Mapping[str, Any] | None, user: Mapping[str, Any] | None = 
         idle_s=_real(p.get("idle_minutes"), 60.0, 0.0, 1e6) * 60.0,
         tau=_real(p.get("tau"), 0.01, 0.0, 0.5),
         ucb_q=_real(p.get("ucb_q"), 0.95, 0.51, 0.999),
+        lease=int(_real(p.get("lease_sessions"), 15, 1, 1e6)),
     )
 
 
@@ -387,11 +406,20 @@ def ucb(entry: Mapping[str, Any], s: Settings) -> float:
     return _beta(entry).ucb(s.ucb_q)
 
 
+def _fresh_ok(entry: Mapping[str, Any], s: Settings) -> bool:
+    """After a lease ended: enough evidence from un-pruned sessions since then."""
+    fresh = entry.get("fresh")
+    if not isinstance(fresh, dict):
+        return True
+    return _int(fresh.get("s")) >= s.min_sessions and _int(fresh.get("p")) >= s.min_prompts
+
+
 def ready(entry: Mapping[str, Any], s: Settings) -> bool:
     return (
         _int(entry.get("s")) >= s.min_sessions
         and _int(entry.get("p")) >= s.min_prompts
         and ucb(entry, s) <= s.tau
+        and _fresh_ok(entry, s)
     )
 
 
@@ -404,7 +432,8 @@ def plan(doc: Mapping[str, Any], s: Settings, fkey: str) -> list[str]:
         return []
     entry = _files(doc).get(fkey)
     foreign = _strs(entry.get("foreign")) if isinstance(entry, dict) else []
-    skip = set(owned_in(doc, fkey)) | set(foreign)
+    journal = _strs(entry.get("pending_add")) if isinstance(entry, dict) else []
+    skip = set(owned_in(doc, fkey)) | set(foreign) | set(journal)
     return sorted(
         name
         for name, row in tools.items()
@@ -436,13 +465,19 @@ def observe_session(doc: dict[str, Any], inv: ToolInventory, s: Settings, fkey: 
             del tools[name]  # used now: protected for good
     if inv.prompts <= 0:
         return attempted
-    for rule in candidate_names(available) | set(pruned):
+    # a pruned rule is not in the model's list: "unused" would be produced by the pruning
+    # itself, so it accrues no evidence while pruned here (review M6)
+    for rule in candidate_names(available) - set(pruned):
         if not is_candidate(rule, doc, s) or rule in attempted:
             continue
         entry = _entry(doc, rule)
         entry["s"] = _int(entry.get("s")) + 1
         entry["p"] = _int(entry.get("p")) + inv.prompts
         entry["r"] = _observe(_beta(entry), 0.0, inv.prompts).to_list()
+        fresh = entry.get("fresh")
+        if isinstance(fresh, dict):
+            fresh["s"] = _int(fresh.get("s")) + 1
+            fresh["p"] = _int(fresh.get("p")) + inv.prompts
     return attempted
 
 
@@ -525,6 +560,39 @@ def _notice(entry: dict[str, Any], text: str) -> None:
         entry["notices"] = [*notes, text][-MAX_NOTICES:]
 
 
+def reconcile(doc: dict[str, Any], writer: DenyWriter | None) -> bool:
+    """Settle a journal (``pending_add``) a killed apply left: a journaled rule present in its
+    settings file is ours, an absent one is dropped; never the user's. A file that cannot be
+    read keeps its journal (decided at a later read). Returns whether ``doc`` changed."""
+    if writer is None:
+        return False
+    changed = False
+    for entry in _files(doc).values():
+        if not isinstance(entry, dict) or not _strs(entry.get("pending_add")):
+            continue
+        if not isinstance(entry.get("dir"), str):
+            continue
+        current = writer.present(Path(entry["dir"]))
+        if current is None:
+            continue
+        mine = _strs(entry.get("owned"))
+        new = [r for r in _strs(entry.get("pending_add")) if r in current and r not in mine]
+        entry["owned"] = [*mine, *new]
+        lease = _lease(entry)
+        for rule in new:
+            lease[rule] = 0
+        entry.pop("pending_add", None)
+        changed = True
+    return changed
+
+
+def _lease(entry: dict[str, Any]) -> dict[str, Any]:
+    raw = entry.get("lease")
+    if not isinstance(raw, dict):
+        raw = entry["lease"] = {}
+    return raw
+
+
 def _idle(home: Path, project_key: str, s: Settings) -> bool:
     _, fresh = tracking.last_active(home, project_key, s.idle_s)
     return not fresh
@@ -553,6 +621,9 @@ def _restore_file(
         log_error(env, "prune", f"restore: {res.message}")
         return []
     entry["owned"] = [r for r in mine if r not in want]
+    lease = _lease(entry)
+    for rule in want:
+        lease.pop(rule, None)
     if cleanup:
         entry["created"] = {}
     if reason is not None:
@@ -578,11 +649,13 @@ def _restore_all(
 
 def _apply(
     doc: dict[str, Any],
+    path: Path,
     project_dir: Path,
     rules: Sequence[str],
     writer: DenyWriter,
     env: Mapping[str, str],
 ) -> list[str]:
+    """Write ``rules`` (the caller holds the store lock on ``path``): journal, write, record."""
     doc["pending"] = False
     target = writer.settings_file(project_dir)
     entry = _file(doc, file_key(target), project_dir)
@@ -594,7 +667,25 @@ def _apply(
             f"(its rules would be committed); untrack it or run `{CLI} prune disable`.",
         )
         return []
-    res = writer.add(project_dir, rules)
+    if exposure == "unknown":
+        _notice(
+            entry,
+            f"token-sparen: git could not tell whether {target} is tracked (git missing or too "
+            "slow), so tool pruning did not write it; it tries again at a later fold.",
+        )
+        return []
+    mine = _strs(entry.get("owned"))
+    present = writer.present(project_dir) or set()
+    already = [r for r in rules if r in present]  # the user's own rules: never journaled
+    todo = [r for r in rules if r not in present]
+    if already:
+        entry["foreign"] = sorted(set(_strs(entry.get("foreign"))) | set(already))
+    if not todo:
+        return []
+    entry["pending_add"] = todo
+    jsonstore.write_locked(path, doc)  # the intent is on disk before the settings write
+    res = writer.add(project_dir, todo, fresh_backup=not mine)
+    entry.pop("pending_add", None)
     if not res.ok:
         log_error(env, "prune", f"apply: {res.message}")
         if entry.get("refused") != res.message:
@@ -602,9 +693,15 @@ def _apply(
         entry["refused"] = res.message
         return []
     entry.pop("refused", None)
-    mine = _strs(entry.get("owned"))
     entry["foreign"] = sorted(set(_strs(entry.get("foreign"))) | set(res.skipped))
     entry["owned"] = [*mine, *(r for r in res.changed if r not in mine)]
+    lease = _lease(entry)
+    tools = _tools(doc)
+    for rule in res.changed:
+        lease[rule] = 0
+        row = tools.get(rule)
+        if isinstance(row, dict):
+            row.pop("fresh", None)
     old = _created(entry)
     entry["created"] = {
         k: old.get(k, False) or res.created.get(k, False) for k in {*old, *res.created}
@@ -624,6 +721,36 @@ def _apply(
     return res.changed
 
 
+def _end_leases(
+    doc: dict[str, Any],
+    fkey: str,
+    s: Settings,
+    writer: DenyWriter,
+    env: Mapping[str, str],
+) -> None:
+    """One more folded session for each rule pruned in this checkout; a lease that reached
+    ``s.lease`` sessions is restored (no regret) and needs fresh evidence to be pruned again."""
+    entry = _files(doc).get(fkey)
+    if not isinstance(entry, dict):
+        return
+    lease = _lease(entry)
+    due: list[str] = []
+    for rule in _strs(entry.get("owned")):
+        lease[rule] = _int(lease.get(rule)) + 1
+        if lease[rule] >= s.lease:
+            due.append(rule)
+    done = _restore_file(doc, fkey, due, None, writer, env)
+    for rule in done:
+        _entry(doc, rule)["fresh"] = {"s": 0, "p": 0}
+    if done:
+        _notice(
+            entry,
+            f"token-sparen: the lease on pruned {', '.join(done)} ended after {s.lease} "
+            "sessions; restored so its use is observed again (pruned again only on fresh "
+            "evidence).",
+        )
+
+
 def _check_owned(doc: dict[str, Any], project_dir: Path, fkey: str, writer: DenyWriter) -> None:
     """A rule of ours the user deleted is a restore (regret, kept); we no longer own it."""
     mine = owned_in(doc, fkey)
@@ -634,7 +761,11 @@ def _check_owned(doc: dict[str, Any], project_dir: Path, fkey: str, writer: Deny
         return
     gone = [r for r in mine if r not in current]
     if gone:
-        _file(doc, fkey, project_dir)["owned"] = [r for r in mine if r in current]
+        entry = _file(doc, fkey, project_dir)
+        entry["owned"] = [r for r in mine if r in current]
+        lease = _lease(entry)
+        for rule in gone:
+            lease.pop(rule, None)
         for rule in gone:
             _regret(doc, rule, "removed by the user")
 
@@ -654,10 +785,12 @@ def fold_session(
     timeout: float | None = None,
     transcript_key: str = "transcript",
     project_dir_key: str = "project_dir",
+    apply: bool = True,
 ) -> list[str]:
     """Fold step: history seeding (once), evidence from the session transcript, restores for
-    attempted uses, then the idle-gated apply for this checkout. Returns the rules added.
-    Raises only ``jsonstore.StoreBusy``."""
+    attempted uses, lease ends, then the idle-gated apply for this checkout. Returns the rules
+    added. ``apply`` False (folded inside a hook): no settings write but restores; new rules stay
+    ``pending``. Raises only ``jsonstore.StoreBusy``."""
     s = settings_for(params, env)
     path = store_path(home, project_key)
     raw_dir = staged.get(project_dir_key)
@@ -672,6 +805,7 @@ def fold_session(
         if all_owned(doc):
             with jsonstore.locked(path, timeout):
                 doc = _fresh(jsonstore.read_locked(path, {}, env))
+                reconcile(doc, writer)
                 _restore_all(doc, None, writer, env)
                 jsonstore.write_locked(path, doc)
         return []
@@ -682,7 +816,10 @@ def fold_session(
     with jsonstore.locked(path, timeout):
         doc = _fresh(jsonstore.read_locked(path, {}, env))
         if fold_id in _applied(doc):
+            if reconcile(doc, writer):
+                jsonstore.write_locked(path, doc)
             return []
+        reconcile(doc, writer)
         if transcript is not None and doc.get("seeded") is not True:
             dirs = [*_history_dirs(writer, project_dir, env), transcript.parent]
             seed(doc, history_files(list(dict.fromkeys(dirs))))
@@ -692,15 +829,51 @@ def fold_session(
             _restore_file(doc, fkey, attempted, "attempted use", writer, env)
         stale = [r for r in owned_in(doc, fkey) if not is_candidate(r, doc, s)]
         _restore_file(doc, fkey, stale, None, writer, env)  # e.g. `builtins` switched off
+        if inv is not None and apply:
+            _end_leases(doc, fkey, s, writer, env)
         added: list[str] = []
         todo = plan(doc, s, fkey)
         if todo:
-            if _idle(home, project_key, s):
-                added = _apply(doc, project_dir, todo, writer, env)
+            if apply and _idle(home, project_key, s):
+                added = _apply(doc, path, project_dir, todo, writer, env)
             else:
                 doc["pending"] = True
         doc["applied"] = [*_applied(doc), fold_id][-APPLIED_MAX:]
         jsonstore.write_locked(path, doc)
+    return added
+
+
+def apply_pending(
+    home: Path,
+    project_key: str,
+    project_dir: Path,
+    *,
+    params: Mapping[str, Any] | None,
+    env: Mapping[str, str],
+    idle_checked: bool = False,
+    timeout: float | None = None,
+) -> list[str]:
+    """``prune apply`` (detached, spawned by SessionStart): write the ``pending`` rules of this
+    checkout when the project is idle (``idle_checked``: the spawning hook measured it before its
+    session counted as active). Returns the rules added."""
+    s = settings_for(params, env)
+    path = store_path(home, project_key)
+    writer = WRITER
+    if writer is None or not path.is_file():
+        return []
+    added: list[str] = []
+    with jsonstore.locked(path, timeout):
+        doc = _fresh(jsonstore.read_locked(path, {}, env))
+        changed = reconcile(doc, writer)
+        due = active(doc, s) and doc.get("pending") is True
+        if due and (idle_checked or _idle(home, project_key, s)):
+            todo = plan(doc, s, file_key(writer.settings_file(project_dir)))
+            if todo:
+                added = _apply(doc, path, project_dir, todo, writer, env)
+            doc["pending"] = False
+            changed = True
+        if changed:
+            jsonstore.write_locked(path, doc)
     return added
 
 
@@ -732,6 +905,7 @@ def disable(home: Path, project_key: str, env: Mapping[str, str]) -> list[str]:
         doc["enabled"] = False
         doc["pending"] = False
         if writer is not None:
+            reconcile(doc, writer)
             done.extend(_restore_all(doc, None, writer, env))
         return doc
 
@@ -757,6 +931,7 @@ def restore(
         return []
     with jsonstore.locked(path, timeout):
         doc = _fresh(jsonstore.read_locked(path, {}, env))
+        reconciled = reconcile(doc, writer)
         if project_dir is None:
             done: list[str] = []
             for fkey in list(_files(doc)):
@@ -765,7 +940,7 @@ def restore(
         else:
             fkey = file_key(writer.settings_file(project_dir))
             done = _restore_file(doc, fkey, rules, reason, writer, env)
-        if done:
+        if done or reconciled:
             jsonstore.write_locked(path, doc)
     return done
 
@@ -787,11 +962,12 @@ def restore_everywhere(
         return out
     with jsonstore.locked(path):
         doc = _fresh(jsonstore.read_locked(path, {}, env))
+        reconciled = reconcile(doc, writer)
         for fkey in list(_files(doc)):
             done = _restore_file(doc, fkey, rules, reason, writer, env)
             if done:
                 out[fkey] = done
-        if out:
+        if out or reconciled:
             jsonstore.write_locked(path, doc)
     return out
 
@@ -807,7 +983,10 @@ def holders(doc: Mapping[str, Any], tool: str) -> dict[str, list[str]]:
 
 
 def read_doc(home: Path, project_key: str, env: Mapping[str, str]) -> dict[str, Any]:
-    return jsonstore.read(store_path(home, project_key), {}, env)
+    """The store as of now, a killed apply's journal reconciled in memory."""
+    doc = jsonstore.read(store_path(home, project_key), {}, env)
+    reconcile(doc, WRITER)
+    return doc
 
 
 def pruned_count(
@@ -818,6 +997,7 @@ def pruned_count(
     if not path.is_file():
         return 0
     doc = jsonstore.read(path, {}, env)
+    reconcile(doc, WRITER)
     if settings_file is None:
         return len(all_owned(doc))
     return len(owned_in(doc, file_key(settings_file)))
@@ -892,7 +1072,9 @@ def _hook_doc(event: Event, env: Mapping[str, str]) -> tuple[Path, dict[str, Any
     if writer is None or not path.is_file():
         return None
     fkey = file_key(writer.settings_file(event.project_dir))
-    return path, jsonstore.read(path, {}, env), fkey
+    doc = jsonstore.read(path, {}, env)
+    reconcile(doc, writer)  # in memory; a restore settles it on disk under the lock
+    return path, doc, fkey
 
 
 def _restore_now(
@@ -915,11 +1097,20 @@ def _restore_now(
         return []
 
 
-def _restored_message(rules: Sequence[str], why: str) -> str:
+def _restored_message(rules: Sequence[str], why: str, where: Path | None = None) -> str:
+    """No claim that the host re-reads its deny rules mid-session (unverified)."""
+    names = ", ".join(f"`{r}`" for r in rules)
+    verb = "is" if len(rules) == 1 else "are"
+    place = f" in {where}" if where is not None else ""
     return (
-        f"token-sparen restored {', '.join(rules)} ({why}); it was pruned as unused here "
-        "and is available again from the next request."
+        f"token-sparen restored {', '.join(rules)} ({why}): {names} {verb} no longer denied"
+        f"{place}; Claude Code may need a new session to show it again."
     )
+
+
+def _where(event: Event) -> Path | None:
+    writer = WRITER
+    return None if writer is None else writer.settings_file(event.project_dir)
 
 
 def on_tool(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Action:
@@ -938,7 +1129,8 @@ def on_tool(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Action:
     done = _restore_now(event, rules, "attempted use", env)
     if not done:
         return Action()
-    return Action(user_message=_restored_message(done, "the agent tried to use it"))
+    msg = _restored_message(done, "the agent tried to use it", _where(event))
+    return Action(user_message=msg)
 
 
 def on_tool_search(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Action:
@@ -953,8 +1145,9 @@ def on_tool_search(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Acti
     done = _restore_now(event, hits, "attempted use", env)
     if not done:
         return Action()
-    msg = _restored_message(done, "the agent searched for it")
-    return Action(inject_context=f"{msg} Run ToolSearch again to load it.", user_message=msg)
+    msg = _restored_message(done, "the agent searched for it", _where(event))
+    hint = " Run ToolSearch again; if it is not listed yet, it needs a new session."
+    return Action(inject_context=msg + hint, user_message=msg)
 
 
 def on_prompt(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Action:
@@ -966,7 +1159,7 @@ def on_prompt(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Action:
     done = _restore_now(event, hits, "user mention", env)
     if not done:
         return Action()
-    msg = _restored_message(done, "you named it")
+    msg = _restored_message(done, "you named it", _where(event))
     return Action(inject_context=msg, user_message=msg)
 
 
@@ -987,9 +1180,17 @@ def notice_line(rules: Sequence[str], env: Mapping[str, str] | None = None) -> s
     return line
 
 
-def on_session_start(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Action:
-    """Deferred apply after an idle gap (before ``tracking`` records this session as active),
-    a policy revert, then the one-line notice and any stored notices."""
+def on_session_start(
+    event: Event,
+    cfg: Config,
+    *,
+    env: Mapping[str, str],
+    spawn: Callable[[list[str]], object] | None = None,
+) -> Action:
+    """Never writes a deny rule (latency-capped hook): a policy revert (a restore), and, after
+    an idle gap measured before ``tracking`` records this session as active, ``spawn`` of the
+    detached ``prune apply --idle-checked`` for ``pending`` rules; then the one-line notice and
+    any stored notices."""
     found = _hook_doc(event, env)
     if found is None:
         return Action()
@@ -999,20 +1200,17 @@ def on_session_start(event: Event, cfg: Config, *, env: Mapping[str, str]) -> Ac
     home = state_home(env)
     want_apply = active(doc, s) and doc.get("pending") is True
     want_revert = not active(doc, s) and bool(all_owned(doc))
-    if writer is not None and (want_revert or (want_apply and _idle(home, event.project_key, s))):
+    if writer is not None and want_revert:
         try:
             with jsonstore.locked(path, HOOK_LOCK_S):
                 doc = _fresh(jsonstore.read_locked(path, {}, env))
-                if want_revert:
-                    _restore_all(doc, None, writer, env)
-                else:
-                    todo = plan(doc, s, fkey)
-                    if todo:
-                        _apply(doc, event.project_dir, todo, writer, env)
-                    doc["pending"] = False
+                reconcile(doc, writer)
+                _restore_all(doc, None, writer, env)
                 jsonstore.write_locked(path, doc)
         except (jsonstore.StoreBusy, OSError) as exc:
             log_error(env, "prune", f"session start: {type(exc).__name__}: {exc}")
+    elif want_apply and spawn is not None and _idle(home, event.project_key, s):
+        spawn(["prune", "apply", "--project", str(event.project_dir), "--idle-checked"])
     entry = _files(doc).get(fkey)
     notes = [render(n, env) for n in _strs(entry.get("notices"))] if isinstance(entry, dict) else []
     if notes:

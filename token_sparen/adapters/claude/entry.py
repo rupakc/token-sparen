@@ -229,8 +229,12 @@ def _on_session_active(event: Event, cfg: Config) -> Action:
 
 
 def _on_prune_start(event: Event, cfg: Config) -> Action:
-    """Deferred pruning (idle gap measured before this session counts as active) + notice."""
-    return prune.on_session_start(event, cfg, env=HOOK_ENV.get())
+    """Notice + revert; after an idle gap (measured before this session counts as active) the
+    pending rules are written by a detached ``prune apply``, never inside this hook."""
+    env = HOOK_ENV.get()
+    return prune.on_session_start(
+        event, cfg, env=env, spawn=lambda args: overlay.spawn_fold(args, env)
+    )
 
 
 def _on_prune_prompt(event: Event, cfg: Config) -> Action:

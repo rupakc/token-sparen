@@ -1401,3 +1401,16 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   this task).
 - README: an "Across sessions" overview table (facts, pruning, loop guard, each with its off
   switch) and off-switch rows for the loop guard and pruning in "Turning it off".
+
+## 2026-11-27 M3 fix wave A: pruning (controller rulings on review B1, M6, minors 3/4/8/9)
+- Settings writes for pruning are journaled (`pending_add` per settings file in `prune.json`)
+  before the write and reconciled on every store read; a journaled rule is never `foreign`.
+  `created` containers are unknown for a reconciled rule, so its restore leaves the (empty)
+  containers in place rather than guessing.
+- New deny rules are written only by the fold or the spawned `prune apply --idle-checked`
+  (SessionStart measures idleness before its session counts, then spawns); a fold inside the
+  SessionStart hook (`overlay.fold(in_hook=True)`) leaves them `pending` and ends no lease.
+- Pruned rules accrue no evidence; lease `[prune] lease_sessions = 15` (project: lower only),
+  then a no-regret restore and a `fresh` gate (min_sessions / min_prompts un-pruned).
+- git missing/timeout -> exposure "unknown" -> never write. Backup refreshed when we own no rule
+  in the file. Restore message makes no mid-session availability claim.

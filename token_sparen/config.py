@@ -209,6 +209,7 @@ PROJECT_POLICY: list[tuple[tuple[str, ...], str, Any]] = [
     (("facts", "max_tokens"), "min", COUNT),
     (("facts", "**"), "user_only", None),  # withhold_floor, activate_lcb, retire_ucb
     (("prune", "allow"), "false_only", None),  # a project may only switch pruning off
+    (("prune", "lease_sessions"), "min", POSITIVE),  # ... or restore pruned tools sooner
     (("prune", "**"), "user_only", None),  # enabling and every threshold are the user's
     (("ope", "**"), "user_only", None),  # offline evaluation thresholds are the user's
     (("loopguard", "enabled"), "false_only", None),  # a project may switch the guard off

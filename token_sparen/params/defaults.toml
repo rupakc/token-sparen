@@ -283,6 +283,7 @@ min_prompts = 15      # ... spanning at least this many prompts
 idle_minutes = 60     # apply only when the project was idle this long (prompt cache)
 tau = 0.01            # high tier: regret ucb must be <= tau
 ucb_q = 0.95
+lease_sessions = 15   # a prune is a lease: restored after this many sessions to observe use again
 
 [loopguard]
 # Failure-loop guard (spec 6.11): within one turn and per agent, the same error k times (k
