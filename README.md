@@ -158,10 +158,11 @@ All of this is on by default. Nothing is sent anywhere.
   undone 2× this turn (<id>). ...]`. The tool output itself is never changed. At most one such
   line per agent and turn; if it happens again you get a terminal notice instead (no model
   tokens). How many repeats it waits for (5, 3 or 2) is learned, starting at the most patient
-  setting: a line counts as useful only when it came after at least 3 repeats and the error
-  then stops recurring within the agent's next 5 tool calls **more often than it stops by
-  itself** (that natural rate is measured on turns where an error reached 3 repeats without a
-  line, per project with a cross-project fallback, and assumed high, 80 %, until measured), and
+  setting. Only a line that was actually shown is judged: useful when the error then stops
+  recurring within the agent's next 5 tool calls. A less patient setting is used only once its
+  lines clearly end loops more often than loops end by themselves (measured on turns where an
+  error reached 3 repeats without a line, per project with a cross-project fallback, and
+  assumed high, 80 %, until measured); until then it is tried in about 5 % of loops. A line counts
   as harmful when you interrupt or your next prompt starts with stop, wait, undo, revert,
   "that's wrong" or "no, don't" (a prompt of at most 8 words may contain it anywhere). Only
   deterministic checks, no LLM. Turn it off with `loopguard.enabled = false`; `[learn.hold] loopguard = true`
@@ -214,14 +215,15 @@ Everything stays on your machine, but some of it is plain text you should know a
   contain anything a command printed), plus a `.gitignore` containing `*` so the folder is never
   committed. Created on the first compression in that project.
 - `~/.token-sparen/` (override with `TOKEN_SPAREN_HOME`; an override inside the current project
-  or its git work tree, or (POSIX) not owned by you, is ignored with one line in the default
-  root's `logs/errors.jsonl`, because a repository's committed Claude Code settings can set
+  or its git work tree (however it is spelled), or (POSIX) not owned by you, is ignored with one
+  line in the default root's `logs/errors.jsonl`, because a repository's committed Claude Code settings can set
   environment variables; the statusline launcher applies the same rule to `TOKEN_SPAREN_ROOT`):
   - `config.toml` (yours, optional), `trusted_extensions.json`, `statusline_install.json` (records
     your settings file's path and original `statusLine`), `statusline.sh` (launcher copy),
     `windows.json` (context window per session), `project_keys.json` (index from project to hash
     key), `config_safety_warned.json` (which ignored project-config values were already reported:
-    a short hash of the project path, the key and the value), `prune_rules.json` (only with
+    a short hash of the project path, the key and the value; and a short hash of an ignored
+    `TOKEN_SPAREN_HOME` / `TOKEN_SPAREN_ROOT` value), `prune_rules.json` (only with
     [tool pruning](#tool-pruning-opt-in): per checkout the **path of its settings file and of the
     checkout**, its project key, the deny rules token-sparen wrote there and what it created,
     rules about to be written, and pending notices; kept here, beside the statusline record, so a

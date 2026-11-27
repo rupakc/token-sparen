@@ -342,6 +342,28 @@ nor their git work-tree root (found by looking for `.git` upwards, no subprocess
 that contains the user's home is not treated as a project), and on POSIX only if the path or its
 nearest existing parent is owned by the current uid. Otherwise the default root is used and the
 rejection is logged once per process to its `errors.jsonl`.
+Fix round 1 (review C-1, I-2, I-3; replaces (1) above): `max(0, broken - p0)` is dropped (it
+paid a no-effect redirect p0(1 - p0) on average, and savings never decided against the safe arm,
+whose S is 0 by definition, so regret feasibility alone let `standard` win). Now: (a) only a
+delivered redirect is observed: an error-loop redirect at >= 3 occurrences observes savings =
+broken in {0, 1} (unbiased Bernoulli); a redirect at 2 occurrences (eager) or for an oscillation
+observes regret only; a decision whose redirect was never delivered is dropped from pending
+(`Engine.forget`) and records no savings and no regret-0 observation. (b) The natural break rate
+is its own Beta, as observed in (1) (prior 0.8 / 10, project + unfolded session, global joining
+below 5 observations; the global entry ages like other global entries). (c) Natural-rate gate
+(`DecisionPoint.natural_gate`, the loop guard): an intervening arm competes in the Thompson draw
+only when lcb_0.9 of its savings posterior > ucb_0.9 of the natural-rate posterior; the draw's
+usual regret constraint (sampled regret <= tau) still applies. Otherwise the decision is
+`patient`. For a gated point the propensity floor (medium 0.05) explores the ladder's
+intervening arms uniformly instead of choosing the safe arm (the safe arm is already the
+default), so non-safe arms are reached only by the floor and the ladder (`eager` only once
+`standard` is established); propensities stay exact. A `[learn.hold]` hold explores nothing.
+(d) §9 / state root: "inside the project" is decided by file identity (`st_dev`, `st_ino`) of
+the target's existing ancestors against the project / cwd / work-tree roots, so case variants on
+case-insensitive file systems, `..` spellings and directory aliases cannot bypass it; the
+statusline launcher uses the same rule. The rejection line is written once per (variable, value)
+across hook processes (marker in `config_safety_warned.json`); `TOKEN_SPAREN_TEST_SEED` is
+ignored when the state root is rejected.
 
 ---
 

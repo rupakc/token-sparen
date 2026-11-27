@@ -115,6 +115,61 @@ def test_project_dir_containing_the_user_home_is_not_a_repository(
     assert state_home(env) == target
 
 
+def _case_insensitive(base: Path) -> bool:
+    probe = base / "CaseProbe"
+    probe.mkdir()
+    try:
+        return (base / "caseprobe").exists()
+    finally:
+        probe.rmdir()
+
+
+def test_case_and_dotdot_spellings_cannot_bypass(
+    tmp_path: Path, user_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix round 1 (I-3): compared by file identity, so `../myrepo/.ts` from `MyRepo` (a
+    case-insensitive file system, the macOS default) or a symlinked alias of the checkout is
+    still inside the project."""
+    repo = tmp_path / "MyRepo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".ts").mkdir()
+    monkeypatch.chdir(repo)
+    env = {"CLAUDE_PROJECT_DIR": str(repo)}
+    default = user_home / ".token-sparen"
+    assert state_home({**env, "TOKEN_SPAREN_HOME": "../MyRepo/.ts"}) == default
+    if _case_insensitive(tmp_path):
+        for spelling in ("../myrepo/.ts", str(tmp_path / "MYREPO" / ".ts")):
+            assert state_home({**env, "TOKEN_SPAREN_HOME": spelling}) == default, spelling
+    else:  # simulate the alias on a case-sensitive file system
+        (tmp_path / "myrepo").symlink_to(repo)
+        assert state_home({**env, "TOKEN_SPAREN_HOME": "../myrepo/.ts"}) == default
+    assert state_home({**env, "TOKEN_SPAREN_HOME": "../MyRepo/.ts/../../state"}) == Path(
+        "../MyRepo/.ts/../../state"
+    )
+
+
+def test_rejection_logged_once_across_processes(tmp_path: Path, user_home: Path) -> None:
+    repo = _repo(tmp_path)
+    env = {"TOKEN_SPAREN_HOME": str(repo / ".ts"), "CLAUDE_PROJECT_DIR": str(repo)}
+    for _ in range(3):
+        config.reset_env_path_checks()  # a fresh hook process each time
+        state_home(env)
+    assert len(_errors(user_home)) == 1
+
+
+@pytest.mark.real_seed
+def test_test_seed_ignored_with_a_rejected_home(tmp_path: Path, user_home: Path) -> None:
+    from token_sparen.learn import hookpolicy
+
+    repo = _repo(tmp_path)
+    env = {
+        "TOKEN_SPAREN_HOME": str(repo / ".ts"),
+        "CLAUDE_PROJECT_DIR": str(repo),
+        "TOKEN_SPAREN_TEST_SEED": "1",
+    }
+    assert hookpolicy.test_seed(env) is None
+
+
 # --- the statusline launcher's TOKEN_SPAREN_ROOT ------------------------------------------------
 
 
@@ -158,3 +213,20 @@ def test_launcher_ignores_a_root_inside_the_project(tmp_path: Path, user_home: P
     )
     env["TOKEN_SPAREN_ROOT"] = str(outside)
     assert "OUTSIDE" in _launch({**env, "CLAUDE_PROJECT_DIR": str(repo)}, repo)
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX sh")
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX launcher")
+def test_launcher_root_alias_spelling_is_still_inside(tmp_path: Path, user_home: Path) -> None:
+    repo = tmp_path / "MyRepo"
+    (repo / ".git").mkdir(parents=True)
+    plugin = _plugin_copy(repo / "vendor" / "ts")
+    (plugin / "token_sparen" / "adapters" / "claude" / "statusline.py").write_text(
+        "def main(args):\n    print('PLANTED')\n    return 0\n", encoding="utf-8"
+    )
+    alias = "../myrepo/vendor/ts"
+    if not (tmp_path / "myrepo").exists():
+        (tmp_path / "myrepo").symlink_to(repo)  # case-sensitive FS: simulate the alias
+    base = {k: v for k, v in os.environ.items() if k not in {"CLAUDE_CONFIG_DIR"}}
+    env = {**base, "HOME": str(user_home), "TOKEN_SPAREN_ROOT": alias}
+    assert "PLANTED" not in _launch({**env, "CLAUDE_PROJECT_DIR": str(repo)}, repo)

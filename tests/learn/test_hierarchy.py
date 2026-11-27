@@ -503,3 +503,25 @@ def test_designed_strength_only_where_declared(tmp_path: Path) -> None:
     st2 = StoreChain(KEY, tmp_path / "h")
     p = prior_for(COMPRESSION, {}, "standard", "savings", st2)
     assert p.a + p.b == pytest.approx(K0)
+
+
+def _natural_doc(path: Path, ev: Evidence) -> None:
+    _write(path, {"version": 2, "points": {}, "natural": {"loopguard": ev.to_list()}})
+
+
+def test_natural_posterior_prior_project_and_global(tmp_path: Path) -> None:
+    home = tmp_path / "h"
+    st = StoreChain(KEY, home, "s-1")
+    p = st.natural_posterior("loopguard")
+    assert (p.a, p.b) == pytest.approx((8.0, 2.0))  # prior mean 0.8, strength 10
+    _natural_doc(home / "global" / "posteriors.json", Evidence(0.0, 10.0, 10.0, 0.0))
+    _natural_doc(home / "projects" / KEY / "posteriors.json", Evidence(1.0, 1.0, 2.0, 1.0))
+    p = StoreChain(KEY, home, "s-1").natural_posterior("loopguard")
+    assert (p.a, p.b) == pytest.approx((9.0, 13.0))  # little project data: global joins
+    _natural_doc(home / "projects" / KEY / "posteriors.json", Evidence(1.0, 9.0, 10.0, 1.0))
+    p = StoreChain(KEY, home, "s-1").natural_posterior("loopguard")
+    assert (p.a, p.b) == pytest.approx((9.0, 11.0))  # enough project data: global left out
+    ov = session.session_path(home, KEY, "s-1")
+    _write(ov, {"natural": {"loopguard": Evidence(2.0, 0.0, 2.0, 2.0).to_list()}})
+    p = StoreChain(KEY, home, "s-1").natural_posterior("loopguard")
+    assert (p.a, p.b) == pytest.approx((11.0, 11.0))  # the unfolded session counts

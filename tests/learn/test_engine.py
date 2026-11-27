@@ -533,3 +533,94 @@ def test_pending_decisions_live_outside_the_hot_overlay(tmp_path: Path) -> None:
     hot = json.loads(_overlay(home).read_text("utf-8"))
     assert "pending" not in hot and hot["evidence"]["compression"][FULL_KEY][trim.arm]
     assert _pending_doc(home)["pending"][trim.decision_id][4] == ["savings"]
+
+
+# --- natural-rate gate (loop guard; wave C1 fix round 1) ---------------------------------------
+
+LG_FEATS = {"cat": "shell"}
+
+
+def _observe_natural(eng: Engine, home: Path, broken: float) -> None:
+    from token_sparen.learn.hierarchy import NATURAL_KEY
+    from token_sparen.store import jsonstore
+
+    def fn(state: dict[str, Any]) -> dict[str, Any]:
+        table = state.setdefault(NATURAL_KEY, {})
+        raw = table.get("loopguard")
+        ev = Evidence.from_list(raw) if raw else Evidence(0.0, 0.0, 0.0, 0.0)
+        table["loopguard"] = ev.observe(broken, gamma=1.0, cap=50.0).to_list()
+        return state
+
+    jsonstore.update(_overlay(home), fn, {}, {"TOKEN_SPAREN_HOME": str(home)})
+    eng.stores.invalidate("session")
+
+
+def _simulate(
+    home: Path, p_arm: float, p0: float, n: int, seed: int
+) -> tuple[Counter[str], Engine]:
+    from token_sparen.learn.policy import LOOPGUARD
+
+    eng = _engine(home, seed=seed)
+    rng = random.Random(seed + 1)
+    chosen: Counter[str] = Counter()
+    for _ in range(n):
+        d = eng.decide(LOOPGUARD, LG_FEATS, _ctx(home))
+        if not eng.last_explored:
+            chosen[d.arm] += 1
+        if d.arm == LOOPGUARD.safe_arm:
+            _observe_natural(eng, home, float(rng.random() < p0))
+        else:
+            eng.reward(d.decision_id, float(rng.random() < p_arm), float(rng.random() < 0.01))
+    return chosen, eng
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_loopguard_null_effect_stays_patient(tmp_path: Path, seed: int) -> None:
+    """Redirects that change nothing (break rate == natural rate) never pass the gate: outside
+    floor exploration the patient arm is chosen >= 95 % of the time."""
+    chosen, _ = _simulate(tmp_path / "h", 0.6, 0.6, 200, seed)
+    total = sum(chosen.values())
+    assert total > 150 and chosen["patient"] / total >= 0.95, chosen
+
+
+def test_loopguard_real_effect_becomes_eligible(tmp_path: Path) -> None:
+    from token_sparen.learn.policy import LOOPGUARD
+
+    home = tmp_path / "h"
+    _, eng = _simulate(home, 0.8, 0.4, 300, 5)
+    fresh = _engine(home, seed=9)
+    assert "standard" in fresh.eligible(LOOPGUARD, LG_FEATS), eng.posteriors(LOOPGUARD, LG_FEATS)
+
+
+def test_loopguard_cold_gate_explores_by_floor_only(tmp_path: Path) -> None:
+    from token_sparen.learn.policy import LOOPGUARD
+
+    eng = _engine(tmp_path / "h")
+    assert eng.eligible(LOOPGUARD, LG_FEATS) == []
+    probs = eng.action_probs(LOOPGUARD, LG_FEATS)
+    assert probs == pytest.approx({"patient": 0.95, "standard": 0.05, "eager": 0.0})
+    seen = Counter(eng.choose(LOOPGUARD, LG_FEATS) for _ in range(400))
+    for (arm, p), _count in seen.items():
+        assert p == pytest.approx(probs[arm])
+    assert {a for a, _ in seen} == {"patient", "standard"}
+
+
+def test_loopguard_held_never_explores(tmp_path: Path) -> None:
+    from token_sparen.learn.policy import LOOPGUARD
+
+    eng = _engine(tmp_path / "h", extra={"learn": {"hold": {"loopguard": True}}})
+    assert eng.action_probs(LOOPGUARD, LG_FEATS) == {"patient": 1.0, "standard": 0.0, "eager": 0.0}
+
+
+def test_forget_drops_the_pending_decision(tmp_path: Path) -> None:
+    from token_sparen.learn.policy import LOOPGUARD
+
+    home = tmp_path / "h"
+    eng = _engine(home, extra={"learn": {"floor": {"medium": 1.0}}})
+    d = eng.decide(LOOPGUARD, LG_FEATS, _ctx(home))
+    assert d.arm == "standard" and d.decision_id in _pending_doc(home)["pending"]
+    eng.forget(d.decision_id)
+    assert d.decision_id not in _pending_doc(home)["pending"]
+    eng.reward(d.decision_id, 1.0, 0.0)  # nothing to update any more
+    assert eng.posteriors(LOOPGUARD, LG_FEATS)["standard"][0].n == 0.0
+    eng.forget("unknown")  # never raises

@@ -42,12 +42,25 @@ def newest(paths):
     return max(good, key=mtime) if good else None
 
 
-def real(path):
-    return os.path.normcase(os.path.realpath(path))
+def ident(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
 
 
-def inside(path, root):
-    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+def chain(path):
+    out = set()
+    cur = path
+    while True:
+        i = ident(cur)
+        if i is not None:
+            out.add(i)
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return out
+        cur = parent
 
 
 def work_tree(start):
@@ -63,16 +76,20 @@ def work_tree(start):
 
 def trusted(path):
     """A $TOKEN_SPAREN_ROOT outside the current project (its dir, the cwd and their git work
-    trees; a directory containing the home dir is no project) and, on POSIX, owned by us: a
-    committed settings env must not make the statusline run code from the repository."""
+    trees, compared by file identity; a directory containing the home dir is no project) and,
+    on POSIX, owned by us: a committed settings env must not make the statusline run code from
+    the repository. Same rule as token_sparen.config.env_path."""
     try:
-        target = real(path)
-        home = real(os.path.expanduser("~"))
+        target = os.path.realpath(os.path.join(os.getcwd(), path))
+        home = chain(os.path.realpath(os.path.expanduser("~")))
+        inside = chain(target)
         for raw in (os.environ.get("CLAUDE_PROJECT_DIR") or "", os.getcwd()):
             if not raw:
                 continue
-            for root in (real(raw), work_tree(real(raw))):
-                if root and not inside(home, root) and inside(target, root):
+            base = os.path.realpath(raw)
+            for root in (base, work_tree(base)):
+                i = None if root is None else ident(root)
+                if i is not None and i not in home and i in inside:
                     return False
         if os.name == "posix" and hasattr(os, "getuid"):
             return os.stat(target).st_uid == os.getuid()

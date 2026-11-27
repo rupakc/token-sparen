@@ -53,11 +53,31 @@ def reset_env_path_checks() -> None:
 
 
 def _real(path: str | Path) -> str:
-    return os.path.normcase(os.path.realpath(path))
+    return os.path.realpath(path)
 
 
-def _inside(path: str, root: str) -> bool:
-    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+def _ident(path: str) -> tuple[int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _chain(path: str) -> set[tuple[int, int]]:
+    """File identities of ``path`` and every existing ancestor: compared by identity, not by
+    spelling, so another case (case-insensitive file systems), ``..`` or a hard / bind alias of
+    a directory cannot hide that a path lies inside it."""
+    out: set[tuple[int, int]] = set()
+    cur = path
+    while True:
+        ident = _ident(cur)
+        if ident is not None:
+            out.add(ident)
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return out
+        cur = parent
 
 
 def _work_tree(start: str) -> str | None:
@@ -90,18 +110,20 @@ def _owned(path: str) -> bool:
         return False
 
 
-def _project_roots(env: Mapping[str, str], cwd: str) -> list[str]:
-    """The hook's project directory and cwd and their git work-tree roots, except a directory
-    that contains the user's home (a session started in or above home is no repository)."""
-    user_home = _real(Path.home())
-    out: list[str] = []
+def _project_roots(env: Mapping[str, str], cwd: str) -> set[tuple[int, int]]:
+    """File identities of the hook's project directory and cwd and of their git work-tree
+    roots, except a directory that contains the user's home (a session started in or above home
+    is no repository)."""
+    home_chain = _chain(_real(Path.home()))
+    out: set[tuple[int, int]] = set()
     for raw in (env.get("CLAUDE_PROJECT_DIR") or "", cwd):
         if not raw:
             continue
         base = _real(raw)
         for root in (base, _work_tree(base)):
-            if root and not _inside(user_home, root) and root not in out:
-                out.append(root)
+            ident = None if root is None else _ident(root)
+            if ident is not None and ident not in home_chain:
+                out.add(ident)
     return out
 
 
@@ -122,7 +144,7 @@ def env_path(env: Mapping[str, str], name: str) -> Path | None:
     if ok is None:
         try:
             target = _real(os.path.join(cwd, value) if cwd else value)
-            ok = _owned(target) and not any(_inside(target, r) for r in _project_roots(env, cwd))
+            ok = _owned(target) and not (_chain(target) & _project_roots(env, cwd))
         except (OSError, ValueError):
             ok = False
         if len(_PATH_CHECKS) > 64:
@@ -130,13 +152,35 @@ def env_path(env: Mapping[str, str], name: str) -> Path | None:
         _PATH_CHECKS[key] = ok
         if not ok and (name, value) not in _PATH_LOGGED:
             _PATH_LOGGED.add((name, value))
-            log_error(
-                {},
-                "config",
-                f"{name} ignored (inside the current project or not owned by this user); "
-                "using the default. Set it outside any repository, e.g. in your shell profile.",
-            )
+            _log_rejected(name, value)
     return Path(value) if ok else None
+
+
+def _log_rejected(name: str, value: str) -> None:
+    """One errors.jsonl line per rejected (variable, value), across hook processes (a marker in
+    the default root's ``SAFETY_WARNED_FILE``; every hook is a fresh process). Best effort."""
+    try:
+        path = Path.home() / ".token-sparen" / SAFETY_WARNED_FILE
+        try:
+            seen = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            seen = {}
+        seen = seen if isinstance(seen, dict) else {}
+        slot = f"env:{name}"
+        shown = hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+        if seen.get(slot) == shown:
+            return
+        seen[slot] = shown
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(seen), encoding="utf-8")
+    except Exception:  # noqa: BLE001 - logging must never break a hook
+        return
+    log_error(
+        {},
+        "config",
+        f"{name} ignored (inside the current project or not owned by this user); "
+        "using the default. Set it outside any repository, e.g. in your shell profile.",
+    )
 
 
 def state_home(env: Mapping[str, str]) -> Path:

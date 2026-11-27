@@ -290,6 +290,28 @@ def _natural(doc: object) -> list[tuple[str, Evidence]]:
     return out
 
 
+NATURAL_T_KEY = "natural_t"  # global: last update per point of the natural table (ageing)
+
+
+def _age_natural(doc: dict[str, Any], now: float, max_age: float) -> int:
+    """Halve global natural-rate entries untouched for ``max_age`` seconds, like ``_age``."""
+    table, stamps = doc.get(NATURAL_KEY), doc.get(NATURAL_T_KEY)
+    if not isinstance(table, dict):
+        return 0
+    if not isinstance(stamps, dict):
+        stamps = doc[NATURAL_T_KEY] = {}
+    aged = 0
+    for point in list(table):
+        t = _num(stamps.get(point))
+        if t is None:
+            stamps[point] = now
+        elif now - t > max_age:
+            table[point] = _get(table, point).scaled(0.5).to_list()
+            stamps[point] = now
+            aged += 1
+    return aged
+
+
 def _add_natural(doc: dict[str, Any], natural: list[tuple[str, Evidence]], cap: float) -> None:
     table = doc.get(NATURAL_KEY)
     if not isinstance(table, dict):
@@ -677,7 +699,7 @@ def _global(
     with jsonstore.locked(gpath, timeout):
         gdoc = _evidence_doc(jsonstore.read_locked(gpath, {}, env), env, "global")
         points: dict[str, Any] = gdoc["points"]
-        rep.aged = _age(points, now, max_age)
+        rep.aged = _age(points, now, max_age) + _age_natural(gdoc, now, max_age)
         tag = project_tag(home, key)
         applied = gdoc.get(APPLIED_KEY)
         if not isinstance(applied, dict):
@@ -696,6 +718,10 @@ def _global(
                     rep.global_cells += 1
             if weight > 0.0:
                 _add_natural(gdoc, [(p, ev.scaled(weight)) for p, ev in natural or []], cap)
+                stamps = gdoc.get(NATURAL_T_KEY)
+                stamps = gdoc[NATURAL_T_KEY] = stamps if isinstance(stamps, dict) else {}
+                for p, _ in natural or []:
+                    stamps[p] = now
             applied[tag] = [*mine, fid][-APPLIED_MAX:]
         jsonstore.write_locked(gpath, gdoc)
 

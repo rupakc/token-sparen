@@ -20,7 +20,6 @@ from token_sparen.mechanisms import loopguard, tracking
 from token_sparen.store import session
 
 KEY = "0123456789abcdef"
-COLD_SAVINGS = 1.0 - 0.8  # broken (1) minus the pessimistic prior natural break rate (0.8)
 SID = "s-1"
 TRACE = (
     "Traceback (most recent call last):\n"
@@ -45,6 +44,7 @@ class Rec:
         self.arm = arm
         self.decisions: list[Decision] = []
         self.rewards: list[tuple[str, float | None, float | None]] = []
+        self.forgotten: list[str] = []
 
     def decide(
         self, point: DecisionPoint, features: Mapping[str, str], session: SessionCtx
@@ -55,6 +55,9 @@ class Rec:
 
     def reward(self, decision_id: str, savings: float | None, regret: float | None) -> None:
         self.rewards.append((decision_id, savings, regret))
+
+    def forget(self, decision_id: str) -> None:
+        self.forgotten.append(decision_id)
 
 
 def _env(tmp_path: Path) -> dict[str, str]:
@@ -555,7 +558,7 @@ def test_watch_counts_only_the_agents_own_calls(tmp_path: Path) -> None:
     assert pol.rewards == []
     for _ in range(5):
         _tool(tmp_path, pol, _ok(tmp_path, agent="sub-1"))
-    assert pol.rewards == [(did, pytest.approx(COLD_SAVINGS), None)]
+    assert pol.rewards == [(did, 1.0, None)]
 
 
 # --- edit-revert oscillation ----------------------------------------------------------------
@@ -637,12 +640,13 @@ def test_reward_loop_broken_after_nudge_at_three(tmp_path: Path) -> None:
     did = _nudged(tmp_path, pol)
     for _ in range(5):
         _tool(tmp_path, pol, _ok(tmp_path))
-    assert pol.rewards == [(did, pytest.approx(COLD_SAVINGS), None)]
+    assert pol.rewards == [(did, 1.0, None)]
     _prompt(tmp_path, pol, "thanks, continue")
-    assert pol.rewards == [(did, pytest.approx(COLD_SAVINGS), None), (did, None, 0.0)]
+    assert pol.rewards == [(did, 1.0, None), (did, None, 0.0)]
 
 
-def test_eager_nudge_at_two_earns_no_savings(tmp_path: Path) -> None:
+def test_eager_nudge_at_two_observes_regret_only(tmp_path: Path) -> None:
+    """A redirect at 2 occurrences is not on the natural rate's footing (>= 3): no savings."""
     pol = Rec("eager")
     _prompt(tmp_path, pol)
     _tool(tmp_path, pol, _fail(tmp_path))
@@ -650,10 +654,15 @@ def test_eager_nudge_at_two_earns_no_savings(tmp_path: Path) -> None:
     did = pol.decisions[0].decision_id
     for _ in range(5):
         _tool(tmp_path, pol, _ok(tmp_path))
-    assert pol.rewards == [(did, 0.0, None)]
+    assert pol.rewards == []
+    _prompt(tmp_path, pol, "ok")
+    assert pol.rewards == [(did, None, 0.0)] and pol.forgotten == []
 
 
-def test_decision_without_nudge_earns_no_savings(tmp_path: Path) -> None:
+@pytest.mark.parametrize("close", ["prompt", "session_end"])
+def test_undelivered_decision_adds_no_evidence(tmp_path: Path, close: str) -> None:
+    """Fix round 1 (C-1, ruling (c)): a decision whose redirect was never delivered is
+    forgotten: no savings, no regret 0, no outcome row."""
     pol = Rec("standard")
     _prompt(tmp_path, pol)
     _tool(tmp_path, pol, _fail(tmp_path))
@@ -661,8 +670,14 @@ def test_decision_without_nudge_earns_no_savings(tmp_path: Path) -> None:
     did = pol.decisions[0].decision_id
     recs = _lg_records(tmp_path)
     assert len(recs) == 1 and recs[0]["decision_id"] == did and recs[0]["tokens_after"] == 0
-    _prompt(tmp_path, pol, "stop")  # no redirect was shown: no regret either
-    assert pol.rewards == [(did, 0.0, None), (did, None, 0.0)]
+    if close == "prompt":
+        _prompt(tmp_path, pol, "stop")
+    else:
+        ev = _event(tmp_path, "session_end")
+        loopguard.on_session_end(ev, pol, _cfg(tmp_path), env=_env(tmp_path))
+    assert pol.rewards == [] and pol.forgotten == [did]
+    assert not [r for r in _decisions(tmp_path) if r.get("kind") == "outcome"]
+    assert not _overlay(tmp_path).get("regret_outcomes")
 
 
 def test_reward_loop_not_broken(tmp_path: Path) -> None:
@@ -678,7 +693,7 @@ def test_turn_end_settles_open_window_as_broken(tmp_path: Path) -> None:
     did = _nudged(tmp_path, pol)
     _tool(tmp_path, pol, _ok(tmp_path))
     _prompt(tmp_path, pol, "ok")
-    assert pol.rewards == [(did, pytest.approx(COLD_SAVINGS), None), (did, None, 0.0)]
+    assert pol.rewards == [(did, 1.0, None), (did, None, 0.0)]
 
 
 @pytest.mark.parametrize(
@@ -717,7 +732,7 @@ def test_session_end_settles(tmp_path: Path) -> None:
     did = _nudged(tmp_path, pol)
     ev = _event(tmp_path, "session_end")
     loopguard.on_session_end(ev, pol, _cfg(tmp_path), env=_env(tmp_path))
-    assert pol.rewards == [(did, pytest.approx(COLD_SAVINGS), None), (did, None, 0.0)]
+    assert pol.rewards == [(did, 1.0, None), (did, None, 0.0)]
 
 
 def test_nudge_counts_as_injected_tokens(tmp_path: Path) -> None:
@@ -847,24 +862,12 @@ def test_post_tool_output_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert "updatedToolOutput" not in spec
 
 
-# --- counterfactual savings (review M1) ---------------------------------------------------------
+# --- natural break rate (review M1, fix round 1) ------------------------------------------------
 
 
 def _natural(tmp_path: Path) -> list[float] | None:
     raw = _overlay(tmp_path).get("natural", {}).get("loopguard")
     return None if raw is None else [float(x) for x in raw]
-
-
-def _store_natural(path: Path, ev: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    doc = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"version": 2}
-    doc.setdefault("points", {})
-    doc["natural"] = {"loopguard": ev.to_list()}
-    path.write_text(json.dumps(doc), encoding="utf-8")
-
-
-def test_prior_natural_rate_constants() -> None:
-    assert (loopguard.P0_PRIOR_MEAN, loopguard.P0_PRIOR_STRENGTH) == (0.8, 10.0)
 
 
 def test_natural_break_observed_without_nudge(tmp_path: Path) -> None:
@@ -914,82 +917,19 @@ def test_nudged_turn_observes_no_natural_rate(tmp_path: Path) -> None:
     assert _natural(tmp_path) is None
 
 
-def test_savings_are_counterfactual_cold(tmp_path: Path) -> None:
+def test_oscillation_redirect_observes_regret_only(tmp_path: Path) -> None:
+    """m-2: oscillation is not on the error loops' natural-rate footing: no savings."""
     pol = Rec("standard")
-    did = _nudged(tmp_path, pol)
-    for _ in range(5):
-        _tool(tmp_path, pol, _ok(tmp_path))
-    assert pol.rewards == [(did, pytest.approx(COLD_SAVINGS), None)]
-
-
-def test_savings_use_project_natural_rate(tmp_path: Path) -> None:
-    from token_sparen.learn.beta import Evidence
-
-    home = tmp_path / "home"
-    _store_natural(home / "projects" / KEY / "posteriors.json", Evidence(1.0, 9.0, 10.0, 1.0))
-    _store_natural(home / "global" / "posteriors.json", Evidence(10.0, 0.0, 10.0, 10.0))
-    pol = Rec("standard")
-    did = _nudged(tmp_path, pol)
-    for _ in range(5):
-        _tool(tmp_path, pol, _ok(tmp_path))
-    p0 = (8.0 + 1.0) / (10.0 + 10.0)  # project data wins over global
-    assert pol.rewards == [(did, pytest.approx(1.0 - p0), None)]
-
-
-def test_savings_fall_back_to_global_natural_rate(tmp_path: Path) -> None:
-    from token_sparen.learn.beta import Evidence
-
-    home = tmp_path / "home"
-    _store_natural(home / "projects" / KEY / "posteriors.json", Evidence(1.0, 1.0, 2.0, 1.0))
-    _store_natural(home / "global" / "posteriors.json", Evidence(0.0, 10.0, 10.0, 0.0))
-    pol = Rec("standard")
-    did = _nudged(tmp_path, pol)
-    _prompt(tmp_path, pol, "ok")  # turn end: window settles as broken
-    p0 = (8.0 + 1.0) / (10.0 + 12.0)  # too little project data: global joins it
-    assert pol.rewards[0] == (did, pytest.approx(1.0 - p0), None)
-
-
-def test_savings_never_negative(tmp_path: Path) -> None:
-    from token_sparen.learn.beta import Evidence
-
-    home = tmp_path / "home"
-    _store_natural(home / "projects" / KEY / "posteriors.json", Evidence(50.0, 0.0, 50.0, 50.0))
-    pol = Rec("standard")
-    did = _nudged(tmp_path, pol)
-    _tool(tmp_path, pol, _fail(tmp_path))  # recurred: broken 0
-    assert pol.rewards == [(did, 0.0, None)]
-    pol2 = Rec("standard")
-    (tmp_path / "b").mkdir()
-    _store_natural(
-        tmp_path / "b" / "home" / "projects" / KEY / "posteriors.json",
-        Evidence(50.0, 0.0, 50.0, 50.0),
-    )
-    did2 = _nudged(tmp_path / "b", pol2)
-    for _ in range(5):
-        _tool(tmp_path / "b", pol2, _ok(tmp_path / "b"))
-    assert pol2.rewards[0][1] == pytest.approx(1.0 - 58.0 / 60.0)
-    assert did2
-
-
-def test_session_natural_observations_count(tmp_path: Path) -> None:
-    """Observations of this session (not yet folded) join the project's own rate."""
-    pol = Rec("patient")
     _prompt(tmp_path, pol)
-    for _ in range(4):  # natural: recurred (not broken)
-        _tool(tmp_path, pol, _fail(tmp_path))
-    pol2 = Rec("standard")
-    _prompt(tmp_path, pol2, "again")
-    for _ in range(3):
-        _tool(tmp_path, pol2, _fail(tmp_path, q="other"))
-    for _ in range(5):
-        _tool(tmp_path, pol2, _ok(tmp_path))
-    did = pol2.decisions[0].decision_id
-    # project has < 5 observations, global none: prior + the session's one observation
-    assert [r for r in pol2.rewards if r[0] == did][0] == (
-        did,
-        pytest.approx(1.0 - 8.0 / 11.0),
-        None,
-    )
+    _tool(tmp_path, pol, _edit(tmp_path, "x = 1", "x = 2"))
+    _tool(tmp_path, pol, _edit(tmp_path, "x = 2", "x = 1"))
+    act = _tool(tmp_path, pol, _edit(tmp_path, "x = 1", "x = 2"))
+    assert act.inject_context is not None
+    did = pol.decisions[0].decision_id
+    for _ in range(6):
+        _tool(tmp_path, pol, _ok(tmp_path))
+    _prompt(tmp_path, pol, "ok")
+    assert pol.rewards == [(did, None, 0.0)]
 
 
 # --- stop phrases (review minor 5) --------------------------------------------------------------

@@ -981,3 +981,23 @@ def test_fold_merges_natural_break_rates(tmp_path: Path) -> None:
     assert _close(Evidence.from_list(glob["natural"]["loopguard"]), nat.scaled(0.3))
     assert set(glob["natural"]) == {"loopguard"}  # only known points
     assert "natural" not in _read(_ov(home)) or not _read(_ov(home))["natural"]
+
+
+def test_global_natural_rate_ages(tmp_path: Path) -> None:
+    """m-4: an untouched global natural-rate entry is halved after global_age_days."""
+    home = _home(tmp_path)
+    old = Evidence(8.0, 2.0, 10.0, 8.0)
+    _write(
+        home / "global" / "posteriors.json",
+        {
+            "version": 2,
+            "points": {},
+            "natural": {"loopguard": old.to_list()},
+            "natural_t": {"loopguard": 0.0},
+        },
+    )
+    _session(home, evidence=ONE)
+    _fold(home, now=100 * 86400.0)
+    glob = _read(home / "global" / "posteriors.json")
+    assert _close(Evidence.from_list(glob["natural"]["loopguard"]), old.scaled(0.5))
+    assert glob["natural_t"]["loopguard"] == 100 * 86400.0

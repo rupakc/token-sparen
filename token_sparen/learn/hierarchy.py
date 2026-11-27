@@ -57,6 +57,9 @@ SESSION_KEY = "evidence"
 # (the loop guard's natural break rate, review M1), under this key in the session overlay and in
 # the project and global ``posteriors.json`` (point names and counts only, never paths).
 NATURAL_KEY = "natural"
+NATURAL_PRIOR_MEAN = 0.8  # pessimistic for an intervention until the natural rate is measured
+NATURAL_PRIOR_STRENGTH = 10.0
+NATURAL_MIN_OBS = 5.0  # local observations before the global ones stop joining
 EPS = 1e-3
 DEFAULT_KAPPA = 6.0
 DEFAULT_KAPPA_REGRET = 20.0
@@ -93,6 +96,7 @@ class StoreChain:
         self.params: Mapping[str, Any] | None = params
         self._env = {"TOKEN_SPAREN_HOME": str(home)}
         self._docs: dict[Scope, dict[str, Any]] = {}
+        self._natural: dict[Scope, Any] = {}  # each scope's NATURAL_KEY table (read with it)
         self._breaker: dict[str, Any] | None = None
         self.kappa_cache: dict[tuple[str, str, str], float] = {}
         self._warned = False
@@ -110,7 +114,9 @@ class StoreChain:
             if self.session_id is None:
                 return {}
             path = session.session_path(self.home, self.project_key, self.session_id)
-            inner = jsonstore.read(path, {}, self._env).get(SESSION_KEY)
+            state = jsonstore.read(path, {}, self._env)
+            self._natural[scope] = state.get(NATURAL_KEY)
+            inner = state.get(SESSION_KEY)
         else:
             base = (
                 project_dir_for(self.home, self.project_key)
@@ -123,6 +129,7 @@ class StoreChain:
             if doc.get("version") != SCHEMA_VERSION:
                 self._warn(f"{scope} evidence: unsupported version {doc.get('version')!r}")
                 return {}
+            self._natural[scope] = doc.get(NATURAL_KEY)
             inner = doc.get("points")
         if inner is None:
             return {}
@@ -141,6 +148,7 @@ class StoreChain:
     def invalidate(self, scope: Scope) -> None:
         """Drop the cached document of ``scope`` (after this process wrote it)."""
         self._docs.pop(scope, None)
+        self._natural.pop(scope, None)
 
     def points(self, scope: Scope) -> dict[str, Any]:
         """The scope's ``{point: {bucket: {arm: ...}}}`` mapping (cached; may be malformed)."""
@@ -150,6 +158,23 @@ class StoreChain:
         if doc is None:
             doc = self._docs[scope] = self._load(scope)
         return doc
+
+    def natural(self, point: str, scope: Scope) -> Evidence:
+        """``point``'s natural-rate evidence in ``scope`` (``NATURAL_KEY``; empty if none)."""
+        self.points(scope)  # loads (and caches) the scope's document
+        return natural_evidence({NATURAL_KEY: self._natural.get(scope)}, point)
+
+    def natural_posterior(self, point: str) -> Beta:
+        """The natural (no-intervention) outcome rate of ``point``: ``Beta(NATURAL_PRIOR_MEAN *
+        NATURAL_PRIOR_STRENGTH, ...)`` plus the project's and this session's evidence, joined by
+        the global evidence while those have fewer than ``NATURAL_MIN_OBS`` observations."""
+        local = self.natural(point, "project") + self.natural(point, "session")
+        data = local
+        if local.n < NATURAL_MIN_OBS:
+            data = local + self.natural(point, "global")
+        a = NATURAL_PRIOR_MEAN * NATURAL_PRIOR_STRENGTH + max(0.0, data.ea)
+        b = (1.0 - NATURAL_PRIOR_MEAN) * NATURAL_PRIOR_STRENGTH + max(0.0, data.eb)
+        return Beta(a, b, max(0.0, data.n))
 
     def get(self, point: str, bucket: str, arm: str, kind: Kind, scope: Scope) -> Evidence | None:
         node: Any = self.points(scope).get(point)

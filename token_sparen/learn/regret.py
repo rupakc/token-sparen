@@ -751,6 +751,12 @@ def reward_fn(policy: object) -> Callable[[str, float | None, float | None], Non
     return fn if callable(fn) else None
 
 
+def forget_fn(policy: object) -> Callable[[str], None] | None:
+    """The policy's ``forget`` method when it learns (duck-typed), else None."""
+    fn = getattr(policy, "forget", None)
+    return fn if callable(fn) else None
+
+
 def pay(policy: object, payouts: Iterable[Payout]) -> None:
     """Report regret values to a learning policy (no-op for the static policy).
 

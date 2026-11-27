@@ -24,6 +24,10 @@ class DecisionPoint:
     arms: tuple[str, ...]
     safe_arm: str
     tier: Tier
+    # Natural-rate gate (the loop guard): the safe arm still intervenes, so an intervening arm
+    # competes only when its savings (outcome rate) lower bound beats the upper bound of the
+    # rate observed without intervention; otherwise it is reached only by floor exploration.
+    natural_gate: bool = False
 
 
 @dataclass(frozen=True)
@@ -75,7 +79,11 @@ SUBAGENT_BRIEF = DecisionPoint("subagent_brief", ("off", "on"), safe_arm="off", 
 # Post-tool (failures, edits): how many repeats of one error within a turn before one redirect
 # (k = 5 / 3 / 2; ``mechanisms.loopguard``). The most patient arm intervenes least.
 LOOPGUARD = DecisionPoint(
-    "loopguard", ("patient", "standard", "eager"), safe_arm="patient", tier="medium"
+    "loopguard",
+    ("patient", "standard", "eager"),
+    safe_arm="patient",
+    tier="medium",
+    natural_gate=True,
 )
 _TIERS: frozenset[str] = frozenset({"low", "medium", "high", "none"})
 # Regret target per tier (``[learn.tau]`` overrides): the engine's feasibility bound and the

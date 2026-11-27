@@ -20,7 +20,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
-from token_sparen.config import Config, flag_off, log_error, state_home
+from token_sparen.config import Config, env_path, flag_off, log_error, state_home
 from token_sparen.events import SessionCtx
 from token_sparen.learn.engine import ERROR_BUCKET, Engine
 from token_sparen.learn.features import static_policy
@@ -39,8 +39,8 @@ def test_seed(env: Mapping[str, str]) -> str | None:
     """``TOKEN_SPAREN_TEST_SEED`` if ``TOKEN_SPAREN_HOME`` is a temp-dir state root."""
     seed = env.get(TEST_SEED_ENV)
     home = env.get("TOKEN_SPAREN_HOME")
-    if not seed or not home:
-        return None
+    if not seed or not home or env_path(env, "TOKEN_SPAREN_HOME") is None:
+        return None  # unset, or a state root that is not honoured (inside the project)
     try:
         root = Path(home).expanduser().resolve()
         if root == _default_home().resolve():
@@ -119,6 +119,12 @@ class HookPolicy:
                 return decision
             self._decide_failed = True  # the engine logged it; static for the rest of the hook
         return self.static.decide(point, features, session)
+
+    @property
+    def forget(self) -> Callable[[str], None] | None:
+        """The Engine's ``forget`` (``regret.forget_fn``), like ``reward``."""
+        eng = self.engine()
+        return None if eng is None else eng.forget
 
     @property
     def reward(self) -> Reward | None:

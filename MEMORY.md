@@ -1501,3 +1501,21 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
   Tests: autouse conftest fixture fakes `HOME` per test so a rejected home never reaches the
   real `~/.token-sparen`; tests whose state root sat inside their project dir / cwd were moved
   to a sibling `proj` / `cwd` directory.
+- Fix round 1 (2026-11-27, review C-1, I-2, I-3; controller ruling replaces the M1 formula):
+  `max(0, broken - p0)` removed (biased: p0(1-p0) for no effect; savings never decided vs the
+  safe arm). Only delivered redirects are observed: error loop at >= 3 -> savings = broken
+  (Bernoulli), regret as before; eager@2 and oscillation redirects -> regret only (builder call:
+  same footing as p0, and m-2); undelivered -> `Engine.forget` (pending dropped, no evidence, no
+  outcome row; duck-typed via `regret.forget_fn`, `HookPolicy.forget`). Natural rate moved to
+  `StoreChain.natural_posterior` (constants `NATURAL_PRIOR_*` in hierarchy). Gate:
+  `DecisionPoint.natural_gate` (loopguard only): arm competes iff `S.lcb(0.1) > natural.ucb(0.9)`;
+  builder call: "regret constraint passes" = the draw's existing sampled-regret check (a
+  deterministic `R.mean <= tau` blocked arms whose regret prior mean sits exactly at tau). Builder
+  call: for a gated point the floor branch explores the ladder's intervening arms uniformly (the
+  floor otherwise picks the safe arm, which would starve the gate of evidence forever); exact
+  propensities via `_propensity(..., explore)`; `Engine.last_explored` for tests. I-3: identity
+  (st_dev, st_ino) of the target's existing ancestors vs roots, mirrored in statusline.sh.
+  Minors folded: m-1 log dedupe across processes (marker `env:<NAME>` in
+  config_safety_warned.json; no SessionStart notice - deferred), m-2, m-4 (global natural ages,
+  `natural_t` stamps), m-5 (test seed ignored when env_path rejects the home). Deferred: m-1 user
+  notice, m-3 (C2 spec note: natural data comes from patient/floor turns), m-6 (no-git subdir).

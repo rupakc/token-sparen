@@ -120,11 +120,12 @@ everything else. No savings figures are claimed for them yet.
   subdirectory or for one package (`cd tests/unit && pytest`, `cargo test -p core`) is no
   longer learned, nor one that picks a config or root (`-c`, `--config`, `--rootDir`); watch-mode
   stoppers such as `--watchAll=false` and `CI=true` are kept (`--run` for vitest only).
-- Failure-loop guard: a redirect is no longer credited for loops that would have ended anyway.
-  Its savings are `max(0, broken - p0)`, where `p0` is the natural break rate measured on turns
-  where an error reached 3 repeats without a redirect (per project, global fallback, prior 0.8);
-  the intervening arms start from neutral, weak priors, so learning no longer drifts toward
-  nudging early.
+- Failure-loop guard: learning no longer drifts toward nudging early. Only a delivered redirect
+  is observed (loop broken or not within the next 5 calls; a decision that never redirected adds
+  no evidence), and an earlier-nudging setting is used only once its break rate is clearly
+  above the rate at which loops end by themselves (measured on turns with no redirect, per
+  project with a global fallback, assumed 80 % until measured); otherwise the guard stays at the
+  most patient setting, exploring the next one in about 5 % of decisions.
 - Failure-loop guard: a stop phrase (now also "wait") counts as regret only at the start of the
   next prompt or in a prompt of at most 8 words ("add a stop button ..." no longer counts).
 
@@ -132,7 +133,9 @@ everything else. No savings figures are claimed for them yet.
 - `TOKEN_SPAREN_HOME` is ignored (default state root used, one line in `errors.jsonl`) when it
   points inside the current project or its git work tree, or (POSIX) at a path not owned by the
   user: a cloned repository's committed settings `env` can no longer plant "observed" facts, a
-  config that enables pruning, or other state. The statusline launcher applies the same rule to
+  config that enables pruning, or other state. "Inside" is decided by file identity, so a case
+  variant (case-insensitive file systems), `..` spelling or directory alias does not bypass it;
+  the rejection is logged once. The statusline launcher applies the same rule to
   `TOKEN_SPAREN_ROOT`.
 - Tool pruning is the second settings write after the statusline: it needs an explicit opt-in
   (`prune enable` or the user's own `config.toml`; never an environment variable or a project

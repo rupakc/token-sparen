@@ -58,6 +58,7 @@ from token_sparen.store import jsonstore, session
 ERROR_BUCKET = "error"
 PENDING_KEY = "pending"
 HIGH_UCB_Q = 0.95
+GATE_Q = 0.9  # natural-rate gate: lcb_0.9(arm savings) > ucb_0.9(natural rate)
 MIN_PROPENSITY = 1e-3
 _KINDS: tuple[Kind, ...] = ("savings", "regret")
 _TAU = DEFAULT_TAU
@@ -122,6 +123,7 @@ class Engine:
         self._env = {"TOKEN_SPAREN_HOME": str(stores.home)}
         self._static = static_policy(cfg.data)
         self._points: dict[str, DecisionPoint] = {}
+        self.last_explored = False  # the last ``choose`` took a gated point's exploration branch
         self._overlay: Path | None = (
             None
             if stores.session_id is None
@@ -250,22 +252,44 @@ class Engine:
         return held(self.cfg.data, point.name)
 
     def _candidates(self, point: DecisionPoint, features: Mapping[str, str]) -> list[Cand]:
+        return self._arms(point, features)[0]
+
+    def _arms(
+        self, point: DecisionPoint, features: Mapping[str, str]
+    ) -> tuple[list[Cand], list[str]]:
+        """``(candidates, explore)``: the arms competing in the Thompson draw and, for a
+        ``natural_gate`` point, the ladder arms its floor branch explores (uniformly). A gated arm
+        competes only when ``lcb_0.9`` of its savings posterior (its outcome rate when it
+        intervened) exceeds ``ucb_0.9`` of the natural rate; the draw then applies the usual
+        regret constraint (sampled regret <= tau)."""
         if self.held(point) or (point.tier == "high" and not self.opted_in(point)):
-            return []
+            return [], []
         tau = self._tau(point)
         posts = self.posteriors(point, features)
+        ladder = self._ladder(point, features, posts)
+        natural = self.stores.natural_posterior(point.name) if point.natural_gate else None
+        bar = natural.ucb(GATE_Q) if natural is not None else 0.0
         cands: list[Cand] = []
-        for arm in self._ladder(point, features, posts):
+        for arm in ladder:
             s, r = posts[arm]
             if point.tier == "high" and r.ucb(HIGH_UCB_Q) > tau:
                 continue  # high tier: never explore without the regret upper bound clearing
+            if natural is not None and not s.lcb(1.0 - GATE_Q) > bar:
+                continue  # no better than leaving the loop alone (yet)
             cands.append((arm, s.a, s.b, r.a, r.b))
-        return cands
+        return cands, (list(ladder) if point.natural_gate else [])
 
-    def _propensity(self, point: DecisionPoint, cands: list[Cand], arm: str) -> float:
+    def _propensity(
+        self,
+        point: DecisionPoint,
+        cands: list[Cand],
+        arm: str,
+        explore: list[str] | None = None,
+    ) -> float:
         """Exact probability that ``decide`` picks ``arm`` (floor mixed with the sampling branch;
-        see ``learn.propensity``); 0 for an ineligible arm. ``decide`` logs it clamped to
-        [1e-3, 1]."""
+        see ``learn.propensity``); 0 for an ineligible arm. For a ``natural_gate`` point the floor
+        branch picks uniformly among ``explore`` (the safe arm if there is none). ``decide`` logs
+        it clamped to [1e-3, 1]."""
         tau = self._tau(point)
         safe, ps = win_probabilities(
             [
@@ -276,12 +300,17 @@ class Engine:
         branch = dict(zip((c[0] for c in cands), ps, strict=True))
         branch[point.safe_arm] = safe
         floor = self._floor(point)
-        p = floor * (arm == point.safe_arm) + (1.0 - floor) * branch.get(arm, 0.0)
+        if explore:
+            low = floor * (arm in explore) / len(explore)
+        else:
+            low = floor * (arm == point.safe_arm)
+        p = low + (1.0 - floor) * branch.get(arm, 0.0)
         return min(1.0, max(0.0, p))
 
     def propensity(self, point: DecisionPoint, features: Mapping[str, str], arm: str) -> float:
         """Probability that ``decide`` picks ``arm`` for these features (exact)."""
-        return self._propensity(point, self._candidates(point, features), arm)
+        cands, explore = self._arms(point, features)
+        return self._propensity(point, cands, arm, explore)
 
     def action_probs(self, point: DecisionPoint, features: Mapping[str, str]) -> dict[str, float]:
         """Exact (unclamped) probability of every arm of ``point`` as ``decide`` would choose
@@ -289,21 +318,27 @@ class Engine:
         the circuit breaker gives the safe arm 1. Used by off-policy evaluation."""
         if self.stores.tripped(point.name):
             return {a: float(a == point.safe_arm) for a in point.arms}
-        cands = self._candidates(point, features)
-        return {a: self._propensity(point, cands, a) for a in point.arms}
+        cands, explore = self._arms(point, features)
+        return {a: self._propensity(point, cands, a, explore) for a in point.arms}
 
     def choose(self, point: DecisionPoint, features: Mapping[str, str]) -> tuple[str, float]:
         """One draw ``(arm, logged propensity)`` with no side effects (no pending entry, no
         store write): ``decide`` uses it, and offline replay uses it as a frozen snapshot."""
+        self.last_explored = False
         if self.stores.tripped(point.name):
             return point.safe_arm, 1.0  # circuit breaker: paused for this project
-        cands = self._candidates(point, features)
+        cands, explore = self._arms(point, features)
         floor = self._floor(point)
         if floor > 0.0 and self.rng.random() < floor:
-            arm = point.safe_arm
+            if explore:  # a gated point explores an intervening arm (its safe arm is the default)
+                arm = explore[int(self.rng.random() * len(explore)) % len(explore)]
+                self.last_explored = True
+            else:
+                arm = point.safe_arm
         else:
             arm = _draw(cands, self._tau(point), point.safe_arm, self.rng)
-        return arm, min(1.0, max(MIN_PROPENSITY, self._propensity(point, cands, arm)))
+        p = self._propensity(point, cands, arm, explore)
+        return arm, min(1.0, max(MIN_PROPENSITY, p))
 
     # --- Policy -------------------------------------------------------------------------------
 
@@ -354,6 +389,25 @@ class Engine:
         jsonstore.update(pending_path(self._overlay), fn, {}, self._env)
 
     # --- reward -------------------------------------------------------------------------------
+
+    def forget(self, decision_id: str) -> None:
+        """Drop a pending decision that will never be observed (e.g. a loop-guard decision whose
+        redirect was never delivered: it must add no evidence, not a regret 0). Never raises."""
+        if self._overlay is None:
+            return
+
+        def fn(doc: dict[str, Any]) -> dict[str, Any]:
+            table = doc.get(PENDING_KEY)
+            if isinstance(table, dict):
+                table.pop(decision_id, None)
+            return doc
+
+        try:
+            side = pending_path(self._overlay)
+            if decision_id in (jsonstore.read(side, {}, self._env).get(PENDING_KEY) or {}):
+                jsonstore.update(side, fn, {}, self._env)
+        except Exception as exc:  # noqa: BLE001 - never raise into a hook
+            log_error(self._env, "engine", f"forget: {type(exc).__name__}: {exc}")
 
     def reward(self, decision_id: str, savings: float | None, regret: float | None) -> None:
         """Fold a savings and/or regret observation into the session overlay evidence.
