@@ -221,9 +221,10 @@ to delete.
    `*.token-sparen.bak` next to your settings files can go too once you have checked them.
 
 After a downgrade (an older token-sparen meeting state a newer one wrote), the older version
-never rewrites that state. `prune disable` / `prune restore` then remove from this checkout's
-settings file only the rules in token-sparen's format that are not in its `.token-sparen.bak`
-backup, and `statusline uninstall` reverts the `statusLine` it recognises by its launcher; for
+never rewrites that state. `prune disable` / `prune restore` then change nothing (which deny
+rules are token-sparen's cannot be read): they list the rules in token-sparen's format that are
+not in the `.token-sparen.bak` backup, with the file to edit by hand (keep any you added
+yourself). `statusline uninstall` reverts the `statusLine` it recognises by its launcher; for
 the rest each command prints `state written by token-sparen <version>; upgrade to it, or run
 <command> from that version`.
 

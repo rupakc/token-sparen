@@ -1310,20 +1310,30 @@ def _command_line(argv: list[str]) -> str:
 def _prune_downgraded(
     exc: jsonstore.NewerSchema, project: Path, tool: str | None, command: str
 ) -> int:
-    """``prune disable`` / ``restore`` when the prune state is newer than this code: undo what
-    the settings file and its backup identify, without parsing the newer state."""
+    """``prune disable`` / ``restore`` when the prune state is newer than this code: ownership
+    cannot be read, so nothing is removed (a user's own deny rule could be taken for ours,
+    ruling R-1). Lists the candidate rules and the manual edit; always exits non-zero."""
     from token_sparen.adapters.claude import settings
 
     target = settings.local_settings_path(project)
-    removed, why = settings.undo_by_backup(project, tool)
-    if removed:
-        print(f"token-sparen prune: removed {', '.join(removed)} from {target}")
-    elif why is not None:
-        print(f"token-sparen prune: nothing removed from {target}: {why}", file=sys.stderr)
+    candidates, why = settings.downgrade_candidates(project, tool)
+    err = sys.stderr
+    print(f"token-sparen: {exc.advice(command)}", file=err)
+    print("token-sparen prune: nothing was changed (which rules are ours cannot be read)", file=err)
+    if why is not None:
+        print(f"token-sparen prune: {why}", file=err)
+    elif candidates:
+        backup = target.name + settings.BACKUP_SUFFIX
+        print(
+            f'to undo by hand, remove from "permissions"."deny" in {target} the entries '
+            f"below that you did not add yourself (they are not in {backup}):",
+            file=err,
+        )
+        for rule in candidates:
+            print(f"  {json.dumps(rule)}", file=err)
     else:
-        print(f"token-sparen prune: no rule of token-sparen's found in {target}")
-    print(f"token-sparen: {exc.advice(command)} (other checkouts and the opt-in)", file=sys.stderr)
-    return 0 if removed or why is None else 1
+        print(f"token-sparen prune: no rule in token-sparen's format in {target}", file=err)
+    return 1
 
 
 def _facts_downgraded(exc: jsonstore.NewerSchema, command: str) -> int:

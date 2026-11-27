@@ -1723,7 +1723,8 @@ and the two new issues they found.
   problems log via `jsonstore.log_once` (per process + `logs/once.json` keyed by
   sha256(path, session)); hooks and folds set `jsonstore.LOG_SESSION`. Versioned docs get
   `written_by` on every write so an older CLI can name the writer. Downgrade undo: prune
-  rules identified by format (`mcp__<server>` or a bare PascalCase built-in) minus the
-  settings-file backup (`settings.undo_by_backup`); statusline by its launcher command;
+  removes nothing (ruling R-1: a user's own bare deny rule could be taken for ours); it lists
+  candidates (our format minus the settings backup, `settings.downgrade_candidates`) as a
+  manual edit and exits 1; statusline by its launcher command;
   everything else prints `NewerSchema.advice(command)`. v1 posteriors copied to
   `posteriors.v1.bak.json` first.

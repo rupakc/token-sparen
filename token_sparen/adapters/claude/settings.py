@@ -614,33 +614,31 @@ def _ours_by_format(rule: Any) -> bool:
     return prune._is_server(rule) or re.fullmatch(r"[A-Z][A-Za-z0-9]*", rule) is not None
 
 
-def undo_by_backup(project_dir: Path, tool: str | None = None) -> tuple[list[str], str | None]:
-    """Remove the deny rules tool pruning wrote to this checkout's settings file without
-    reading its (newer) state: a rule counts as ours when it has our format and is absent from
-    the settings-file backup token-sparen took before its first rule. ``tool``: only the rules
-    covering it. Returns (rules removed, None) or ([], why nothing was done)."""
+def downgrade_candidates(
+    project_dir: Path, tool: str | None = None
+) -> tuple[list[str], str | None]:
+    """Deny rules in this checkout's settings file that *may* be tool pruning's, for when its
+    ownership registry was written by a newer token-sparen and cannot be read: rules in our
+    format absent from the backup taken before our first rule. A rule the user added later
+    matches too, so nothing is ever removed from this list automatically (ruling R-1): the
+    caller shows it as a manual edit. ``tool``: only the rules covering it. Returns
+    (candidates, None) or ([], why none could be listed)."""
     target = local_settings_path(project_dir)
     backup = target.with_name(target.name + BACKUP_SUFFIX)
     if not target.is_file():
         return [], None
-    if _linked(target):
-        return [], f"{target} is a symbolic link (or inside one)"
     current = deny_rules(target)
     if current is None:
         return [], f"{target} is not valid settings JSON"
-    if not backup.is_file():
-        return [], f"no backup ({backup.name}) to tell token-sparen's rules from yours"
-    try:
-        before = {r for r in _deny_list(_load(backup)[0]) if isinstance(r, str)}
-    except (_Invalid, OSError):
-        return [], f"{backup.name} is not valid settings JSON"
-    ours = sorted(r for r in current if _ours_by_format(r) and r not in before)
-    if tool is not None:
-        ours = prune.tool_rule(tool, ours)
-    if not ours:
-        return [], None
-    res = remove_deny_rules(target, ours, {}, cleanup=False)
-    return (res.changed, None) if res.ok else ([], res.message)
+    if backup.is_file():
+        try:
+            before = {r for r in _deny_list(_load(backup)[0]) if isinstance(r, str)}
+        except (_Invalid, OSError):
+            return [], f"{backup.name} is not valid settings JSON"
+    else:
+        before = set()  # no backup: every rule in our format is only a candidate anyway
+    out = sorted(r for r in current if _ours_by_format(r) and r not in before)
+    return (prune.tool_rule(tool, out) if tool is not None else out), None
 
 
 def deny_rules(path: Path) -> set[str] | None:

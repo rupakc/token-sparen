@@ -473,8 +473,9 @@ def _deny(path: Path, rules: list[str]) -> None:
 def test_downgrade_undo_commands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """I-3: with every store from a newer version, the opt-out commands still undo what the
-    settings files identify, and otherwise say what to do; never a raw exception."""
+    """I-3 / R-1: with every store from a newer version, the opt-out commands never fail with an
+    exception. Prune ownership cannot be read, so nothing is removed: the candidates are listed
+    as a manual edit (a user's own bare deny rule must never be dropped)."""
     where = _install("v0.4.0-m4", tmp_path, monkeypatch)
     home, pdir, proj = where["home"], where["home"] / "projects" / KEY, where["proj"]
     bumped = {
@@ -487,20 +488,29 @@ def test_downgrade_undo_commands(
         )
     }
     local = proj / ".claude" / "settings.local.json"
-    _deny(local, ["Bash(rm:*)", "mcp__mine", "mcp__unused", "NotebookEdit"])
-    _deny(local.with_name(local.name + ".token-sparen.bak"), ["Bash(rm:*)", "mcp__mine"])
+    # the reviewer's probe: the user added WebFetch after token-sparen's backup was taken
+    _deny(local, ["Bash(rm:*)", "mcp__srv", "NotebookEdit", "WebFetch"])
+    _deny(local.with_name(local.name + ".token-sparen.bak"), ["Bash(rm:*)"])
+    before = local.read_bytes()
     capsys.readouterr()
 
-    assert cli_main(["prune", "restore", "NotebookEdit", "--project", str(proj)]) == 0
+    for argv, command in (
+        (["prune", "disable"], "token-sparen prune disable"),
+        (["prune", "restore", "--all"], "token-sparen prune restore --all"),
+    ):
+        assert cli_main([*argv, "--project", str(proj)]) == 1
+        out = capsys.readouterr()
+        assert "state written by token-sparen 1.3.0" in out.err
+        assert f"run `{command}` from that version" in out.err
+        assert "nothing was changed" in out.err and str(local) in out.err
+        for rule in ("mcp__srv", "NotebookEdit", "WebFetch"):
+            assert f'  "{rule}"' in out.err
+        assert '"Bash(rm:*)"' not in out.err
+        assert local.read_bytes() == before  # never removed automatically
+    assert cli_main(["prune", "restore", "NotebookEdit", "--project", str(proj)]) == 1
     out = capsys.readouterr()
-    assert "removed NotebookEdit" in out.out
-    assert "state written by token-sparen 1.3.0" in out.err
-    assert "run `token-sparen prune restore NotebookEdit` from that version" in out.err
-    assert cli_main(["prune", "disable", "--project", str(proj)]) == 0
-    out = capsys.readouterr()
-    assert "removed mcp__unused" in out.out and "token-sparen prune disable" in out.err
-    deny = json.loads(local.read_text(encoding="utf-8"))["permissions"]["deny"]
-    assert deny == ["Bash(rm:*)", "mcp__mine"]  # the user's rules (in the backup) stay
+    assert '  "NotebookEdit"' in out.err and '"WebFetch"' not in out.err
+    assert local.read_bytes() == before
 
     assert cli_main(["statusline", "uninstall"]) == 0
     out = capsys.readouterr()
@@ -518,18 +528,22 @@ def test_downgrade_undo_commands(
         assert path.read_bytes() == data, path
 
 
-def test_downgrade_undo_without_backup_says_so(
+def test_downgrade_undo_without_backup_lists_candidates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     where = _install("v0.4.0-m4", tmp_path, monkeypatch)
     proj = where["proj"]
     _bump(where["home"] / "projects" / KEY / "prune.json", prune.VERSION + 1, writer="")
     local = proj / ".claude" / "settings.local.json"
-    _deny(local, ["mcp__unused"])
+    _deny(local, ["mcp__unused", "Read(./secrets/**)"])
     assert cli_main(["prune", "disable", "--project", str(proj)]) == 1
     out = capsys.readouterr()
-    assert "no backup" in out.err and "a newer token-sparen" in out.err
-    assert json.loads(local.read_text(encoding="utf-8"))["permissions"]["deny"] == ["mcp__unused"]
+    assert "a newer token-sparen" in out.err and '  "mcp__unused"' in out.err
+    assert "secrets" not in out.err
+    assert json.loads(local.read_text(encoding="utf-8"))["permissions"]["deny"] == [
+        "mcp__unused",
+        "Read(./secrets/**)",
+    ]
 
 
 def test_prune_lockfree_reads_ignore_a_newer_store(tmp_path: Path) -> None:

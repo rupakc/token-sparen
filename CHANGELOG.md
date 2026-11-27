@@ -28,8 +28,9 @@ for M3); the package version stays `0.1.0.dev0` until v1.0.
 - A newer or corrupt state file is logged once per store per session (`logs/once.json` holds
   short hashes only), not once per hook.
 - Versioned documents record `written_by` (the token-sparen version that wrote them). After a
-  downgrade, `prune disable` / `prune restore` remove from this checkout's settings file the
-  rules in token-sparen's format that are not in its backup, `statusline uninstall` reverts the
+  downgrade, `prune disable` / `prune restore` change nothing and list, as a manual edit, the
+  rules in token-sparen's format that are not in the settings backup (a rule you added yourself
+  would match too, so none is removed automatically), `statusline uninstall` reverts the
   `statusLine` it recognises, `facts disable` explains that this version does not inject from a
   newer `facts.json`, and any other command prints `state written by token-sparen <version>;
   upgrade to it, or run <command> from that version` instead of an exception. README documents
