@@ -323,7 +323,8 @@ watch_calls = 5    # tool calls after the redirect that decide "loop broken" (sa
 [output_style]
 # Output-style directive (spec 6.6, high tier): one short line at SessionStart (startup, clear,
 # compact; never resume) asking for concise prose, never shorter code. Off by default in v1.0;
-# only you can turn it on. A project file may only switch it off; the directive is user-only.
+# enabled only from the user's config.toml or a session override. A project file may only switch
+# it off; the directive is user-only.
 enabled = false
 directive = "concise"   # a name from mechanisms/outputstyle.DIRECTIVES; unknown -> off
 
