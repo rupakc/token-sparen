@@ -13,6 +13,7 @@ import pytest
 from perfutil import best_of, perf_factor
 from sampleoutputs import big_pytest
 
+from token_sparen import recovery
 from token_sparen.compress import CompressContext, CompressResult, Level, registry
 from token_sparen.config import Config, load_config
 from token_sparen.estimate import estimate_tokens
@@ -309,6 +310,40 @@ def test_persisted_falls_back_to_compressing_preview(tmp_path: Path) -> None:
     assert _overlay(tmp_path)["tokens_removed"] == rec["tokens_before"] - rec["tokens_after"]
 
 
+class _PreviewOnly:
+    """Wraps a compressor; the full output's candidate is unusable (as when even its trimmed form
+    is longer than the preview), so the preview is trimmed instead."""
+
+    def __init__(self, inner: Any, full: str | None, text: str | None = None) -> None:
+        self.inner, self.full, self.text = inner, full, text
+
+    def compress(self, text: str, level: Level, ctx: CompressContext) -> CompressResult:
+        if text is self.full:
+            return CompressResult(text=text, kept_lines=1, total_lines=1, lossless=True)
+        if self.text is not None:
+            return CompressResult(text=self.text, kept_lines=1, total_lines=9, lossless=False)
+        return self.inner.compress(text, level, ctx)
+
+
+def test_pick_candidate_probes_the_marker_it_will_emit(tmp_path: Path) -> None:
+    """Near the preview's length, the probe must size the marker with the full output's line
+    count (the one the hook emits), or the hook ends in a spurious longer-than-preview no-op."""
+    full = "\n".join(f"line {i}" for i in range(100_000))  # 6-digit total vs 1-digit
+    stand_in = compression._marker_len_ref(tmp_path)
+    short_marker = recovery.marker(1, 9, stand_in)
+    body = "x" * 4000
+    preview = body + "\n" + short_marker  # fits exactly with the preview-only total
+    cfg = _cfg(tmp_path)
+    level = Level(head=40, tail=20, keep_ratio=0.35)
+    no_ctx = CompressContext(prompt=None, recent_paths=())
+    args = (level, _PreviewOnly(None, full, body), no_ctx, cfg, "text", 10_000, tmp_path)
+    picked = compression.pick_candidate(full, preview, *args)
+    assert picked is None  # with the 6-digit total the body no longer fits
+    roomy = preview + " " * 10
+    picked = compression.pick_candidate(full, roomy, *args)
+    assert picked is not None and picked.total_lines == 100_000
+
+
 def test_preview_fallback_marker_counts_the_full_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -318,8 +353,8 @@ def test_preview_fallback_marker_counts_the_full_output(
     saved.write_text(full, encoding="utf-8")
     real = compression.pick_candidate
 
-    def preview_only(full_text: str | None, *args: Any) -> Any:
-        return real(None, *args)  # as when the full output's candidate is too long
+    def preview_only(full_text: str | None, prev: str, level: Any, comp: Any, *rest: Any) -> Any:
+        return real(full_text, prev, level, _PreviewOnly(comp, full_text), *rest)
 
     monkeypatch.setattr(compression, "pick_candidate", preview_only)
     act = _handle(tmp_path, _bash(tmp_path, preview, persistedOutputPath=str(saved)))
