@@ -10,6 +10,21 @@ Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones 
 and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`
 for M3); the package version stays `0.1.0.dev0` until v1.0.
 
+### Security and privacy review (M6)
+
+- `TOKEN_SPAREN_*` environment variables may only narrow, like a project's
+  `token-sparen.toml` (a repository's committed Claude Code settings can set environment
+  variables); an ignored value is logged once. Widen in `~/.token-sparen/config.toml` or with
+  `token-sparen config set`. `learn.optin.*` and `extensions.allow_override` are read from
+  `~/.token-sparen/config.toml` only.
+- Directories created under `~/.token-sparen/` and `<project>/.token-sparen/` are owner-only
+  (0700 on POSIX); recovery files are never written or pruned through a symbolic link.
+- Threat model in `docs/user/privacy-security.md`; `SECURITY.md` states supported versions and
+  scope. CI: actions pinned by commit SHA, checkouts without a persisted token, a `supply-chain`
+  job (pinning and least-privilege tests, advisory `pip-audit`), Dependabot, and a deny-list
+  that scans generated trees and archives (`--path`) and fails closed on `main` when its word
+  list is missing (`--require-private-words`).
+
 ### M4 final-review fixes (offline evaluation validity)
 
 - Hill-climbing `--confirm` also runs the `compression` lane on each arm whose
