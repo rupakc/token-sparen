@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from bench import quota as qt
@@ -56,9 +58,77 @@ def test_unknown_weekly_fails_safe() -> None:
     assert qt.decide(past_reset, POLICY, NOW, 0).reason == "weekly"
 
 
-def test_rejected_unknown_kind_is_treated_as_weekly() -> None:
-    readings = [*_ok(), _r("unknown", None, status="rejected", source="stream")]
-    assert qt.decide(readings, POLICY, NOW, 0) == qt.QuotaDecision(False, "weekly", None)
+def test_rejected_unknown_kind_blocks_until_owner_reading_or_backoff() -> None:
+    """Review I3: a rejection without a reset blocks, but never forever."""
+    rej = _r("unknown", None, at=NOW - 60, status="rejected", source="stream")
+    d = qt.decide([*_ok(), rej], POLICY, NOW, 0)
+    assert d == qt.QuotaDecision(False, "five_hour", NOW - 60 + POLICY.rate_backoff_s)
+    assert qt.decide([*_ok(), rej], POLICY, NOW - 60 + POLICY.rate_backoff_s + 1, 0).go
+    fresh = [rej, _r("weekly", 11.0, at=NOW - 10, resets=NOW + 72 * H), _ok()[1]]
+    assert qt.decide(fresh, POLICY, NOW, 0).go  # a newer owner reading supersedes
+    weekly = _r("weekly", None, at=NOW - 60, status="rejected", source="stream")
+    assert qt.decide([*_ok(), weekly], POLICY, NOW, 0) == qt.QuotaDecision(False, "weekly", None)
+    later = NOW + POLICY.rate_backoff_s
+    fresh_ok = [_r("weekly", 10.0, at=later - 60, resets=later + 72 * H), _ok()[1]]
+    assert qt.decide([*fresh_ok, weekly], POLICY, later, 0).go
+
+
+def test_uncalibrated_stream_events_are_only_logged() -> None:
+    """Review I2: allowed / allowed_warning stream events without a % never stop a run."""
+    events = [
+        _r("weekly", None, at=NOW - 1, source="stream"),
+        _r("weekly", None, at=NOW - 1, source="stream", status="allowed_warning"),
+        _r("five_hour", None, at=NOW - 1, resets=NOW + H, source="stream"),
+    ]
+    assert qt.decide([*_ok(), *events], POLICY, NOW, 0).go
+
+
+def test_projected_usage_never_crosses_the_weekly_stop() -> None:
+    """Minor ruling: pause if the next run could cross 60 %, by the max observed per-run use."""
+    reading = _r("weekly", 57.5, at=NOW - 600, resets=NOW + 72 * H)
+    five = _ok()[1]
+    assert qt.decide([reading, five], POLICY, NOW, 0, starts=()).go  # default 1 % per run
+    starts = [NOW - 500, NOW - 400]  # two runs since: 57.5 + 3 * 1.0 >= 60
+    assert qt.decide([reading, five], POLICY, NOW, 0, starts=starts).reason == "weekly"
+    early = _r("weekly", 40.0, at=NOW - 5000, resets=NOW + 72 * H)
+    observed = [NOW - 4000]  # one run moved 40 -> 57.5: 17.5 % per run
+    assert qt.per_run_weekly_pct([early, reading], observed, POLICY) == 17.5
+    assert qt.decide([early, reading, five], POLICY, NOW, 0, starts=observed).reason == "weekly"
+
+
+def test_future_or_inconsistent_readings_ignored() -> None:
+    future = _r("weekly", 1.0, at=NOW + 3600, resets=NOW + 72 * H)
+    backwards = _r("weekly", 1.0, at=NOW - 60, resets=NOW - 120)
+    assert qt.decide([future, _ok()[1]], POLICY, NOW, 0).reason == "weekly"
+    assert qt.decide([backwards, _ok()[1]], POLICY, NOW, 0).reason == "weekly"
+
+
+def test_unit_read_at_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    rl = RateLimit("allowed", "weekly", NOW + H, 0.25)
+    assert qt.reading_from_rate_limit(rl, at=NOW).utilization_pct is None
+    monkeypatch.setattr(qt, "UTILIZATION_UNIT", "fraction")
+    assert qt.reading_from_rate_limit(rl, at=NOW).utilization_pct == 25.0
+
+
+def test_account_journal_and_lock(tmp_path: Path) -> None:
+    acct = qt.Account(tmp_path / "acct")
+    acct.record_reading(_r("weekly", 5.0, resets=NOW + H), now=NOW)
+    acct.record_start("c1/s/a/0/i", at=NOW)
+    assert [r.utilization_pct for r in acct.readings()] == [5.0]
+    assert acct.starts() == [NOW]
+    with pytest.raises(ValueError):
+        acct.record_reading(_r("weekly", 5.0, at=NOW + 3600), now=NOW)
+    with pytest.raises(ValueError):
+        acct.record_reading(_r("weekly", 150.0), now=NOW)
+    with acct.hold():
+        with pytest.raises(qt.AccountBusy):
+            with qt.Account(tmp_path / "acct").hold():
+                pass
+
+
+def test_default_account_dir_is_fixed(tmp_path: Path) -> None:
+    assert qt.default_account_dir({"TOKEN_SPAREN_BENCH_STATE": str(tmp_path)}) == tmp_path
+    assert qt.default_account_dir({}).name == ".token-sparen-bench"
 
 
 def test_five_hour_waits_until_reset() -> None:

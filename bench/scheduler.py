@@ -29,9 +29,16 @@ crash after it re-derives the promotion from the run's own ``state-out`` (`promo
 idempotent; the stream keeps only its last promoted state); a final key is never rerun; a
 graded block is not graded again (grading itself is idempotent too).
 
-Locks: ``<workspace>/scheduler.lock`` for the whole campaign (a second scheduler is refused),
-``<workspace>/bench.lock`` only around each agent container (grading takes it itself, in the
-same process, after the run released it; it never runs while an agent container runs).
+Quota state is account-wide (fix round 1, I1): run starts and readings go to the
+`bench.quota.Account` journal under the fixed bench state directory, shared by every ledger,
+stage, campaign and workspace; the scheduler holds the exclusive account lock for its whole life
+(a second scheduler anywhere refuses to start: `SchedulerBusy`). ``<workspace>/bench.lock`` is
+held only around each agent container (grading takes it itself, in the same process, after the
+run released it; it never runs while an agent container runs).
+
+Errors that would repeat on every resume (a final run's state or patch gone, an image pull or
+removal failing) end the invocation with a ``pause`` record (reason ``error``) and
+``incomplete`` instead of an exception.
 """
 
 from __future__ import annotations
@@ -42,7 +49,7 @@ import os
 import secrets
 import shutil
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from random import Random
@@ -62,19 +69,20 @@ from bench.classify import RunStatus
 from bench.freeze import FrozenPlugin, FrozenPluginChanged, verify
 from bench.ledger import Ledger, LedgerError, RunKey, sha256_text
 from bench.quota import (
-    UTILIZATION_UNIT,
+    Account,
+    AccountBusy,
     QuotaPolicy,
     QuotaReading,
     Unit,
     decide,
+    default_account_dir,
     reading_from_rate_limit,
-    reading_from_record,
     reading_record,
     window_bounds,
 )
 from bench.streamjson import run_cost
 from bench.tasks import Task
-from token_sparen.store.jsonstore import StoreBusy, locked
+from token_sparen.store.jsonstore import locked
 
 CampaignStatus = Literal[
     "complete",
@@ -99,7 +107,6 @@ EXIT_CODES: dict[CampaignStatus, int] = {
     "paused_disk": 10,
 }
 DISK_FLOOR_GB = 30.0
-SCHEDULER_LOCK = "scheduler"  # `locked` adds ".lock"
 BENCH_LOCK = "bench"  # the shared one-container lock `bench.lock` (grading takes it too)
 BENCH_LOCK_TIMEOUT_S = 6 * 3600.0
 WAIT_MARGIN_S = 60.0
@@ -112,9 +119,13 @@ class SchedulerBusy(RuntimeError):
 
 
 class TaskGrader(Protocol):
-    """Grades one task's final runs (Task 8: ``functools.partial(grade_task, grader=g)``)."""
+    """Grades one task's final runs: Task 8's ``functools.partial(grade_task, grader=g)``;
+    ``gold_ok`` = `bench.grade.preflight_ok(work)` (repeat grading OOMs of a task whose gold
+    patch passed preflight become unresolved: ruling N1)."""
 
-    def __call__(self, ledger: Ledger, *, stage: str, instance_id: str) -> None: ...
+    def __call__(
+        self, ledger: Ledger, *, stage: str, instance_id: str, gold_ok: Collection[str]
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -125,18 +136,26 @@ class RunSettings:
 
 
 class Breaker:
-    """Trips after ``limit`` consecutive infra failures (``rate`` and ``disk`` excepted)."""
+    """Trips after ``limit`` consecutive infra failures (``rate`` and ``disk`` excepted).
+
+    A failure of the same key right after its own previous failure does not add to the count
+    (fix round 1): a lone pending key (the last key of a block, or a one-sided retry round)
+    then reaches its own attempt cap and becomes unrunnable instead of tripping the breaker;
+    a systemic failure still trips it as soon as it reaches a second and third key."""
 
     def __init__(self, limit: int = 3) -> None:
         self.limit = limit
         self.count = 0
+        self._last: str | None = None
 
-    def record(self, status: RunStatus) -> bool:
+    def record(self, status: RunStatus, key: str | None = None) -> bool:
         kind, sub = status
         if kind != "infra_fail":
-            self.count = 0
+            self.count, self._last = 0, None
         elif sub not in BREAKER_EXEMPT:
-            self.count += 1
+            if key is None or key != self._last or self.count == 0:
+                self.count += 1
+            self._last = key
         return self.count >= self.limit
 
 
@@ -181,13 +200,22 @@ def stream_dir(workspace: Path, key: RunKey, repo: str) -> Path:
 
 
 def promote_state(
-    workspace: Path, *, key: RunKey, repo: str, arm: Arm, source: Path, ledger: Ledger
+    workspace: Path,
+    *,
+    key: RunKey,
+    repo: str,
+    arm: Arm,
+    source: Path,
+    ledger: Ledger,
+    attempt: int = 1,
 ) -> Path:
-    """The stream's state after ``key`` (a final run): ``arm.state_paths`` copied from the
-    run's ``state-out`` into a temp dir, renamed atomically to ``streams/…/<key>``; the
-    stream's other states are removed. Idempotent: an existing promotion is returned."""
+    """The stream's state after attempt ``attempt`` of ``key`` (its final run):
+    ``arm.state_paths`` copied from the run's ``state-out`` into a temp dir, renamed atomically
+    to ``streams/…/<key>-a<attempt>``; the stream's other states are removed. Stored per
+    attempt (fix round 1, I4): a rerun after an invalidation is a new promotion, never the
+    stale one. Idempotent: an existing promotion of that attempt is returned."""
     base = _private_dir(stream_dir(workspace, key, repo))
-    dest = base / _short(key.id)
+    dest = base / f"{_short(key.id)}-a{attempt}"
     if dest.is_dir():
         return dest
     if not source.is_dir():
@@ -198,7 +226,7 @@ def promote_state(
     for other in base.iterdir():
         if other != dest:
             shutil.rmtree(other, ignore_errors=True)
-    ledger.append({"kind": "promote", "stream": base.name, "key": key.id})
+    ledger.append({"kind": "promote", "stream": base.name, "key": key.id, "attempt": attempt})
     return dest
 
 
@@ -227,14 +255,19 @@ class _Campaign:
         wait: bool,
         settings: RunSettings,
         problems: Mapping[str, str],
-        unit: Unit | None,
+        unit: Unit | None | Literal["module"],
         breaker_limit: int,
+        account: Account,
+        gold_ok: Collection[str],
+        one_sided_retries: int,
     ) -> None:
         self.backend, self.ledger, self.arms, self.tasks = backend, ledger, arms, tasks
         self.workspace, self.frozen, self.policy, self.grader = workspace, frozen, policy, grader
         self.keep, self.clock, self.sleep, self.wait = keep_images, clock, sleep, wait
         self.settings, self.problems, self.unit = settings, problems, unit
         self.breaker = Breaker(breaker_limit)
+        self.account = account
+        self.gold_ok, self.one_sided_retries = frozenset(gold_ok), one_sided_retries
         self.campaign = ledger.campaign
         self.stage = str(ledger.header["stage"])
         self.known = [
@@ -286,24 +319,29 @@ class _Campaign:
         self.ledger.append({"kind": "pause", "at": self.clock(), "reason": reason, **details})
 
     def _needs_grading(self, iid: str) -> bool:
-        last_end, last_graded = -1, -1
+        """A block is graded again only when an ``end`` of its own keys, or an invalidation
+        touching them (by key, or a range over their ends), came after its last ``graded``."""
+        last_change, last_graded = -1, -1
+        ends_at: list[float] = []
         for i, rec in enumerate(self.ledger.records()):
-            if rec.get("kind") == "end":
+            kind = rec.get("kind")
+            if kind in ("end", "invalidate") and isinstance(rec.get("key"), str):
                 try:
-                    k = RunKey.from_id(str(rec.get("key")))
+                    k = RunKey.from_id(rec["key"])
                 except ValueError:
                     continue
                 if k.instance_id == iid and k.stage == self.stage:
-                    last_end = i
-            elif rec.get("kind") in ("graded", "invalidate"):
-                if rec.get("kind") == "invalidate" or (
-                    rec.get("instance_id") == iid and rec.get("stage") == self.stage
-                ):
-                    if rec.get("kind") == "graded":
-                        last_graded = i
-                    else:
-                        last_end = max(last_end, i)  # a reopened key may change the verdicts
-        return last_end > last_graded
+                    last_change = i
+                    if kind == "end":
+                        ends_at.append(float(rec.get("at", 0.0)))
+            elif kind == "invalidate" and rec.get("from") is not None and rec.get("to") is not None:
+                lo, hi = float(rec["from"]), float(rec["to"])
+                if any(lo <= at <= hi for at in ends_at):
+                    last_change = i
+            elif kind == "graded" and rec.get("instance_id") == iid:
+                if rec.get("stage") == self.stage:
+                    last_graded = i
+        return last_change > last_graded
 
     # --- the run loop --------------------------------------------------------------------
 
@@ -319,30 +357,66 @@ class _Campaign:
                 self._block(iid)
         except _Stop as stop:
             return stop.status
+        except (LedgerError, BackendError) as exc:  # e.g. a final run's state or patch is gone
+            self._pause("error", detail=f"{type(exc).__name__}: {exc}"[:500])
+            return "incomplete"
         return "incomplete" if self.incomplete else "complete"
 
     def _block(self, iid: str) -> None:
         task = self.tasks[iid]
-        pending = [k for k in self.blocks[iid] if not self.resolved(k)]
         ensured = False
-        while pending:
-            for key in list(pending):
-                pred = self.pred[key]
-                if pred is not None and not self.resolved(pred):  # pragma: no cover - order
-                    raise _Stop("incomplete")
-                self._checks(key)
-                if not ensured:  # pulled when the block's first run is cleared to start
-                    self.backend.ensure_image(task.image)
-                    ensured = True
-                self._run_one(key, task)
-            pending = [k for k in pending if not self.resolved(k)]
+        while True:
+            pending = [k for k in self.blocks[iid] if not self.resolved(k)]
+            while pending:
+                for key in list(pending):
+                    pred = self.pred[key]
+                    if pred is not None and not self.resolved(pred):  # pragma: no cover
+                        raise _Stop("incomplete")
+                    self._checks(key)
+                    if not ensured:  # pulled when the block's first run is cleared to start
+                        self.backend.ensure_image(task.image)
+                        ensured = True
+                    self._run_one(key, task)
+                pending = [k for k in pending if not self.resolved(k)]
+            if not self._retry_one_sided(iid):
+                break
+        self._record_exclusions(iid)
         if self._needs_grading(iid):
             self._disk_floor(None)
-            self.grader(self.ledger, stage=self.stage, instance_id=iid)
+            self.grader(self.ledger, stage=self.stage, instance_id=iid, gold_ok=self.gold_ok)
             release_image(self.backend, task.image, keep=self.keep)
             self.ledger.append(
                 {"kind": "graded", "at": self.clock(), "stage": self.stage, "instance_id": iid}
             )
+
+    def _retry_one_sided(self, iid: str) -> bool:
+        """A fresh round of attempts for each unrunnable key of the block whose other arms
+        (same seed) finished, up to ``one_sided_retries`` rounds (Task 9 ruling). True if any."""
+        block = self.blocks[iid]
+        retried = False
+        for key in block:
+            if not self.ledger.unrunnable(key):
+                continue
+            one_sided = any(
+                o.seed == key.seed and o.arm != key.arm and self.ledger.final(o) is not None
+                for o in block
+            )
+            if one_sided and self.ledger.retry_rounds(key) < self.one_sided_retries:
+                self.ledger.append(
+                    {"kind": "retry", "at": self.clock(), "key": key.id, "reason": "one_sided"}
+                )
+                retried = True
+        return retried
+
+    def _record_exclusions(self, iid: str) -> None:
+        """An ``excluded`` audit record for each key of the block that stays unrunnable."""
+        done: dict[str, str | None] = {}
+        for rec in self.ledger.records():
+            if rec.get("kind") in ("excluded", "retry", "invalidate") and rec.get("key"):
+                done[str(rec["key"])] = rec["kind"]
+        for ex in self.ledger.excluded_after_retries(self.stage):
+            if ex["instance_id"] == iid and done.get(ex["key"]) != "excluded":
+                self.ledger.append({"kind": "excluded", "at": self.clock(), **ex})
 
     def _disk_floor(self, key: RunKey | None) -> None:
         free = self.backend.free_disk_gb()
@@ -362,15 +436,11 @@ class _Campaign:
                     raise _Stop("plugin_changed") from exc
             self._disk_floor(key)
             now = self.clock()
-            records = self.ledger.records()
-            readings = [
-                r
-                for r in (reading_from_record(x) for x in records if x.get("kind") == "quota")
-                if r is not None
-            ]
+            readings = self.account.readings()  # account-wide (fix round 1, I1)
+            starts = self.account.starts()
             start, _ = window_bounds(readings, now)
-            runs = sum(1 for x in records if x.get("kind") == "start" and x["at"] >= start)
-            d = decide(readings, self.policy, now, runs)
+            runs = sum(1 for at in starts if at >= start)
+            d = decide(readings, self.policy, now, runs, starts=starts)
             if d.go:
                 return
             self._pause(d.reason, wait_until=d.wait_until)
@@ -400,6 +470,7 @@ class _Campaign:
             arm=self.arms[key.arm],
             source=source,
             ledger=self.ledger,
+            attempt=int(end.get("attempt", 1)),
         )
 
     def _run_one(self, key: RunKey, task: Task) -> None:
@@ -424,6 +495,7 @@ class _Campaign:
             campaign=self.campaign,
             problem_statement=self.problems.get(task.instance_id, ""),
         )
+        self.account.record_start(key.id, at=self.clock())
         self.ledger.append(
             {
                 "kind": "start",
@@ -456,6 +528,10 @@ class _Campaign:
         if out.status == ("infra_fail", "rate") and not any(r.rejected for r in readings):
             readings.append(QuotaReading(now, "stream", "unknown", None, None, "rejected"))
         for reading in readings:
+            try:
+                self.account.record_reading(reading, now=now)
+            except ValueError:
+                pass  # an implausible stream event: logged in the ledger only
             self.ledger.append(reading_record(reading))
         kind, sub = out.status
         graded = kind in ("ok", "agent_fail")
@@ -485,7 +561,7 @@ class _Campaign:
         if kind == "infra_fail" and sub in _STOP_AT_ONCE:
             self._pause(sub, key=key.id)
             raise _Stop(_STOP_AT_ONCE[sub])
-        if self.breaker.record(out.status):
+        if self.breaker.record(out.status, key.id):
             self._pause("breaker", key=key.id, consecutive=self.breaker.count)
             raise _Stop("paused_breaker")
 
@@ -507,18 +583,22 @@ def run_campaign(
     wait: bool = False,
     settings: RunSettings = RunSettings(),
     problems: Mapping[str, str] | None = None,
-    unit: Unit | None = UTILIZATION_UNIT,
+    unit: Unit | None | Literal["module"] = "module",
     breaker_limit: int = 3,
+    account: Path | None = None,
+    gold_ok: Collection[str] = frozenset(),
+    one_sided_retries: int = 1,
 ) -> CampaignStatus:
     """Run (or resume) ``keys`` of the ledger's campaign stage; see the module docstring.
     Keys of another campaign or stage, or naming an unknown task or arm, are skipped and the
     result is then at best ``incomplete``."""
     _private_dir(workspace)
-    lock = locked(workspace / SCHEDULER_LOCK, timeout=0)
+    acct = Account(default_account_dir() if account is None else account)
     try:
-        lock.__enter__()
-    except StoreBusy as exc:
-        raise SchedulerBusy(f"another scheduler holds {workspace}") from exc
+        hold = acct.hold()
+        hold.__enter__()
+    except AccountBusy as exc:
+        raise SchedulerBusy(str(exc)) from exc
     try:
         return _Campaign(
             keys,
@@ -538,7 +618,10 @@ def run_campaign(
             problems=problems or {},
             unit=unit,
             breaker_limit=breaker_limit,
+            account=acct,
+            gold_ok=gold_ok,
+            one_sided_retries=one_sided_retries,
         ).run()
     finally:
         with contextlib.suppress(Exception):
-            lock.__exit__(None, None, None)
+            hold.__exit__(None, None, None)

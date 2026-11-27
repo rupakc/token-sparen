@@ -22,15 +22,23 @@ Every later record has ``kind`` (one of `RECORD_KINDS`) and ``at`` (epoch second
   ``status = "infra_fail"``, ``sub = "disk"`` (never counted by the breaker).
 * ``invalidate`` (operator command): ``key`` or a time range ``from`` / ``to`` over the ``at`` of
   earlier ``end`` records, and ``reason``. It reopens the key(s): their earlier ends no longer
-  count, as final or as infra attempts.
-* ``promote``: ``stream`` and ``key``: the run's learner state became the stream's state.
+  count, as final or as infra attempts. It does not cascade: the later keys of a
+  ``state = "stream"`` stream keep their finals built on the reopened key's old state; to rerun
+  a stream from a point, invalidate a time range covering it.
+* ``promote``: ``stream``, ``key`` and ``attempt``: that attempt's learner state became the
+  stream's state (stored per attempt: a rerun after an invalidation is a new promotion).
 * ``graded``: ``stage``, ``instance_id``: a task's block was graded and its image released.
+* ``retry``: ``key``, ``reason`` (``one_sided``): a fresh round of attempts for an unrunnable
+  key whose other arms finished (Task 9 ruling: single-arm exclusions are re-run first, with
+  bounded rounds).
+* ``excluded``: the fields of `Ledger.excluded_after_retries` for a key that stays unrunnable
+  after its rounds (an audit record; the method computes the live list).
 
 A key's final outcome is its last non-invalidated ``end`` with status ``ok`` or ``agent_fail``;
 ``infra_fail`` is never final. These shapes are what `bench.stats.summarise` (Task 9) reads.
 
 Appends hold ``<ledger>.lock`` and are fsynced; a torn last line (a crash mid-write) is ignored
-on read and the next append starts on a fresh line.
+on read and cut off by the next append; a malformed line anywhere else is an error.
 """
 
 from __future__ import annotations
@@ -59,11 +67,14 @@ HEADER_KEYS = (
     "model",
     "claude_code_version",
 )
-RECORD_KINDS = frozenset({"start", "end", "quota", "pause", "invalidate", "promote", "graded"})
+RECORD_KINDS = frozenset(
+    {"start", "end", "quota", "pause", "invalidate", "promote", "graded", "retry", "excluded"}
+)
 GRADED = frozenset({"ok", "agent_fail"})
 MAX_INFRA_ATTEMPTS = 3
-# infra sub-statuses that never count as an attempt (re-queued / paused, not the key's fault)
-NOT_AN_ATTEMPT = frozenset({"rate", "disk"})
+# infra sub-statuses that never count as an attempt: re-queued, paused or stopped for a
+# cause that is not the key's (rate, disk floor, an expired token, a leak)
+NOT_AN_ATTEMPT = frozenset({"rate", "disk", "auth", "leak"})
 LOCK_TIMEOUT_S = 30.0
 
 
@@ -117,15 +128,33 @@ class FinalRun:
     patch: str
 
 
+def _torn_tail(fd: int, size: int) -> int:
+    """Length of the file without a torn last line (a crash mid-append)."""
+    pos, chunk = size, 65536
+    while pos > 0:
+        start = max(0, pos - chunk)
+        os.lseek(fd, start, os.SEEK_SET)
+        data = os.read(fd, pos - start)
+        cut = data.rfind(b"\n")
+        if cut >= 0:
+            return start + cut + 1
+        pos = start
+    return 0
+
+
 def _write_line(path: Path, doc: Mapping[str, Any]) -> None:
+    """Append one record (the caller holds the path's lock): a torn last line left by a
+    crash is cut off first, so a damaged record never sits between valid ones."""
     line = (json.dumps(doc, sort_keys=True, default=str) + "\n").encode("utf-8")
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0), 0o600)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
     try:
         size = os.fstat(fd).st_size
         if size:
             os.lseek(fd, size - 1, os.SEEK_SET)
-            if os.read(fd, 1) != b"\n":  # a torn last line: never glue onto it
-                line = b"\n" + line
+            if os.read(fd, 1) != b"\n":
+                size = _torn_tail(fd, size)
+                os.ftruncate(fd, size)
+        os.lseek(fd, size, os.SEEK_SET)
         os.write(fd, line)
         os.fsync(fd)
     finally:
@@ -134,21 +163,27 @@ def _write_line(path: Path, doc: Mapping[str, Any]) -> None:
         os.chmod(path, 0o600)
 
 
-def _read_lines(path: Path) -> list[dict[str, Any]]:
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """The records of an append-only JSONL file. Only a torn last line (no newline after it)
+    is skipped; any other malformed line raises `LedgerError` (never silently dropped)."""
     try:
-        raw = path.read_bytes().decode("utf-8", "replace")
+        raw = path.read_bytes()
     except FileNotFoundError:
         return []
+    lines = raw.split(b"\n")
     out: list[dict[str, Any]] = []
-    for line in raw.splitlines():
+    for i, line in enumerate(lines):
         if not line.strip():
             continue
         try:
-            doc = json.loads(line)
-        except ValueError:
-            continue  # a torn line (crash mid-append): not a record
-        if isinstance(doc, dict):
-            out.append(doc)
+            doc = json.loads(line.decode("utf-8"))
+        except ValueError as exc:
+            if i == len(lines) - 1:
+                continue  # the torn tail: cut off by the next append
+            raise LedgerError(f"malformed record on line {i + 1} of {path}") from exc
+        if not isinstance(doc, dict):
+            raise LedgerError(f"malformed record on line {i + 1} of {path}")
+        out.append(doc)
     return out
 
 
@@ -161,7 +196,7 @@ class Ledger:
         self.path = path
         self._cache: list[dict[str, Any]] = []
         self._stamp: tuple[int, int] | None = None
-        lines = _read_lines(path)
+        lines = read_jsonl(path)
         if not lines:
             if header is None:
                 raise LedgerError(f"no ledger at {path}")
@@ -172,9 +207,12 @@ class Ledger:
             doc.setdefault("price_table_version", PRICE_TABLE_VERSION)
             path.parent.mkdir(parents=True, exist_ok=True)
             with locked(path, timeout=LOCK_TIMEOUT_S):
-                _write_line(path, doc)
-            self.header: dict[str, Any] = doc
-            return
+                lines = read_jsonl(path)  # re-checked under the lock: one header only
+                if not lines:
+                    _write_line(path, doc)
+            if not lines:
+                self.header: dict[str, Any] = doc
+                return
         first = lines[0]
         if first.get("kind") != LEDGER_KIND or first.get("schema") != SCHEMA:
             raise LedgerError(f"not an E4 ledger (schema {SCHEMA}): {path}")
@@ -206,7 +244,7 @@ class Ledger:
         except OSError:
             stamp = None
         if stamp is None or stamp != self._stamp:
-            self._cache = _read_lines(self.path)[1:]
+            self._cache = read_jsonl(self.path)[1:]
             self._stamp = stamp
         return [dict(r) for r in self._cache]
 
@@ -223,6 +261,8 @@ class Ledger:
             kind = rec.get("kind")
             if kind == "end" and isinstance(rec.get("key"), str):
                 ends.setdefault(rec["key"], []).append(rec)
+            elif kind == "retry" and isinstance(rec.get("key"), str):
+                ends[rec["key"]] = []  # a new round of attempts (the key had no final)
             elif kind == "invalidate":
                 if isinstance(rec.get("key"), str):
                     ends[rec["key"]] = []
@@ -242,6 +282,62 @@ class Ledger:
     def unrunnable(self, key: RunKey) -> bool:
         ends = self._ends().get(key.id, [])
         return _final_of(ends) is None and _infra_count(ends) >= MAX_INFRA_ATTEMPTS
+
+    def retry_rounds(self, key: RunKey) -> int:
+        """``retry`` records of ``key`` since it was last invalidated by key."""
+        n = 0
+        for rec in self.records():
+            if rec.get("key") == key.id and rec.get("kind") in ("retry", "invalidate"):
+                n = n + 1 if rec["kind"] == "retry" else 0
+        return n
+
+    def excluded_after_retries(self, stage: str) -> list[dict[str, Any]]:
+        """Every unrunnable key of ``stage`` (its retry rounds spent or not granted), for the
+        stats gate: ``key``, ``arm``, ``seed``, ``instance_id``, ``cause`` (the last counted
+        infra sub-status), ``attempts`` (counted infra failures since the last invalidation,
+        over every round), ``retry_rounds`` and ``one_sided`` (another arm of the same task
+        and seed has a final outcome: a single-arm exclusion)."""
+        records = self.records()
+        ends = self._ends(records)
+        finals = {k for k, lst in ends.items() if _final_of(lst) is not None}
+        out: list[dict[str, Any]] = []
+        for key_id, lst in sorted(ends.items()):
+            key = RunKey.from_id(key_id)
+            if key.stage != stage or _final_of(lst) is not None:
+                continue
+            if _infra_count(lst) < MAX_INFRA_ATTEMPTS:
+                continue
+            attempts, cause, rounds = 0, None, 0
+            for rec in records:
+                if rec.get("key") != key_id:
+                    continue
+                if rec.get("kind") == "invalidate":
+                    attempts, rounds = 0, 0
+                elif rec.get("kind") == "retry":
+                    rounds += 1
+                elif rec.get("kind") == "end" and _infra_count([rec]):
+                    attempts, cause = attempts + 1, rec.get("sub")
+            others = {
+                RunKey(key.campaign, stage, k.arm, k.seed, k.instance_id).id
+                for k in (RunKey.from_id(f) for f in finals)
+                if k.stage == stage
+                and k.instance_id == key.instance_id
+                and k.seed == key.seed
+                and k.arm != key.arm
+            }
+            out.append(
+                {
+                    "key": key_id,
+                    "arm": key.arm,
+                    "seed": key.seed,
+                    "instance_id": key.instance_id,
+                    "cause": cause,
+                    "attempts": attempts,
+                    "retry_rounds": rounds,
+                    "one_sided": bool(others),
+                }
+            )
+        return out
 
     def next_attempt(self, key: RunKey) -> int:
         """1 + every ``start`` of the key ever (container names and run dirs never reused)."""

@@ -102,7 +102,7 @@ def test_ledger_file_is_private(tmp_path: Path) -> None:
         assert (led.path.stat().st_mode & 0o777) == 0o600
 
 
-def test_torn_last_line_ignored_and_next_append_on_new_line(tmp_path: Path) -> None:
+def test_torn_last_line_ignored_and_truncated_by_next_append(tmp_path: Path) -> None:
     led = _ledger(tmp_path)
     led.append(_end(KEY, "ok", "success", 1.0))
     with led.path.open("a", encoding="utf-8") as fh:
@@ -111,6 +111,23 @@ def test_torn_last_line_ignored_and_next_append_on_new_line(tmp_path: Path) -> N
     assert len(reopened.records()) == 1
     reopened.append({"kind": "pause", "reason": "x"})
     assert [r["kind"] for r in reopened.records()] == ["end", "pause"]
+    assert "trunc" not in led.path.read_text(encoding="utf-8")
+
+
+def test_malformed_middle_line_refused(tmp_path: Path) -> None:
+    """Review M7: only a torn tail is tolerated; a damaged record elsewhere is an error."""
+    led = _ledger(tmp_path)
+    with led.path.open("a", encoding="utf-8") as fh:
+        fh.write('not json\n{"kind": "pause", "reason": "y", "at": 1.0}\n')
+    with pytest.raises(lg.LedgerError, match="malformed"):
+        lg.Ledger(led.path).records()
+
+
+def test_auth_and_leak_are_not_attempts(tmp_path: Path) -> None:
+    led = _ledger(tmp_path)
+    for i, sub in enumerate(("auth", "leak", "auth", "leak")):
+        led.append(_end(KEY, "infra_fail", sub, float(i)))
+    assert led.infra_attempts(KEY) == 0 and not led.unrunnable(KEY)
 
 
 def test_final_is_last_graded_end_never_infra(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ end-to-end test drives `bench.backends.FakeBackend`.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -148,18 +149,34 @@ def _ledger(
     return led
 
 
-def _owner(led: lg.Ledger, *, weekly: float, five: float, at: float = T0 - 60) -> None:
-    for kind, pct, resets in (("weekly", weekly, T0 + 72 * H), ("five_hour", five, T0 + 2 * H)):
+def _account(led: lg.Ledger) -> qt.Account:
+    return qt.Account(led.path.parent / "account")  # tests never touch the real bench state
+
+
+def _owner(
+    led: lg.Ledger,
+    *,
+    weekly: float,
+    five: float,
+    at: float = T0 - 60,
+    five_resets: float | None = T0 + 2 * H,
+    weekly_resets: float = T0 + 72 * H,
+) -> None:
+    for kind, pct, resets in (("weekly", weekly, weekly_resets), ("five_hour", five, five_resets)):
         reading = qt.QuotaReading(at, "owner", kind, pct, resets)  # type: ignore[arg-type]
-        led.append(qt.reading_record(reading))
+        _account(led).record_reading(reading, now=at)
 
 
 class Grades:
     def __init__(self, backend: ScriptBackend | None = None) -> None:
         self.backend = backend
         self.graded: list[tuple[str, list[str]]] = []
+        self.gold_ok: list[frozenset[str]] = []
 
-    def __call__(self, ledger: lg.Ledger, *, stage: str, instance_id: str) -> None:
+    def __call__(
+        self, ledger: lg.Ledger, *, stage: str, instance_id: str, gold_ok: Any = frozenset()
+    ) -> None:
+        self.gold_ok.append(frozenset(gold_ok))
         keys = sorted(r.key for r in ledger.final_runs(stage) if r.instance_id == instance_id)
         self.graded.append((instance_id, keys))
         if self.backend is not None:
@@ -184,12 +201,15 @@ def _run(
     keep: frozenset[str] = frozenset(),
     frozen: fz.FrozenPlugin | None = None,
     tasks: Mapping[str, tk.Task] = TASKS,
+    account: Path | None = None,
+    **extra: Any,
 ) -> sc.CampaignStatus:
     clock = clock or Clock()
+    led = led or _ledger(tmp)
     return sc.run_campaign(
         keys,
         backend=backend,
-        ledger=led or _ledger(tmp),
+        ledger=led,
         arms={**ARMS, **am.load_arms()},
         tasks=tasks,
         workspace=tmp,
@@ -200,6 +220,8 @@ def _run(
         clock=clock,
         sleep=clock.sleep,
         wait=wait,
+        account=account or led.path.parent / "account",
+        **extra,
     )
 
 
@@ -344,83 +366,156 @@ def test_crash_between_end_and_promotion_promotes_on_resume(
     assert resumed.histories[second.id] == ["fake__alpha-1"]
 
 
-@settings(max_examples=25, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+def _pred(key: lg.RunKey) -> lg.RunKey | None:
+    task = TASKS[key.instance_id]
+    chain = tk.streams(list(TASKS.values()))[task.repo]
+    i = [t.instance_id for t in chain].index(key.instance_id)
+    return replace(key, instance_id=chain[i - 1].instance_id) if i else None
+
+
+SITES = ("run", "promote", "grade", "append")
+
+
+@settings(max_examples=60, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 @given(
-    crashes=st.lists(
-        st.tuples(st.integers(0, 12), st.sampled_from(["run", "promote", "grade"])), max_size=4
+    crashes=st.lists(st.tuples(st.integers(0, 14), st.sampled_from(SITES)), max_size=5),
+    infra=st.dictionaries(
+        st.integers(1, 16), st.sampled_from(["api", "load", "rate", "auth"]), max_size=5
     ),
-    infra=st.sets(st.integers(0, 15), max_size=4),
+    cap=st.integers(1, 5),
+    invalidations=st.lists(st.tuples(st.integers(0, 8), st.integers(0, 7)), max_size=3),
 )
-def test_crash_resume_property(crashes: list[tuple[int, str]], infra: set[int]) -> None:
-    """Any sequence of crashes (in a run, in promotion, in grading) and transient infra
-    failures: resuming until complete gives one final per key, state chained in commit order,
-    no final key ever rerun and every task graded."""
+def test_crash_resume_property(
+    crashes: list[tuple[int, str]],
+    infra: dict[int, str],
+    cap: int,
+    invalidations: list[tuple[int, int]],
+) -> None:
+    """Crashes anywhere (in a run, in promotion, in grading, mid-append leaving a torn line),
+    typed infra failures, low per-window run caps and operator invalidations: resuming until
+    complete gives a final for every runnable key, every run started from the state of the
+    latest valid attempt of its predecessor at that moment, no final key ever rerun, unique
+    attempts and container names, never more than ``cap`` starts in any five-hour window,
+    and every task graded."""
     with tempfile.TemporaryDirectory() as tmp_s:
         tmp = Path(tmp_s)
+        clock = Clock()
         led = _ledger(tmp)
-        counter = {"run": 0, "promote": 0, "grade": 0}
-        pending = list(crashes)
+        _owner(led, weekly=10.0, five=10.0, five_resets=None)
+        policy = qt.QuotaPolicy(max_runs_per_window=cap)
+        counter = dict.fromkeys(SITES, 0)
+        pending = sorted(crashes)
+        active = {"on": False}
         calls = {"n": 0}
+        runs: list[tuple[str, int, list[str]]] = []
 
-        def crash_point(where: str) -> None:
+        def hit(where: str) -> bool:
+            if not active["on"]:
+                return False
             n = counter[where]
             counter[where] += 1
-            if pending and pending[0] == (n, where):
-                pending.pop(0)
-                raise Crash
+            for i, c in enumerate(pending):
+                if c == (n, where):
+                    del pending[i]
+                    return True
+            return False
 
         def plan(req: bk.RunRequest) -> str:
-            crash_point("run")
+            hist = req.state_in / STATE / "history"
+            history = hist.read_text().split() if hist.exists() else []
+            runs.append((req.key_id, req.attempt, history))
+            out = req.run_dir / "state-out" / STATE / "history"  # unique per attempt
+            out.write_text(" ".join([*history, f"{req.task.instance_id}#a{req.attempt}"]))
+            if hit("run"):
+                raise Crash
             calls["n"] += 1
-            if calls["n"] in infra:
-                return "infra_fail/api"
-            return "ok/success"
+            sub = infra.get(calls["n"])
+            return f"infra_fail/{sub}" if sub else "ok/success"
 
-        real = sc.promote_state
+        real_promote, real_ledger_write, real_quota_write = (
+            sc.promote_state,
+            lg._write_line,
+            qt._write_line,
+        )
 
         def promote(*args: Any, **kwargs: Any) -> Path:
-            crash_point("promote")
-            return real(*args, **kwargs)
+            if hit("promote"):
+                raise Crash
+            return real_promote(*args, **kwargs)
+
+        def torn(path: Path, doc: Mapping[str, Any]) -> None:
+            if hit("append"):
+                line = json.dumps(doc).encode()
+                with path.open("ab") as fh:
+                    fh.write(line[: len(line) // 2])
+                raise Crash
+            real_ledger_write(path, doc)
 
         grades = Grades()
 
-        def grade(ledger: lg.Ledger, *, stage: str, instance_id: str) -> None:
-            crash_point("grade")
+        def grade(ledger: lg.Ledger, *, stage: str, instance_id: str, **_kw: Any) -> None:
+            if hit("grade"):
+                raise Crash
             grades(ledger, stage=stage, instance_id=instance_id)
 
         keys = _keys()
-        sc_promote = sc.promote_state
         sc.promote_state = promote  # type: ignore[assignment]
+        lg._write_line = torn  # type: ignore[assignment]
+        qt._write_line = torn  # type: ignore[assignment]
         try:
             status: str | None = None
-            for _ in range(20):
-                backend = ScriptBackend(plan)
+            for it in range(80):
+                for when, idx in invalidations:
+                    if when == it and led.final(keys[idx]) is not None:
+                        led.invalidate(keys[idx], reason="operator")
+                backend = ScriptBackend(plan, clock=clock)
                 finals_before = {k.id for k in keys if led.final(k) is not None}
+                active["on"] = True
                 try:
-                    status = _run(tmp, backend, keys, led, grader=grade)
+                    status = _run(tmp, backend, keys, led, grader=grade, clock=clock,
+                                  policy=policy, wait=True)  # fmt: skip
                 except Crash:
                     status = None
+                finally:
+                    active["on"] = False
                 assert not finals_before & {r.key_id for r in backend.calls}
-                if status not in (None, "paused_breaker"):
+                if status in ("paused_weekly", "paused_five_hour"):
+                    clock.t += 60
+                    _owner(led, weekly=10.0, five=10.0, at=clock.t, five_resets=None,
+                           weekly_resets=clock.t + 72 * H)  # fmt: skip
+                    clock.t += 1
+                if status == "complete" and not any(w > it for w, _ in invalidations):
                     break
         finally:
-            sc.promote_state = sc_promote  # type: ignore[assignment]
+            sc.promote_state = real_promote  # type: ignore[assignment]
+            lg._write_line = real_ledger_write  # type: ignore[assignment]
+            qt._write_line = real_quota_write  # type: ignore[assignment]
         assert status == "complete"
-        ends = _ends(led)
+        records = led.records()
         for key in keys:
-            graded = [e for e in ends if e["key"] == key.id and e["status"] == "ok"]
-            if led.unrunnable(key):  # three counted infra failures: never graded
-                assert graded == []
-                continue
-            assert len(graded) == 1
-            repo = "alpha" if "alpha" in key.instance_id else "beta"
-            chain = [f"fake__{repo}-1", f"fake__{repo}-2"]
-            done = [
-                iid
-                for iid in chain[: chain.index(key.instance_id) + 1]
-                if not led.unrunnable(replace(key, instance_id=iid))
-            ]
-            assert _final_history(tmp, led, key) == done  # carried in commit order
+            assert led.unrunnable(key) or led.final(key) is not None
+        # every run started from the latest valid final attempt of its predecessor
+        starts = {
+            (r["key"], r["attempt"]): i for i, r in enumerate(records) if r["kind"] == "start"
+        }
+        for key_id, attempt, history in runs:
+            prefix_ends = led._ends(records[: starts[(key_id, attempt)]])
+            expect: list[str] = []
+            pred = _pred(lg.RunKey.from_id(key_id))
+            while pred is not None:
+                final = lg._final_of(prefix_ends.get(pred.id, []))
+                if final is not None:
+                    out = tmp / final["run_dir"] / "state-out" / STATE / "history"
+                    expect = out.read_text().split()
+                    break
+                pred = _pred(pred)
+            assert history == expect, (key_id, attempt)
+        started = [r for r in records if r["kind"] == "start"]
+        assert len({(r["key"], r["attempt"]) for r in started}) == len(started)
+        assert len({r["container"] for r in started}) == len(started)
+        account_starts = sorted(_account(led).starts())
+        for at in account_starts:
+            assert sum(1 for s in account_starts if at - 5 * H <= s <= at) <= cap
         assert {iid for iid, _ in grades.graded} == set(TASKS)
 
 
@@ -449,12 +544,30 @@ def test_rate_requeues_without_attempt(tmp_path: Path) -> None:
     assert statuses == ["rate", "success"]
 
 
-def test_rate_without_a_usable_reading_fails_safe(tmp_path: Path) -> None:
-    def plan(req: bk.RunRequest) -> str:
-        return "infra_fail/rate"
+def test_rate_without_reset_blocks_until_owner_reading_or_backoff(tmp_path: Path) -> None:
+    clock = Clock()
+    calls = {"n": 0}
 
-    status = _run(tmp_path, ScriptBackend(plan), _keys(), wait=True)
-    assert status == "paused_weekly" and sc.EXIT_CODES[status] == 3
+    def plan(req: bk.RunRequest) -> str:
+        calls["n"] += 1
+        return "infra_fail/rate" if calls["n"] == 1 else "ok/success"
+
+    led = _ledger(tmp_path)
+    backend = ScriptBackend(plan)
+    assert _run(tmp_path, backend, _keys(), led, clock=clock) == "paused_five_hour"
+    assert _run(tmp_path, backend, _keys(), led, clock=clock) == "paused_five_hour"  # still
+    _owner(led, weekly=12.0, five=20.0, at=clock.t + 1)  # a fresh owner reading supersedes
+    clock.t += 2
+    assert _run(tmp_path, backend, _keys(), led, clock=clock) == "complete"
+    # without a new reading the block expires after the backoff (default 1 h), never forever
+    tmp2 = tmp_path / "backoff"
+    tmp2.mkdir()
+    clock2 = Clock()
+    calls["n"] = 0
+    led2 = _ledger(tmp2)
+    status = _run(tmp2, ScriptBackend(plan), _keys(), led2, clock=clock2, wait=True)
+    assert status == "complete"
+    assert 3600 <= clock2.sleeps[0] <= 3600 + 2 * sc.WAIT_MARGIN_S
 
 
 def test_infra_never_graded_and_unrunnable_after_three(tmp_path: Path) -> None:
@@ -469,8 +582,8 @@ def test_infra_never_graded_and_unrunnable_after_three(tmp_path: Path) -> None:
     backend = ScriptBackend(plan)
     status = _run(tmp_path, backend, keys, led, grader=grades)
     assert status == "complete"
-    assert [r.key_id for r in backend.calls].count(bad.id) == 3
-    assert [r.attempt for r in backend.calls if r.key_id == bad.id] == [1, 2, 3]
+    assert [r.key_id for r in backend.calls].count(bad.id) == 6  # 3 + one one-sided round
+    assert [r.attempt for r in backend.calls if r.key_id == bad.id] == [1, 2, 3, 4, 5, 6]
     assert led.unrunnable(bad) and led.final(bad) is None
     for _, graded_keys in grades.graded:
         assert bad.id not in graded_keys
@@ -499,6 +612,10 @@ def test_breaker_counts_only_consecutive_non_rate_non_disk() -> None:
     assert not br.record(("infra_fail", "unknown"))
     assert br.record(("infra_fail", "proxy"))
     assert sc.Breaker(limit=1).record(("infra_fail", "docker"))
+    same = sc.Breaker()
+    assert not any(same.record(("infra_fail", "load"), "k1") for _ in range(5))  # one key
+    assert not same.record(("infra_fail", "load"), "k2")
+    assert same.record(("infra_fail", "load"), "k3")
 
 
 @pytest.mark.parametrize(("sub", "expect"), [("auth", "stopped_auth"), ("leak", "stopped_leak")])
@@ -649,12 +766,110 @@ def test_unknown_task_or_arm_leaves_campaign_incomplete(tmp_path: Path) -> None:
     assert _run(tmp_path, ScriptBackend(), keys) == "incomplete"
 
 
-def test_second_scheduler_on_a_workspace_refused(tmp_path: Path) -> None:
-    from token_sparen.store.jsonstore import locked
-
-    with locked(tmp_path / sc.SCHEDULER_LOCK, timeout=0):
+def test_second_scheduler_refused_account_wide(tmp_path: Path) -> None:
+    other = tmp_path / "other-workspace"
+    other.mkdir()
+    account = other / "account"  # where `_ledger(other)` writes the owner readings
+    with qt.Account(account).hold():  # held by a scheduler of another workspace
         with pytest.raises(sc.SchedulerBusy):
-            _run(tmp_path, ScriptBackend(), _keys())
+            _run(other, ScriptBackend(), _keys(), account=account)
+    assert _run(other, ScriptBackend(), _keys(), _ledger(other), account=account) == "complete"
+
+
+def test_quota_is_account_wide_across_ledgers(tmp_path: Path) -> None:
+    """Review I1: a second stage (or campaign, or workspace) in the same window shares the
+    account's run cap and owner readings."""
+    policy = qt.QuotaPolicy(max_runs_per_window=4)
+    account = tmp_path / "account"
+    ws1, ws2 = tmp_path / "s1", tmp_path / "s2"
+    ws1.mkdir()
+    ws2.mkdir()
+    led1 = _ledger(ws1, readings=False)
+    qt.Account(account).record_reading(
+        qt.QuotaReading(T0 - 60, "owner", "weekly", 10.0, T0 + 72 * H), now=T0
+    )
+    qt.Account(account).record_reading(
+        qt.QuotaReading(T0 - 60, "owner", "five_hour", 10.0, T0 + 2 * H), now=T0
+    )
+    first = ScriptBackend()
+    assert _run(ws1, first, _keys(), led1, policy=policy, account=account) == "paused_five_hour"
+    assert len(first.calls) == 4
+    led2 = lg.Ledger(ws2 / "ledger.jsonl", header=led1.header | {"stage": "confirmation"})
+    keys2 = [replace(k, stage="confirmation") for k in _keys()]
+    second = ScriptBackend()
+    assert _run(ws2, second, keys2, led2, policy=policy, account=account) == "paused_five_hour"
+    assert second.calls == []
+
+
+def test_uncalibrated_stream_events_never_stop_the_campaign(tmp_path: Path) -> None:
+    """Review I2: allowed weekly / five-hour events with no calibrated unit are only logged."""
+
+    def plan(req: bk.RunRequest) -> bk.RunOutcome:
+        rls = [
+            RateLimit("allowed", "weekly", T0 + 50 * H, 0.97),
+            RateLimit("allowed_warning", "five_hour", T0 + H, 0.99),
+        ]
+        m = RunMetrics(model="m", claude_code_version="v", rate_limits=rls)
+        return bk.RunOutcome(
+            ("ok", "success"), m, f"patch {req.key_id}\n", req.run_dir / "state-out", 1.0, []
+        )
+
+    led = _ledger(tmp_path)
+    assert _run(tmp_path, ScriptBackend(plan), _keys(), led) == "complete"
+    logged = [r for r in led.records() if r["kind"] == "quota"]
+    assert len(logged) == 16 and all(r["utilization_pct"] is None for r in logged)
+
+
+def test_invalidated_stream_head_rerun_carries_new_state(tmp_path: Path) -> None:
+    """Review I4: the successor takes the state of the latest valid attempt of its
+    predecessor, never a stale promotion of an invalidated one."""
+    head = lg.RunKey("c1", "screening", "a", 0, "fake__alpha-1")
+    led = _ledger(tmp_path)
+    assert _run(tmp_path, ScriptBackend(), [head], led) == "complete"
+    led.invalidate(head, reason="operator: rerun")
+
+    def plan(req: bk.RunRequest) -> str:
+        if req.key_id == head.id:
+            out = req.run_dir / "state-out" / STATE / "history"
+            out.write_text("NEW", encoding="utf-8")
+        return "ok/success"
+
+    backend = ScriptBackend(plan)
+    assert _run(tmp_path, backend, _keys(), led) == "complete"
+    second = lg.RunKey("c1", "screening", "a", 0, "fake__alpha-2")
+    assert backend.histories[second.id] == ["NEW"]
+
+
+def test_promotion_failure_pauses_incomplete(tmp_path: Path) -> None:
+    head = lg.RunKey("c1", "screening", "a", 0, "fake__alpha-1")
+    led = _ledger(tmp_path)
+    assert _run(tmp_path, ScriptBackend(), [head], led) == "complete"
+    final = led.final(head)
+    assert final is not None
+    import shutil
+
+    shutil.rmtree(tmp_path / "streams")
+    shutil.rmtree(tmp_path / final["run_dir"] / "state-out")
+    assert _run(tmp_path, ScriptBackend(), _keys(), led) == "incomplete"
+    assert [r["reason"] for r in led.records() if r["kind"] == "pause"][-1] == "error"
+
+
+def test_grader_error_pauses_incomplete(tmp_path: Path) -> None:
+    def bad(ledger: lg.Ledger, *, stage: str, instance_id: str, **_kw: Any) -> None:
+        raise lg.LedgerError("patch differs from its recorded sha256")
+
+    led = _ledger(tmp_path)
+    assert _run(tmp_path, ScriptBackend(), _keys(), led, grader=bad) == "incomplete"
+
+
+def test_invalidate_regrades_only_its_task(tmp_path: Path) -> None:
+    led = _ledger(tmp_path)
+    grades = Grades()
+    assert _run(tmp_path, ScriptBackend(), _keys(), led, grader=grades) == "complete"
+    key = _keys()[0]
+    led.invalidate(key, reason="x")
+    assert _run(tmp_path, ScriptBackend(), _keys(), led, grader=grades) == "complete"
+    assert [iid for iid, _ in grades.graded[4:]] == [key.instance_id]
 
 
 # --- end to end with the fake backend ------------------------------------------------------
@@ -697,3 +912,75 @@ def test_fake_backend_end_to_end_records_task9_shape(tmp_path: Path) -> None:
     runs = led.final_runs("screening")
     assert len(runs) == 4 and all("calc.py" in r.patch for r in runs)
     assert backend.removed == [] or set(backend.removed) == {tk.FAKE_IMAGE}
+
+
+# --- Task 9 / Task 8 wiring ----------------------------------------------------------------
+
+
+def test_one_sided_exclusion_rerun_with_bounded_retries(tmp_path: Path) -> None:
+    """Task 9 ruling: a single-arm exclusion gets a fresh, bounded round of attempts before it
+    stays excluded; the ledger lists it per key with its cause and rounds."""
+    bad = lg.RunKey("c1", "screening", "a", 0, "fake__alpha-1")
+    led = _ledger(tmp_path)
+    backend = ScriptBackend(lambda r: "infra_fail/load" if r.key_id == bad.id else "ok/success")
+    keys = [bad, *[k for k in _keys(arms=("a", "b", "c")) if k != bad]]
+    assert _run(tmp_path, backend, keys, led, one_sided_retries=2) == "complete"
+    assert [r.key_id for r in backend.calls].count(bad.id) == 9  # 3 attempts x (1 + 2 rounds)
+    (ex,) = led.excluded_after_retries("screening")
+    assert ex == {
+        "key": bad.id,
+        "arm": "a",
+        "seed": 0,
+        "instance_id": "fake__alpha-1",
+        "cause": "load",
+        "attempts": 9,
+        "retry_rounds": 2,
+        "one_sided": True,
+    }
+    audit = [r for r in led.records() if r["kind"] == "excluded"]
+    assert len(audit) == 1 and audit[0]["key"] == bad.id
+    assert [r["reason"] for r in led.records() if r["kind"] == "retry"] == ["one_sided"] * 2
+    # a rerun of the campaign neither retries again nor duplicates the audit record
+    again = ScriptBackend()
+    assert _run(tmp_path, again, keys, led, one_sided_retries=2) == "complete"
+    assert again.calls == []
+    assert len([r for r in led.records() if r["kind"] == "excluded"]) == 1
+
+
+def test_one_sided_retry_recovers_the_key(tmp_path: Path) -> None:
+    bad = lg.RunKey("c1", "screening", "a", 0, "fake__alpha-1")
+    seen = {"n": 0}
+
+    def plan(req: bk.RunRequest) -> str:
+        if req.key_id != bad.id:
+            return "ok/success"
+        seen["n"] += 1
+        return "infra_fail/api" if seen["n"] <= 3 else "ok/success"
+
+    led = _ledger(tmp_path)
+    keys = [bad, *[k for k in _keys(arms=("a", "b", "c")) if k != bad]]
+    assert _run(tmp_path, ScriptBackend(plan), keys, led) == "complete"
+    assert led.final(bad) is not None and led.excluded_after_retries("screening") == []
+
+
+def test_task_level_exclusion_is_not_retried(tmp_path: Path) -> None:
+    """Every arm of the task fails: a task-level exclusion (dropped), no extra round."""
+    led = _ledger(tmp_path)
+
+    def plan(req: bk.RunRequest) -> str:
+        return "infra_fail/docker" if req.task.instance_id == "fake__alpha-1" else "ok/success"
+
+    backend = ScriptBackend(plan)
+    assert _run(tmp_path, backend, _keys(), led, breaker_limit=100) == "complete"
+    excluded = led.excluded_after_retries("screening")
+    assert {e["arm"] for e in excluded} == {"a", "b"}
+    assert all(not e["one_sided"] and e["retry_rounds"] == 0 for e in excluded)
+    assert [r for r in led.records() if r["kind"] == "retry"] == []
+
+
+def test_gold_ok_reaches_the_grader(tmp_path: Path) -> None:
+    """Task 8 ruling N1: the scheduler passes ``gold_ok`` (preflight-passed tasks) through."""
+    grades = Grades()
+    gold = frozenset({"fake__alpha-1", "fake__beta-1"})
+    assert _run(tmp_path, ScriptBackend(), _keys(), grader=grades, gold_ok=gold) == "complete"
+    assert grades.gold_ok == [gold] * 4
