@@ -206,8 +206,13 @@ def _split(command: Any) -> list[str] | None:
         return None
 
 
+def same_path(a: str, b: str, pathmod: Any = os.path) -> bool:
+    """The same path spelled differently: separators and, on Windows, case (``normcase``)."""
+    return bool(pathmod.normcase(pathmod.normpath(a)) == pathmod.normcase(pathmod.normpath(b)))
+
+
 def _is_launcher(arg: str, launcher: str) -> bool:
-    if arg == launcher:
+    if arg == launcher or (arg and launcher and same_path(arg, launcher)):
         return True
     if Path(arg).name != LAUNCHER_NAME:
         return False
