@@ -18,6 +18,7 @@ from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from typing import Any, TextIO, cast
 
+from token_sparen import deferred
 from token_sparen.adapters.claude import settings as _settings  # noqa: F401 - registers the deny writer
 from token_sparen.adapters.claude.translate import EVENT_KINDS, ClaudeAdapter
 from token_sparen.config import Config, flag_on, load_config, log_error, state_home
@@ -50,7 +51,8 @@ NOOP = "{}"
 _POST_KINDS = frozenset({"post_tool", "post_tool_failure"})
 
 
-# Handlers that still run after a PostToolUse replacement ended the chain (bookkeeping).
+# Handlers that must not be lost: bookkeeping after a PostToolUse replacement, or settlement
+# that a later handler's latency overrun must not skip (see ``register``).
 ALWAYS_RUN: set[Handler] = set()
 
 
@@ -59,6 +61,8 @@ def register(kind: EventKind, fn: Handler, *, always: bool = False) -> None:
 
     ``always``: on PostToolUse(+Failure) the handler also runs after an output replacement
     (its own replacement is ignored); use it for bookkeeping placed at the end of the chain.
+    On every other event the always-run handlers run first, in order, before the rest of the
+    chain, so an overrun of a later handler (the watchdog ends the process) cannot skip them.
     """
     HANDLERS[kind] = [*HANDLERS.get(kind, []), fn]
     if always:
@@ -260,7 +264,7 @@ for _kind, _fn in (
     ("prompt", _on_boundary),
     ("prompt", _on_regret),  # after the turn count: expires regret windows (explicit 0)
     ("prompt", _on_prune_prompt),  # the user named a pruned tool: restore it
-    ("prompt", _on_loopguard_prompt),  # after the turn count: settles the previous turn
+    ("prompt", _on_loopguard_prompt),  # always (runs first): settles the previous turn
     ("pre_tool", _on_prune_tool),  # first: a later block ends the chain; never blocks itself
     ("pre_tool", _on_activity),
     ("pre_tool", _on_pre_invalidate),
@@ -295,7 +299,9 @@ for _kind, _fn in (
     ("session_end", _on_fold_spawn),  # after settling: the fold sees every regret outcome
     ("permission_denied", _on_prune_tool),
 ):
-    always = _fn in (_on_track, _on_loopguard) or (_kind == "post_tool" and _fn is _on_activity)
+    always = _fn in (_on_track, _on_loopguard, _on_loopguard_prompt) or (
+        _kind == "post_tool" and _fn is _on_activity
+    )
     register(cast(EventKind, _kind), _contained(cast(Handler, _fn)), always=always)
 
 
@@ -316,11 +322,17 @@ def handle(event: Event, cfg: Config) -> Action:
     later handlers see the rewritten input. PostToolUse(+Failure): the first output replacement
     ends the chain (read de-dupe runs before compression, so a pointer skips compression); only
     handlers registered ``always`` (tracking) still run after it.
+    Any other event: always-run handlers first (``register``), then the rest, in order.
     ``inject_context`` and ``user_message`` of all handlers that ran are joined in order.
     """
     result = Action()
     current = event
-    for fn in HANDLERS.get(event.kind, []):
+    chain = HANDLERS.get(event.kind, [])
+    if event.kind not in _POST_KINDS:
+        chain = [fn for fn in chain if fn in ALWAYS_RUN] + [
+            fn for fn in chain if fn not in ALWAYS_RUN
+        ]
+    for fn in chain:
         action = fn(current, cfg)
         _merge_side(result, action)
         if event.kind == "pre_tool":
@@ -493,6 +505,10 @@ def _respond(
     return json.dumps(rendered, ensure_ascii=True, allow_nan=False), cfg, "action"
 
 
+def _log_deferred(env: Mapping[str, str], event_name: str, exc: BaseException) -> None:
+    log_error(env, "claude.entry", f"{event_name}: after emit: {type(exc).__name__}: {exc}")
+
+
 def main(
     event_name: str,
     stdin: TextIO,
@@ -501,15 +517,20 @@ def main(
     *,
     exit_fn: Callable[[int], Any] = os._exit,
 ) -> int:
-    """Run one hook. Always returns 0 and writes exactly one JSON object line to ``stdout``."""
+    """Run one hook. Always returns 0 and writes exactly one JSON object line to ``stdout``.
+
+    Work the handlers passed to ``deferred.after_emit`` runs once this response is written, and
+    not at all when the watchdog's no-op was written instead."""
     out = _Output(stdout)
     dog = _Watchdog(out, env, event_name, exit_fn)
     cfg: Config | None = None
     outcome = "error"
     try:
         dog.arm(DEFAULT_BUDGET_MS)
-        text, cfg, outcome = _respond(event_name, stdin, env, dog)
-        out.write(text)
+        with deferred.collecting() as later:
+            text, cfg, outcome = _respond(event_name, stdin, env, dog)
+        if out.write(text):  # the host got this response, not the watchdog's no-op
+            deferred.run(later, functools.partial(_log_deferred, env, event_name))
     except BaseException as exc:  # noqa: BLE001 - fail open, whatever happened
         out.write(NOOP)
         log_error(env, "claude.entry", f"{event_name}: {type(exc).__name__}: {exc}")

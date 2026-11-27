@@ -44,7 +44,10 @@ compression decisions on error-bearing outputs get 0.5 regret.
 State is a bounded per-turn dict in the session overlay (``loopguard``: at most ``MAX_AGENTS``
 agents, at most ``MAX_FINGERPRINTS`` fingerprints and as many files in total across them,
 ``MAX_PAIRS`` edit pairs per file; hashes only, about 15 KB at worst); each event costs at most
-one overlay read and one or two updates, independent of the session length.
+one overlay read and one or two updates, independent of the session length. The redirect's
+state (``nudge``, ``watch``, the injected-tokens cost), the decision record and ``on_loop`` are
+written after the hook's response reached the host (``deferred.after_emit``; one more update):
+a response the watchdog replaced with the no-op leaves no record of a redirect.
 """
 
 from __future__ import annotations
@@ -59,6 +62,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from token_sparen import deferred
 from token_sparen.compress.reports import failing_tests
 from token_sparen.config import Config, flag, flag_on, log_error, state_home
 from token_sparen.emit import LEDGER_FIELD
@@ -139,6 +143,9 @@ _SUMMARY = re.compile(
     r"|^(?:FAIL|ok|PASS)(?:\t.*)?$",
     re.IGNORECASE,
 )
+# The failing total of a summary line: "3 failed, 1 error", "Tests: 2 failed", cargo "2 failed;",
+# unittest "FAILED (failures=2, errors=1)" (go test prints no total).
+_TOTAL = re.compile(r"\b(\d+) (failed|errors?)\b|\b(failures|errors)=(\d+)", re.IGNORECASE)
 _EXC = re.compile(r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)\b")
 _EXC_MSG = re.compile(r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)\s*:\s*\S")
 _DETAIL = re.compile(r"^E\s{2,}\S")  # pytest's assertion detail
@@ -208,6 +215,19 @@ def _informative(raw: list[str]) -> list[str]:
     return out
 
 
+def _summary_total(lines: list[str]) -> str:
+    """The failing counts of the report's summary lines, in order ("" without any): the
+    total still changes when a fixed test's id lies outside the scanned head and tail."""
+    out = []
+    for line in lines:
+        ln = line.strip()
+        if _SUMMARY.match(ln):
+            for m in _TOTAL.finditer(ln):
+                num, word = (m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3))
+                out.append(f"{num}{word[0].lower()}")
+    return ",".join(out)
+
+
 def _last_exception(lines: list[str]) -> str:
     for ln in reversed(lines):
         found = _EXC.findall(ln)
@@ -223,10 +243,11 @@ def fingerprint(text: str, *, tool: str = "", target: str = "") -> str | None:
 
     A pytest / jest / go test / cargo test report (``compress.reports.failing_tests``) is keyed
     by the number of failing test ids and a hash of their whole sorted set (within the scanned
-    text) plus the first failure's error line, so fixing a suite one test at a time changes the
-    fingerprint. Anything else is keyed by
-    the last exception type named and the most specific error line. Both also mix in the tool
-    name and its ``target`` (Bash: ``command_head``; file tools: the path) and are normalised by
+    text), the failing total of its summary lines (``N failed``, ``N errors``; it also counts
+    ids beyond the scanned text) plus the first failure's error line, so fixing a suite one
+    test at a time changes the fingerprint. Anything else is keyed by the last exception type
+    named, the most specific error line and any summary total. Both also mix in the tool name
+    and its ``target`` (Bash: ``command_head``; file tools: the path) and are normalised by
     ``_normalise``. Only the first ``SCAN_HEAD`` and last ``SCAN_TAIL`` characters are read.
     Never raises."""
     if len(text) > SCAN_HEAD + SCAN_TAIL:
@@ -238,13 +259,15 @@ def fingerprint(text: str, *, tool: str = "", target: str = "") -> str | None:
         body = _informative(block[1:]) or _informative(block[:1])
         err = _error_line(body) or ""
         unique = sorted(set(ids))
-        key = f"{len(unique)}:{_sha(chr(10).join(unique))}"  # every id counts, none is stored
+        # every scanned id counts (none is stored); the summary total counts the unscanned ones
+        key = f"{len(unique)}:{_summary_total(raw)}:{_sha(chr(10).join(unique))}"
         return _sha(f"{tool}|{target}|tests|{key}|{_last_exception(body)}|{_normalise(err)}")
     lines = _informative(raw)
     line = _error_line(lines)
     if line is None:
         return None
-    return _sha(f"{tool}|{target}|{_last_exception(lines)}|{_normalise(line)}")
+    total = _summary_total(raw)  # e.g. unittest's "FAILED (failures=N)"
+    return _sha(f"{tool}|{target}|{_last_exception(lines)}|{_normalise(line)}|{total}")
 
 
 def command_head(command: str) -> str:
@@ -323,6 +346,8 @@ class _Step:
     need_decision: bool = False
     decided: Decision | None = None  # adopted by this hook (logged by it)
     nudge: str | None = None
+    deliver: dict[str, Any] | None = None  # the redirect's state, written after the response
+    delivered: bool = False  # ``_deliver`` recorded it
     error_loop: bool = False
     notice: str | None = None
     natural: list[tuple[str, float]] = field(default_factory=list)  # (bucket, broken 0 / 1)
@@ -481,7 +506,9 @@ def _oscillation(
 
 def _evaluate(ag: dict[str, Any], hit: _Hit, cfg: Config, step: _Step, lg: dict[str, Any]) -> None:
     """Apply the agent's arm to this event: the first trigger becomes the redirect; a later
-    detection (counted on events after the redirect) becomes the user notice."""
+    detection (counted on events after the redirect) becomes the user notice. The redirect's
+    state (``nudge``, ``watch``) is only prepared here: ``_deliver`` writes it once the hook's
+    response reached the host."""
     dec = ag.get("decision")
     if not isinstance(dec, list) or len(dec) < 4 or hit.fp is None:
         return
@@ -501,17 +528,57 @@ def _evaluate(ag: dict[str, Any], hit: _Hit, cfg: Config, step: _Step, lg: dict[
     if hit.n < need:
         return
     occurrences = hit.n + 1 if hit.osc else hit.n
-    ag["nudge"] = {"fp": hit.fp, "n": hit.n}
-    ag["natural"] = None  # a redirect now shapes what follows: no longer a natural observation
-    ag["watch"] = {
-        "fp": hit.fp,
-        "left": _param(cfg, "watch_calls", DEFAULT_WATCH),
-        # savings observed only for an error loop at >= 3 occurrences: the same footing as the
-        # natural rate it is gated against (an oscillation or an eager n = 2 redirect: regret only)
-        "observe": not hit.osc and occurrences >= SAVINGS_MIN_N,
+    step.deliver = {
+        "did": dec[0],
+        "nudge": {"fp": hit.fp, "n": hit.n},
+        "watch": {
+            "fp": hit.fp,
+            "left": _param(cfg, "watch_calls", DEFAULT_WATCH),
+            # savings observed only for an error loop at >= 3 occurrences: the same footing as
+            # the natural rate it is gated against (an oscillation or an eager n = 2 redirect:
+            # regret only)
+            "observe": not hit.osc and occurrences >= SAVINGS_MIN_N,
+        },
     }
     step.nudge = (OSC_NUDGE if hit.osc else NUDGE).format(n=hit.n, fp=hit.fp)
     step.error_loop = not hit.osc
+
+
+def _deliver(state: dict[str, Any], turn: int, agent: str, step: _Step) -> None:
+    """After the response: record the delivered redirect (``nudge``, its savings ``watch``, the
+    injected-tokens ledger), unless the turn moved on or another hook already redirected."""
+    pend = step.deliver
+    lg = state.get(STATE_KEY)
+    if pend is None or not isinstance(lg, dict) or lg.get("turn") != turn:
+        return
+    ag = _dict(lg.get("agents")).get(agent)
+    if not isinstance(ag, dict) or ag.get("nudge"):
+        return
+    dec = ag.get("decision")
+    if not isinstance(dec, list) or not dec or dec[0] != pend["did"]:
+        return
+    ag["nudge"] = pend["nudge"]
+    ag["natural"] = None  # a redirect now shapes what follows: no longer a natural observation
+    ag["watch"] = pend["watch"]
+    _account(state, step)
+    step.delivered = True
+
+
+def _to_log(state: dict[str, Any], turn: int, agent: str, step: _Step) -> Decision | None:
+    """The agent's decision, once: when this hook adopted it or delivered its redirect (a hook
+    that overran after adopting it left it unlogged)."""
+    lg = state.get(STATE_KEY)
+    ag = _dict(lg.get("agents")).get(agent) if isinstance(lg, dict) else None
+    if not isinstance(lg, dict) or lg.get("turn") != turn or not isinstance(ag, dict):
+        return None
+    dec = ag.get("decision")
+    if ag.get("logged") or not isinstance(dec, list) or len(dec) < 4:
+        return None
+    mine = step.decided is not None and dec[0] == step.decided.decision_id
+    if not (mine or step.delivered):
+        return None
+    ag["logged"] = True
+    return Decision(str(dec[0]), LOOPGUARD.name, str(dec[1]), float(dec[2]), str(dec[3]))
 
 
 def _watch(ag: dict[str, Any], fp: str | None, step: _Step) -> None:
@@ -720,9 +787,8 @@ def on_tool(
             step.need_decision = hit.fp is not None and hit.n >= (MIN_REVERSALS if hit.osc else 2)
         else:
             _evaluate(ag, hit, cfg, step, lg)
-            if step.nudge is not None:
-                _account(state, step)
-            _natural_open(ag, hit, cfg)
+            if step.deliver is None:  # a redirect about to go out is not a natural observation
+                _natural_open(ag, hit, cfg)
         _record(state, step)
 
     if not _update(path, env, phase1):
@@ -745,15 +811,29 @@ def on_tool(
                 ]
                 step.decided = decision
             _evaluate(ag, hit, cfg, step, lg)
-            if step.nudge is not None:
-                _account(state, step)
 
         _update(path, env, phase2)
-        if step.decided is not None:
-            _log_decision(event, step.decided, cfg, env)
-    if step.error_loop:
-        # this turn's error-bearing compressions get 0.5; paid when their window settles
-        regret.RegretDetector(cfg, env).on_loop(tracking.session_ctx(event, overlay, path), None)
+
+    def after_emit() -> None:
+        """Records of what the host received: never written for a response it did not get."""
+        log: list[Decision] = []
+
+        def record(state: dict[str, Any]) -> None:
+            _deliver(state, turn, agent, step)
+            decision = _to_log(state, turn, agent, step)
+            if decision is not None:
+                log.append(decision)
+
+        _update(path, env, record)
+        for decision in log:
+            _log_decision(event, decision, cfg, env)
+        if step.error_loop:
+            # this turn's error-bearing compressions get 0.5; paid when their window settles
+            sctx = tracking.session_ctx(event, overlay, path)
+            regret.RegretDetector(cfg, env).on_loop(sctx, None)
+
+    if step.deliver is not None or step.decided is not None or step.error_loop:
+        deferred.after_emit(after_emit)
     _pay(policy, step, event, cfg, env)
     return Action(inject_context=step.nudge, user_message=step.notice)
 

@@ -39,7 +39,7 @@ python scripts/check_denylist.py
 ## Invariants
 - Python >= 3.11, runtime stdlib only.
 - Hooks fail open (no-op response plus one line in `~/.token-sparen/logs/errors.jsonl`); non-LLM p95 < 50 ms.
-- Outputs under 2000 estimated tokens are never modified (`min_tokens` is floored at 2000); lines matching `ERROR_PATTERNS` are never elided.
+- Outputs under 2000 estimated tokens are never modified (`min_tokens` is floored at 2000); error lines (`is_error_line`: `ERROR_PATTERNS`; a stack-frame head only when it matches outside its file location) are never elided.
 - Never larger: a replacement must not exceed the host's preview of the output.
 - Failed tool results are not replaceable on Claude Code (only `additionalContext`, e.g. the loop guard); no PreToolUse command rewriting (pre-trim is a PostToolUse arm).
 - Mechanisms and compressors never import `token_sparen.adapters`.

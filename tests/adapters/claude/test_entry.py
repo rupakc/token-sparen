@@ -380,3 +380,56 @@ def test_plugin_manifest_states_the_minimum_claude_code() -> None:
     (earlier: MCP tools only), which compression needs; older hosts must not load the plugin."""
     plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
     assert plugin["engines"] == {"claude-code": ">=2.1.121"}
+
+
+class _Killed(BaseException):
+    """Models ``os._exit`` from the watchdog: the main thread runs no further handler."""
+
+
+def test_stop_prompt_settles_even_after_overrun(tmp_path: Path) -> None:
+    """Review M3 (M4 triage): the loop guard's prompt handler is always-run, so a "stop" settles
+    the previous turn's redirect with regret 1 even when another prompt handler overruns."""
+    from token_sparen.mechanisms import loopguard, tracking
+
+    env = _env(tmp_path, TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS="50")
+    payload = {"session_id": "s-1", "hook_event_name": "UserPromptSubmit", "prompt": "stop"}
+    event = entry.ADAPTER.parse("UserPromptSubmit", payload, env)
+    path = tracking.overlay_path(event, env)
+    agent = {"fps": {}, "files": {}, "decision": ["d-1", "standard", 0.5, "cat=shell"]}
+    agent["nudge"] = {"fp": "f" * 10, "n": 3}
+    lg = {"turn": 1, "agents": {"": agent}}
+    jsonstore.update(path, lambda _: {"turn": 1, loopguard.STATE_KEY: lg}, {}, env)
+
+    def overrun(event: Event, cfg: Config) -> Action:
+        time.sleep(0.3)  # the watchdog fires meanwhile and would os._exit the process
+        raise _Killed
+
+    chain = entry.HANDLERS["prompt"]
+    entry.HANDLERS["prompt"] = [chain[0], overrun, *chain[1:]]  # right after the turn count
+    exits: list[int] = []
+    rc, out = _run("UserPromptSubmit", json.dumps(payload), env, exit_fn=exits.append)
+    assert (rc, out, exits) == (0, "{}\n", [0])
+    state = jsonstore.read(path, {})
+    assert loopguard.STATE_KEY not in state
+    rows = [r for r in state.get("regret_outcomes", []) if r[0] == "d-1"]
+    assert rows and rows[0][4] == 1.0 and rows[0][6] == "user_stop"
+
+
+def test_after_emit_work_runs_after_the_response_and_fails_open(tmp_path: Path) -> None:
+    from token_sparen import deferred
+
+    seen: list[str] = []
+    out = io.StringIO()
+
+    def boom() -> None:
+        raise RuntimeError("late boom")
+
+    def handler(event: Event, cfg: Config) -> Action:
+        deferred.after_emit(boom)
+        deferred.after_emit(lambda: seen.append(out.getvalue()))
+        return Action(replace_output="short")
+
+    entry.register("post_tool", handler)
+    assert entry.main("PostToolUse", io.StringIO(_bash_payload()), out, _env(tmp_path)) == 0
+    assert seen and "updatedToolOutput" in seen[0]  # the response was written first
+    assert any("after emit: RuntimeError: late boom" in e["error"] for e in _errors(tmp_path))

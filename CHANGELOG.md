@@ -8,9 +8,28 @@ All notable changes to this project are documented here. The format follows
 Pre-release (`0.1.0.dev0`; nothing is published on PyPI yet). Covers milestones M0
 (foundations), M1 (Claude Code plugin), M2 (learning, offline evaluation, quality-first defaults
 and config safety) and M3 (cross-session learning). Milestones are tagged in git (`v0.3.0-m3`
-for M3); the package version stays a development version until the first release.
+for M3); the package version stays `0.1.0.dev0` until v1.0.
 
-### M3: cross-session learning (0.3.0 milestone)
+### M4 triage (quality-relevant fixes before tuning)
+
+- Loop guard: a test report's fingerprint also carries its summary's failing total (`N failed`,
+  `N errors`, jest `Tests: N failed`, cargo `N failed;`; unittest `FAILED (failures=N)` for other
+  failures), so fixing one test of a suite with more failures than the scanned text holds no
+  longer looks like the same error repeating.
+- Loop guard: the prompt-side settlement is always-run and runs first in the UserPromptSubmit
+  chain, so a "stop" after a redirect settles regret 1 even when another prompt handler
+  overruns the latency budget.
+- Loop guard: the redirect's state, its injected-tokens cost, the decision record and the
+  regret detector's loop signal are written only after the hook's response reached Claude Code
+  (new `token_sparen/deferred.py`); a hook answered with the watchdog's no-op records none of
+  them.
+- Compression: a stack-frame head is an error line only when it matches outside its file
+  location, so library frames such as `requests/exceptions.py` can be folded again (E2 stays
+  100 %).
+- Docs: params path `token_sparen/params/defaults.toml` in agent and skill docs; README "Verify"
+  has three steps; M3 heading wording.
+
+### M3: cross-session learning (milestone 0.3.0; package version 0.1.0.dev0 until v1.0)
 
 Three mechanisms that learn across sessions of one project, each with its own off switch:
 repository facts (`token-sparen facts disable`, `[facts] enabled = false`), opt-in tool pruning

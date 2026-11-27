@@ -352,6 +352,16 @@ _PIECES = st.sampled_from(
         "\x00",
         "\udcff",
         "step",
+        # frame heads judged without their file location (M4 triage)
+        '  File "',
+        '", line 3',
+        "\tat ",
+        "    at ",
+        "fn (",
+        "/errors.js:1:2",
+        ")",
+        "\u00a0",
+        "\r",
     ]
 )
 _LINE = st.lists(_PIECES, max_size=6).map("".join)

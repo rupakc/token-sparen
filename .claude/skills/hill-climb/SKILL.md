@@ -1,9 +1,9 @@
 ---
 name: hill-climb
-description: Use when tuning parameters in params/defaults.toml to improve savings without hurting quality.
+description: Use when tuning parameters in token_sparen/params/defaults.toml to improve savings without hurting quality.
 ---
 # Hill-climb (spec 10.6)
-1. Pick one tunable in `params/defaults.toml`; propose a single change.
+1. Pick one tunable in `token_sparen/params/defaults.toml`; propose a single change.
 2. `python evals/e2/run.py` must stay 100 %; otherwise revert.
 3. Evaluate on the DEV split: objective = savings with regret at or below target. Must improve.
 4. Confirm once on the held-out TEST split. Never tune against it; never iterate on it.

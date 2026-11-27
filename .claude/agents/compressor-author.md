@@ -11,5 +11,5 @@ fixture and golden test that fails; (3) add E2 corpus entries with planted needl
 (5) run `pytest`, `ruff check .`, `mypy --strict token_sparen`, `python evals/e2/run.py`.
 
 Rules: never elide lines matching `ERROR_PATTERNS`; outputs under 2000 estimated tokens are
-untouched; every elision uses the recovery marker; every tunable goes to `params/defaults.toml`;
+untouched; every elision uses the recovery marker; every tunable goes to `token_sparen/params/defaults.toml`;
 fixtures are synthetic or public, never private data; copy no code from any reference.

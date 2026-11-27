@@ -795,14 +795,18 @@ def test_state_is_bounded(tmp_path: Path) -> None:
 
 
 def _hook(
-    tmp_path: Path, name: str, payload: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    name: str,
+    payload: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    **extra_env: str,
 ) -> dict[str, Any]:
     from token_sparen.adapters.claude import entry
 
     monkeypatch.setattr(entry, "POLICY", Rec("eager"))
     proj = tmp_path / "proj"
     proj.mkdir(exist_ok=True)
-    env = {**_env(tmp_path), "CLAUDE_PROJECT_DIR": str(proj)}
+    env = {**_env(tmp_path), "CLAUDE_PROJECT_DIR": str(proj), **extra_env}
     base = {"session_id": SID, "cwd": str(proj), "hook_event_name": name}
     out = io.StringIO()
     entry.main(name, io.StringIO(json.dumps({**base, **payload})), out, env, exit_fn=lambda _: 0)
@@ -973,3 +977,121 @@ def test_natural_rate_of_an_unlearned_bucket_is_pooled_only(tmp_path: Path) -> N
         _tool(tmp_path, pol, _fail(tmp_path))
     table = _overlay(tmp_path)["natural"]["loopguard"]
     assert set(table) == {"*"}  # the static bucket is no category
+
+
+# --- M4 triage: scan window, delivery before records ---------------------------------------------
+
+
+def test_report_fingerprint_changes_with_total_beyond_scan_window() -> None:
+    """Ids outside the scanned head and tail: the summary's failing total still tells the
+    runs apart (fixing a test in the middle of a 150-failure suite)."""
+    every = list(range(1, 151))
+    fixed = [i for i in every if i != 75]
+    a, b = _pytest(every, total=200), _pytest(fixed, total=200)
+    scan = loopguard.SCAN_HEAD + loopguard.SCAN_TAIL
+    assert len(a) > 2 * scan and "test_75" not in a[: loopguard.SCAN_HEAD]
+    assert "test_75" not in a[-loopguard.SCAN_TAIL :]
+    assert _fp(a) != _fp(b)
+    assert _fp(a) == _fp(_pytest(every, total=200))  # deterministic
+
+
+@pytest.mark.parametrize(
+    ("make", "kind"),
+    [
+        (lambda n: f"FAIL src/a.test.ts\n  ● a › x\n\nTests:       {n} failed, 1 total", "jest"),
+        (lambda n: f"Traceback\nAssertionError: x\n\nFAILED (failures={n})", "unittest"),
+    ],
+)
+def test_summary_total_counts_in_other_runners(make: Any, kind: str) -> None:
+    assert _fp(make(3)) != _fp(make(4)), kind
+
+
+def test_no_nudge_state_without_delivery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hook that overruns its budget after the guard decided returns the no-op: no nudge
+    state, no ledger cost and no decision record are written; the next repeat redirects."""
+    import time
+
+    from token_sparen.adapters.claude import entry
+
+    saved = dict(entry.HANDLERS)
+    _hook(tmp_path, "UserPromptSubmit", {"prompt": "fix it"}, monkeypatch)
+    fail = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "pytest -q"},
+        "tool_use_id": "tu-1",
+        "error": TRACE.format(d="a", n=3, q="z"),
+    }
+    assert _hook(tmp_path, "PostToolUseFailure", fail, monkeypatch) == {}
+
+    def slow(event: Event, cfg: Config) -> Action:
+        time.sleep(0.3)
+        return Action()
+
+    entry.register("post_tool_failure", slow)  # after the guard: it decides, then the hook overruns
+    payload = {**fail, "tool_use_id": "tu-2"}
+    try:
+        out = _hook(
+            tmp_path,
+            "PostToolUseFailure",
+            payload,
+            monkeypatch,
+            TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS="50",
+        )
+    finally:
+        entry.HANDLERS.clear()
+        entry.HANDLERS.update(saved)
+    (pdir,) = (tmp_path / "home" / "projects").iterdir()  # the hook's own project key
+
+    def overlay() -> dict[str, Any]:
+        return session.read_session(pdir / "sessions" / f"{SID}.json")
+
+    def records() -> list[dict[str, Any]]:
+        log = pdir / "decisions.jsonl"
+        rows = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        return [r for r in map(json.loads, rows) if r.get("point") == "loopguard"]
+
+    assert out == {}  # the watchdog's no-op: the redirect never reached the host
+    ov = overlay()
+    ag = ov[loopguard.STATE_KEY]["agents"][""]
+    assert ag.get("decision") and not ag.get("nudge") and not ag.get("watch")
+    assert not ov.get("injected_tokens")
+    assert records() == []
+    out = _hook(tmp_path, "PostToolUseFailure", {**fail, "tool_use_id": "tu-3"}, monkeypatch)
+    assert out["hookSpecificOutput"]["additionalContext"].startswith("[token-sparen: this error")
+    assert overlay()[loopguard.STATE_KEY]["agents"][""]["nudge"]
+    assert overlay().get("injected_tokens")
+    assert len(records()) == 1
+
+
+def test_late_delivery_after_the_turn_moved_on_records_nothing(tmp_path: Path) -> None:
+    from token_sparen import deferred
+
+    pol = Rec("eager")
+    _prompt(tmp_path, pol)
+    _tool(tmp_path, pol, _fail(tmp_path))
+    with deferred.collecting() as later:
+        act = _tool(tmp_path, pol, _fail(tmp_path))
+    assert act.inject_context is not None and later
+    assert not _overlay(tmp_path)[loopguard.STATE_KEY]["agents"][""].get("nudge")
+    _prompt(tmp_path, pol, "next")  # the turn settles first: the decision was never delivered
+    errors: list[BaseException] = []
+    deferred.run(later, errors.append)
+    assert errors == [] and loopguard.STATE_KEY not in _overlay(tmp_path)
+    assert _lg_records(tmp_path) == [] and pol.forgotten == [pol.decisions[0].decision_id]
+
+
+def test_concurrent_delivery_records_once(tmp_path: Path) -> None:
+    from token_sparen import deferred
+
+    pol = Rec("eager")
+    _prompt(tmp_path, pol)
+    _tool(tmp_path, pol, _fail(tmp_path))
+    with deferred.collecting() as first:
+        assert _tool(tmp_path, pol, _fail(tmp_path)).inject_context is not None
+    with deferred.collecting() as second:  # a parallel call before the first one's record
+        assert _tool(tmp_path, pol, _fail(tmp_path)).inject_context is not None
+    deferred.run(first, pytest.fail)
+    deferred.run(second, pytest.fail)
+    ag = _overlay(tmp_path)[loopguard.STATE_KEY]["agents"][""]
+    assert ag["nudge"]["n"] == 2 and ag["logged"] is True
+    assert len(_lg_records(tmp_path)) == 1

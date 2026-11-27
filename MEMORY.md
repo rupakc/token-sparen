@@ -1536,3 +1536,24 @@ bucket; MC propensity gave E[p/p-hat] ~ 5.9 at p ~ .02 (unusable for IPS).
 - README defaults table lists every `[prune]` key; project-config table adds `prune.allow`
   (false only) and `prune.lease_sessions` (lower only), matching `PROJECT_POLICY`.
 - Public drift report `docs/reports/drift-m3.md`: no open divergences; 2 deferred items.
+
+## 2026-11-27 M4 triage of quality-relevant deferred minors (Task 1)
+- Loop-guard test-report fingerprints also key on the summary's failing total (`N failed`,
+  `N errors`, cargo `N failed;`, jest `Tests: N failed`); other failures mix in a summary total
+  when present (unittest `FAILED (failures=N)`). go test prints no total: ids only.
+- `register(..., always=True)` on a chain without output replacement (every event but
+  PostToolUse(+Failure)) means "runs first": the watchdog's `os._exit` can stop the chain at any
+  handler, so ordering is the only guarantee. The loop guard's prompt settlement is always-run
+  (it does not need the turn count; it only pops and settles the previous turn's state).
+- Post-emit work: `token_sparen/deferred.py` (`after_emit`, queued inside a hook, run by the
+  adapter after its response is written, dropped when the watchdog wrote the no-op; runs at once
+  outside a hook). The loop guard defers the redirect's state, ledger cost, decision record and
+  `on_loop`; the adopted decision (`ag["decision"]`) stays in-lock so concurrent hooks agree. A
+  decision adopted by a hook that overran is logged by the hook that later delivers its redirect
+  (`ag["logged"]`), else forgotten at settlement. Worst case: a delivered redirect without its
+  record (post-emit overrun or a concurrent double delivery), never a record without delivery.
+  The user notice's `warned` flag stays in-lock (at most a lost notice, never a repeated one).
+- `is_error_line` (and its byte twin `error_line_indices`) judges a stack-frame head (Python
+  `File "<path>", line N`; JS/JVM `at [fn (]<path>:N[:M][)]`) without its file location, so a
+  library frame in `requests/exceptions.py` is no longer pinned. Words outside the location
+  (`at new ValidationError (...)`) still pin it. E2 stays 156/156.

@@ -77,8 +77,41 @@ _RAW_SCANNERS: tuple[re.Pattern[bytes], ...] = (
 )
 
 
-def is_error_line(line: str) -> bool:
+# Stack-frame heads: Python ``File "<path>", line N`` and JS / JVM ``at [fn (]<path>:N[:M][)]``.
+# Group 2 is the file location; a match only inside it (``requests/exceptions.py``,
+# ``http-errors/index.js``) does not make the frame an error line.
+_FRAME_HEAD = re.compile(
+    r'^(\s*File ")([^"\n]*)(", line \d+)'
+    r"|^(\s*at\s+(?:[^()\n]*\()?)([^()\s]+:\d+(?::\d+)?)(\)?\s*)$",
+    re.ASCII,  # ASCII whitespace, as the byte-level pre-check ``_FRAME_START``
+)
+_FRAME_START = re.compile(rb'^\s*(?:File "|at\s)')
+
+
+def _matches(line: str) -> bool:
     return any(p.search(line) for p in ERROR_PATTERNS)
+
+
+def is_error_line(line: str) -> bool:
+    """Does ``line`` match ``ERROR_PATTERNS``? A stack-frame head counts only when it matches
+    outside its file location (its path, file name and line number)."""
+    if not _matches(line):
+        return False
+    m = _FRAME_HEAD.match(line)
+    if m is None:
+        return True
+    loc = 2 if m.group(2) is not None else 5
+    return _matches(line[: m.start(loc)] + line[m.end(loc) :])
+
+
+def _frame_only(data: bytes, pos: int) -> bool:
+    """Is the line of ``data`` around ``pos`` a frame head that matches only in its location?"""
+    start = data.rfind(b"\n", 0, pos) + 1
+    end = data.find(b"\n", pos)
+    line = data[start : len(data) if end == -1 else end]
+    if _FRAME_START.match(line) is None:
+        return False
+    return not is_error_line(line.decode("utf-8", "surrogatepass"))
 
 
 def encode_lossless(text: str) -> bytes:
@@ -89,7 +122,8 @@ def encode_lossless(text: str) -> bytes:
 def error_line_indices(
     text: str, raw: bytes | None = None, stop_at: int | None = None
 ) -> list[int]:
-    """Sorted 0-based indices of lines (split on newline) matching ERROR_PATTERNS.
+    """Sorted 0-based indices of lines (split on newline) that are error lines
+    (``is_error_line``: ERROR_PATTERNS, frame heads judged without their file location).
 
     With `stop_at`, scanning stops as soon as that many error lines are known; the result is
     then incomplete (callers use it to detect error-dense output cheaply). `raw` may pass the
@@ -98,6 +132,7 @@ def error_line_indices(
     data = raw if raw is not None else encode_lossless(text)
     low = data.lower()  # ASCII-only lower-casing: same length, same newline offsets
     found: set[int] = set()
+    frames: set[int] = set()  # frame heads that match only in their file location
     for scanners, hay in ((_LOWER_SCANNERS, low), (_RAW_SCANNERS, data)):
         for pat in scanners:
             m = pat.search(hay)
@@ -107,7 +142,11 @@ def error_line_indices(
                 pos = m.start()
                 idx += hay.count(b"\n", last, pos)
                 last = pos
-                found.add(idx)
+                if idx not in found and idx not in frames:
+                    if _frame_only(data, pos):
+                        frames.add(idx)
+                    else:
+                        found.add(idx)
                 if stop_at is not None and len(found) >= stop_at:
                     return sorted(found)
                 nxt = hay.find(b"\n", pos)

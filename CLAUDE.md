@@ -15,6 +15,7 @@ Decisions: `MEMORY.md`.
 
 ## Layout
 - `token_sparen/` core (stdlib only): `cli.py events.py config.py estimate.py transcript.py emit.py recovery.py extensions.py`
+  (`deferred.py`: work that runs only after a hook's response reached the host)
   - `store/` JSON+JSONL state, `compress/` compressors, `mechanisms/` decision-point mechanisms
     (compression, guards, read_dedupe, governor, boundary, subagent, tracking, prune, loopguard)
   - `learn/` policy, decision log, engine, regret, session fold (`overlay`), circuit `breaker`,
@@ -22,7 +23,8 @@ Decisions: `MEMORY.md`.
   - `replay/` E1 offline replay and the private report writer (`--out` outside any git tree)
   - `adapters/` host protocol; `adapters/claude/` Claude Code (entry, translate, statusline, settings)
   - `testing/conformance.py` compressor conformance kit
-  - `params/defaults.toml` every tunable (hill-climbing surface; packaged inside the package)
+  - `token_sparen/params/defaults.toml` every tunable (hill-climbing surface; packaged inside
+    the package)
   - `facts/` (M3) repo-fact sanitiser (`sanitize`), fold-time miners + `facts.json` store
     (`miners`), the per-fact bandit lifecycle (`lifecycle`) and SessionStart injection as a
     labelled data block (`inject`)
@@ -58,7 +60,8 @@ Use the repo `.venv`. All must pass before a commit.
   work for them (only `additionalContext`, e.g. the loop guard's redirect).
 - No PreToolUse command rewriting: a pre-trim is a PostToolUse compression arm, never a shell edit.
 - Mechanisms and compressors never import `token_sparen.adapters` (hosts own tool-output shapes).
-- Never elide lines matching `ERROR_PATTERNS`.
+- Never elide error lines (`is_error_line`: `ERROR_PATTERNS`; a stack-frame head counts only
+  when it matches outside its file location).
 - Every elision appends the `[token-sparen: kept X of Y lines ...]` marker and saves the full text
   to `<project>/.token-sparen/outputs/<id>.txt`.
 - `TOKEN_SPAREN_DISABLE=1` makes every hook a no-op.

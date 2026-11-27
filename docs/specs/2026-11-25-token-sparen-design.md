@@ -543,7 +543,9 @@ attribute reward to it. Tier governs exploration (§7.6).
   ("× 37 similar lines").
 - **Arms**: `off`, `light`, `standard`, `aggressive`. The keep ratios are fixed per level
   (`[compression.levels.*]`); the learner chooses the level per context bucket, not the ratios.
-- **Invariants**: never elide lines matching error/failure/exception signatures; always append a
+- **Invariants**: never elide lines matching error/failure/exception signatures (a stack-frame
+  head counts only when it matches outside its file location, so a library frame in
+  `requests/exceptions.py` can still be folded; M4); always append a
   marker `[token-sparen: kept X of Y lines · full output: <abs path> · `token-sparen show <id>`]`;
   full output saved to `<project>/.token-sparen/outputs/<id>.txt` (gitignored, TTL + size cap).
   Below 2 000 tokens est. nothing is touched: this is a floor, `compression.min_tokens` can raise
@@ -723,7 +725,12 @@ attribute reward to it. Tier governs exploration (§7.6).
   this error has repeated {n}× this turn ({fp}). Consider stepping back: re-read the error,
   check assumptions, or try a different approach.]` (oscillation has its own text). At most one
   per agent and turn; a second detection only tells the **user**, at most once per turn. An
-  error-loop trigger also calls `RegretDetector.on_loop`.
+  error-loop trigger also calls `RegretDetector.on_loop`. Ordering (M4): the redirect's state
+  (nudge, savings watch, injected-tokens cost), the decision record and the `on_loop` call are
+  written only after the hook's response reached the host (`token_sparen/deferred.py`); a hook
+  the watchdog answered with the no-op records none of them, so the next repeat may redirect.
+  The prompt-side settlement is an always-run handler that runs first in the UserPromptSubmit
+  chain, so another prompt handler's latency overrun cannot turn a "stop" into an expiry.
 - **Reward** (§7.5): only a delivered redirect is observed. An error-loop redirect at >= 3
   occurrences observes savings = "broken" in {0, 1}: 1 if the fingerprint does not recur in the
   agent's next `[loopguard] watch_calls` (5) tool calls of the turn (the turn ending first counts
@@ -856,11 +863,14 @@ candidate (prior Beta(1, 1), unused prompts as zero-regret observations, a resto
   tools: the path) and the most specific error line plus the last exception type named, with only
   volatile parts normalised (case folded; directories reduced to base names, line:col, hex ids,
   durations, clock times, long numbers; quoted values and literals kept). A test-runner report
-  (pytest, jest, go test, cargo test) is keyed instead by the count of failing test ids and a
-  hash of the whole sorted id set plus the first failure's error line, so fixing a suite one
-  test at a time changes the fingerprint. Only the
-  first 8000 and last 4000 characters are scanned; boilerplate (`Exit code N`, tags, test-run
-  summary lines) is never an error line.
+  (pytest, jest, go test, cargo test) is keyed instead by the count of failing test ids, a
+  hash of the whole sorted id set, the failing total of its summary lines (`N failed`, `N
+  errors`, cargo `N failed;`, jest `Tests: N failed`; go test prints none) plus the first
+  failure's error line, so fixing a suite one test at a time changes the fingerprint even when
+  the fixed test's id lies outside the scanned text (M4); any other failure also mixes in a
+  summary total when it has one (unittest `FAILED (failures=N)`). Only the first 8000 and last
+  4000 characters are scanned; boilerplate (`Exit code N`, tags, test-run summary lines) is
+  never an error line.
 
 ### 7.8 Offline evaluation and challengers
 Decision logs with propensities allow **IPS and doubly-robust** estimates of any candidate policy

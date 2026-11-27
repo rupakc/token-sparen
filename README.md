@@ -54,7 +54,7 @@ for you. To run it yourself in a terminal, call the bundled launcher from the pl
 Optional: the `token-sparen` console command (handy in your own terminal). It is **not published on PyPI yet**;
 from a checkout of this repository run `pip install .`.
 
-**Verify.** Two steps:
+**Verify.** Three steps:
 
 1. `/token-sparen doctor` in Claude Code (or `token-sparen doctor` in a terminal). It checks Python,
    the state directory, hook files and a synthetic compress-and-recover round trip. That round
