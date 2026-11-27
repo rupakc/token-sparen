@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from collections import Counter
+from pathlib import Path
 
 import pytest
 
@@ -66,3 +68,55 @@ def test_e2_detects_a_dropped_needle(monkeypatch: pytest.MonkeyPatch) -> None:
     report = e2.run(levels=("light",))
     assert report.failures
     assert report.passed < report.cases
+
+
+def _overlay(**std: object) -> dict[str, object]:
+    return {"compression": {"levels": {"standard": std}}}
+
+
+def test_params_overlay_reaches_compressors() -> None:
+    base = e2.run(levels=("standard",))
+    kept = e2.run(levels=("standard",), params=_overlay(head=400, tail=400, keep_ratio=0.95))
+    assert kept.mean_ratio["standard"] > base.mean_ratio["standard"]
+    assert kept.failures == []
+    assert "ts-e2-" not in os.environ.get("TOKEN_SPAREN_HOME", "")
+
+
+def test_inline_rate_per_level() -> None:
+    report = e2.run()
+    assert set(report.inline_rate) == set(e2.LEVELS)
+    assert all(0.0 < v <= 1.0 for v in report.inline_rate.values())
+    more = e2.run(levels=("standard",), params=_overlay(head=400, tail=400, keep_ratio=0.95))
+    assert more.inline_rate["standard"] >= report.inline_rate["standard"]
+    nothing = e2.run(levels=("standard",), params=_overlay(head=0, tail=0, keep_ratio=0.0))
+    assert nothing.inline_rate["standard"] < report.inline_rate["standard"]
+
+
+def test_inline_rate_excludes_recovery_only_needles(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(e2, "_compress_case", lambda c, lv, tmp: ("x", c.text, 1.0))
+    report = e2.run(levels=("light",))
+    assert report.inline_rate["light"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "params",
+    [_overlay(bogus=1), _overlay(head="many"), {"nope": {"x": 1}}],
+)
+def test_invalid_overlay_key_raises(params: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="overlay"):
+        e2.run(levels=("standard",), params=params)
+
+
+def test_no_overlay_output_unchanged() -> None:
+    a = e2.run(levels=("standard",))
+    b = e2.run(levels=("standard",), params={})
+    assert e2._table(a, ("standard",)) == e2._table(b, ("standard",))
+    assert "inline" not in e2._table(a, ("standard",))
+    assert a.rows == b.rows
+
+
+def test_params_flag_loads_overlay_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    f = tmp_path / "p.toml"
+    f.write_text("[compression.levels.standard]\nhead = 400\n", encoding="utf-8")
+    assert e2.main(["--params", str(f), "--json"]) == 0
+    assert "inline_rate" in capsys.readouterr().out

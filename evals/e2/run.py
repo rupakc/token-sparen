@@ -4,7 +4,10 @@ Mirrors production per case and level: detect (optional command hint) -> registr
 -> if lossy, save the full text under a temporary project dir and append the marker. A needle
 passes if it is in that final text, or (unless tagged ``must_inline``) in the recovery file.
 
-    python evals/e2/run.py [--strict] [--json]
+    python evals/e2/run.py [--strict] [--json] [--params OVERLAY.toml]
+
+``run(levels, params)`` evaluates a config overlay (written as the isolated home's user
+config.toml) and reports ``inline_rate`` per level: needles visible in the compressed text itself.
 """
 
 from __future__ import annotations
@@ -16,16 +19,17 @@ import os
 import sys
 import tempfile
 import tomllib
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 if __package__ in (None, ""):  # `python evals/e2/run.py` from a checkout
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from token_sparen import recovery
 from token_sparen.compress import CompressContext, detect, load_level, registry
-from token_sparen.config import load_config
+from token_sparen.config import _MISSING, _dig, _leaves, _same_type, load_config, packaged_defaults
 from token_sparen.estimate import estimate_tokens
 from token_sparen.events import ToolCall
 
@@ -55,6 +59,7 @@ class E2Report:
     failures: list[tuple[str, str, str]]  # (case, level, needle)
     mean_ratio: dict[str, float]  # mean compressed/original tokens over compressible cases
     rows: list[dict[str, object]] = field(default_factory=list)
+    inline_rate: dict[str, float] = field(default_factory=dict)  # needles in the text itself
 
 
 def load_cases() -> list[Case]:
@@ -117,14 +122,57 @@ def _isolated_home(tmp: Path) -> Iterator[None]:
             os.environ["TOKEN_SPAREN_HOME"] = old
 
 
-def run(levels: Sequence[str] = LEVELS) -> E2Report:
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, str):
+        return json.dumps(value)
+    return repr(value)
+
+
+def _toml_dump(node: Mapping[str, Any], prefix: tuple[str, ...] = ()) -> str:
+    """Minimal TOML writer for an overlay (nested tables of scalars and string lists)."""
+    out = [f"{k} = {_toml_value(v)}" for k, v in node.items() if not isinstance(v, Mapping)]
+    text = "\n".join(out) + "\n" if out else ""
+    for k, v in node.items():
+        if isinstance(v, Mapping):
+            path = (*prefix, str(k))
+            text += f"\n[{'.'.join(path)}]\n" + _toml_dump(v, path)
+    return text
+
+
+def validate_overlay(params: Mapping[str, Any]) -> None:
+    """Raise ValueError unless every overlay leaf is a packaged-default key of the right type."""
+    defaults = packaged_defaults()
+    for path, value in _leaves(dict(params), ()):
+        key = ".".join(path)
+        base = _dig(defaults, path)
+        if base is _MISSING:
+            raise ValueError(f"params overlay: unknown key {key!r}")
+        if not _same_type(value, base):
+            raise ValueError(
+                f"params overlay: {key!r} must be {type(base).__name__}, got {value!r}"
+            )
+
+
+def run(levels: Sequence[str] = LEVELS, params: Mapping[str, Any] | None = None) -> E2Report:
     cases = load_cases()
+    if params:
+        validate_overlay(params)
     failures: list[tuple[str, str, str]] = []
     rows: list[dict[str, object]] = []
     ratios: dict[str, list[float]] = {lv: [] for lv in levels}
+    inline = {lv: 0 for lv in levels}
+    total = 0
     passed = 0
     with tempfile.TemporaryDirectory(prefix="ts-e2-") as d, _isolated_home(Path(d)):
         tmp = Path(d)
+        if params:
+            (tmp / "home").mkdir(parents=True, exist_ok=True)
+            (tmp / "home" / "config.toml").write_text(_toml_dump(params), encoding="utf-8")
+        total = sum(len(c.needles) for c in cases)
         for case in cases:
             kind = _detected(case)
             for lv in levels:
@@ -136,6 +184,7 @@ def run(levels: Sequence[str] = LEVELS) -> E2Report:
                 except Exception as exc:  # noqa: BLE001 - a crash is a failure, not an abort
                     final, recovered, ratio = "", None, 1.0
                     bad.append(f"<exception: {type(exc).__name__}: {exc}>")
+                inline[lv] += sum(n in final for n in case.needles)
                 for n in case.needles:
                     if not needle_ok(n, final, recovered, must_inline=n in case.must_inline):
                         bad.append(n)
@@ -147,7 +196,8 @@ def run(levels: Sequence[str] = LEVELS) -> E2Report:
                     {"case": case.file, "level": lv, "ok": not bad, "ratio": round(ratio, 3)}
                 )
     mean = {lv: (sum(r) / len(r) if r else 1.0) for lv, r in ratios.items()}
-    return E2Report(len(cases) * len(levels), passed, failures, mean, rows)
+    rate = {lv: (inline[lv] / total if total else 0.0) for lv in levels}
+    return E2Report(len(cases) * len(levels), passed, failures, mean, rows, rate)
 
 
 def _table(report: E2Report, levels: Sequence[str]) -> str:
@@ -174,9 +224,11 @@ def _table(report: E2Report, levels: Sequence[str]) -> str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="e2")
     ap.add_argument("--strict", action="store_true", help="exit 1 on any failure or weak ratio")
+    ap.add_argument("--params", type=Path, help="TOML overlay of config params to evaluate")
     ap.add_argument("--json", action="store_true", help="print the report as JSON")
     args = ap.parse_args(argv)
-    report = run()
+    params = tomllib.loads(args.params.read_text(encoding="utf-8")) if args.params else None
+    report = run(params=params)
     if args.json:
         print(json.dumps(report.__dict__, indent=2))
     else:
