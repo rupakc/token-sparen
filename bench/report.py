@@ -988,8 +988,11 @@ def build_report(
     (no ``ts-style`` runs) or ``keep_off``; ``preflight`` = the grading preflight's
     ``preflight.json`` (its exclusions are disclosed). Nothing is written when the document is
     invalid, a run or the gate differs from the plan in the ledger header, or any artefact
-    holds private data."""
+    holds private data. An advisory gate (no server receipts; `GateResult.advisory`) is
+    refused: only the release-job-verified gate may be published."""
     assert_e4_source(ledger)
+    if gate is not None and getattr(gate, "advisory", False):
+        raise ReportError("advisory gate result (no server receipts): not publishable")
     doc = _document(
         Ledger(ledger),
         grades,

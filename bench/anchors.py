@@ -13,21 +13,33 @@ publication extends the previous one, every anchored head lies on the final chai
 at the same count, i.e. a prefix), the last anchor equals the final heads, and no two
 consecutive publications are more than five hours apart (commit times).
 
+Trust (re-review N7): commit times and local refs are set by the publisher, so the
+authoritative check runs in the release job (CI) against a freshly fetched
+``origin/bench-anchors`` with server-side receipts: the ``anchor-receipt`` workflow runs on every
+push to that branch, and its runs' ``head_sha`` and ``created_at`` (GitHub API,
+`fetch_receipts`) date each publication (`verify_release`, ``python -m bench.anchors
+verify-release``). Without receipts the local gate is advisory only.
+
 Residual (disclosed in e4.json as ``anchor_window_operator_trust``): records written after the
 last published anchor could still be rewritten by the operator before the next publication.
 """
 
 from __future__ import annotations
 
+import argparse
+import datetime as dt
 import itertools
 import json
 import os
 import subprocess
+import sys
 import time
-from collections.abc import Mapping, Sequence
+import urllib.parse
+import urllib.request
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from bench.grade import grades_path
 from bench.ledger import (
@@ -189,11 +201,56 @@ def read_published(repo: Path, ref: str, campaign: str) -> list[Publication]:
     return pubs
 
 
-def check_published(ledger: Ledger, pubs: Sequence[Publication]) -> list[tuple[str, str]]:
-    """(code, detail) problems of the published history against the final chains: each
-    publication extends the previous one (append-only); every anchor lies on the final chains;
-    the last anchor equals the final heads; consecutive publications at most `MAX_GAP_S`
-    apart (commit times)."""
+class Receipt(NamedTuple):
+    """A server-side receipt of one push to ``bench-anchors``: the ``anchor-receipt`` workflow
+    run's ``head_sha`` and ``created_at`` (epoch seconds), from the GitHub API."""
+
+    sha: str
+    server_time: float
+
+
+RECEIPT_WORKFLOW = "anchor-receipt.yml"
+ANCHORS_BRANCH = "bench-anchors"
+API = "https://api.github.com"
+
+
+def _epoch(iso: str) -> float:
+    return dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+
+
+def fetch_receipts(
+    github_repo: str,
+    token: str | None,
+    *,
+    opener: Callable[[urllib.request.Request], Any] = urllib.request.urlopen,
+    max_pages: int = 50,
+) -> list[Receipt]:
+    """Every push run of the receipt workflow on ``bench-anchors`` (GitHub REST API, paginated;
+    in CI with the job's token): the server-side publication times."""
+    out: list[Receipt] = []
+    for page in range(1, max_pages + 1):
+        query = urllib.parse.urlencode(
+            {"branch": ANCHORS_BRANCH, "event": "push", "per_page": 100, "page": page}
+        )
+        url = f"{API}/repos/{github_repo}/actions/workflows/{RECEIPT_WORKFLOW}/runs?{query}"
+        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})  # noqa: S310
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        with opener(req) as resp:
+            runs = json.loads(resp.read().decode("utf-8")).get("workflow_runs", [])
+        out += [Receipt(str(r["head_sha"]), _epoch(str(r["created_at"]))) for r in runs]
+        if len(runs) < 100:
+            break
+    return out
+
+
+def check_history(
+    pubs: Sequence[Publication], receipts: Sequence[Receipt] | None
+) -> list[tuple[str, str]]:
+    """(code, detail) problems of the publication history alone: append-only, the anchors'
+    own chain, and the five-hour rule. With ``receipts`` every publishing commit needs a
+    server receipt and the gaps use the earliest receipt time per commit (authoritative);
+    without, the gaps use commit times (advisory: the publisher sets them)."""
     if not pubs or not pubs[-1].anchors:
         return [("anchors_missing", "no published anchor")]
     problems: list[tuple[str, str]] = []
@@ -201,6 +258,39 @@ def check_published(ledger: Ledger, pubs: Sequence[Publication]) -> list[tuple[s
     for p in pubs:
         if not p.anchors or list(p.anchors) != final[: len(p.anchors)]:
             problems.append(("anchor_history_rewritten", f"{p.commit[:12]} is not a prefix"))
+    try:
+        chain_head(final, genesis=GENESIS)
+    except LedgerError as exc:
+        problems.append(("anchor_history_rewritten", f"published anchors: {exc}"))
+    times: list[float] = [float(p.at) for p in pubs]
+    if receipts is not None:
+        first: dict[str, float] = {}
+        for r in receipts:
+            first[r.sha] = min(first.get(r.sha, r.server_time), r.server_time)
+        missing = [p.commit for p in pubs if p.commit not in first]
+        if missing:
+            problems.append(
+                ("anchor_without_receipt", f"{len(missing)} publication(s) without a server "
+                 f"receipt, e.g. {missing[0][:12]}")
+            )  # fmt: skip
+            return problems
+        times = [first[p.commit] for p in pubs]
+    for (_, b), when in zip(itertools.pairwise(pubs), itertools.pairwise(times), strict=True):
+        if when[1] - when[0] > MAX_GAP_S:
+            gap = (when[1] - when[0]) / 3600
+            problems.append(("anchor_gap", f"{gap:.1f} h before publication {b.commit[:12]}"))
+    return problems
+
+
+def check_published(
+    ledger: Ledger, pubs: Sequence[Publication], receipts: Sequence[Receipt] | None = None
+) -> list[tuple[str, str]]:
+    """`check_history`, plus: every anchor lies on the final chains and the last anchor equals
+    the final heads."""
+    problems = check_history(pubs, receipts)
+    if any(code == "anchors_missing" for code, _ in problems):
+        return problems
+    final = list(pubs[-1].anchors)
     problems += [("anchor_not_on_chain", text) for text in verify_anchors(ledger, final)]
     try:
         heads = current_heads(ledger)
@@ -208,8 +298,58 @@ def check_published(ledger: Ledger, pubs: Sequence[Publication]) -> list[tuple[s
         return [*problems, ("anchor_not_on_chain", str(exc))]
     if any(final[-1].get(k) != heads[k] for k in ANCHOR_KEYS):
         problems.append(("anchor_not_final", "the last published anchor is not the final heads"))
-    for a, b in itertools.pairwise(pubs):
-        if b.at - a.at > MAX_GAP_S:
-            gap = (b.at - a.at) / 3600
-            problems.append(("anchor_gap", f"{gap:.1f} h before publication {b.commit[:12]}"))
     return problems
+
+
+def verify_release(
+    evidence: Mapping[str, Any],
+    pubs: Sequence[Publication],
+    receipts: Sequence[Receipt],
+) -> list[tuple[str, str]]:
+    """The release job's authoritative check (no ledger there): the freshly fetched
+    publication history with server receipts, and its last anchor equal to the chain heads the
+    published e4.json carries (`bench.e4.GATE_ANCHOR_FIELDS`)."""
+    problems = check_history(pubs, receipts)
+    if any(code == "anchors_missing" for code, _ in problems):
+        return problems
+    gate = evidence.get("gate") or {}
+    last = pubs[-1].anchors[-1]
+    if last.get("campaign") != evidence.get("campaign"):
+        problems.append(("anchor_not_final", "the last anchor is of another campaign"))
+    for field, key in (("ledger_chain_head", "ledger_head"), ("grades_chain_head", "grades_head")):
+        if gate.get(field) is None or gate.get(field) != last.get(key):
+            problems.append(("anchor_not_final", f"e4.json gate.{field} is not the last anchor"))
+    return problems
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m bench.anchors verify-release --evidence E --repo R --ref REF
+    --github-repo OWNER/NAME``: the release job's check (token from ``GH_TOKEN``)."""
+    parser = argparse.ArgumentParser(prog="python -m bench.anchors")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    v = sub.add_parser("verify-release")
+    v.add_argument("--evidence", type=Path, required=True)
+    v.add_argument("--repo", type=Path, default=Path("."))
+    v.add_argument("--ref", default=ANCHORS_REF)
+    v.add_argument("--github-repo", required=True)
+    args = parser.parse_args(argv)
+    evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
+    if evidence.get("stage") != "confirmation":
+        print("not confirmation evidence: no anchors to verify")
+        return 0
+    try:
+        pubs = read_published(args.repo, args.ref, str(evidence["campaign"]))
+    except AnchorError as exc:
+        print(f"{exc.code}: {exc}", file=sys.stderr)
+        return 1
+    receipts = fetch_receipts(args.github_repo, os.environ.get("GH_TOKEN"))
+    problems = verify_release(evidence, pubs, receipts)
+    for code, detail in problems:
+        print(f"{code}: {detail}", file=sys.stderr)
+    if not problems:
+        print(f"anchors verified: {len(pubs)} publication(s) with server receipts")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

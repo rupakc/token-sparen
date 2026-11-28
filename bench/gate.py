@@ -35,11 +35,18 @@ measurement.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from bench.anchors import ANCHORS_REF, AnchorError, check_published, read_published
+from bench.anchors import (
+    ANCHORS_REF,
+    AnchorError,
+    Receipt,
+    check_published,
+    read_published,
+)
 from bench.e4 import GATE_REASON_CODES
 from bench.grade import grades_chain_head, grades_path
 from bench.ledger import GRADED, Ledger, LedgerError, read_jsonl
@@ -57,6 +64,7 @@ from bench.stats import MARGIN, GateCheck, Summary, summarise_ledger
 TREATMENT = "token-sparen"
 REFERENCE = "baseline"
 DECISION_FILE = "docs/release/gate-decision.toml"
+ADVISORY = "advisory: no server receipts (local run); not a release verdict"
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 
 # Ruling N4 (with the M6 Task 9 rulings), stated again in docs/reports/m5-method.md and the
@@ -119,6 +127,14 @@ class GateResult:
     # heads of the verified hash chains (ruling N4), anchored by the signed release commit
     ledger_chain_head: str | None = None
     grades_chain_head: str | None = None
+    # True when no server receipts were given (re-review N7): the publication times are the
+    # publisher's own, so the result is advisory and never a release verdict
+    advisory: bool = False
+
+    @property
+    def release_verdict(self) -> str:
+        """The verdict for release purposes: ``advisory`` unless receipts were verified."""
+        return "advisory" if self.advisory else self.verdict
 
     def as_e4(self) -> dict[str, Any]:
         """The ``gate`` object of ``e4.json``: codes only, plus the plan hash and both chain
@@ -233,13 +249,18 @@ def gate(
     n_boot: int = 10000,
     seed: int = 0,
     anchors_ref: str = ANCHORS_REF,
+    receipts: Sequence[Receipt | tuple[str, float]] | None = None,
 ) -> GateResult:
     """Release gate on the confirmation ``ledger``: its recorded plan gives the planned tasks,
     the seed, the pins and the power verdict, and the summary is built from it
     (`summarise_ledger`: its runs, exclusions after retries and grades; ruling N2), never
     supplied by the caller. The chain-head anchors are read from git: every commit of
     ``anchors_ref`` in ``repo`` (`bench.anchors.read_published`, default the fetched
-    ``origin/bench-anchors``), never a caller-supplied list.
+    ``origin/bench-anchors``), never a caller-supplied list. ``receipts`` = the server-side
+    push receipts (`bench.anchors.fetch_receipts`, in the release job): every publication needs
+    one and the five-hour gaps use their times. Without receipts the result is ``advisory``
+    (`GateResult.release_verdict`; ruling N7): the authoritative check is the release job's
+    (``python -m bench.anchors verify-release``).
     ``n_boot`` and ``seed`` go to `Summary.gate`."""
     if not _HASH.match(release_hash):
         raise ValueError(f"release_hash must be 64 lowercase hex characters, got {release_hash!r}")
@@ -261,7 +282,8 @@ def gate(
         published = read_published(repo, anchors_ref, ledger.campaign)
     except AnchorError as exc:
         raise GateRefused(f"published anchors: {exc}", code=exc.code) from exc
-    anchored = check_published(ledger, published)
+    server = None if receipts is None else [Receipt(str(a), float(b)) for a, b in receipts]
+    anchored = check_published(ledger, published, server)
     if anchored:
         code, detail = anchored[0]
         raise GateRefused(
@@ -322,7 +344,13 @@ def gate(
             price_confirmed_on=plan.price_confirmed_on,
             ledger_chain_head=ledger_head,
             grades_chain_head=grades_head,
-            details=[*extra, *(f"{code}: {text}" for code, text in findings), bound],
+            advisory=server is None,
+            details=[
+                *([ADVISORY] if server is None else []),
+                *extra,
+                *(f"{code}: {text}" for code, text in findings),
+                bound,
+            ],
         )
 
     if invalid:

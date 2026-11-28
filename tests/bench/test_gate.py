@@ -783,3 +783,119 @@ def test_residual_window_is_disclosed() -> None:
     from bench import e4
 
     assert "anchor_window_operator_trust" in e4.DISCLOSURE_CODES
+
+
+# --- server receipts (re-review N7) ---------------------------------------------------------
+
+
+def _shas(repo: Path, campaign: str = "c") -> list[str]:
+    return [p.commit for p in anchors.read_published(repo, "bench-anchors", campaign)]
+
+
+def test_local_gate_without_receipts_is_advisory(store: Store) -> None:
+    res = _gate(ledger=store(_confirm()), **KW)
+    assert res.verdict == "passed" and res.advisory and res.release_verdict == "advisory"
+    assert res.details[0].startswith("advisory")
+
+
+def test_gate_with_server_receipts_is_authoritative(store: Store) -> None:
+    led = store(_confirm())
+    repo = publish(led, T0)
+    led.append({"kind": "pause", "reason": "weekly"})
+    anchors.record_anchor(led)
+    publish(led, T0 + 9 * H)  # commit times 9 h apart, but the server received both 4 h apart
+    first, second = _shas(repo)
+    receipts = [(first, T0 + 60.0), (second, T0 + 4 * H), (second, T0 + 8 * H)]
+    res = g.gate(ledger=led, **_ref(repo), receipts=receipts, **KW)
+    assert not res.advisory and res.release_verdict == "passed"
+
+
+def test_gap_is_computed_from_receipts(store: Store) -> None:
+    led = store(_confirm())
+    repo = publish(led, T0)
+    led.append({"kind": "pause", "reason": "weekly"})
+    anchors.record_anchor(led)
+    publish(led, T0 + H)  # commit times 1 h apart (set by the publisher)
+    first, second = _shas(repo)
+    with pytest.raises(g.GateRefused) as err:
+        g.gate(ledger=led, **_ref(repo), receipts=[(first, T0), (second, T0 + 6 * H)], **KW)
+    assert err.value.code == "anchor_gap"
+
+
+def test_forged_local_anchors_without_receipts_are_refused(store: Store) -> None:
+    """N7 probe: truncate + re-run, then a locally forged anchors history (never pushed, commit
+    dates set to fit). The server only received the honest publication."""
+    led = store(_harmed_last())
+    honest = publish(led, T0)
+    (honest_sha,) = _shas(honest)
+    rerun = _truncate_and_rerun(led, HARMED)
+    anchors.anchors_path(rerun).unlink()
+    anchors.record_anchor(rerun)
+    honest.rename(honest.with_name("honest-repo"))
+    repo = publish(rerun, T0 + H)  # a fresh local repository holding only forged anchors
+    local = g.gate(ledger=rerun, **_ref(repo), **KW)
+    assert local.release_verdict == "advisory"  # locally it "passes", but only as advisory
+    with pytest.raises(g.GateRefused) as err:
+        g.gate(ledger=rerun, **_ref(repo), receipts=[(honest_sha, T0 + 60.0)], **KW)
+    assert err.value.code == "anchor_without_receipt"
+
+
+class _Resp:
+    def __init__(self, doc: dict[str, Any]) -> None:
+        self.data = json.dumps(doc).encode()
+
+    def __enter__(self) -> _Resp:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.data
+
+
+def test_fetch_receipts_paginates() -> None:
+    pages = {
+        1: [{"head_sha": f"{i:040x}", "created_at": "2026-11-28T10:00:00Z"} for i in range(100)],
+        2: [{"head_sha": "f" * 40, "created_at": "2026-11-28T15:00:00Z"}],
+    }
+    seen: list[str] = []
+
+    def opener(req: Any) -> _Resp:
+        seen.append(req.full_url)
+        assert req.get_header("Authorization") == "Bearer t0k"
+        page = int(req.full_url.rsplit("page=", 1)[1])
+        return _Resp({"workflow_runs": pages[page]})
+
+    got = anchors.fetch_receipts("owner/repo", "t0k", opener=opener)
+    assert len(got) == 101 and got[-1] == anchors.Receipt("f" * 40, got[0].server_time + 5 * H)
+    assert "actions/workflows/anchor-receipt.yml/runs" in seen[0]
+    assert "branch=bench-anchors" in seen[0] and "event=push" in seen[0]
+
+
+def test_verify_release_against_e4_heads(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The release job (no ledger): fresh publication history + receipts, last anchor = the
+    chain heads in e4.json."""
+    led = store(_confirm())
+    res = _gate(ledger=led, **KW)
+    repo = led.path.parent / "anchors-repo"
+    pubs = anchors.read_published(repo, "bench-anchors", "c")
+    receipts = [anchors.Receipt(p.commit, T0 + i * H) for i, p in enumerate(pubs)]
+    evidence = {"stage": "confirmation", "campaign": "c", "gate": res.as_e4()}
+    assert anchors.verify_release(evidence, pubs, receipts) == []
+    bad = evidence | {"gate": res.as_e4() | {"ledger_chain_head": "e" * 64}}
+    assert [c for c, _ in anchors.verify_release(bad, pubs, receipts)] == ["anchor_not_final"]
+    assert [c for c, _ in anchors.verify_release(evidence, pubs, [])] == ["anchor_without_receipt"]
+    # the CLI the release job runs
+    path = led.path.parent / "e4.json"
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    monkeypatch.setattr(anchors, "fetch_receipts", lambda *a, **k: receipts)
+    argv = ["verify-release", "--evidence", str(path), "--repo", str(repo)]
+    argv += ["--ref", "bench-anchors", "--github-repo", "o/r"]
+    assert anchors.main(argv) == 0
+    path.write_text(json.dumps(bad), encoding="utf-8")
+    assert anchors.main(argv) == 1
+    path.write_text(json.dumps({"stage": "screening"}), encoding="utf-8")
+    assert anchors.main(argv) == 0
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    assert anchors.main([*argv[:-4], "--ref", "nope", "--github-repo", "o/r"]) == 1

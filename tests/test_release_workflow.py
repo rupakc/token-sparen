@@ -248,7 +248,7 @@ def test_permissions_least_privilege(wf: dict[str, Any]) -> None:
     expected = {
         "gate": {"contents": "read"},
         "verify-tag": {"contents": "read"},
-        "build": {"contents": "read"},
+        "build": {"contents": "read", "actions": "read"},
         "draft-release": {"contents": "write"},
         "provenance": {"contents": "read", "id-token": "write", "attestations": "write"},
         "push-tree": {"contents": "write"},
@@ -483,3 +483,22 @@ def test_actions_pinned_and_checkouts_drop_the_token(wf: dict[str, Any]) -> None
             assert SHA_PIN.fullmatch(ref), f"{name}: {ref} is not pinned to a commit SHA"
             if ref.startswith("actions/checkout@"):
                 assert step["with"]["persist-credentials"] is False, name
+
+
+def test_e4_anchor_check_runs_in_the_release_job(wf: dict[str, Any]) -> None:
+    """M5 Task 10 ruling N7: the authoritative anchor check runs in CI on a fresh fetch of the
+    public branch with server receipts, before the build, for tag pushes only."""
+    build = _jobs(wf)["build"]
+    (step,) = [s for s in build["steps"] if "bench.anchors verify-release" in str(s.get("run", ""))]
+    assert step["if"] == "github.event_name == 'push'"
+    assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert "+refs/heads/bench-anchors:refs/remotes/origin/bench-anchors" in step["run"]
+    run = _runs(build)
+    assert run.index("verify-release") < run.index("python -m build --no-isolation")
+    receipt = parse_yaml((WORKFLOWS / "anchor-receipt.yml").read_text(encoding="utf-8"))
+    assert isinstance(receipt, dict)
+    assert receipt["on"] == {"push": {"branches": ["bench-anchors"]}}
+    assert receipt["permissions"] == {"contents": "read"}
+    (job,) = receipt["jobs"].values()
+    assert job["permissions"] == {"contents": "read"}
+    assert all("uses" not in s for s in job["steps"])  # no checkout, no third-party action
