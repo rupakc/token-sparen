@@ -99,7 +99,8 @@ def test_e2e_failure_event_is_noop_on_claude(tmp_path: Path) -> None:
     assert not (tmp_path / "proj" / ".token-sparen" / "outputs").exists()
 
 
-def test_e2e_agent_result_compressed(tmp_path: Path) -> None:
+def test_e2e_agent_result_never_compressed(tmp_path: Path) -> None:
+    """v1 review I1: a subagent's report (here a test run it quotes) is never trimmed."""
     (tmp_path / "proj").mkdir()
     text = big_pytest()
     half = len(text.splitlines()) // 2
@@ -119,14 +120,10 @@ def test_e2e_agent_result_compressed(tmp_path: Path) -> None:
         tool_use_id="tu-agent",
         tool_response=response,
     )
-    new = _run("PostToolUse", payload, tmp_path)["hookSpecificOutput"]["updatedToolOutput"]
-    assert {k: v for k, v in new.items() if k != "content"} == {
-        k: v for k, v in response.items() if k != "content"
-    }
-    (block,) = new["content"]
-    assert block["type"] == "text" and "[token-sparen: kept " in block["text"]
-    assert len(block["text"]) <= len("\n".join(blocks))  # never more than the model saw
-    assert "FAILED tests/test_cache.py::test_cache_eviction" in block["text"]
+    static = {"learn": {"enabled": False}}  # the static policy always trims an allowed type
+    out = _run("PostToolUse", payload, tmp_path, static)
+    assert "updatedToolOutput" not in json.dumps(out)
+    assert not (tmp_path / "proj" / ".token-sparen" / "outputs").exists()
 
 
 def test_e2e_agent_call_site_report_left_whole(tmp_path: Path) -> None:
