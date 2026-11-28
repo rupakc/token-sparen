@@ -1367,6 +1367,35 @@ def test_backup_location_not_ignored_means_never_written(env: dict[str, str], pr
     assert not settings.backup_path(_local(proj)).exists()
 
 
+def _doctor_lines(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> list[str]:
+    import token_sparen.cli as cli
+
+    monkeypatch.setattr(cli, "_round_trip", lambda root: (True, "skipped in this test"))
+    capsys.readouterr()
+    main(["doctor"])
+    return [ln for ln in capsys.readouterr().out.splitlines() if "tool pruning" in ln]
+
+
+# v1 review M6: deleting the state root (Reset) drops the ownership registry; the deny rules stay
+# in settings.local.json and nothing restores them, so doctor names them.
+def test_doctor_warns_about_deny_rules_whose_ownership_record_is_gone(
+    env: dict[str, str],
+    proj: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _enable(env, proj)
+    _local(proj).parent.mkdir()
+    _local(proj).write_text('{"permissions": {"deny": ["Bash(rm *)"]}}', encoding="utf-8")
+    _three(env, proj)
+    assert _deny(proj) == ["Bash(rm *)", "WebFetch", "WebSearch"]
+    assert _doctor_lines(monkeypatch, capsys) == []  # the registry owns them: nothing to say
+    shutil.rmtree(_home(env))  # "Reset": rm -r ~/.token-sparen
+    (line,) = _doctor_lines(monkeypatch, capsys)
+    assert '"WebFetch"' in line and '"WebSearch"' in line and "Bash(rm" not in line
+    assert str(_local(proj)) in line and "by hand" in line
+
+
 def test_stale_backup_is_refreshed_when_we_own_nothing(env: dict[str, str], proj: Path) -> None:
     _enable(env, proj)
     _local(proj).parent.mkdir()

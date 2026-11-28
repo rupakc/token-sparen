@@ -180,13 +180,17 @@ There is no `compression.enabled` key; use the hold or `allow_ctypes` row above.
 compression), which trims more than a cold learner does.
 
 Uninstalling leaves `~/.token-sparen/` and each project's `.token-sparen/` in place; both are safe
-to delete.
+to delete once tool pruning's rules and the statusline are undone (steps 1 and 2 below).
 
 **Full uninstall**, in this order (the settings edits live outside the state folder, so deleting
 `~/.token-sparen/` alone does not undo them):
 
-1. `token-sparen prune disable` in each project where you enabled tool pruning: it removes every
-   deny rule token-sparen wrote to `.claude/settings.local.json` (in every recorded checkout).
+1. `token-sparen prune restore --all`, then `token-sparen prune disable`, in each project where
+   you enabled tool pruning: they remove every deny rule token-sparen wrote to
+   `.claude/settings.local.json` (the second also in its other recorded checkouts). Deleting
+   `~/.token-sparen/` first would drop the records of which rules are ours. Without the
+   `token-sparen` command, run `python3 -I "<plugin dir>/hooks/run_cli.py" <args>` instead
+   (Windows: `py -3 -I`), before removing the plugin.
 2. `token-sparen statusline uninstall`: restores your original `statusLine`.
 3. `claude plugin uninstall token-sparen@token-sparen` (and `pipx uninstall token-sparen` or the
    like if you installed the CLI for your terminal).

@@ -800,6 +800,9 @@ def _doctor(args: argparse.Namespace) -> int:
         add(_OK if good else _BAD, "hook round-trip", detail)
     if sys.platform == "win32":
         add(_OK, "statusline", "launcher not supported on Windows yet (skipped)")
+    orphans = _orphan_deny_rules(env)
+    if orphans is not None:
+        add(_WARN, "tool pruning", orphans)
     try:
         leftovers = [p for p in home.rglob("*.tmp-*") if p.is_file()]
     except OSError:
@@ -816,6 +819,36 @@ def _doctor(args: argparse.Namespace) -> int:
     for mark, name, detail in results:
         print(f"{mark} {name}: {detail}")
     return 1 if any(m == _BAD for m, _, _ in results) else 0
+
+
+def _orphan_deny_rules(env: Mapping[str, str]) -> str | None:
+    """A warning when this project's ``.claude/settings.local.json`` holds deny rules in tool
+    pruning's format that the ownership registry does not know (v1 review M6: deleting the state
+    root drops the registry, so nothing would restore them and ``prune restore`` finds nothing),
+    else None. A rule the user added in that format matches too, so it is only listed."""
+    from token_sparen.adapters.claude import settings
+    from token_sparen.mechanisms import prune
+
+    try:
+        project = _prune_project(argparse.Namespace(project=None))
+        target = settings.local_settings_path(project)
+        candidates, why = settings.downgrade_candidates(project)
+        if why is not None or not candidates:
+            return None
+        key = keycache.cached_project_key(project, env)
+        doc = prune.read_doc(state_home(env), key, env, checkout=project)
+        known = prune.known_in(doc, prune.file_key(target))
+    except Exception:  # noqa: BLE001 - a newer or broken registry: prune status explains it
+        return None
+    orphans = [r for r in candidates if r not in known]
+    if not orphans:
+        return None
+    listed = ", ".join(json.dumps(r) for r in orphans)
+    return (
+        f"{target} denies {listed} in token-sparen's format, but no ownership record for them "
+        "exists (was ~/.token-sparen deleted?), so they are never restored automatically; "
+        'unless you added them yourself, remove them from "permissions"."deny" by hand'
+    )
 
 
 def _launcher_path() -> Path:

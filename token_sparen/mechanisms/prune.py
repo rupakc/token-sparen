@@ -372,6 +372,15 @@ def owned_in(doc: Mapping[str, Any], fkey: str) -> list[str]:
     return _strs(entry.get("owned")) if isinstance(entry, dict) else []
 
 
+def known_in(doc: Mapping[str, Any], fkey: str) -> set[str]:
+    """Rules the registry records for this settings file: ours (owned) and the user's
+    (foreign)."""
+    entry = _files(doc).get(fkey)
+    if not isinstance(entry, dict):
+        return set()
+    return set(_strs(entry.get("owned"))) | set(_strs(entry.get("foreign")))
+
+
 def all_owned(doc: Mapping[str, Any]) -> list[str]:
     out: set[str] = set()
     for entry in _files(doc).values():
