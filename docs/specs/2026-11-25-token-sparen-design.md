@@ -7,6 +7,17 @@ Status: APPROVED 2026-11-25 (with §6.12 live statusline added at approval) · D
 
 ## Revision log
 
+**2026-11-28 (M5, Task 12: E4 as built).** §10.4: the own runner replaces Harbor (no plugin-dir
+or free flags, amd64-only images, no learner streams or quota windows); the pool is Mini plus the
+arm64 SWE-bench Verified extension; grading is local only with the official harness on the arm64
+images, gold patches preflighted twice. §10.5: BCa cost intervals, the confirmatory bound as
+min(task-cluster bootstrap, Tango score) on seed 0 with the exclusion rule, the conditional exact
+McNemar CI alongside, a power step before confirmation, the `underpowered` verdict (owner
+decides), figures only for E4 public results, and the plugin-hash definition. The confirmation
+ledger, grades and plan are hash-chained and anchored on the public `bench-anchors` branch with
+server-side receipts; a local gate is advisory. `python -m bench` drives every stage and a dry run
+of the whole pipeline runs in CI. Method: `docs/reports/m5-method.md`.
+
 **2026-11-27 (M6 release engineering).** The user documentation source is `docs/user` with the
 `site/` templates, rendered with Python-Markdown (`docs` extra); the site is
 generated from it. A release is cut from tags: an owner-signed annotated `vX.Y.Z` tag starts a
@@ -1040,9 +1051,16 @@ that bucket, or when no ratio can be formed; a target that never trims is `no_tr
 rotation generations; an unsettled outcome counts as regret in the pessimistic variant.
 
 ### 10.4 E4 — Live benchmark with Claude Code under Max
-- Tasks: **SWE-bench Verified Mini (50 tasks)**; harness: Harbor (`claude-code` agent with
-  OAuth token, isolated `CLAUDE_CONFIG_DIR` per arm, `--plugin-dir`, `--strict-mcp-config`);
-  fallback: own runner + official `swebench` grader (local x86 Docker or sb-cli).
+- Tasks: **SWE-bench Verified Mini (50 tasks)** first, restricted to tasks with a prebuilt arm64
+  evaluation image (screening); the **extended pool** is every SWE-bench Verified task with such an
+  image (`bench/data/pool.jsonl`), drawn seeded and stratified by repository when the power step
+  needs more tasks. Harness (as built, M5): the **own runner** in `bench/` (the spec's fallback;
+  Harbor has no `--plugin-dir`, no free flags, amd64-only images and no learner streams or quota
+  windows; it stays the candidate for E5): each (arm, seed, task) runs `claude -p` with
+  `stream-json` inside the task's arm64 image, a read-only toolchain and a read-only frozen plugin,
+  isolated `CLAUDE_CONFIG_DIR` and `HOME` per run, `--strict-mcp-config`, the dedicated OAuth
+  token by name only and scrubbed from every subprocess. `python -m bench` drives it
+  (`bench/README.md`).
 - Arms: (1) plain Claude Code; (2) "answer concisely" control prompt; (3) **token-sparen**;
   (4) RTK; (5) Headroom; (6) Caveman (skill only); (7) context-mode; (8) TokenEconomizer (shipped
   plugin, repo-ordered tasks). Each competitor in its documented default configuration; plugin load
@@ -1056,21 +1074,41 @@ rotation generations; an unsettled outcome counts as regret in the pessimistic v
   are measured the way users would experience them; a cold-start ablation arm is reported separately.
 - Cost unit: cost-weighted tokens / `total_cost_usd` (list-price equivalent incl. cache classes) is
   primary; Max quota % consumed is recorded as secondary.
-- Grading: official `swebench` harness; on the arm64 dev machine try locally built arm64 images first,
-  fall back to the hosted `sb-cli` grader.
+- Grading (as built, owner 2026-11-27): **local only**, the official `swebench` 5.0.2 harness on the
+  same arm64 image the agent ran in (no sb-cli); a task whose gold patch does not resolve twice in
+  a row (or whose no-op patch resolves) is dropped before any agent run and listed with its reason.
 - Budget plan (maintainer on **a Claude Max subscription, no deadline**): **screening** — baseline, concise-prompt control,
-  token-sparen, RTK, Headroom, TokenEconomizer × 50 tasks × 1 seed on a cheaper model;
-  Caveman and context-mode added if quota allows; **confirmation** — baseline + token-sparen + best
-  two competitors × 50 × 3 seeds on the default model. Calendar time is unconstrained. Scheduler alternates arms inside each 5-hour
+  token-sparen, RTK, Headroom, TokenEconomizer × the Mini tasks with arm64 images × 1 seed on
+  `sonnet` (effort high), frozen at `v0.5.0-screen1`; Caveman and context-mode added if quota
+  allows; a **power step** then sizes the confirmation from the screening discordance (≥ 80 %
+  power to pass the −5 pp margin when the true difference is 0, at least 80 tasks, exclusions
+  simulated at the screening rates); **confirmation** — baseline + token-sparen (+ the best
+  competitor, then `ts-style`, only while quota and disk allow) × the power-sized pool × seed 0
+  on Claude Code's default model, frozen at `v1.0.0-rc1`. A size beyond six weeks of quota at the
+  60 % weekly stop, or beyond the pool, is **`underpowered`**: not failed, documented, the owner
+  decides. Calendar time is unconstrained. Scheduler alternates arms inside each 5-hour
   window, records usage %, pauses near the weekly cap, resumes idempotently. Model = Claude Code's
   default model at run time (recorded); a cheaper-model screening run is allowed if quota requires.
 - Optional E5: Terminal-Bench 2.0 subset for non-SWE agent work.
 
 ### 10.5 Statistics and claims policy
-Paired per-task comparisons; cost: paired bootstrap 95 % CI of the median ratio; quality:
-**non-inferiority** on resolved rate with margin −5 pp (owner decision: what 50 tasks × 3 seeds can honestly resolve; exact CI always published alongside E1/E2 quality evidence; release gate = non-inferior at −5 pp) (paired McNemar / bootstrap). A result is
-published only with its CI, n, seeds, model and date; the published numbers measure the **released
-plugin version** (hash recorded). No claim without a reproducible script in `bench/`.
+Paired per-task comparisons; cost: paired **BCa** bootstrap 95 % CI (tasks are the clusters) of
+the median per-task cost ratio; quality: **non-inferiority** on resolved rate with margin −5 pp
+(owner decision; release gate = non-inferior at −5 pp). As built (M5): the confirmatory bound is
+min(task-cluster percentile bootstrap, Tango score on the paired outcomes) on the pre-specified
+seed 0 only, after the exclusion rule (one-sided exclusions re-run, then only the net excess
+imputed as token-sparen failures); the **conditional exact** McNemar CI is published alongside,
+labelled so. Only token-sparen vs baseline is confirmatory; every other comparison is
+descriptive. The **power step** sizes the confirmation before it runs; a confirmation that cannot
+reach the required power within the pool or the quota is **`underpowered`** (not failed; the
+owner decides in `docs/release/gate-decision.toml`), and a clearly inferior result fails
+whatever the power. A result is published only with its CI, n, seeds, model, Claude Code
+version, date range, plugin version, **plugin hash** and harness commit; the published numbers
+measure the **released plugin version**. Plugin hash: sha256 over the sorted (path, sha256 of
+bytes) list of `.claude-plugin/plugin.json`, `hooks/`, `skills/` and `token_sparen/` as shipped
+(`scripts/plugin_hash.py`; not a git tree hash). **Figures** (charts) are allowed only for E4
+public benchmark results, rendered from `e4.json`; E1/E3 data never become a figure. No claim
+without a reproducible script in `bench/` (`python -m bench`).
 
 ### 10.6 Hill-climbing
 Every tunable (keep ratios, thresholds, priors, λ targets, size floors, compressor rules) is a

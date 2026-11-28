@@ -73,3 +73,33 @@ def test_published_e4_reports_equal_their_rerender() -> None:
         if not (d / "report.md").is_file():
             continue  # docs/evidence may hold e4.json alone (render_evidence fixtures)
         assert lint_report(d) == [], d.relative_to(ROOT)
+
+
+# M5 Task 12: the M5 method states only dates, section numbers, ids and the design constants.
+_M5_CONSTANTS = {"50", "25", "3", "5", "60", "80", "85", "3600", "−5", "-5", "95", "0"}
+
+
+def _m5_figures(text: str) -> list[str]:
+    text = re.sub(r"```.*?```", " ", text, flags=re.S)  # command blocks
+    text = re.sub(r"`[^`]*`", " ", text)  # commands, paths and code names
+    text = re.sub(r"\]\([^)]*\)", "]", text)  # link targets
+    for pat in _STRUCTURAL:
+        text = re.sub(pat, " ", text)
+    text = re.sub(r"(?m)^\s*\d+\.\s", " ", text)  # list numbers
+    found = []
+    for m in re.finditer(r"[−-]?\d+(?:[.,]\d+)?", text):
+        if m.group(0) not in _M5_CONSTANTS:
+            found.append(text[max(0, m.start() - 20) : m.end() + 20])
+    return found
+
+
+def test_m5_method_doc_has_no_private_figures() -> None:
+    assert _m5_figures("Ran 47 tasks, 12.5 % better.") != []  # positive control
+    assert _m5_figures("Margin −5 pp, 95 % CI, 3600 s, 2026-11-27, §10.5, E4.") == []
+    text = (ROOT / "docs" / "reports" / "m5-method.md").read_text(encoding="utf-8")
+    assert _m5_figures(text) == []
+
+
+def test_benchmark_runbook_has_no_private_figures() -> None:
+    text = (ROOT / "docs" / "release" / "benchmark-runbook.md").read_text(encoding="utf-8")
+    assert _m5_figures(text) == []

@@ -8,10 +8,10 @@ enabled = false` -> `StaticPolicy`), with regret detection, session fold and cir
 `replay` (E1) and `ope` (E3) evaluate offline into private reports. M3: repo-fact learning
 (miners, lifecycle bandit, SessionStart injection), opt-in tool pruning (`mechanisms/prune.py`,
 deny rules via `adapters/claude/settings.py`), the learned failure-loop guard
-(`mechanisms/loopguard.py`). M4: replay lanes and `evals/hillclimb/` (method
-`docs/reports/m4-method.md`); tuned parameters unchanged. North star: maximise tokens saved
+(`mechanisms/loopguard.py`). M4: replay lanes, `evals/hillclimb/` (`docs/reports/m4-method.md`);
+tuned values unchanged. M5: live benchmark E4 (`docs/reports/m5-method.md`). North star: maximise tokens saved
 subject to no measurable quality loss. Spec: `docs/specs/2026-11-25-token-sparen-design.md`.
-Plans: `docs/plans/` (M0-M3, M4). Decisions: `MEMORY.md`.
+Plans: `docs/plans/` (M0-M6). Decisions: `MEMORY.md`.
 
 ## Layout
 - `token_sparen/` core (stdlib only): `cli.py events.py config.py estimate.py transcript.py emit.py recovery.py extensions.py`
@@ -33,7 +33,7 @@ Plans: `docs/plans/` (M0-M3, M4). Decisions: `MEMORY.md`.
   `/token-sparen` skill (there is no `commands/` directory)
 - `evals/e2/` fact-preservation suite (corpus, `needles.toml`, `run.py`); `evals/challengers/`
   offline learners via the `sim` lane (LinTS; never imported by the package); `evals/hillclimb/`
-  hill-climbing harness
+  hill-climbing harness; `bench/` the E4 harness, `python -m bench` (`bench/README.md`)
 - `tests/` mirrors the package; fixtures are synthetic only; `tests/perf/` is the perf marker
 - `scripts/` `check_denylist.py`, `check_wheel.py`; `.claude/agents/`, `.claude/skills/` dev-time
   agents and skills
@@ -43,7 +43,7 @@ Plans: `docs/plans/` (M0-M3, M4). Decisions: `MEMORY.md`.
 pytest                          # tests + coverage gate (>= 90 %)
 ruff check .                    # lint
 ruff format --check .           # format
-mypy --strict token_sparen      # types
+mypy --strict token_sparen bench  # types (package and the E4 harness)
 python evals/e2/run.py --strict # E2 fact-preservation, must stay 100 %
 TOKEN_SPAREN_PERF_FACTOR=1.5 pytest -m perf --no-cov   # strict latency budgets (CI runs it)
 python scripts/check_wheel.py   # build wheel, install in fresh venv, smoke-test CLI

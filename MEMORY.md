@@ -1781,3 +1781,42 @@ and the two new issues they found.
   patch stayed unresolved. No pinned 4.x and no amd64 emulation needed. Local grading only (no
   hosted grader); un-gradable tasks are dropped by `preflight` and disclosed. Grading needs
   network (some eval scripts pip-install the package).
+
+## 2026-11-28 M5 Task 12: E4 design decisions, owner answers and the `python -m bench` CLI
+- Design decisions (M5 plan): own runner, not Harbor (no `--plugin-dir`/free flags, forced
+  config dir, amd64-only images, no learner streams or quota windows; Harbor stays the E5
+  candidate). Pool: Mini tasks with arm64 images first, extended pool = SWE-bench Verified tasks
+  with prebuilt arm64 images, drawn seeded and stratified. Frozen plugin per stage from plain
+  tags only (`v0.5.0-screen1`, `v1.0.0-rc1`). Plugin hash per the M6-B1/N1 definition. Figures
+  only for E4 public results. Output style ships off in v1.0 whatever E4 shows. Cold-start
+  ablation is screening only. Spec §10.4/§10.5 and the revision log updated to match.
+- Owner answers (2026-11-27): OAuth token only (dedicated `claude setup-token`, revoked after the
+  campaign); local grading only (no sb-cli; ungradable tasks dropped and listed); pause at the
+  60 % weekly stop; TokenEconomizer as documented (headless limitation disclosed); screening
+  model `sonnet`, effort high.
+- CLI rulings wired: workspace = `--out`/`TOKEN_SPAREN_BENCH_OUT` (no default), dry run or real
+  fixed by the first command, one campaign per workspace. Token only from a 0600, user-owned,
+  non-link file (`--token-file`/`TOKEN_SPAREN_BENCH_TOKEN_FILE`); `CLAUDE_CODE_OAUTH_TOKEN` in the
+  environment is refused. Real commands refused on Windows. `quota set` records the owner's
+  readings with a timestamp in the account-wide journal (quota calibration not done yet).
+  Confirmation: `write_plan` (plugin_version from the frozen plugin.json, `--price-confirmed-on`)
+  then the plan anchor is pushed to `bench-anchors` before any run (`run --plan-only` stops
+  there so the owner can commit `docs/evidence/plan.sha256` first); then one commit per push
+  before grading each block (each publication adds at most one block, refused if a block could
+  exceed `RUN_CAP`), a heartbeat when the last publication is three hours old (before each run
+  and while sleeping), and once at the end; `anchors publish` for pauses. The anchors clone lives
+  in the workspace (`anchors-git/`); remote = the repo's `origin` unless `--anchors-remote`.
+  `gate` fetches first; with `--github-repo` it uses server receipts, otherwise advisory, and
+  `report` refuses an advisory or stale (chain heads changed) gate. Scheduler grader =
+  `grade_task` with the stage grader, `gold_ok = preflight_ok(grading/)`.
+- Dry run (`run --dry-run`): FakeBackend with a deterministic scenario, a grader that resolves a
+  patch iff it carries the fake fix, `FAKE_TASKS`, freeze of committed `HEAD` without tag checks,
+  scripted owner readings in `<out>/dry-account` (the real account is never touched), a persisted
+  virtual clock (window caps are waited through), a temporary bare repository as the anchors
+  remote, `n_boot` 200 and `n_sim` 50; the gate prints the advisory verdict and stores one with
+  receipts simulated from the temporary remote (never publishable: the bootstrap is too small and
+  `--publish` is refused for dry workspaces). CI job `bench-dry-run`; `mypy --strict bench` in
+  `lint`.
+- Not built here (Task 13): the toolchain and per-arm template builds; `prepare toolchain` and
+  `prepare templates` only check their presence (`toolchain/pins.json` with `claude_code` and
+  `arms`, `grade-venv/`, `templates/<arm>/`).
