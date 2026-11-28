@@ -226,6 +226,11 @@ def detect(text: str, tool: ToolCall | None = None) -> ContentType:
 
 
 def _detect(text: str, tool: ToolCall | None) -> ContentType:
+    if tool is not None and tool.category == "agent":
+        # A subagent's report is the main agent's only view of its work: a list of call sites
+        # in it is never search output to cut (v1 review M11), whatever its input says.
+        sniffed = sniff(text)
+        return "text" if sniffed == "search" else sniffed
     if tool is not None:
         hint = _tool_hint(tool)
         if hint is not None:

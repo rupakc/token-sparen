@@ -15,7 +15,13 @@ from userconf import write_user_config
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def _run(event: str, payload: dict[str, Any], tmp_path: Path, **extra: str) -> dict[str, Any]:
+def _run(
+    event: str,
+    payload: dict[str, Any],
+    tmp_path: Path,
+    user: dict[str, Any] | None = None,
+    **extra: str,
+) -> dict[str, Any]:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("TOKEN_SPAREN_", "CLAUDE_"))}
     env.update(
         {
@@ -26,7 +32,7 @@ def _run(event: str, payload: dict[str, Any], tmp_path: Path, **extra: str) -> d
         }
     )
     # slow CI runners: a larger budget widens, so it goes in the user's file (env only narrows)
-    write_user_config(tmp_path / "home", {"adapter": {"latency_budget_ms": 5000}})
+    write_user_config(tmp_path / "home", {"adapter": {"latency_budget_ms": 5000}, **(user or {})})
     proc = subprocess.run(
         [sys.executable, "-I", str(ROOT / "hooks" / "run.py"), event],
         input=json.dumps(payload),
@@ -118,6 +124,31 @@ def test_e2e_agent_result_compressed(tmp_path: Path) -> None:
     assert block["type"] == "text" and "[token-sparen: kept " in block["text"]
     assert len(block["text"]) <= len("\n".join(blocks))  # never more than the model saw
     assert "FAILED tests/test_cache.py::test_cache_eviction" in block["text"]
+
+
+def test_e2e_agent_call_site_report_left_whole(tmp_path: Path) -> None:
+    """v1 review M11 (probed): a subagent listing 240 call sites is not cut like grep output."""
+    (tmp_path / "proj").mkdir()
+    report = "\n".join(
+        f"src/pkg/mod_{i % 12}.py:{i + 3}: result = legacy_client.fetch(user_id={i}, retries=3)"
+        for i in range(240)
+    )
+    response = {
+        "status": "completed",
+        "agentId": "agent-8",
+        "content": [{"type": "text", "text": report}],
+        "totalTokens": 999,
+        "usage": {"input_tokens": 10, "output_tokens": 20},
+    }
+    payload = _payload(
+        "PostToolUse",
+        tool_name="Agent",
+        tool_input={"prompt": "list every call site of legacy_client.fetch"},
+        tool_use_id="tu-agent-sites",
+        tool_response=response,
+    )
+    static = {"learn": {"enabled": False}}  # the static policy always trims an allowed type
+    assert "updatedToolOutput" not in json.dumps(_run("PostToolUse", payload, tmp_path, static))
 
 
 def test_e2e_env_narrowing_reaches_the_hook(tmp_path: Path) -> None:
