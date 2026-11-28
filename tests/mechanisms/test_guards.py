@@ -616,16 +616,26 @@ def test_bounded_pretrim_project_may_only_raise(tmp_path: Path) -> None:
     assert load_config(proj, env).get("guards.pretrim_bounded_keep_ratio") == 0.6
     assert guards.pretrim_level(load_config(proj, env), 50).keep_ratio == 0.6
     # set by the user: a project may only raise it
-    user = {**env, "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "0.5"}
+    user = to_user_config({**env, "TOKEN_SPAREN_GUARDS__PRETRIM_BOUNDED_KEEP_RATIO": "0.5"})
     (proj / "token-sparen.toml").write_text("[guards]\npretrim_bounded_keep_ratio = 0.4\n", "utf-8")
     assert load_config(proj, user).get("guards.pretrim_bounded_keep_ratio") == 0.5
     # unset by the user, the effective ratio is max(packaged, the user's standard) = 0.7: the
     # project's 0.4 would trim more, so it is dropped and 0.7 kept
-    std = {**env, "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.7"}
+    std = to_user_config(
+        {
+            "TOKEN_SPAREN_HOME": str(tmp_path / "home_std"),
+            "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.7",
+        }
+    )
     assert load_config(proj, std).get("guards.pretrim_bounded_keep_ratio") is None
     assert guards.pretrim_level(load_config(proj, std), 50).keep_ratio == 0.7
     # and a user standard ratio below the packaged one never lets a project trim more
-    low = {**env, "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.2"}
+    low = to_user_config(
+        {
+            "TOKEN_SPAREN_HOME": str(tmp_path / "home_low"),
+            "TOKEN_SPAREN_COMPRESSION__LEVELS__STANDARD__KEEP_RATIO": "0.2",
+        }
+    )
     (proj / "token-sparen.toml").write_text("[guards]\npretrim_bounded_keep_ratio = 0.3\n", "utf-8")
     assert load_config(proj, low).get("guards.pretrim_bounded_keep_ratio") is None  # dropped
     assert guards.pretrim_level(load_config(proj, low), 50).keep_ratio == 0.35

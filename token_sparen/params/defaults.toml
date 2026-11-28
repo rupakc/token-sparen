@@ -164,7 +164,9 @@ pretrim_max = 200  # candidates kept per project (least recently seen dropped)
 savings_reward = "scaled"  # savings reward at decision time: "scaled" = min(1, removed x resends /
 # p95 of the bucket); "fraction" = removed / output tokens; "counterfactual" = removed / max removed
 # over the point's trimming arms on the same output x min(1, resends / resend_horizon) (compresses
-# the output once per arm: hook p95 gated by tests/perf/test_counterfactual_reward.py); "cost" =
+# the output once per arm: CI gates its hook p95 at <= 1.6x the default reward's, same process;
+# enabling it in a tuning campaign requires the absolute < 50 ms check on the target machine:
+# TOKEN_SPAREN_PERF_STRICT=1 pytest -m perf tests/perf/test_counterfactual_reward.py --no-cov); "cost" =
 # cache-weighted cost removed (pricing.cache_write + pricing.cache_read x resends) / its p95
 resend_horizon = 20  # R of the counterfactual reward: resends at which a removal counts in full
 ladder_retry_decisions = 0  # 0 = off. N > 0: after N decisions of a bucket within one session

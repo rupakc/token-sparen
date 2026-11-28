@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
+from userconf import to_user_config
 
 from token_sparen.config import Config, load_config
 from token_sparen.events import Event, EventKind, ToolCall
@@ -27,7 +28,7 @@ POINTER = (
 def _env(tmp_path: Path, **over: str) -> dict[str, str]:
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
     env.update({f"TOKEN_SPAREN_{k}": v for k, v in over.items()})
-    return env
+    return to_user_config(env)  # env only narrows; widening overrides live in the user file
 
 
 def _cfg(tmp_path: Path, **over: str) -> Config:

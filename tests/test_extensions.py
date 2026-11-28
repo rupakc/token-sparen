@@ -239,6 +239,7 @@ def test_override_flag_lets_extension_replace_builtin(env: dict[str, str]) -> No
     assert comp.compress("a\nb", LEVEL, CTX).text == "a|ext"
 
 
+@pytest.mark.env_drop_expected
 def test_override_flag_never_from_env(env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
     """A repository's committed Claude Code settings can set environment variables."""
     monkeypatch.setenv("TOKEN_SPAREN_EXTENSIONS__ALLOW_OVERRIDE", "true")
@@ -509,6 +510,7 @@ def test_runtime_rejects_error_line_only_inside_longer_line(env: dict[str, str])
 
 
 @pytest.mark.parametrize("value", ["1", "true", "TRUE"])
+@pytest.mark.env_drop_expected
 def test_override_env_values_ignored(
     env: dict[str, str], monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
@@ -523,6 +525,7 @@ def test_override_user_file_int_one(env: dict[str, str]) -> None:
 
 
 @pytest.mark.parametrize("value", ["0", "false", "no", "off"])
+@pytest.mark.env_drop_expected
 def test_override_env_false_values(
     env: dict[str, str], monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:

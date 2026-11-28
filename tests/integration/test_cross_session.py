@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from userconf import to_user_config, write_user_config
 
 from token_sparen.adapters.claude import entry
 from token_sparen.cli import main as cli
@@ -91,6 +92,7 @@ def env(tmp_path: Path, proj: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str
         "TOKEN_SPAREN_ADAPTER__LATENCY_SAMPLE_RATE": "0",
         "TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS": "10000",
     }
+    e = to_user_config(e)  # widening settings live in the user's file (env only narrows)
     for k in ("TOKEN_SPAREN_HOME", "CLAUDE_CONFIG_DIR"):  # the CLI reads os.environ
         monkeypatch.setenv(k, e[k])
     monkeypatch.chdir(proj)
@@ -171,7 +173,7 @@ def test_three_sessions_learn_fact_and_inject(
     (bootstrap rule; with 2 the lcb rule needs a third confirmation too), so three learning
     sessions and the fourth session's start shows it. The withhold floor (exploration) is set
     to 0 so the fourth session is not the one that withholds it for its baseline."""
-    env["TOKEN_SPAREN_FACTS__WITHHOLD_FLOOR"] = "0"
+    write_user_config(Path(env["TOKEN_SPAREN_HOME"]), {"facts": {"withhold_floor": 0}})
     for i, sid in enumerate(("s1", "s2", "s3"), start=1):
         alias_session(env, proj, tmp_path, sid)
         doc = miners.load(_pdir(env, proj), env)
@@ -387,7 +389,7 @@ def _snapshot(*roots: Path) -> dict[str, bytes]:
 
 @pytest.mark.usefixtures("standard_arm")
 def test_kill_switch_disables_everything(env: dict[str, str], proj: Path, tmp_path: Path) -> None:
-    env["TOKEN_SPAREN_FACTS__WITHHOLD_FLOOR"] = "0"
+    write_user_config(Path(env["TOKEN_SPAREN_HOME"]), {"facts": {"withhold_floor": 0}})
     for sid in ("s1", "s2", "s3"):
         alias_session(env, proj, tmp_path, sid)
     prune_cycle(env, proj, tmp_path)
