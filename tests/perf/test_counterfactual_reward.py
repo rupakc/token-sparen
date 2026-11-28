@@ -14,12 +14,15 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from perfutil import P95_ROUNDS, p95, perf_factor
 from sampleoutputs import big_pytest
 
 from token_sparen.adapters.claude import entry
+from token_sparen.mechanisms import compression
+from token_sparen.mechanisms.compression import COMPRESSION
 
 CALLS = 200
 P95_BUDGET_MS = 50.0
@@ -29,8 +32,17 @@ STRICT = os.environ.get("TOKEN_SPAREN_PERF_STRICT") == "1"
 
 
 @pytest.mark.perf
-def test_counterfactual_reward_hook_p95(tmp_path: Path) -> None:
+def test_counterfactual_reward_hook_p95(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     text = big_pytest(50_000)
+    calls = [0]  # per-arm candidate compressions (pick_candidate) in the current round
+    real_pick = compression.pick_candidate
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        calls[0] += 1
+        return real_pick(*args, **kwargs)
+
+    monkeypatch.setattr(compression, "pick_candidate", spy)
+    extra_arms = len(COMPRESSION.arms) - 2  # every arm but the safe one and the chosen one
 
     def round_(k: int, counterfactual: bool) -> list[float]:
         root = tmp_path / f"r{k}{'c' if counterfactual else 'd'}"
@@ -43,8 +55,13 @@ def test_counterfactual_reward_hook_p95(tmp_path: Path) -> None:
             "TOKEN_SPAREN_TEST_SEED": "1",
         }
         if counterfactual:
-            env["TOKEN_SPAREN_LEARN__SAVINGS_REWARD"] = "counterfactual"
+            # user-only option: the env layer is narrowing-only, so it goes in the user config
+            (root / "home").mkdir()
+            (root / "home" / "config.toml").write_text(
+                '[learn]\nsavings_reward = "counterfactual"\n'
+            )
         times: list[float] = []
+        calls[0] = 0
         for i in range(CALLS):
             payload = {
                 "session_id": "perf",
@@ -68,6 +85,9 @@ def test_counterfactual_reward_hook_p95(tmp_path: Path) -> None:
             if "updatedToolOutput" in stdout.getvalue():
                 times.append(ms)  # the measured path is the compressing one
         assert len(times) >= CALLS * 0.7
+        # one pick per compressed output; counterfactual adds one per other trimming arm, only there
+        expected = len(times) * (1 + (extra_arms if counterfactual else 0))
+        assert calls[0] == expected, f"{calls[0]} arm compressions, expected {expected}"
         return times
 
     best_d = best_c = float("inf")
