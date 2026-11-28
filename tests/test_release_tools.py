@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 E4_EXAMPLE = ROOT / "tests" / "bench" / "fixtures" / "e4_example.json"
 PIN = "v1.0.0-rc1"
 RELEASE_SOURCE = {"source": "github", "repo": "rupakc/token-sparen", "ref": "release/claude"}
+SEED_REF = "refs/remotes/origin/release/claude"
 
 README = """# token-sparen
 
@@ -163,6 +164,8 @@ def _make_base(dest: Path) -> Path:
     _set_version(dest, "1.0.0")
     _commit(dest, "chore(release): v1.0.0")
     _git(dest, "tag", PIN)
+    # the seeded release/claude (as fetched from origin): the measured 1.0.0 plugin
+    _git(dest, "update-ref", SEED_REF, "HEAD")
     return dest
 
 
@@ -432,6 +435,76 @@ def test_patch_refuses_a_changed_tree_builder(
     monkeypatch.setattr(rc, "build_claude_tree", builder)
     problems = rc.release_check(repo, tag="v1.0.1", mode="tag")
     assert any("(d)" in p and "tree builder" in p for p in problems), problems
+
+
+def _seed_commit(repo: Path, extra: str | None = None, *, parent: str | None = None) -> str:
+    """A commit whose tree is the repo at HEAD (optionally with an unmeasured plugin edit),
+    made outside the main history, as a hand-made seed of release/claude would be."""
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    if extra is not None:
+        with (repo / "token_sparen" / "cli.py").open("a", encoding="utf-8") as fh:
+            fh.write(extra)
+        _git(repo, "add", "-A")
+    tree = _git(repo, "write-tree").strip()
+    if extra is not None:
+        _git(repo, "reset", "-q", "--hard", base)
+    args = ["commit-tree", tree, "-m", "release: seed"]
+    if parent is not None:
+        args += ["-p", parent]
+    return _git(repo, *args).strip()
+
+
+def test_tag_mode_checks_the_seeded_release_branch(
+    repo: Path, tmp_path: Path, passing_gate: list[tuple[Any, ...]]
+) -> None:
+    """Review NEW-I1: release/claude holding this version must hold the measured plugin."""
+    _released(repo, tmp_path)
+    assert rc.release_check(repo, tag="v1.0.0", mode="tag") == []
+    wrong = _seed_commit(repo, "\n# unmeasured\n")
+    _git(repo, "update-ref", SEED_REF, wrong)
+    problems = rc.release_check(repo, tag="v1.0.0", mode="tag")
+    assert any("not the measured plugin" in p and "corrective" in p for p in problems), problems
+    assert rc.release_branch_problems(repo, "1.0.0")
+    # recovery without force: a fast-forward commit on top whose tree is the measured tree
+    fixed = _seed_commit(repo, parent=wrong)
+    _git(repo, "update-ref", SEED_REF, fixed)
+    assert _git(repo, "merge-base", "--is-ancestor", wrong, fixed) == ""
+    assert rc.release_check(repo, tag="v1.0.0", mode="tag") == []
+    # a missing branch is a problem in tag mode (fetch it first)
+    _git(repo, "update-ref", "-d", SEED_REF)
+    problems = rc.release_check(repo, tag="v1.0.0", mode="tag")
+    assert any("not found" in p and "git fetch origin" in p for p in problems), problems
+
+
+def test_prepare_release_seed_check_fetches_origin(repo: Path, tmp_path: Path) -> None:
+    """`bump_version.fetched_seed_problems` (the --prepare-release default) fetches
+    release/claude from origin and runs the same check as tag mode."""
+    from scripts import bump_version
+
+    _released(repo, tmp_path)
+    origin = tmp_path / "origin.git"
+    _git(repo, "init", "-q", "--bare", str(origin))
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "update-ref", "-d", SEED_REF)
+    _git(repo, "push", "-q", "origin", f"{PIN}^{{commit}}:refs/heads/release/claude")
+    assert bump_version.fetched_seed_problems(repo, "1.0.0") == []
+    wrong = _seed_commit(repo, "\n# unmeasured\n")
+    _git(repo, "push", "-q", "--force", "origin", f"{wrong}:refs/heads/release/claude")
+    (problem,) = bump_version.fetched_seed_problems(repo, "1.0.0")
+    assert "not the measured plugin" in problem
+
+
+def test_seed_check_ignores_an_older_release_branch(repo: Path) -> None:
+    """A branch holding the previous release is moved forward by push-tree, not checked."""
+    _set_version(repo, "0.9.0")
+    _commit(repo, "older")
+    _git(repo, "update-ref", SEED_REF, "HEAD")
+    assert rc.release_branch_problems(repo, "1.0.0") == []
+    with (repo / ".claude-plugin" / "plugin.json").open("w", encoding="utf-8") as fh:
+        fh.write("{")
+    _commit(repo, "broken manifest")
+    _git(repo, "update-ref", SEED_REF, "HEAD")
+    assert any("no readable" in p for p in rc.release_branch_problems(repo, "1.0.0"))
 
 
 def test_normalised_plugin_hash_ignores_only_the_version(tmp_path: Path) -> None:

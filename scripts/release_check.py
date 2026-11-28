@@ -387,12 +387,78 @@ def tree_reuse_problems(root: Path, measured: str, tree: Path, evidence_hash: st
                 f"not the evidence's {evidence_hash[:12]} (the tree builder or the measured ref "
                 "changed); a new E4 confirmation is required"
             )
-        if normalised_plugin_hash(old) != normalised_plugin_hash(tree):
+        try:
+            same = normalised_plugin_hash(old) == normalised_plugin_hash(tree)
+        except ValueError as exc:  # a plugin.json that is not JSON (fails closed, no traceback)
+            return [*problems, f"patch rule (d): cannot normalise the plugin tree: {exc}"]
+        if not same:
             problems.append(
                 "patch rule (d): the release plugin tree differs from the measured one beyond "
                 "the version; a new E4 confirmation is required"
             )
     return problems
+
+
+RELEASE_BRANCH_REF = "refs/remotes/origin/release/claude"
+SEED_FIX = (
+    "push a corrective fast-forward commit whose tree is the measured plugin tree "
+    "(docs/release/runbook.md, 'A wrong seed'), then check again"
+)
+
+
+def release_branch_problems(
+    root: Path, version: str, *, ref: str = RELEASE_BRANCH_REF
+) -> list[str]:
+    """Review NEW-I1: when ``release/claude`` (``ref``, fetched from origin) already holds
+    ``version`` (the first release's seed, made by hand), its plugin tree must be the measured
+    one: equal, with the version normalised, to the tree of the commit the evidence measured,
+    which itself must still build the evidence's plugin hash. A branch holding an older release
+    is fine (``push-tree`` moves it forward); a missing ref is a problem (fetch it first)."""
+    resolved = _git(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    if resolved.returncode != 0:
+        return [
+            f"{ref} not found: fetch it first (git fetch origin "
+            "+refs/heads/release/claude:refs/remotes/origin/release/claude); a release needs "
+            "the seeded or the previous release branch"
+        ]
+    head = resolved.stdout.strip()
+    shown = _git(root, "show", f"{head}:{VERSION_FILES[1]}")
+    try:
+        held = json.loads(shown.stdout).get("version") if shown.returncode == 0 else None
+    except (ValueError, AttributeError):
+        held = None
+    if held is None:
+        return [f"release/claude ({head[:12]}) holds no readable {VERSION_FILES[1]}"]
+    if held != version:
+        return []
+    doc, error = _evidence(root)
+    if doc is None:
+        return [f"release/claude holds {version}, but {error}: cannot check the seed"]
+    measured_ref = _measured_ref(doc) or ""
+    measured = _git(root, "rev-parse", "--verify", "--quiet", f"{measured_ref}^{{commit}}")
+    if not measured_ref or measured.returncode != 0:
+        return [f"release/claude seed check: cannot resolve the measured ref {measured_ref!r}"]
+    evidence_hash = str(doc.get("plugin_hash", ""))
+    with tempfile.TemporaryDirectory(prefix="token-sparen-seed-") as tmp:
+        seed, old = Path(tmp) / "seed", Path(tmp) / "measured"
+        try:
+            build_claude_tree(root, seed, ref=head)
+            build_claude_tree(root, old, ref=measured.stdout.strip())
+            if plugin_hash(old) != evidence_hash:
+                return [
+                    f"release/claude seed check: {measured_ref} now builds plugin "
+                    f"{plugin_hash(old)[:12]}, not the evidence's {evidence_hash[:12]}"
+                ]
+            same = normalised_plugin_hash(seed) == normalised_plugin_hash(old)
+        except (OSError, TreeError, ValueError) as exc:
+            return [f"release/claude seed check: cannot build or hash the trees: {exc}"]
+    if not same:
+        return [
+            f"release/claude ({head[:12]}) holds {version} but not the measured plugin "
+            f"{evidence_hash[:12]} of {measured_ref}: the marketplace would serve an unmeasured "
+            f"tree; {SEED_FIX}"
+        ]
+    return []
 
 
 def _patch_rule(root: Path, version: str, changelog: str, tree: Path) -> list[str]:
@@ -560,6 +626,8 @@ def release_check(root: Path, *, tag: str | None, mode: Mode) -> list[str]:
         if mode == "dry-run" or version is None:
             return problems + marketplace_problems(root, required=marketplace_required(changelog))
         problems += marketplace_problems(root, required=True)
+        if version is not None:
+            problems += release_branch_problems(root, version)
         if tag is None:
             return [*problems, "tag mode needs --tag vX.Y.Z"]
         problems += _dirty(root)

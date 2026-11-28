@@ -206,19 +206,47 @@ def _write_all(files: list[tuple[Path, str]]) -> None:
             temp.unlink(missing_ok=True)
 
 
+def fetched_seed_problems(root: Path, version: str) -> list[str]:
+    """Fetch ``release/claude`` from origin and run the seed check of `release_check` on it."""
+    fetch = subprocess.run(  # noqa: S603
+        [
+            "git",
+            "fetch",
+            "--no-tags",
+            "--force",
+            "origin",
+            f"+refs/heads/{RELEASE_BRANCH}:refs/remotes/origin/{RELEASE_BRANCH}",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if fetch.returncode != 0:
+        return [f"cannot fetch {RELEASE_BRANCH} from origin: {fetch.stderr.strip()}"]
+    if str(ROOT) not in sys.path:  # run as a script: make `scripts` importable
+        sys.path.insert(0, str(ROOT))
+    from scripts.release_check import release_branch_problems  # noqa: PLC0415 (import cycle)
+
+    return release_branch_problems(root, version)
+
+
 def prepare_release(
     root: Path,
     version: str,
     date: str,
     *,
     branch_exists: Callable[[Path], bool] | None = None,
+    seed_check: Callable[[Path, str], list[str]] | None = None,
 ) -> list[Path]:
     """The release-prep step of ``X.Y.Z`` (ruling B1): date the CHANGELOG heading and point the
     marketplace at ``release/claude``, in the same ``chore(release)`` commit.
 
     Refused unless ``release/claude`` already exists on ``origin`` (review I2: for the first
     release the runbook seeds it with the measured tree first, so the marketplace never names a
-    missing branch). Checks everything before writing, then writes both files atomically."""
+    missing branch) and, when it already holds this version (the seed), its plugin tree is the
+    measured one (review NEW-I1, `release_check.release_branch_problems` on a fresh fetch).
+    Checks everything before writing, then writes both files atomically."""
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError(f"bad release version {version!r}: expected X.Y.Z")
     if current_version(root) != version:
@@ -232,6 +260,10 @@ def prepare_release(
             "tree first (docs/release/runbook.md, 'Seed release/claude'), so the marketplace "
             "never points at a missing branch"
         )
+    check = seed_check if seed_check is not None else fetched_seed_problems
+    problems = check(root, version)
+    if problems:
+        raise ValueError("; ".join(problems))
     _write_all([(changelog, changelog_text), (market, market_text)])
     return [changelog, market]
 

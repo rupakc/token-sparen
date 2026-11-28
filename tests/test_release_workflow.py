@@ -362,9 +362,17 @@ def test_publish_order_pypi_after_tree_push(wf: dict[str, Any]) -> None:
     assert "push-tree" in ancestors("publish-pypi")
     assert "publish-pypi" in ancestors("finalize")
     assert "publish-pypi" not in ancestors("push-tree")
-    # only push-tree writes release/claude
+    # only push-tree writes release/claude; build only fetches it for the seed check (NEW-I1)
+    seed_fetch = (
+        'git fetch --no-tags --force origin "+refs/heads/release/claude:'
+        'refs/remotes/origin/release/claude"'
+    )
     for name, job in jobs.items():
         text = _runs(job) + str(job.get("env", {}))
+        if name == "build":
+            assert text.count(seed_fetch) == 1
+            assert text.index(seed_fetch) < text.index("release_check.py --mode tag")
+            text = text.replace(seed_fetch, "").replace("reads release/claude as", "")
         if name != "push-tree":
             assert "release/claude" not in text and " push " not in text, name
 

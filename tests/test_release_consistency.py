@@ -232,6 +232,11 @@ def _seeded(root: Path) -> bool:
     return True
 
 
+def _good_seed(root: Path, version: str) -> list[str]:
+    """The seeded `release/claude` holds the measured plugin (no network in tests)."""
+    return []
+
+
 def _market(root: Path) -> dict[str, Any]:
     data = json.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
     assert isinstance(data, dict)
@@ -270,7 +275,9 @@ def test_prepare_release_dates_and_tracks_release_branch(tmp_path: Path) -> None
     root = _make_repo(tmp_path)
     mod.bump(root, "1.0.0", date=None)
     before = _market(root)
-    changed = mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=_seeded)
+    changed = mod.prepare_release(
+        root, "1.0.0", "2026-12-01", branch_exists=_seeded, seed_check=_good_seed
+    )
     assert sorted(p.relative_to(root).as_posix() for p in changed) == [
         ".claude-plugin/marketplace.json",
         "CHANGELOG.md",
@@ -298,15 +305,21 @@ def test_prepare_release_refuses_and_writes_nothing(tmp_path: Path) -> None:
     mod = _bump_module()
     root = _make_repo(tmp_path)
     with pytest.raises(ValueError, match="X.Y.Z"):
-        mod.prepare_release(root, "1.0.1.dev0", "2026-12-01", branch_exists=_seeded)
+        mod.prepare_release(
+            root, "1.0.1.dev0", "2026-12-01", branch_exists=_seeded, seed_check=_good_seed
+        )
     with pytest.raises(ValueError, match="current version"):
-        mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=_seeded)  # not bumped yet
+        mod.prepare_release(
+            root, "1.0.0", "2026-12-01", branch_exists=_seeded, seed_check=_good_seed
+        )  # not bumped yet
     mod.bump(root, "1.0.0", date=None)
     market = root / ".claude-plugin" / "marketplace.json"
     market.write_text('{"plugins": []}', encoding="utf-8")
     snapshot = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
     with pytest.raises(ValueError, match="exactly one"):
-        mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=_seeded)
+        mod.prepare_release(
+            root, "1.0.0", "2026-12-01", branch_exists=_seeded, seed_check=_good_seed
+        )
     assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == snapshot
 
 
@@ -323,6 +336,11 @@ def test_cli_prepare_release(
     assert "does not exist on origin" in capsys.readouterr().err
     assert _market(root)["plugins"][0]["source"] == "./"
     monkeypatch.setattr(mod, "remote_branch_exists", _seeded)
+    monkeypatch.setattr(mod, "fetched_seed_problems", lambda root, v: ["seed is wrong"])
+    assert mod.main(["--prepare-release", "1.0.0", "2026-12-01"]) == 1
+    assert "seed is wrong" in capsys.readouterr().err
+    assert _market(root)["plugins"][0]["source"] == "./"
+    monkeypatch.setattr(mod, "fetched_seed_problems", _good_seed)
     assert mod.main(["--prepare-release", "1.0.0", "2026-12-01"]) == 0
     out = capsys.readouterr().out
     assert "marketplace.json" in out and "CHANGELOG.md" in out
@@ -338,6 +356,30 @@ def test_prepare_release_refused_until_release_branch_is_seeded(tmp_path: Path) 
     with pytest.raises(ValueError, match="does not exist on origin"):
         mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=lambda r: False)
     assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == snapshot
+
+
+def test_prepare_release_refuses_a_wrong_seed(tmp_path: Path) -> None:
+    """Review NEW-I1: a seed whose plugin is not the measured one is refused before any write."""
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    mod.bump(root, "1.0.0", date=None)
+    snapshot = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    seen: list[tuple[Path, str]] = []
+
+    def wrong(r: Path, v: str) -> list[str]:
+        seen.append((r, v))
+        return ["release/claude holds 1.0.0 but not the measured plugin"]
+
+    with pytest.raises(ValueError, match="not the measured plugin"):
+        mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=_seeded, seed_check=wrong)
+    assert seen == [(root, "1.0.0")]
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == snapshot
+
+
+def test_fetched_seed_problems_without_origin(tmp_path: Path) -> None:
+    mod = _bump_module()
+    (problem,) = mod.fetched_seed_problems(tmp_path, "1.0.0")
+    assert "cannot fetch release/claude" in problem
 
 
 def test_remote_branch_exists_without_origin(tmp_path: Path) -> None:
@@ -362,6 +404,8 @@ def test_prepare_release_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(mod.os, "replace", flaky)
     with pytest.raises(OSError, match="disk full"):
-        mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=_seeded)
+        mod.prepare_release(
+            root, "1.0.0", "2026-12-01", branch_exists=_seeded, seed_check=_good_seed
+        )
     assert [p.name for p in calls] == ["CHANGELOG.md", "marketplace.json"]
     assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == snapshot  # no temps

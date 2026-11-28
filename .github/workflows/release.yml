@@ -75,6 +75,8 @@ jobs:
           set -euo pipefail
           # the gate-decision signature (git %G?) must be checked against the owner's key only
           python scripts/release_trust.py trust --email "$RELEASE_TAGGER" --key-env RELEASE_SIGNING_KEY --signers "$RUNNER_TEMP/allowed_signers"
+          # the seed check (review NEW-I1) reads release/claude as fetched just now
+          git fetch --no-tags --force origin "+refs/heads/release/claude:refs/remotes/origin/release/claude"
           python scripts/release_check.py --mode tag --tag "$TAG"
       - name: Release check (dry run)
         if: github.event_name != 'push'

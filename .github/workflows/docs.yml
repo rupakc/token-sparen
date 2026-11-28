@@ -2,8 +2,8 @@ name: Docs
 
 # Manual re-deploy only. The public site and wiki are published by release.yml (job `docs`,
 # after `finalize`), so they never describe a version that was not released (review C1). This
-# workflow re-publishes an already released version, e.g. to restore the previous release's
-# docs or to ship a docs fix cherry-picked onto a release: run it "from" the tag itself
+# workflow re-publishes the docs of an already released version exactly as its tag holds them
+# (e.g. to restore the previous release's docs after a failed deploy): run it "from" the tag
 # (Actions -> Docs -> Run workflow -> Use workflow from: Tags -> vX.Y.Z) with the same `tag`
 # input. The tag must be an exact vX.Y.Z on main with a published (not draft, not pre-release)
 # GitHub Release, and it passes the same owner-signed verification as a release (verify-tag.yml).

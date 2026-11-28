@@ -44,8 +44,8 @@ job, which runs `.github/workflows/docs-deploy.yml` after `finalize`. So they ne
 version that was not approved, published to PyPI and un-drafted. A patch on an older line, one
 that is not the highest release, does not replace the docs. Nothing else publishes them.
 `.github/workflows/docs.yml` is a manual re-deploy only (`workflow_dispatch`): restore or
-refresh the docs of an already released version (for example a docs fix cherry-picked onto a
-release). Run it **from the tag** (Actions → Docs → Run workflow → *Use workflow from*: Tags →
+re-publish the docs of an already released version exactly as that tag holds them (tags are
+immutable, so a later docs fix reaches the site only with the next release). Run it **from the tag** (Actions → Docs → Run workflow → *Use workflow from*: Tags →
 `vX.Y.Z`) with the input `tag` = `vX.Y.Z`. It refuses unless all of these hold:
 
 - the tag is exactly `vX.Y.Z`;
@@ -131,10 +131,17 @@ release-prep commit → signed tag.**
 5. **Seed `release/claude` (first release only).** The marketplace must never name a missing
    branch, so before the prep commit lands on `main` create `release/claude` from the measured
    plugin tree (the rc tag; its plugin hash is the evidence's). From a clean checkout of `main`,
-   with `<tmp>` a fresh temporary directory:
+   with `<tmp>` a fresh temporary directory, build the tree and **check its hash before
+   pushing anything**:
 
    ```
    python scripts/build_claude_tree.py --ref vX.Y.0-rc1 --out <tmp>/tree
+   python scripts/plugin_hash.py <tmp>/tree    # must print "plugin_hash" of docs/evidence/e4.json
+   ```
+
+   Only if the two hashes are equal, push it as the branch:
+
+   ```
    git init -q <tmp>/seed
    git -C <tmp>/seed --work-tree=<tmp>/tree add --all --force .
    git -C <tmp>/seed -c user.name=<you> -c user.email=<release email> \
@@ -142,13 +149,37 @@ release-prep commit → signed tag.**
    git -C <tmp>/seed push https://github.com/rupakc/token-sparen.git HEAD:refs/heads/release/claude
    ```
 
-   Check that `python scripts/plugin_hash.py <tmp>/tree` prints the hash in
-   `docs/evidence/e4.json`. Until the prep commit lands, nobody installs from this branch (the
-   marketplace on `main` still says `./`). At the release, `push-tree` accepts the seeded branch
-   because it holds the identical plugin under the same version, and adds the release commit on
-   top. Later releases skip this step.
+   Until the prep commit lands, nobody installs from this branch (the marketplace on `main`
+   still says `./`). Step 6 and `release_check --mode tag` fetch the branch and check the seed
+   again: while it holds the release version, its plugin tree, with the version normalised,
+   must equal the tree of the measured commit, which must still build the evidence's hash. At
+   the release, `push-tree` accepts the seeded branch because it holds the identical plugin
+   under the same version, and adds the release commit on top. Later releases skip this step.
+
+   **A wrong seed** (pushed from the wrong ref, so step 6 or `release_check` refuses with
+   "holds X.Y.0 but not the measured plugin"). The ruleset blocks force pushes and deletion,
+   so do not rewrite the branch. Push a corrective fast-forward commit whose tree is the
+   correct plugin tree, then check again:
+
+   ```
+   python scripts/build_claude_tree.py --ref vX.Y.0-rc1 --out <tmp>/fixed
+   python scripts/plugin_hash.py <tmp>/fixed    # must equal the evidence's plugin_hash
+   git init -q <tmp>/fix
+   git -C <tmp>/fix fetch -q https://github.com/rupakc/token-sparen.git refs/heads/release/claude
+   git -C <tmp>/fix --work-tree=<tmp>/fixed add --all --force .
+   git -C <tmp>/fix -c user.name=<you> -c user.email=<release email> \
+     commit-tree "$(git -C <tmp>/fix write-tree)" -p FETCH_HEAD -m "release: reseed vX.Y.0-rc1"
+   git -C <tmp>/fix push https://github.com/rupakc/token-sparen.git <printed commit>:refs/heads/release/claude
+   ```
+
+   `commit-tree` prints the new commit; push exactly that id. The push is a plain fast-forward
+   of the current head, so it needs no force. Then run step 6 again, which fetches and
+   re-verifies the branch. If the wrong seed was already on `main` through a prep commit, the
+   marketplace served it until this fix: note it in the release notes.
 6. **Release prep.** `python scripts/bump_version.py --prepare-release X.Y.0 YYYY-MM-DD`. It
-   refuses until `release/claude` exists on `origin`. It dates the CHANGELOG heading and points
+   refuses until `release/claude` exists on `origin` and, when it holds this version (the
+   seed), until its plugin tree is the measured one (a fresh fetch, the same check as
+   `release_check --mode tag`). It dates the CHANGELOG heading and points
    `.claude-plugin/marketplace.json` at the `release/claude` branch
    (`{"source": "github", "repo": "rupakc/token-sparen", "ref": "release/claude"}`), writing
    both files atomically. Until the first release's prep commit the marketplace entry on `main`
@@ -178,8 +209,7 @@ release-prep commit → signed tag.**
     replace the "not published on PyPI yet" text in `README.md`, `docs/user/install.md` and
     `docs/user/upgrade.md` (and the `pip install .` uninstall lines in `README.md` and
     `docs/user/uninstall.md`) with the PyPI commands, in a `docs:` commit on `main`. The public
-    docs pick it up with the next release, or re-deploy them with `docs.yml` after
-    cherry-picking it onto the release tag's line.
+    docs pick it up with the next release (`docs.yml` only re-deploys a tag's own docs).
 
 Denying `pypi` after `release` leaves the plugin released and the GitHub Release a draft until
 `pypi` is approved or the owner publishes the draft by hand.
