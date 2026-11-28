@@ -13,18 +13,19 @@ or a real campaign (fixed by its first command) and holds one campaign.
 
 | Command | Does |
 |---|---|
-| `prepare toolchain\|templates\|images\|dataset` | checks the toolchain pins and grading venv, the per-arm config templates; pulls the Mini images; fetches the dataset rows |
+| `prepare harness [--ref C] [--replace]` | the pinned, clean harness clone (`<out>/harness`) every real command runs from |
+| `prepare toolchain\|templates\|images\|dataset` | checks the toolchain pins and grading venv, the per-arm config templates; pulls the Mini images (no token); fetches the dataset rows |
 | `preflight [--tasks mini\|pool]` | oracle check: gold patch twice, no-op once, per task (`grading/preflight.json`) |
 | `freeze --stage S --ref TAG` | read-only plugin export; real stages accept only their plain tag (`v0.5.0-screen1`, `v1.0.0-rc1`) |
 | `calibrate` | quota and disk projections for the power step (`calibration.json`) |
-| `run --stage S --campaign ID [--arms a,b] [--model ID] [--wait] [--plan-only] [--dry-run]` | runs or resumes a stage |
+| `run --stage S --campaign ID [--arms a,b] [--model ID] [--wait] [--plan-only] [--evidence-repo P] [--dry-run]` | runs or resumes a stage (confirmation runs need the committed plan hash in `--evidence-repo`) |
 | `quota set --weekly P --five-hour P [--weekly-resets ISO] [--five-hour-resets ISO]` | the owner's `/usage` readings (account-wide) |
 | `invalidate --key ID \| --stage S --since ISO --reason TEXT` | reopens keys (never a graded confirmation run) |
 | `status` | final runs per arm and status, next key, last pause, breaker, last quota readings; no secrets |
 | `grade --stage S`, `analyse --stage S` | grading of final runs; a private analysis |
 | `power` | the confirmation spec and power verdict (`power.json`) |
-| `gate [--release-hash H] [--github-repo OWNER/NAME]` | release gate; advisory without server receipts |
-| `report --stage S [--publish]` | `e4.json`, `report.md`, figures; `--publish` copies them into the repository |
+| `gate [--release-hash H] [--github-repo OWNER/NAME] [--evidence-repo P]` | release gate; advisory without server receipts |
+| `report --stage S [--publish --repo P]` | `e4.json`, `report.md`, figures; `--publish` copies them into the main checkout `P` |
 | `anchors publish` | a manual publication of the confirmation anchors (optional; the scheduler publishes its own heartbeats) |
 
 Exit codes of `run`: `0` complete, `3` weekly stop, `4` five-hour wait, `5` incomplete, `6`
@@ -33,7 +34,9 @@ breaker, `7` auth, `8` token leak, `9` frozen plugin changed, `10` disk floor; `
 
 ## Real campaigns
 
-macOS or Linux only (refused on Windows). Credentials: one dedicated OAuth token in a private
+macOS or Linux only (real workspaces are refused on Windows before anything is written). Real
+`run`, `grade`, `preflight` and `gate` run only from the workspace's pinned harness clone at its
+recorded commit with no uncommitted change; owner commits go to the main checkout. Credentials: one dedicated OAuth token in a private
 file (`--token-file` or `$TOKEN_SPAREN_BENCH_TOKEN_FILE`, mode 0600, owned by the user, not a
 link); `CLAUDE_CODE_OAUTH_TOKEN` in the environment is refused. Quota: the owner's readings
 (`quota set`) are authoritative until calibrated; the account state lives in
@@ -48,7 +51,9 @@ version, a Python, Node, the competitor tools; `toolchain/pins.json` with `claud
 Confirmation: the plan (from `power.json`, the frozen plugin's version and the live-pricing date)
 is recorded in the ledger before any run, and the plan anchor is pushed to the `bench-anchors`
 branch of the repository's `origin` (or `--anchors-remote`) through a private clone in the
-workspace. Then one commit per push after every graded block, a heartbeat every three hours
+workspace (a remote URL with embedded credentials is refused). A failed push leaves its commit
+local; every later publication first pushes each pending commit alone, in order. Then one commit
+per push after every graded block, a heartbeat every three hours
 while running or waiting, and one at the end. `gate` fetches the branch first.
 
 ## Dry run

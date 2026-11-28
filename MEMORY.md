@@ -1823,3 +1823,23 @@ and the two new issues they found.
 - Not built here (Task 13): the toolchain and per-arm template builds; `prepare toolchain` and
   `prepare templates` only check their presence (`toolchain/pins.json` with `claude_code` and
   `arms`, `grade-venv/`, `templates/<arm>/`).
+
+## 2026-11-28 M5 Task 12 fix round 1 (review C1, I1-I3, minors)
+- C1: anchor publication is retry-safe. Each publish fetches, then pushes every local commit the
+  remote lacks, oldest first, one commit per push (`Publisher.push_pending`); the last confirmed
+  push is recorded in `<out>/anchors-pushed.json`; the published text and heartbeat age come
+  from the fetched remote ref; a diverged remote is refused (never force).
+- I1: real `run`/`grade`/`preflight`/`gate` run only from `<out>/harness`, a separate clean
+  clone pinned by `prepare harness` (meta `harness_commit`), with no uncommitted change; owner
+  commits (plan.sha256, the report) go to the main checkout (`--evidence-repo`, `report
+  --publish --repo`). Freezing from the harness fetches exactly the stage tag from origin.
+- I2: `prepare images` uses a token-less Docker backend and needs no preflight; the runbook runs
+  preflight first anyway. I3: `calibrate` records the screening's last run; `power` refuses an
+  older calibration; the runbook re-calibrates after screening.
+- Minors: the idle-gap rule counts graded runs, not starts (a crash after a start must not block
+  a resume; stated in the method). Real workspaces are refused on Windows inside
+  `open_workspace` before any write. Anchors remote: credentialed URLs refused, a conflicting
+  `--anchors-remote` refused, the gate checks the remote is `--github-repo`, git stderr
+  redacted. Token file opened with O_NOFOLLOW and checked by fstat. `docs/evidence/plan.sha256`
+  is checked before the first confirmation run, by the CLI gate and by `bench.anchors
+  verify-release` (`--plan-file`, default that path).

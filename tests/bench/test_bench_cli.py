@@ -21,6 +21,7 @@ import pytest
 from bench import anchors, cli
 from bench import scheduler as sc
 from bench.ledger import Ledger, read_jsonl
+from bench.stages import read_plan
 
 SECRET = "sk-ant-oat01-" + "Z" * 40  # a look-alike, never a real credential
 _FORBIDDEN = ("docker", "claude", "swebench")
@@ -154,6 +155,7 @@ def test_status_prints_no_secret(
     assert "quota" in text and "breaker" in text
 
 
+@pytest.mark.skipif(os.name == "nt", reason="real workspaces are refused on Windows")
 def test_real_run_refuses_untagged_freeze(
     no_real_tools: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -213,6 +215,7 @@ def test_dry_workspace_cannot_publish_or_run_real(
     assert cli.main(argv) == 2
 
 
+@pytest.mark.skipif(os.name == "nt", reason="real workspaces are refused on Windows")
 def test_quota_set_records_an_owner_reading(
     no_real_tools: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -293,3 +296,160 @@ def test_scheduler_stopped_for_a_day_then_resumed_without_runs_passes(
     pubs = anchors.read_published(pub.clone, pub.ref, "ci")
     assert pubs[-1].at - pubs[-2].at > anchors.MAX_GAP_S
     assert anchors.check_published(led, pubs) == []
+
+
+def _real_copy(dry_ws: Path, tmp_path: Path) -> tuple[cli.Workspace, Ledger, cli.VirtualClock]:
+    """A copy of the dry workspace relabelled as real (to reach the real-only checks)."""
+    ws, led, clock = _copy(dry_ws, tmp_path)
+    ws.meta["dry_run"] = False
+    ws.save()
+    return ws, led, clock
+
+
+def test_failed_push_is_retried_one_commit_per_push(
+    dry_ws: Path, no_real_tools: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review C1: a push that failed leaves its commit local; the retry pushes every pending
+    commit alone and in order, so each gets its own server receipt."""
+    ws, led, clock = _copy(dry_ws, tmp_path)
+    pub = cli._publisher(ws, clock)
+    real_git = cli._git
+    pushes: list[str] = []
+    state = {"fail": True}
+
+    def git(cwd: Path, *args: str, **kw: Any) -> str:
+        if args[:1] == ("push",):
+            if state["fail"]:
+                raise cli.CliError("git push failed: offline", cli.EXIT_ANCHORS)
+            pushes.append(args[-1].split(":")[0])
+        return real_git(cwd, *args, **kw)
+
+    monkeypatch.setattr(cli, "_git", git)
+    clock.sleep(3600.0)
+    with pytest.raises(cli.CliError):
+        pub.publish(led, heartbeat=True)  # commit made, push failed
+    clock.sleep(3600.0)
+    with pytest.raises(cli.CliError):
+        pub.publish(led, heartbeat=True)  # the first is retried first and fails again
+    pending = pub.pending()
+    assert len(pending) == 1
+    state["fail"] = False
+    clock.sleep(3600.0)
+    assert pub.publish(led, heartbeat=True)
+    new = pending + [pushes[-1]]
+    assert pushes == new and len(set(pushes)) == len(pushes)  # one commit per push, in order
+    assert pub.pending() == []
+    assert (ws.root / "anchors-pushed.json").is_file()
+    pubs = anchors.read_published(pub.clone, pub.ref, "ci")
+    receipts = [anchors.Receipt(p.commit, float(p.at)) for p in pubs]
+    assert anchors.check_published(led, pubs, receipts) == []
+
+
+def test_plan_only_rerun_pushes_the_unpushed_plan_anchor(
+    dry_ws: Path, no_real_tools: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws, led, clock = _copy(dry_ws, tmp_path)
+    pub = cli._publisher(ws, clock)
+    env = cli._git_env(isolated=True)
+    # a local commit the remote never got (as after a failed --plan-only push)
+    (pub.clone / "anchors").mkdir(exist_ok=True)
+    clock.sleep(60.0)
+    led.append({"kind": "pause", "at": clock(), "reason": "weekly"})
+    anchors.record_anchor(led, at=clock())
+    text = "".join(json.dumps(d, sort_keys=True) + "\n" for d in anchors.anchors_to_publish(led))
+    (pub.clone / anchors.branch_path("ci")).write_text(text, encoding="utf-8")
+    cli._git(pub.clone, "add", "-A", env=env)
+    cli._git(pub.clone, "-c", "commit.gpgSign=false", "commit", "-q", "-m", "x", env=env)
+    assert len(pub.pending()) == 1
+    assert pub.publish(led) is True  # nothing new locally, but the pending commit goes out
+    assert pub.pending() == []
+
+
+def test_harness_must_be_the_pinned_clean_clone(tmp_path: Path) -> None:
+    repo = tmp_path / "h"
+    repo.mkdir()
+    env = cli._git_env(isolated=True)
+    cli._git(repo, "init", "-q", env=env)
+    (repo / "f.txt").write_text("x\n", encoding="utf-8")
+    cli._git(repo, "add", "f.txt", env=env)
+    cli._git(repo, "-c", "commit.gpgSign=false", "commit", "-q", "-m", "c", env=env)
+    head = cli._git(repo, "rev-parse", "HEAD", env=env).strip()
+    assert cli.harness_problem(repo, repo, head) is None
+    assert "prepare harness" in str(cli.harness_problem(repo, repo, None))
+    assert "harness clone" in str(cli.harness_problem(cli.REPO, repo, head))
+    assert "pinned" in str(cli.harness_problem(repo, repo, "0" * 40))
+    (repo / "f.txt").write_text("changed\n", encoding="utf-8")
+    assert "uncommitted" in str(cli.harness_problem(repo, repo, head))
+
+
+def test_anchors_remote_validation(dry_ws: Path, no_real_tools: Path, tmp_path: Path) -> None:
+    with pytest.raises(cli.CliError, match="credentials"):
+        cli.check_remote_url("https://user:secret@github.com/o/r.git")
+    cli.check_remote_url("git@github.com:o/r.git")
+    cli.check_remote_url("https://github.com/o/r.git")
+    assert cli.remote_matches("git@github.com:o/r.git", "o/r")
+    assert cli.remote_matches("https://github.com/o/r", "o/r")
+    assert not cli.remote_matches("https://github.com/o/r2.git", "o/r")
+    ws, _, clock = _real_copy(dry_ws, tmp_path)
+    ws.meta["anchors_remote"] = "https://github.com/o/r.git"
+    with pytest.raises(cli.CliError, match="differs"):
+        cli._publisher(ws, clock, "https://github.com/x/y.git")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX links and modes")
+def test_token_file_link_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    real = tmp_path / "tok"
+    real.write_text(SECRET, encoding="utf-8")
+    os.chmod(real, 0o600)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    with pytest.raises(cli.CliError, match="link"):
+        cli.read_token(link)
+
+
+def test_windows_refuses_real_workspaces_before_writing(
+    dry_ws: Path, no_real_tools: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sc, "_HOST_OS", "nt")
+    for argv in (
+        ["quota", "set", "--weekly", "1", "--five-hour", "1"],
+        ["freeze", "--stage", "screening", "--ref", "v0.5.0-screen1"],
+        ["prepare", "toolchain"],
+        ["anchors", "publish"],
+    ):
+        assert cli.main([*argv, "--out", str(tmp_path / "w")]) == 2, argv
+    assert not (tmp_path / "w").exists()
+    assert cli.main(["status", "--out", str(dry_ws)]) == 0  # a dry workspace is fine
+
+
+def test_power_refuses_a_pre_screening_calibration(
+    dry_ws: Path, no_real_tools: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws, _, _ = _real_copy(dry_ws, tmp_path)
+    assert cli.main(["power", "--out", str(ws.root)]) == 2
+    assert "calibrate" in capsys.readouterr().err
+
+
+def test_plan_hash_must_be_committed(dry_ws: Path, no_real_tools: Path, tmp_path: Path) -> None:
+    ws, led, _ = _real_copy(dry_ws, tmp_path)
+    with pytest.raises(cli.CliError, match="evidence-repo"):
+        cli._check_plan_file(ws, None)
+    main = tmp_path / "main"
+    (main / "docs" / "evidence").mkdir(parents=True)
+    with pytest.raises(cli.CliError, match="missing"):
+        cli._check_plan_file(ws, main)
+    plan = read_plan(led)
+    (main / anchors.PLAN_FILE).write_text("0" * 64 + "\n", encoding="utf-8")
+    with pytest.raises(cli.CliError, match="differs"):
+        cli._check_plan_file(ws, main)
+    (main / anchors.PLAN_FILE).write_text(plan.sha256 + "\n", encoding="utf-8")
+    cli._check_plan_file(ws, main)
+
+
+def test_real_publish_needs_the_main_checkout(
+    dry_ws: Path, no_real_tools: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws, _, _ = _real_copy(dry_ws, tmp_path)
+    with pytest.raises(cli.CliError, match="--repo"):
+        cli.report_step(ws, "screening", publish=True)

@@ -965,9 +965,16 @@ def test_verify_release_against_e4_heads(store: Store, monkeypatch: pytest.Monke
     path = led.path.parent / "e4.json"
     path.write_text(json.dumps(evidence), encoding="utf-8")
     monkeypatch.setattr(anchors, "fetch_receipts", lambda *a, **k: receipts)
+    plan_file = led.path.parent / "plan.sha256"
+    plan_file.write_text(f"{res.plan_sha256}\n", encoding="utf-8")
     argv = ["verify-release", "--evidence", str(path), "--repo", str(repo)]
-    argv += ["--ref", "bench-anchors", "--github-repo", "o/r"]
+    argv += ["--plan-file", str(plan_file), "--ref", "bench-anchors", "--github-repo", "o/r"]
     assert anchors.main(argv) == 0
+    plan_file.write_text("0" * 64 + "\n", encoding="utf-8")  # a different committed plan hash
+    assert anchors.main(argv) == 1
+    plan_file.unlink()
+    assert anchors.main(argv) == 1
+    plan_file.write_text(f"{res.plan_sha256}\n", encoding="utf-8")
     path.write_text(json.dumps(bad), encoding="utf-8")
     assert anchors.main(argv) == 1
     path.write_text(json.dumps({"stage": "screening"}), encoding="utf-8")

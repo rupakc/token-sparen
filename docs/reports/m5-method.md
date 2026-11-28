@@ -90,7 +90,12 @@ public `bench-anchors` branch: the plan's anchor before any run, then one commit
 every graded block (at most four graded runs per publication), a heartbeat at least every four
 hours while the scheduler is alive (waits included), and once at the end. A server-side receipt
 workflow dates every push. Two publications may lie more than 5 h apart only when the later one
-anchors no additional graded run (the scheduler was stopped and nothing ran unanchored). The release
+anchors no additional graded run (the scheduler was stopped and nothing ran unanchored). The rule
+counts graded runs, not run starts: a crash after a start record must not block a legitimate
+resume, and an ungraded run never enters the gate. A failed push is retried later commit by
+commit, so every publication keeps its own receipt. The harness itself runs from a separate
+clean clone pinned at one commit per stage, and the plan hash is also committed in the
+repository before the first confirmation run; the gate and the release job check that file. The release
 job fetches that branch and checks every publication against the final chains with the receipts;
 a local gate has no receipts and is advisory only. The residual risk (records written after the
 last publication of a window) is disclosed in the report.

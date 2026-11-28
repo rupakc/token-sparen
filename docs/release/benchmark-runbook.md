@@ -13,6 +13,25 @@ git work tree and point the CLI at it once per shell:
 export TOKEN_SPAREN_BENCH_OUT="<private folder>/bench-m5"
 ```
 
+## Pinned harness
+
+The bench never runs from your live checkout: each stage ledger pins the harness commit, so a
+pull or an evidence commit there would stop the campaign. Create a separate clean clone of
+the harness commit in the workspace once, from the main checkout, and run every later
+`python -m bench` command from inside it:
+
+```
+cd "<main checkout>"
+python -m bench prepare harness --ref <harness commit>
+cd "$TOKEN_SPAREN_BENCH_OUT/harness"
+```
+
+The real `run`, `grade`, `preflight` and `gate` commands refuse to run anywhere else, refuse
+a harness at another commit, and refuse uncommitted changes in it. Never edit or commit in the
+harness. Commits the runbook asks for (`docs/evidence/plan.sha256`, the published report) go to
+the main checkout. Replace the harness (`prepare harness --ref <commit> --replace`) only between
+stages; a started stage keeps the commit its ledger recorded.
+
 ## Dedicated OAuth token
 
 Use a token made for the benchmark only, never the daily one.
@@ -28,6 +47,9 @@ Use a token made for the benchmark only, never the daily one.
    export TOKEN_SPAREN_BENCH_TOKEN_FILE="<private folder>/bench-secret/token"
    ```
 
+   Use an editor that does not write swap, backup or undo files next to the token (or
+   turn them off for this file), and check afterwards that nothing else appeared in the
+   folder.
 3. Never export `CLAUDE_CODE_OAUTH_TOKEN` in the bench shell: the CLI refuses to run when it is
    set, and it refuses a token file that is a link, not owned by you, or readable by group or
    others. The CLI never prints the token; `python -m bench status` shows progress only.
@@ -75,13 +97,14 @@ authorised only during real campaigns; dry runs use a temporary local repository
 python -m bench prepare dataset
 python -m bench prepare toolchain      # checks toolchain/pins.json and grade-venv
 python -m bench prepare templates      # checks one config template per arm
-python -m bench prepare images         # pulls the Mini images (needs the token file)
 python -m bench preflight --tasks pool # gold twice, no-op once, per task
+python -m bench prepare images         # pulls the Mini images (no token needed)
 python -m bench calibrate --gb-per-image <G> --gb-kept <G> --gb-per-run <G>
 ```
 
 The toolchain and the per-arm templates are built as described in `bench/README.md`; a missing
-piece makes the check commands exit `2` with what is missing.
+piece makes the check commands exit `2` with what is missing. This first calibration only
+serves the screening; it is redone after screening.
 
 ## Screening
 
@@ -100,7 +123,11 @@ piece makes the check commands exit `2` with what is missing.
    changed, `10` disk floor, `2` a refusal, `11` anchor publication failed.
 3. `python -m bench grade --stage screening`, then `analyse --stage screening` and
    `report --stage screening` (private, in the workspace).
-4. `python -m bench power` writes the confirmation spec and verdict and prints the projected
+4. Calibrate again, so that the observed per-run weekly use (from your readings and the
+   screening's run starts) and the screening's retry rate feed the sizing:
+   `python -m bench calibrate --gb-per-image <G> --gb-kept <G> --gb-per-run <G>`. `power`
+   refuses a calibration older than the screening's last run.
+5. `python -m bench power` writes the confirmation spec and verdict and prints the projected
    weeks; decide before going on (an `underpowered` verdict means the owner decides).
 
 ## Live pricing check
@@ -119,14 +146,19 @@ confirmation report without it is never published.
    python -m bench freeze --stage confirmation --ref v1.0.0-rc1
    python -m bench run --stage confirmation --campaign m5 --model <resolved default model id> \
      --price-confirmed-on <YYYY-MM-DD> --plan-only
-   # commit the printed hash as docs/evidence/plan.sha256 in a signed commit, push, then:
+   # in the MAIN checkout (never the harness): write the printed hash to
+   # docs/evidence/plan.sha256, commit it signed, push; then, back in the harness:
    python -m bench run --stage confirmation --campaign m5 --model <resolved default model id> \
-     --price-confirmed-on <YYYY-MM-DD> --wait
+     --price-confirmed-on <YYYY-MM-DD> --evidence-repo "<main checkout>" --wait
    ```
 
    `--plan-only` writes the plan into the ledger, publishes the plan anchor and prints the plan
-   hash without starting a run. The run then publishes after every graded block, every three
-   hours while it runs or waits, and at the end.
+   hash without starting a run; running it again retries a failed anchor push. The run refuses
+   to start until the committed `plan.sha256` equals the recorded plan. It then publishes after
+   every graded block, every three hours while it runs or waits, and at the end; a failed push
+   (exit `11`) is retried by the next invocation, one commit per push. Give exactly the same
+   `--model` and `--price-confirmed-on` on every confirmation invocation: both are pinned in the
+   ledger header, and a different value is refused.
 3. Pauses need no owner action for the anchors. While the scheduler is alive (running or
    waiting with `--wait`) it publishes a heartbeat at least every four hours. When it has
    stopped (a weekly stop, the breaker, a reboot), it publishes nothing. Resuming later is
@@ -139,10 +171,14 @@ confirmation report without it is never published.
 
 ```
 python -m bench grade --stage confirmation
-python -m bench gate --release-hash <plugin hash of the RC> --github-repo <owner>/<name>
+python -m bench gate --github-repo <owner>/<name> --evidence-repo "<main checkout>"
 ```
 
-The gate fetches `bench-anchors` first, runs E2 and reads the push receipts from the GitHub API
+Without `--release-hash` the gate uses the hash of the frozen confirmation plugin (printed by
+`freeze`); give the full hash explicitly only to check another tree, for example
+`python scripts/plugin_hash.py` run on the release tree. The gate checks that the anchors
+remote is `<owner>/<name>` and that the committed `plan.sha256` equals the plan, fetches
+`bench-anchors` first, runs E2 and reads the push receipts from the GitHub API
 (set `GH_TOKEN` to raise the API rate limit). Without `--github-repo` the result is advisory and
 cannot be published. A `failed` gate means no `v1.0` release; `underpowered` means the owner
 decides in `docs/release/gate-decision.toml`.
@@ -150,10 +186,12 @@ decides in `docs/release/gate-decision.toml`.
 ## Publish
 
 ```
-TOKEN_SPAREN_DENYLIST="<private words>" python -m bench report --stage confirmation --publish
+export TOKEN_SPAREN_DENYLIST="$(cat "<private folder>/denylist")"   # a 0600 file, never typed
+python -m bench report --stage confirmation --publish --repo "<main checkout>"
 ```
 
-This writes `docs/evidence/e4.json`, the report and its figures into the repository. Run the
+This writes `docs/evidence/e4.json`, the report and its figures into the main checkout (never
+the harness). Run the
 full battery, commit, push; the release job re-verifies the anchors with server receipts.
 
 ## Token revocation

@@ -53,10 +53,12 @@ from bench import scheduler as sc
 from bench.anchors import (
     ANCHOR_KEYS,
     ANCHORS_BRANCH,
+    PLAN_FILE,
     RUN_CAP,
     AnchorError,
     anchors_to_publish,
     branch_path,
+    check_plan_file,
     current_heads,
     fetch_receipts,
     read_published,
@@ -198,18 +200,23 @@ def read_token(path: Path | None) -> str:
         path = Path(env) if env else None
     if path is None:
         raise CliError(f"a real run needs the token file (--token-file or {TOKEN_FILE_ENV})")
+    # one open without following a link, then every check on that descriptor (no TOCTOU)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        st = path.lstat()
+        fd = os.open(path, flags)
     except OSError as exc:
-        raise CliError("the token file cannot be read") from exc
-    if not stat.S_ISREG(st.st_mode):
-        raise CliError("the token file must be a regular file (not a link)")
-    if os.name == "posix":
-        if st.st_mode & 0o077:
-            raise CliError("the token file must have mode 0600 (no group or other access)")
-        if st.st_uid != os.getuid():
-            raise CliError("the token file must be owned by the current user")
-    token = path.read_text(encoding="utf-8").strip()
+        raise CliError("the token file cannot be opened (missing, unreadable or a link)") from exc
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise CliError("the token file must be a regular file (not a link)")
+        if os.name == "posix":
+            if st.st_mode & 0o077:
+                raise CliError("the token file must have mode 0600 (no group or other access)")
+            if st.st_uid != os.getuid():
+                raise CliError("the token file must be owned by the current user")
+        raw = fh.read(4096)
+    token = raw.decode("utf-8", errors="replace").strip()
     if not token or any(c.isspace() for c in token):
         raise CliError("the token file must hold exactly one token")
     return token
@@ -284,6 +291,13 @@ def open_workspace(args: argparse.Namespace, *, dry_run: bool | None = None) -> 
     out = args.out or os.environ.get(OUT_ENV)
     if not out:
         raise CliError(f"--out DIR (or {OUT_ENV}) is required; there is no default workspace")
+    if sc._HOST_OS == "nt" and dry_run is not True:  # refused before anything is written
+        try:
+            existing = json.loads((Path(out) / "workspace.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            existing = {}
+        if not (isinstance(existing, dict) and existing.get("dry_run") is True):
+            _require_benchmark_host()
     try:
         root = check_workspace(Path(out))
     except IsolationError as exc:
@@ -338,13 +352,84 @@ def _git(cwd: Path, *args: str, env: Mapping[str, str], check: bool = True) -> s
         check=False,
     )
     if check and proc.returncode != 0:
-        raise CliError(f"git {args[0]} failed: {proc.stderr.strip()[:200]}", EXIT_ANCHORS)
+        err = re.sub(r"://[^/@\s]*@", "://***@", proc.stderr.strip())[:200]
+        raise CliError(f"git {args[0]} failed: {err}", EXIT_ANCHORS)
     return proc.stdout
+
+
+def _git_run(cwd: Path, *args: str, env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603
+        ["git", "-C", str(cwd), *args],  # noqa: S607
+        capture_output=True,
+        text=True,
+        env=dict(env),
+        check=False,
+    )
 
 
 def _harness_commit() -> str:
     env = _git_env(isolated=True)
     return _git(REPO, "rev-parse", "HEAD", env=env).strip()
+
+
+HARNESS_DIR = "harness"
+
+
+def harness_problem(repo: Path, harness: Path, commit: object) -> str | None:
+    """Why ``repo`` (the code running) is not the workspace's pinned harness (review I1): it
+    must be the workspace's own clone at the recorded commit with no uncommitted change, so a
+    multi-week campaign never runs from the owner's live checkout (a pull or an evidence
+    commit there would change ``harness_commit`` mid-stage)."""
+    if not isinstance(commit, str) or not (harness / ".git").exists():
+        return "no pinned harness: run `python -m bench prepare harness` first"
+    if repo.resolve() != harness.resolve():
+        return f"run the bench from the workspace's harness clone: cd {harness} first"
+    env = _git_env(isolated=True)
+    head = _git_run(repo, "rev-parse", "HEAD", env=env).stdout.strip()
+    if head != commit:
+        return f"the harness is at {head[:12]}, pinned at {commit[:12]}"
+    dirty = _git_run(repo, "status", "--porcelain", env=env).stdout.strip()
+    if dirty:
+        return "the harness has uncommitted changes; it must stay a clean checkout"
+    return None
+
+
+def _require_harness(ws: Workspace) -> None:
+    if ws.dry_run:
+        return
+    problem = harness_problem(REPO, ws.root / HARNESS_DIR, ws.meta.get("harness_commit"))
+    if problem:
+        raise CliError(problem)
+
+
+def _prepare_harness(ws: Workspace, ref: str, *, replace: bool) -> str:
+    """A separate clean clone of the harness commit in the workspace (review I1); its
+    ``origin`` points where the main checkout's does (anchors, stage tags)."""
+    env = _git_env(isolated=True)
+    proc = _git_run(REPO, "rev-parse", "--verify", f"{ref}^{{commit}}", env=env)
+    if proc.returncode:
+        raise CliError(f"not a commit: {ref!r}")
+    commit = proc.stdout.strip()
+    target = ws.root / HARNESS_DIR
+    if target.exists():
+        if ws.meta.get("harness_commit") == commit:
+            return commit
+        if not replace:
+            raise CliError(
+                f"a harness pinned at {str(ws.meta.get('harness_commit'))[:12]} exists; a stage "
+                "ledger pins its harness commit (pass --replace only between stages)"
+            )
+        shutil.rmtree(target)
+    _git(REPO, "clone", "-q", "--no-checkout", str(REPO), str(target), env=env)
+    _git(target, "checkout", "-q", "--detach", commit, env=env)
+    origin = _git_run(REPO, "remote", "get-url", "origin", env=_git_env(isolated=False))
+    url = origin.stdout.strip()
+    if origin.returncode == 0 and url:
+        check_remote_url(url)
+        _git(target, "remote", "set-url", "origin", url, env=env)
+    ws.meta["harness_commit"] = commit
+    ws.save()
+    return commit
 
 
 class Publisher:
@@ -396,20 +481,64 @@ class Publisher:
         return self.clone / branch_path(campaign)
 
     def published_text(self, campaign: str) -> str:
-        path = self._path(campaign)
-        return path.read_text(encoding="utf-8") if path.is_file() else ""
+        """The anchors file as the remote has it (the fetched ref, never the local clone)."""
+        proc = _git_run(self.clone, "show", f"{self.ref}:{branch_path(campaign)}", env=self._env())
+        return proc.stdout if proc.returncode == 0 else ""
 
     def last_published(self, campaign: str) -> float | None:
+        """Commit time of the remote's last publication of the campaign's anchors."""
         out = _git(
-            self.clone, "log", "-1", "--format=%ct", "--", branch_path(campaign), env=self._env()
+            self.clone,
+            "log",
+            "-1",
+            "--format=%ct",
+            self.ref,
+            "--",
+            branch_path(campaign),
+            env=self._env(),
         ).strip()
         return float(out) if out else None
 
+    def pending(self) -> list[str]:
+        """Local anchor commits the remote does not have yet, oldest first."""
+        out = _git(self.clone, "rev-list", "--reverse", f"{self.ref}..HEAD", env=self._env())
+        return out.split()
+
+    def push_pending(self) -> int:
+        """Retry-safe publication (review C1): push every local commit the remote lacks, in
+        order, ONE commit per push (each gets its own server receipt); the last confirmed
+        push is recorded in ``anchors-pushed.json``. A diverged remote is refused."""
+        env = self._env()
+        if _git_run(
+            self.clone, "merge-base", "--is-ancestor", self.ref, "HEAD", env=env
+        ).returncode:
+            if _git_run(
+                self.clone, "merge-base", "--is-ancestor", "HEAD", self.ref, env=env
+            ).returncode:
+                raise CliError(
+                    f"the local anchors clone and {self.ref} diverged: inspect "
+                    f"{self.clone} (never force-push)",
+                    EXIT_ANCHORS,
+                )
+            _git(self.clone, "checkout", "-q", "-B", ANCHORS_BRANCH, self.ref, env=env)
+            return 0
+        pushed = 0
+        for sha in self.pending():
+            _git(self.clone, "push", "-q", "origin", f"{sha}:refs/heads/{ANCHORS_BRANCH}", env=env)
+            _git(self.clone, "update-ref", f"refs/remotes/{self.ref}", sha, env=env)
+            _write_json(self.ws.root / "anchors-pushed.json", {"commit": sha})
+            pushed += 1
+        return pushed
+
     def publish(self, ledger: Ledger, *, heartbeat: bool = False) -> bool:
-        """Publish if anything changed (or ``heartbeat``); True when a commit was pushed."""
+        """Push what earlier attempts left un-pushed, then publish if anything changed (or
+        ``heartbeat``); True when at least one commit was pushed."""
         campaign = ledger.campaign
         if not (self.clone / ".git").is_dir():
             self.ensure_clone()
+        else:
+            self.fetch()
+        retried = self.push_pending() > 0
         published = self.published_text(campaign)
         local = anchors_to_publish(ledger)
         if not local:
@@ -422,7 +551,7 @@ class Publisher:
                 local = anchors_to_publish(ledger)
         text = "".join(json.dumps(d, sort_keys=True) + "\n" for d in local)
         if text == published:
-            return False
+            return retried
         target = self._path(campaign)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8", newline="\n")
@@ -430,7 +559,7 @@ class Publisher:
         _git(self.clone, "add", "--", branch_path(campaign), env=env)
         msg = f"anchors: {campaign} ({len(local)} anchors)"
         _git(self.clone, "-c", "commit.gpgSign=false", "commit", "-q", "-m", msg, env=env)
-        _git(self.clone, "push", "-q", "origin", f"HEAD:refs/heads/{ANCHORS_BRANCH}", env=env)
+        self.push_pending()  # exactly this commit; on failure it is retried next time, alone
         return True
 
     def beat(self, ledger: Ledger) -> None:
@@ -461,13 +590,34 @@ def _dry_remote(ws: Workspace) -> str:
 def _publisher(ws: Workspace, clock: Callable[[], float], remote: str | None = None) -> Publisher:
     if ws.dry_run:
         return Publisher(ws, _dry_remote(ws), isolated=True, clock=clock)
-    url = ws.meta.get("anchors_remote") or remote
+    stored = ws.meta.get("anchors_remote")
+    if stored is not None and remote is not None and remote != stored:
+        raise CliError(f"this workspace publishes anchors to {stored}; --anchors-remote differs")
+    url = stored or remote
     if not url:
         url = _git(REPO, "remote", "get-url", "origin", env=_git_env(isolated=False)).strip()
-    if ws.meta.get("anchors_remote") is None:
+    check_remote_url(str(url))
+    if stored is None:
         ws.meta["anchors_remote"] = url
         ws.save()
     return Publisher(ws, str(url), isolated=False, clock=clock)
+
+
+_USERINFO = re.compile(r"^[a-z][a-z0-9+.-]*://[^/@]*@", re.I)
+
+
+def check_remote_url(url: str) -> None:
+    """Refuse an anchors remote with embedded credentials (an ``https://user:token@`` URL
+    would be stored in workspace.json and could echo in git errors); ssh's ``git@host:`` is
+    fine."""
+    if _USERINFO.match(url):
+        raise CliError("the anchors remote URL carries credentials: use a credential helper or ssh")
+
+
+def remote_matches(url: str, github_repo: str) -> bool:
+    """True when ``url`` names the GitHub repository ``OWNER/NAME``."""
+    pat = rf"github\.com[:/]{re.escape(github_repo)}(?:\.git)?/?$"
+    return re.search(pat, url, re.I) is not None
 
 
 # --------------------------------------------------------------------------- dry-run parts
@@ -694,6 +844,19 @@ def _freeze_stage(ws: Workspace, stage: str, ref: str) -> dict[str, Any]:
             raise CliError(f"{stage} is already frozen at {doc.get('ref')!r}")
         _load_frozen(ws, stage)  # verified
         return doc
+    if not ws.dry_run:  # the pinned harness clone may predate the tag: fetch exactly that tag
+        tag = ref.removeprefix("refs/tags/")
+        env = _git_env(isolated=False)
+        if _git_run(REPO, "rev-parse", "-q", "--verify", f"refs/tags/{tag}", env=env).returncode:
+            _git(
+                REPO,
+                "fetch",
+                "-q",
+                "--no-tags",
+                "origin",
+                f"refs/tags/{tag}:refs/tags/{tag}",
+                env=env,
+            )
     try:
         frozen = freeze(REPO, ref, dest, dry_run=ws.dry_run)
     except FreezeError as exc:
@@ -760,6 +923,19 @@ def _confirmation_plan(ws: Workspace, model: str) -> ConfirmationPlan:
     )
 
 
+def _stage_ledger(ws: Workspace, stage: str, header: Mapping[str, Any]) -> Ledger:
+    try:
+        return Ledger(ws.ledger_path(stage), header=header)
+    except LedgerError as exc:
+        hint = ""
+        if "harness_commit" in str(exc):
+            hint = (
+                " (the stage was started from another harness commit: run it from the "
+                "workspace's pinned harness clone, never the live checkout)"
+            )
+        raise CliError(f"{exc}{hint}") from exc
+
+
 def _run_stage(
     ws: Workspace,
     stage: str,
@@ -809,7 +985,7 @@ def _run_stage(
         if len(cplan.spec.arms) * len(cplan.spec.seeds) > RUN_CAP:
             raise CliError(f"a confirmation block may hold at most {RUN_CAP} runs per anchor")
         ws.stage_dir(stage).mkdir(parents=True, exist_ok=True, mode=0o700)
-        ledger = Ledger(ws.ledger_path(stage), header=header)
+        ledger = _stage_ledger(ws, stage, header)
         write_plan(
             ledger,
             cplan,
@@ -828,7 +1004,7 @@ def _run_stage(
     if not task_ids:
         raise CliError(f"no {stage} task passed the preflight")
     ws.stage_dir(stage).mkdir(parents=True, exist_ok=True, mode=0o700)
-    ledger = Ledger(ws.ledger_path(stage), header=header)
+    ledger = _stage_ledger(ws, stage, header)
     tasks = [rig.tasks[i] for i in task_ids]
     keys = sc.plan_order(
         streams(tasks), arms, seeds, campaign=ws.campaign, stage=stage, shuffle_seed=SHUFFLE_SEED
@@ -959,6 +1135,12 @@ def power_step(ws: Workspace) -> dict[str, Any]:
         ok = preflight_ok(ws.grading)
         pool = [t for t in load_pool() if t.instance_id in ok]
         kw = {}
+        cal = _read_json(ws.root / "calibration.json", "calibration")
+        if cal.get("screening_last_end") != _last_end(ws, "screening"):
+            raise CliError(  # review I3: size from the screening's observed usage and retries
+                "calibration.json predates the screening's last run: run `python -m bench "
+                "calibrate` again after screening, then `power`"
+            )
     quota, disk = _calibration(ws)
     try:
         cp = plan_confirmation(
@@ -995,6 +1177,30 @@ def power_step(ws: Workspace) -> dict[str, Any]:
 # --------------------------------------------------------------------------- gate / report
 
 
+def _check_plan_file(ws: Workspace, evidence_repo: Path | None) -> None:
+    """The plan hash committed in the main checkout (``docs/evidence/plan.sha256``) must equal
+    the recorded plan's before any confirmation run and at the gate (review M6)."""
+    if evidence_repo is None:
+        raise CliError(
+            "--evidence-repo PATH (the main checkout holding docs/evidence/plan.sha256) is "
+            "required: commit the plan hash printed by `run --plan-only` there first"
+        )
+    try:
+        plan = read_plan(ws.ledger("confirmation"))
+    except PlanError as exc:
+        raise CliError(f"confirmation plan: {exc} (run --plan-only first)") from exc
+    problems = check_plan_file(evidence_repo / PLAN_FILE, plan.sha256)
+    if problems:
+        raise CliError(f"{problems[0][1]}: commit {plan.sha256} there (signed) first")
+
+
+def _last_end(ws: Workspace, stage: str) -> float | None:
+    if not ws.ledger_path(stage).is_file():
+        return None
+    ats = [float(r.get("at", 0.0)) for r in ws.ledger(stage).iter_kind("end")]
+    return max(ats) if ats else None
+
+
 def _e2_ok() -> bool:
     proc = subprocess.run(  # noqa: S603
         [sys.executable, str(REPO / "evals" / "e2" / "run.py"), "--strict"],
@@ -1024,18 +1230,28 @@ def _gate_doc(res: GateResult, receipts: str) -> dict[str, Any]:
 
 
 def gate_step(
-    ws: Workspace, *, release_hash: str | None, github_repo: str | None
+    ws: Workspace,
+    *,
+    release_hash: str | None,
+    github_repo: str | None,
+    evidence_repo: Path | None = None,
 ) -> tuple[GateResult, dict[str, Any]]:
     """The release gate on the confirmation ledger, after fetching ``bench-anchors``. With
     ``github_repo`` the push receipts come from the GitHub API (``GH_TOKEN`` if set; what CI
-    does) and the result is authoritative; without, it is advisory. A dry run prints the
-    advisory gate, then gates again with receipts simulated from its temporary remote (the
-    fake server), which is the stored result."""
+    does) and the result is authoritative; without, it is advisory. A real gate also checks
+    the committed plan hash (``--evidence-repo``) and that the anchors remote is
+    ``github_repo``. A dry run prints the advisory gate, then gates again with receipts
+    simulated from its temporary remote (the fake server), which is the stored result."""
     ledger = ws.ledger("confirmation")
     _, frec = _load_frozen(ws, "confirmation")
     rhash = release_hash or str(frec["plugin_hash"])
     clock: Callable[[], float] = time.time
     pub = _publisher(ws, clock)
+    if not ws.dry_run:
+        _require_harness(ws)
+        _check_plan_file(ws, evidence_repo)
+        if github_repo and not remote_matches(pub.remote, github_repo):
+            raise CliError(f"the anchors remote is not github.com/{github_repo}")
     if not (pub.clone / ".git").is_dir():
         pub.ensure_clone()
     pub.fetch()
@@ -1107,7 +1323,7 @@ def _stored_gate(ws: Workspace, ledger: Ledger) -> StoredGate:
     )
 
 
-def report_step(ws: Workspace, stage: str, *, publish: bool) -> Path:
+def report_step(ws: Workspace, stage: str, *, publish: bool, repo: Path | None = None) -> Path:
     if publish and ws.dry_run:
         raise CliError("a dry run never publishes (synthetic tasks, small bootstrap)")
     ledger = ws.ledger(stage)
@@ -1140,9 +1356,11 @@ def report_step(ws: Workspace, stage: str, *, publish: bool) -> Path:
     )
     print(f"{stage} report written ({len(list(built.rglob('*')))} files, private)")
     if publish:
-        written = publish_report(built, REPO)
+        if repo is None or repo.resolve() == (ws.root / HARNESS_DIR).resolve():
+            raise CliError("--publish needs --repo PATH: the main checkout (never the harness)")
+        written = publish_report(built, repo)
         for path in written:
-            print(f"published {path.relative_to(REPO).as_posix()}")
+            print(f"published {path.relative_to(repo).as_posix()}")
     return built
 
 
@@ -1204,14 +1422,19 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         print(f"prepare {what}: nothing to do in a dry run")
         return 0
     _require_benchmark_host()
+    if what == "harness":
+        commit = _prepare_harness(ws, args.ref, replace=args.replace)
+        print(f"harness pinned at {commit[:12]}: run the bench from {ws.root / HARNESS_DIR}")
+        return 0
     if what == "dataset":
         from bench.data.fetch_pool import cmd_dataset
 
         return cmd_dataset(ws.root)
-    if what == "images":
-        rig = _real_rig(ws, args.token_file)
-        for task in [t for t in rig.tasks.values() if t.mini]:
-            rig.backend.ensure_image(task.image)
+    if what == "images":  # no token, no preflight needed (review I2)
+        environ = {k: v for k, v in os.environ.items() if k != TOKEN_ENV}
+        backend = DockerBackend(ws.root / "toolchain", ws.root / "templates", environ=environ)
+        for task in [t for t in load_pool() if t.mini]:
+            backend.ensure_image(task.image)
         print("Mini images present")
         return 0
     if what == "toolchain":
@@ -1235,6 +1458,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         _dry_preflight(ws)
     else:
         _require_benchmark_host()
+        _require_harness(ws)
         grader = _real_grader(ws)
         rows = load_dataset_rows(ws.root)
         ids = {t.instance_id for t in load_pool() if args.tasks == "pool" or t.mini}
@@ -1272,6 +1496,7 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
             ends = sum(1 for _ in led.iter_kind("end"))
             finals = len(led.finals(stage="screening"))
             retry = max(0.0, ends / finals - 1) if finals else 0.0
+    last_end = _last_end(ws, "screening")
     disk = [args.gb_per_image, args.gb_kept, args.gb_per_run]
     if any(v is None for v in disk):
         raise CliError("calibrate needs --gb-per-image, --gb-kept and --gb-per-run (no zero)")
@@ -1288,6 +1513,7 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
             "gb_per_run": args.gb_per_run,
         },
         "at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+        "screening_last_end": last_end,  # power refuses a calibration older than screening
     }
     _write_json(ws.root / "calibration.json", doc)
     _calibration(ws)  # validated
@@ -1307,6 +1533,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     ws.bind_campaign(args.campaign)
     if not dry:
         _load_frozen(ws, args.stage)  # refuse before any token or Docker use
+        _require_harness(ws)
+        if args.stage == "confirmation" and not args.plan_only:
+            _check_plan_file(ws, args.evidence_repo)
         rig = _real_rig(ws, args.token_file)
         return _run_stage(
             ws,
@@ -1416,6 +1645,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_grade(args: argparse.Namespace) -> int:
     ws = open_workspace(args)
     grader: Grader = DryGrader() if ws.dry_run else _real_grader(ws)
+    _require_harness(ws)
     _grade(ws, args.stage, grader)
     print(f"{args.stage}: graded")
     return 0
@@ -1439,7 +1669,12 @@ def cmd_power(args: argparse.Namespace) -> int:
 
 def cmd_gate(args: argparse.Namespace) -> int:
     ws = open_workspace(args)
-    res, _ = gate_step(ws, release_hash=args.release_hash, github_repo=args.github_repo)
+    res, _ = gate_step(
+        ws,
+        release_hash=args.release_hash,
+        github_repo=args.github_repo,
+        evidence_repo=args.evidence_repo,
+    )
     if ws.dry_run or res.verdict != "failed":
         return 0
     return 1
@@ -1447,7 +1682,7 @@ def cmd_gate(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     ws = open_workspace(args)
-    report_step(ws, args.stage, publish=args.publish)
+    report_step(ws, args.stage, publish=args.publish, repo=args.repo)
     return 0
 
 
@@ -1473,7 +1708,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("prepare", parents=[common], help="check or fetch the prerequisites")
-    p.add_argument("what", choices=("toolchain", "templates", "images", "dataset"))
+    p.add_argument("what", choices=("harness", "toolchain", "templates", "images", "dataset"))
+    p.add_argument("--ref", default="HEAD", help="harness: the commit to pin (default HEAD)")
+    p.add_argument("--replace", action="store_true", help="harness: replace (between stages)")
     p.set_defaults(fn=cmd_prepare)
 
     p = sub.add_parser("preflight", parents=[common], help="oracle check of the gold patches")
@@ -1499,6 +1736,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", help="the resolved model id the stage pins")
     p.add_argument("--price-confirmed-on", help="date of the live-pricing check (confirmation)")
     p.add_argument("--anchors-remote", help="the anchors remote (default: the repo's origin)")
+    p.add_argument("--evidence-repo", type=Path, help="the main checkout (plan.sha256)")
     p.add_argument("--wait", action="store_true", help="sleep through five-hour waits")
     p.add_argument(
         "--plan-only", action="store_true", help="confirmation: record and anchor the plan only"
@@ -1539,11 +1777,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("gate", parents=[common], help="the release gate (confirmation)")
     p.add_argument("--release-hash")
     p.add_argument("--github-repo", help="OWNER/NAME: fetch server receipts (authoritative)")
+    p.add_argument("--evidence-repo", type=Path, help="the main checkout (plan.sha256)")
     p.set_defaults(fn=cmd_gate)
 
     p = sub.add_parser("report", parents=[common], help="e4.json, report and figures")
     p.add_argument("--stage", type=_stage_arg, required=True)
     p.add_argument("--publish", action="store_true")
+    p.add_argument("--repo", type=Path, help="--publish: the main checkout to write into")
     p.set_defaults(fn=cmd_report)
 
     p = sub.add_parser("anchors", parents=[common], help="publish the confirmation anchors")
