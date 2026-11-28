@@ -443,6 +443,9 @@ def write_plan(
     if any(r.get("kind") == "start" for r in records):
         raise PlanError("runs already started: the plan must precede the first start")
     ledger.append({"kind": PLAN_KIND, "plan": doc, "plan_sha256": digest})
+    from bench.anchors import record_anchor  # anchors imports grade, which imports ledger
+
+    record_anchor(ledger)  # the plan anchor: the CLI publishes it before the first run
     return read_plan(ledger)
 
 

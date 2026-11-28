@@ -20,6 +20,12 @@ push to that branch, and its runs' ``head_sha`` and ``created_at`` (GitHub API,
 `fetch_receipts`) date each publication (`verify_release`, ``python -m bench.anchors
 verify-release``). Without receipts the local gate is advisory only.
 
+Coverage (re-review N8): the first publication anchors the plan before any run (its last
+anchor ends at the plan record: zero starts, the plan hash), and each later publication adds
+at most `RUN_CAP` (the per-window run cap) graded runs; with gaps of at most five hours this
+spreads the publications over the whole campaign. Task 12's CLI pushes ONE commit per push
+(a receipt names only the pushed tip).
+
 Residual (disclosed in e4.json as ``anchor_window_operator_trust``): records written after the
 last published anchor could still be rewritten by the operator before the next publication.
 """
@@ -45,6 +51,7 @@ from bench.grade import grades_path
 from bench.ledger import (
     CHAIN_FIELD,
     GENESIS,
+    GRADED,
     PROTECTED_STAGE,
     Ledger,
     LedgerError,
@@ -53,12 +60,24 @@ from bench.ledger import (
     read_jsonl,
     record_sha256,
 )
+from bench.quota import QuotaPolicy
 from token_sparen.store.jsonstore import locked
 
 ANCHORS_FILE = "anchors.jsonl"
 ANCHOR_KIND = "anchor"
 LOCK_TIMEOUT_S = 30.0
-ANCHOR_KEYS = ("ledger_count", "ledger_head", "grades_count", "grades_head")
+ANCHOR_KEYS = (
+    "ledger_count",
+    "ledger_head",
+    "grades_count",
+    "grades_head",
+    "runs_started",  # confirmation starts in the anchored ledger prefix
+    "graded_runs",  # confirmation ends with a graded status in it
+    "plan_sha256",  # the recorded plan's hash (None before the plan)
+)
+# re-review N8: at most this many graded runs between consecutive publications (the per-window
+# run cap of the quota policy), and the first publication anchors the plan before any run
+RUN_CAP = QuotaPolicy().max_runs_per_window
 
 
 def anchors_path(ledger: Ledger) -> Path:
@@ -77,14 +96,43 @@ def prefix_heads(records: Sequence[Mapping[str, Any]], *, genesis: str) -> list[
     return heads
 
 
+def _is_run(rec: Mapping[str, Any], kind: str) -> bool:
+    key = rec.get("key")
+    return (
+        rec.get("kind") == kind
+        and isinstance(key, str)
+        and key.split("/")[1:2] == [PROTECTED_STAGE]
+        and (kind == "start" or rec.get("status") in GRADED)
+    )
+
+
+def prefix_counts(
+    records: Sequence[Mapping[str, Any]],
+) -> tuple[list[int], list[int], list[str | None]]:
+    """Per prefix length ``i``: confirmation starts, graded ends, and the plan hash so far."""
+    started, graded = [0], [0]
+    plan: list[str | None] = [None]
+    for rec in records:
+        started.append(started[-1] + _is_run(rec, "start"))
+        graded.append(graded[-1] + _is_run(rec, "end"))
+        sha = rec.get("plan_sha256") if rec.get("kind") == "plan" else None
+        plan.append(plan[-1] if sha is None else str(sha))
+    return started, graded, plan
+
+
 def current_heads(ledger: Ledger) -> dict[str, Any]:
     """Counts and verified heads of the ledger and grades chains (`LedgerError` on a break)."""
     grades = _grade_records(ledger)
+    records = ledger.records()
+    started, graded, plan = prefix_counts(records)
     return {
-        "ledger_count": len(ledger.records()),
+        "ledger_count": len(records),
         "ledger_head": ledger.chain_head(),
         "grades_count": len(grades),
         "grades_head": chain_head(grades, genesis=GENESIS),
+        "runs_started": started[-1],
+        "graded_runs": graded[-1],
+        "plan_sha256": plan[-1],
     }
 
 
@@ -124,8 +172,10 @@ def verify_anchors(ledger: Ledger, anchors: Sequence[Mapping[str, Any]]) -> list
         chain_head(list(anchors), genesis=GENESIS)
     except LedgerError as exc:
         problems.append(f"published anchors: {exc}")
-    ledger_heads = prefix_heads(ledger.records(), genesis=record_sha256(ledger.header))
+    records = ledger.records()
+    ledger_heads = prefix_heads(records, genesis=record_sha256(ledger.header))
     grade_heads = prefix_heads(_grade_records(ledger), genesis=GENESIS)
+    counts = prefix_counts(records)
     for i, a in enumerate(anchors):
         if any(k not in a for k in ANCHOR_KEYS) or a.get("campaign") != ledger.campaign:
             problems.append(f"anchor {i + 1}: malformed or of another campaign")
@@ -136,6 +186,11 @@ def verify_anchors(ledger: Ledger, anchors: Sequence[Mapping[str, Any]]) -> list
                 problems.append(f"anchor {i + 1}: the {name} is shorter than anchored")
             elif heads[count] != a[f"{name}_head"]:
                 problems.append(f"anchor {i + 1}: the {name} differs from its anchored prefix")
+        n = a["ledger_count"]
+        if isinstance(n, int) and 0 <= n < len(ledger_heads):
+            expect = (counts[0][n], counts[1][n], counts[2][n])
+            if expect != (a["runs_started"], a["graded_runs"], a["plan_sha256"]):
+                problems.append(f"anchor {i + 1}: its run counts or plan differ from the ledger")
     return problems
 
 
@@ -279,7 +334,23 @@ def check_history(
         if when[1] - when[0] > MAX_GAP_S:
             gap = (when[1] - when[0]) / 3600
             problems.append(("anchor_gap", f"{gap:.1f} h before publication {b.commit[:12]}"))
-    return problems
+    return problems + _coverage(pubs)
+
+
+def _coverage(pubs: Sequence[Publication]) -> list[tuple[str, str]]:
+    """Re-review N8: the first publication anchors the plan before any run (zero starts, a
+    plan hash), and each later one adds at most `RUN_CAP` graded runs."""
+    out: list[tuple[str, str]] = []
+    head = pubs[0].anchors[-1] if pubs[0].anchors else {}
+    if head.get("runs_started") != 0 or head.get("graded_runs") != 0 or not head.get("plan_sha256"):
+        out.append(("anchor_first_not_plan", "the first publication is not the plan before runs"))
+    for a, b in itertools.pairwise(pubs):
+        before, after = a.anchors[-1].get("graded_runs"), b.anchors[-1].get("graded_runs")
+        if not isinstance(before, int) or not isinstance(after, int) or after - before > RUN_CAP:
+            out.append(
+                ("anchor_too_many_runs", f"{b.commit[:12]} adds more than {RUN_CAP} graded runs")
+            )
+    return out
 
 
 def check_published(
@@ -298,6 +369,11 @@ def check_published(
         return [*problems, ("anchor_not_on_chain", str(exc))]
     if any(final[-1].get(k) != heads[k] for k in ANCHOR_KEYS):
         problems.append(("anchor_not_final", "the last published anchor is not the final heads"))
+    first = pubs[0].anchors[-1] if pubs[0].anchors else {}
+    n = first.get("ledger_count")
+    records = ledger.records()
+    if not isinstance(n, int) or not 0 < n <= len(records) or records[n - 1].get("kind") != "plan":
+        problems.append(("anchor_first_not_plan", "the first publication does not end at the plan"))
     return problems
 
 
@@ -319,6 +395,8 @@ def verify_release(
     for field, key in (("ledger_chain_head", "ledger_head"), ("grades_chain_head", "grades_head")):
         if gate.get(field) is None or gate.get(field) != last.get(key):
             problems.append(("anchor_not_final", f"e4.json gate.{field} is not the last anchor"))
+    if pubs[0].anchors and pubs[0].anchors[-1].get("plan_sha256") != gate.get("plan_sha256"):
+        problems.append(("anchor_first_not_plan", "the first publication is not e4.json's plan"))
     return problems
 
 

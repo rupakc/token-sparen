@@ -1025,7 +1025,9 @@ def test_confirmation_runs_carry_the_plan_hash(tmp_path: Path) -> None:
     from bench import anchors
 
     published = anchors.anchors_to_publish(led)
-    assert len(published) == len(TASKS) and anchors.verify_anchors(led, published) == []
+    assert len(published) == 1 + len(TASKS)  # the plan anchor, then one per graded task
+    assert published[0]["runs_started"] == 0 and published[-1]["graded_runs"] == 8
+    assert anchors.verify_anchors(led, published) == []
     outside = [replace(keys[0], arm="c")]
     with pytest.raises(stages.PlanError, match="not in the recorded"):
         _run(tmp_path, ScriptBackend(), outside, led, account=acct)

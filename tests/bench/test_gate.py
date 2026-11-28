@@ -153,12 +153,18 @@ def persist(
             if e.cause == "harness_error":
                 grade(key, None)
     last: dict[str, Any] = (led.records() or [led.header])[-1]
+    graded = 0
     with led.path.open("a", encoding="utf-8") as fh:
         for rec in records:
             if stage == "confirmation":
                 rec[CHAIN_FIELD] = record_sha256(last)
             fh.write(json.dumps(rec, sort_keys=True) + "\n")
             last = rec
+            graded += rec["kind"] == "end" and rec.get("status") in ("ok", "agent_fail")
+            if early and graded == anchors.RUN_CAP:  # the scheduler anchors after each task
+                fh.flush()
+                anchors.record_anchor(Ledger(led.path))
+                graded = 0
     gr._append(grades_path(led), grades)
     led = Ledger(led.path)
     if plan_after_runs:  # what a direct `Ledger.append` could do, bypassing `write_plan`
@@ -214,13 +220,26 @@ def publish(led: Ledger, at: int, *, records: list[dict[str, Any]] | None = None
     return repo
 
 
+def publish_all(led: Ledger, start: int, *, step: int = 600) -> Path:
+    """An honest publisher: one commit (one push) per local anchor not yet published, at
+    ``start``, ``start + step``, ..."""
+    repo = led.path.parent / "anchors-repo"
+    done = 0
+    if repo.exists():
+        done = len(anchors.read_published(repo, "bench-anchors", led.campaign)[-1].anchors)
+    local = anchors.anchors_to_publish(led)
+    for i in range(done, len(local)):
+        publish(led, start + (i - done) * step, records=local[: i + 1])
+    return repo
+
+
 def _gate(*, ledger: Ledger, **kw: Any) -> g.GateResult:
-    """The gate after an honest final publication (anchor of the final heads, committed)."""
+    """The gate after honest publications (each anchor, then one of the final heads)."""
     try:
         anchors.record_anchor(ledger)
     except LedgerError:
         pass  # a broken chain: the gate's own chain check decides
-    repo = publish(ledger, T0)
+    repo = publish_all(ledger, T0)
     return g.gate(ledger=ledger, repo=repo, anchors_ref="bench-anchors", **kw)
 
 
@@ -236,6 +255,20 @@ def raw_append(led: Ledger, rec: dict[str, Any], *, chain: bool = True) -> None:
         rec = rec | {CHAIN_FIELD: record_sha256(records[-1] if records else led.header)}
     with led.path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, sort_keys=True) + "\n")
+
+
+@pytest.fixture
+def real_cap() -> None:
+    """Keep the real per-publication run cap (see `_cap`)."""
+
+
+@pytest.fixture(autouse=True)
+def _cap(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Scenario tests (100-task campaigns) would need one publication per four graded runs;
+    they lift the cap so a campaign anchors at its plan and at its end. The coverage tests
+    (small campaigns) request `real_cap`."""
+    if "real_cap" not in request.fixturenames:
+        monkeypatch.setattr(anchors, "RUN_CAP", 10**6)
 
 
 @pytest.fixture
@@ -589,7 +622,8 @@ def test_grade_must_match_the_final_patch(store: Store) -> None:
     first = json.loads(lines[0])
     path.write_text("", encoding="utf-8")
     gr._append(path, [first | {"patch_sha256": "0" * 64}] + [json.loads(x) for x in lines[1:]])
-    anchors.anchors_path(led2).unlink()  # anchored after the rewrite: the patch check decides
+    apath = anchors.anchors_path(led2)  # anchored after the rewrite: the patch check decides
+    apath.write_text(apath.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
     anchors.record_anchor(led2)
     with pytest.raises(g.GateRefused, match="patch"):
         _gate(ledger=led2, **KW)
@@ -671,8 +705,8 @@ def test_truncate_both_and_rerun_is_refused_by_anchors(store: Store) -> None:
     chains. An anchor published before the truncation refuses it."""
     led = store(_harmed_last())
     published = anchors.anchors_to_publish(led)
-    assert len(published) == 1 and published[0]["ledger_count"] == len(led.records())
-    repo = publish(led, T0)  # pushed before the truncation
+    assert len(published) == 2 and published[-1]["ledger_count"] == len(led.records())
+    repo = publish_all(led, T0)  # pushed before the truncation
     rerun = _truncate_and_rerun(led, HARMED)
     anchors.record_anchor(rerun)  # the operator anchors the rewritten state too
     publish(rerun, T0 + H)
@@ -690,7 +724,7 @@ def test_gate_reads_every_published_anchor(store: Store) -> None:
     publications from git. Anchors after the plan and at the end; truncation and re-run; only
     the first anchor was passed before."""
     led = store(_harmed_last())  # anchor 1: the full honest campaign
-    repo = publish(led, T0)
+    repo = publish_all(led, T0)
     rerun = _truncate_and_rerun(led, HARMED)
     # the operator resets the local anchors file to the first anchor's prefix and republishes
     # only that (a force-push is outside this check; the branch keeps the full history here)
@@ -704,7 +738,7 @@ def test_gate_reads_every_published_anchor(store: Store) -> None:
 
 def test_gate_happy_path_with_publications_within_five_hours(store: Store) -> None:
     led = store(_confirm())
-    repo = publish(led, T0)
+    repo = publish_all(led, T0)
     led.append({"kind": "pause", "reason": "weekly"})
     anchors.record_anchor(led)
     publish(led, T0 + 4 * H)
@@ -717,7 +751,7 @@ def test_gate_happy_path_with_publications_within_five_hours(store: Store) -> No
 
 def test_gate_refuses_missing_final_anchor(store: Store) -> None:
     led = store(_confirm())
-    repo = publish(led, T0)
+    repo = publish_all(led, T0)
     led.append({"kind": "pause", "reason": "weekly"})  # never anchored and published
     with pytest.raises(g.GateRefused) as err:
         g.gate(ledger=led, **_ref(repo), **KW)
@@ -730,7 +764,7 @@ def test_gate_refuses_missing_final_anchor(store: Store) -> None:
 
 def test_gate_refuses_six_hour_gap(store: Store) -> None:
     led = store(_confirm())
-    repo = publish(led, T0)
+    repo = publish_all(led, T0)
     led.append({"kind": "pause", "reason": "weekly"})
     anchors.record_anchor(led)
     publish(led, T0 + 6 * H)
@@ -741,13 +775,15 @@ def test_gate_refuses_six_hour_gap(store: Store) -> None:
 
 def test_gate_refuses_without_publications(store: Store, tmp_path: Path) -> None:
     led = store(_confirm())
-    repo = publish(led, T0)
+    repo = publish_all(led, T0)
     with pytest.raises(g.GateRefused) as err:
         g.gate(ledger=led, repo=repo, anchors_ref="no-such-branch", **KW)
     assert err.value.code == "anchors_missing"
     with pytest.raises(g.GateRefused) as err:  # no anchor file for this campaign
         other = store(_confirm())
-        g.gate(ledger=other, repo=publish(store(_confirm()), T0), anchors_ref="bench-anchors", **KW)
+        g.gate(
+            ledger=other, repo=publish_all(store(_confirm()), T0), anchors_ref="bench-anchors", **KW
+        )
     assert err.value.code in ("anchors_missing", "anchor_not_on_chain", "anchor_not_final")
     rewritten = publish(led, T0 + H, records=[anchors.anchors_to_publish(led)[0] | {"at": 1.0}])
     with pytest.raises(g.GateRefused) as err:
@@ -800,25 +836,27 @@ def test_local_gate_without_receipts_is_advisory(store: Store) -> None:
 
 def test_gate_with_server_receipts_is_authoritative(store: Store) -> None:
     led = store(_confirm())
-    repo = publish(led, T0)
+    repo = publish_all(led, T0)
     led.append({"kind": "pause", "reason": "weekly"})
     anchors.record_anchor(led)
-    publish(led, T0 + 9 * H)  # commit times 9 h apart, but the server received both 4 h apart
-    first, second = _shas(repo)
-    receipts = [(first, T0 + 60.0), (second, T0 + 4 * H), (second, T0 + 8 * H)]
+    publish(led, T0 + 9 * H)  # commit times 9 h apart, but the server received it 4 h later
+    *early, last = _shas(repo)
+    receipts = [(sha, T0 + 60.0 * i) for i, sha in enumerate(early)]
+    receipts += [(last, T0 + 4 * H), (last, T0 + 8 * H)]
     res = g.gate(ledger=led, **_ref(repo), receipts=receipts, **KW)
     assert not res.advisory and res.release_verdict == "passed"
 
 
 def test_gap_is_computed_from_receipts(store: Store) -> None:
     led = store(_confirm())
-    repo = publish(led, T0)
+    repo = publish_all(led, T0)
     led.append({"kind": "pause", "reason": "weekly"})
     anchors.record_anchor(led)
     publish(led, T0 + H)  # commit times 1 h apart (set by the publisher)
-    first, second = _shas(repo)
+    *early, last = _shas(repo)
+    receipts = [(sha, T0 + 60.0 * i) for i, sha in enumerate(early)] + [(last, T0 + 7 * H)]
     with pytest.raises(g.GateRefused) as err:
-        g.gate(ledger=led, **_ref(repo), receipts=[(first, T0), (second, T0 + 6 * H)], **KW)
+        g.gate(ledger=led, **_ref(repo), receipts=receipts, **KW)
     assert err.value.code == "anchor_gap"
 
 
@@ -826,17 +864,18 @@ def test_forged_local_anchors_without_receipts_are_refused(store: Store) -> None
     """N7 probe: truncate + re-run, then a locally forged anchors history (never pushed, commit
     dates set to fit). The server only received the honest publication."""
     led = store(_harmed_last())
-    honest = publish(led, T0)
-    (honest_sha,) = _shas(honest)
+    honest = publish_all(led, T0)
+    honest_receipts = [(sha, T0 + 60.0 * i) for i, sha in enumerate(_shas(honest))]
     rerun = _truncate_and_rerun(led, HARMED)
-    anchors.anchors_path(rerun).unlink()
+    apath = anchors.anchors_path(rerun)  # keep the plan anchor, drop the honest final one
+    apath.write_text(apath.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
     anchors.record_anchor(rerun)
     honest.rename(honest.with_name("honest-repo"))
-    repo = publish(rerun, T0 + H)  # a fresh local repository holding only forged anchors
+    repo = publish_all(rerun, T0 + H)  # a fresh local repository holding forged anchors
     local = g.gate(ledger=rerun, **_ref(repo), **KW)
     assert local.release_verdict == "advisory"  # locally it "passes", but only as advisory
     with pytest.raises(g.GateRefused) as err:
-        g.gate(ledger=rerun, **_ref(repo), receipts=[(honest_sha, T0 + 60.0)], **KW)
+        g.gate(ledger=rerun, **_ref(repo), receipts=honest_receipts, **KW)
     assert err.value.code == "anchor_without_receipt"
 
 
@@ -899,3 +938,47 @@ def test_verify_release_against_e4_heads(store: Store, monkeypatch: pytest.Monke
     assert anchors.main(argv) == 0
     path.write_text(json.dumps(evidence), encoding="utf-8")
     assert anchors.main([*argv[:-4], "--ref", "nope", "--github-repo", "o/r"]) == 1
+
+
+def test_run_then_anchor_once_is_refused(store: Store, real_cap: None) -> None:
+    """Re-review N8 probe: the whole campaign run unpublished, the harmed keys truncated and
+    re-run, then ONE publication of the final anchor (with a real receipt) passed."""
+    led = store(_harmed_last())
+    rerun = _truncate_and_rerun(led, HARMED)
+    anchors.anchors_path(rerun).unlink()
+    anchors.record_anchor(rerun)
+    repo = publish(rerun, T0)
+    (sha,) = _shas(repo)
+    with pytest.raises(g.GateRefused) as err:
+        g.gate(ledger=rerun, **_ref(repo), receipts=[(sha, T0 + 2 * 24 * H)], **KW)
+    assert err.value.code == "anchor_first_not_plan"
+    pubs = anchors.read_published(repo, "bench-anchors", "c")
+    evidence = {"stage": "confirmation", "campaign": "c", "gate": {}}
+    codes = [c for c, _ in anchors.verify_release(evidence, pubs, [anchors.Receipt(sha, T0)])]
+    assert "anchor_first_not_plan" in codes
+
+
+def test_more_than_the_run_cap_between_publications_is_refused(
+    store: Store, real_cap: None
+) -> None:
+    """After the plan anchor, a publication that adds more than four graded runs is refused
+    (the scheduler anchors after every task, the CLI must publish each window)."""
+    led = store(_confirm(10))
+    local = anchors.anchors_to_publish(led)
+    assert local[0]["runs_started"] == 0 and local[0]["plan_sha256"]
+    repo = publish(led, T0, records=local[:1])  # the plan anchor
+    publish(led, T0 + H, records=local[:3])  # skips one: eight graded runs in one publication
+    publish(led, T0 + 2 * H)
+    with pytest.raises(g.GateRefused) as err:
+        g.gate(ledger=led, **_ref(repo), **KW)
+    assert err.value.code == "anchor_too_many_runs"
+
+
+def test_plan_anchor_happy_path(store: Store, real_cap: None) -> None:
+    led = store(_confirm(10))
+    repo = publish_all(led, T0, step=H)  # plan anchor, then one per two tasks, hourly
+    pubs = anchors.read_published(repo, "bench-anchors", "c")
+    assert pubs[0].anchors[-1]["graded_runs"] == 0 and len(pubs) == 1 + 10 * 2 // 4 + 1
+    receipts = [(p.commit, float(p.at) + 30) for p in pubs]
+    res = g.gate(ledger=led, **_ref(repo), receipts=receipts, **KW)
+    assert res.release_verdict in ("passed", "failed") and not res.advisory
