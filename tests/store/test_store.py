@@ -80,6 +80,39 @@ def test_project_key_git_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert len(paths.project_key(tmp_path)) == 16
 
 
+def test_project_key_outside_any_repo_spawns_no_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``.git`` up the tree and no ``GIT_DIR``: git cannot name a remote, so it is not run
+    (macOS ``/usr/bin/git`` is an xcrun shim that can eat a hook's save deadline); a sub-dir of
+    a repository and ``GIT_DIR`` still ask git."""
+    calls: list[object] = []
+    real = paths.subprocess.run
+
+    def counting(*a: object, **k: object) -> object:
+        if "remote.origin.url" in a[0]:  # type: ignore[operator]
+            calls.append(a)
+        return real(*a, **k)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(paths.subprocess, "run", counting)
+    monkeypatch.delenv("GIT_DIR", raising=False)
+    outside = tmp_path / "plain"
+    outside.mkdir()
+    if any((p / ".git").exists() for p in (outside, *outside.parents)):
+        pytest.skip("the temporary directory lies inside a git work tree")
+    assert len(paths.project_key(outside)) == 16 and calls == []
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nowhere"))
+    paths.project_key(outside)
+    assert len(calls) == 1
+    monkeypatch.delenv("GIT_DIR")
+    repo = tmp_path / "repo"
+    (repo / "sub").mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "remote", "add", "origin", "https://github.com/a/b")
+    assert paths.project_key(repo / "sub") == paths.project_key(repo)
+    assert len(calls) == 3  # the two keys above
+
+
 def test_parallel_writers_no_lost_update(tmp_path: Path) -> None:
     target = tmp_path / "counter.json"
     ctx = mp.get_context("spawn")

@@ -335,12 +335,19 @@ def _hook_env(tmp_path: Path, **extra: str) -> dict[str, str]:
         TOKEN_SPAREN_HOME=str(tmp_path / "home"),
         CLAUDE_PROJECT_DIR=str(proj),
         TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS="5000",
+        TOKEN_SPAREN_COMPRESSION__SAVE_DEADLINE_MS="5000",  # slow CI runners, like the budget
         TOKEN_SPAREN_LEARN__ENABLED="false",
         TOKEN_SPAREN_NO_UV="1",
     )
     env.update(extra)
     # widening settings belong in the user's config.toml (env may only narrow)
     return to_user_config(env)
+
+
+def _errors_log(home: Path) -> str:
+    """The hook's own account of a no-op, for an assertion message."""
+    path = home / "logs" / "errors.jsonl"
+    return "\nerrors.jsonl:\n" + (path.read_text(encoding="utf-8") if path.is_file() else "-")
 
 
 def _post_payload(proj: Path) -> str:
@@ -379,7 +386,9 @@ def test_forced_reexec_runs_the_hook_end_to_end(tmp_path: Path) -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "[token-sparen: kept " in proc.stdout, proc.stdout[:300] + proc.stderr
+    assert "[token-sparen: kept " in proc.stdout, (
+        proc.stdout[:300] + proc.stderr + _errors_log(tmp_path / "home")
+    )
     calls = log.read_text(encoding="utf-8").splitlines()
     assert calls[-1] == f"-I -S {ROOT / 'hooks' / 'run.py'} PostToolUse"
 
@@ -490,7 +499,9 @@ def test_pythonpath_cannot_inject_modules(tmp_path: Path, forced: bool) -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "[token-sparen: kept " in proc.stdout, proc.stdout[:300] + proc.stderr
+    assert "[token-sparen: kept " in proc.stdout, (
+        proc.stdout[:300] + proc.stderr + _errors_log(tmp_path / "home")
+    )
     assert not marker.exists(), marker.read_text(encoding="utf-8")
     if forced:
         calls = log.read_text(encoding="utf-8").splitlines()
@@ -571,7 +582,9 @@ def test_hook_command_resolves_the_interpreter_per_platform(
         _fake_tool(bindir, "uname", kernel[shell])
     proc = _run_hook_command(tmp_path, os.pathsep.join([str(bindir), "/usr/bin", "/bin"]))
     assert proc.returncode == 0, proc.stderr
-    assert "[token-sparen: kept " in proc.stdout, proc.stdout[:300] + proc.stderr
+    assert "[token-sparen: kept " in proc.stdout, (
+        proc.stdout[:300] + proc.stderr + _errors_log(tmp_path / "home")
+    )
     if shell == "posix":  # a normal hook run on a POSIX shell prints nothing to stderr
         assert proc.stderr == "", proc.stderr
     assert "not found" not in proc.stderr, proc.stderr
@@ -695,3 +708,46 @@ def test_search_has_an_overall_deadline(pyfind: ModuleType, tmp_path: Path) -> N
     assert pyfind.search(env, (3, 9), which, run, "linux", "/fake/self", deadline=1.0) is None
     assert 1 <= len(timeouts) <= 5 and all(t <= 1.0 for t in timeouts)
     assert pyfind.SEARCH_DEADLINE <= 2.0
+
+
+# --- a no-op the launcher writes itself is never silent (errors.jsonl, shown by doctor) ----------
+
+
+def test_broken_install_noop_is_logged_once_a_day(tmp_path: Path) -> None:
+    """``hooks/run.py`` in a plugin tree whose package cannot be imported answers ``{}`` and
+    leaves one ``errors.jsonl`` line per reason and day (never a silent ``{}``)."""
+    plugin = tmp_path / "plugin"
+    shutil.copytree(ROOT / "hooks", plugin / "hooks")
+    (plugin / "token_sparen").mkdir()
+    (plugin / "token_sparen" / "__init__.py").write_text("raise ImportError('x')\n", "utf-8")
+    env = _hook_env(tmp_path)
+    for _ in range(2):
+        proc = subprocess.run(
+            [sys.executable, "-I", str(plugin / "hooks" / "run.py"), "PostToolUse"],
+            input=_post_payload(tmp_path / "proj"),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            timeout=60,
+            check=False,
+        )
+        assert proc.returncode == 0 and proc.stdout.strip() == "{}", proc.stdout + proc.stderr
+    log = tmp_path / "home" / "logs" / "errors.jsonl"
+    lines = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 1, lines
+    assert lines[0]["where"] == "launcher"
+    assert lines[0]["error"].startswith("PostToolUse: cannot import token_sparen")
+
+
+def test_log_fallback_rotates_its_day_markers(pyfind: ModuleType, tmp_path: Path) -> None:
+    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
+    t0 = time.mktime((2026, 11, 2, 12, 0, 0, 0, 0, -1))
+    pyfind.log_fallback(env, "a", now=t0)
+    pyfind.log_fallback(env, "a", now=t0)
+    pyfind.log_fallback(env, "b", now=t0)
+    pyfind.log_fallback(env, "a", now=t0 + 86400.0)
+    logs = tmp_path / "home" / "logs"
+    text = (logs / "errors.jsonl").read_text(encoding="utf-8")
+    assert [json.loads(x)["error"] for x in text.splitlines()] == ["a", "b", "a"]
+    assert len(list(logs.glob("launcher-fallback-*"))) == 1  # yesterday's markers are gone

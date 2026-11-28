@@ -35,7 +35,10 @@ def _run(
         }
     )
     # slow CI runners: a larger budget widens, so it goes in the user's file (env only narrows)
-    write_user_config(tmp_path / "home", {"adapter": {"latency_budget_ms": 5000}, **(user or {})})
+    # (the save deadline too: past it a hook leaves the output untouched); merged, not replaced
+    slow = {"adapter": {"latency_budget_ms": 5000}, "compression": {"save_deadline_ms": 5000}}
+    write_user_config(tmp_path / "home", slow)
+    write_user_config(tmp_path / "home", user or {})
     proc = subprocess.run(
         [sys.executable, "-I", str(ROOT / "hooks" / "run.py"), event],
         input=json.dumps(payload),
@@ -172,6 +175,8 @@ def test_e2e_marker_command_runs_on_a_plugin_only_install(tmp_path: Path) -> Non
     )
     static = {"learn": {"enabled": False}}
     out = _run("PostToolUse", payload, tmp_path, static, PATH=path)
+    errors = tmp_path / "home" / "logs" / "errors.jsonl"
+    assert "hookSpecificOutput" in out, errors.read_text("utf-8") if errors.is_file() else out
     stdout = out["hookSpecificOutput"]["updatedToolOutput"]["stdout"]
     m = re.search(r"`([^`]+ show [0-9a-f]{12})`\]$", stdout)
     assert m and "token-sparen show" not in m.group(1), stdout[-300:]

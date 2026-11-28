@@ -1898,3 +1898,11 @@ and the two new issues they found.
   `undefined reference` and `command not found`.
 - `command -v`, not `hash`: macOS bash prints `hash: cygpath: not found` even with stderr closed;
   `command -v` is silent on a miss, so a POSIX hook run has empty stderr (tested).
+- 2026-11-28 CI fixes: a no-op `{}` that `hooks/run.py` writes itself (package not importable,
+  relaunch failed, a still-old relaunched interpreter, `main` raising) logs one `errors.jsonl`
+  line per reason and day (`_pyfind.log_fallback`), so `doctor` shows it. The shell's own
+  `|| echo {}` cannot log: hook commands may name no path but `${CLAUDE_PLUGIN_ROOT}` ones.
+  `paths._origin` spawns git only with a `.git` up the tree or `GIT_DIR` (macOS `/usr/bin/git`
+  is an xcrun shim; a cold call likely ate the 250 ms save deadline on CI runners). Scanners
+  are grouped by a shared rare byte (`c`, `f`, `E`): 8 passes instead of 20 over a 10 MB output,
+  same lines (fuzzed). The normalised plugin hash works on bytes (CRLF trees normalise too).

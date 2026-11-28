@@ -31,6 +31,15 @@ def _noop(message=""):
     sys.stdout.flush()
 
 
+def _log_fallback(env, error):
+    """One ``errors.jsonl`` line (``_pyfind.log_fallback``) for a no-op the launcher wrote
+    itself; never raises."""
+    try:
+        _load_pyfind().log_fallback(env, error)
+    except Exception:  # noqa: BLE001 - fail open
+        pass
+
+
 def _hop(argv, env, version):
     """None: carry on in this interpreter; an int: exit with it (relaunched, or no-op)."""
     child = env.pop(_FLAG, None) is not None  # never leaks into the hook's own subprocesses
@@ -42,6 +51,7 @@ def _hop(argv, env, version):
         return None
     if child:  # never a second hop
         if old:
+            _log_fallback(env, f"relaunched hook still on Python {version[0]}.{version[1]}; no-op")
             _noop()
             return 0
         return None
@@ -65,6 +75,9 @@ def _hop(argv, env, version):
             message = pyfind.report_missing(env, version)
         except Exception:  # noqa: BLE001
             message = ""
+    else:  # report_missing logs the common case; these must not be silent either
+        why = f"could not relaunch on {found[0]}" if found is not None else "launcher broken"
+        _log_fallback(env, f"Python {version[0]}.{version[1]}: {why}; no-op")
     _noop(message)
     return 0
 
@@ -80,16 +93,22 @@ def _run() -> int:
             stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
         except Exception:  # noqa: BLE001
             pass
-    try:
-        from token_sparen.adapters.claude.entry import main
-    except Exception:  # noqa: BLE001 - broken install must not break the host session
-        sys.stdout.write("{}\n")
-        sys.stdout.flush()
-        return 0
     event_name = sys.argv[1] if len(sys.argv) > 1 else ""
     try:
+        from token_sparen.adapters.claude.entry import main
+    except Exception as exc:  # noqa: BLE001 - broken install must not break the host session
+        sys.stdout.write("{}\n")
+        sys.stdout.flush()
+        py = f"{sys.version_info[0]}.{sys.version_info[1]}"
+        why = f"{type(exc).__name__}: {exc}"
+        _log_fallback(
+            os.environ, f"{event_name}: cannot import token_sparen on Python {py} ({why}); no-op"
+        )
+        return 0
+    try:
         return main(event_name, sys.stdin, sys.stdout, os.environ)
-    except Exception:  # noqa: BLE001 - main never raises; never write twice
+    except Exception as exc:  # noqa: BLE001 - main never raises; never write twice
+        _log_fallback(os.environ, f"{event_name}: {type(exc).__name__}: {exc}")
         return 0
 
 

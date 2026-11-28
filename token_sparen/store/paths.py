@@ -44,7 +44,29 @@ def normalise_remote(url: str) -> str:
     return f"{host.lower()}/{rest}"
 
 
+def _in_git_tree(project_dir: Path, env: Mapping[str, str]) -> bool:
+    """A ``.git`` entry in ``project_dir`` or any parent, or a ``GIT_DIR`` in the environment:
+    only then can git name a remote. Spares a git spawn per new project outside any repository
+    (on macOS ``/usr/bin/git`` is an xcrun shim whose cold first call can take most of a hook's
+    budget)."""
+    if env.get("GIT_DIR"):
+        return True
+    try:
+        cur = Path(os.path.abspath(project_dir))
+    except (OSError, ValueError):
+        return True
+    for d in (cur, *cur.parents):
+        try:
+            if os.path.lexists(d / ".git"):
+                return True
+        except (OSError, ValueError):
+            return True
+    return False
+
+
 def _origin(project_dir: Path) -> str | None:
+    if not _in_git_tree(project_dir, os.environ):
+        return None
     try:
         proc = subprocess.run(
             ["git", "-C", str(project_dir), "config", "--get", "remote.origin.url"],

@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from token_sparen import recovery
 from token_sparen.adapters.claude import entry, settings
 from token_sparen.cli import main
 from token_sparen.config import load_config, policy_for
@@ -790,7 +791,8 @@ def test_notice_names_the_plugin_launcher(env: dict[str, str], proj: Path) -> No
     _three(env, proj)
     root = str(proj.parent / "plugin root")
     out = _hook({**env, "CLAUDE_PLUGIN_ROOT": root}, "SessionStart", {"source": "startup"})
-    cmd = f'python3 -I "{root}/hooks/run_cli.py" prune restore <tool>'
+    # the interpreter hooks.json starts on this OS: python3, or on Windows py -3 / python
+    cmd = f'{recovery.hook_python()} -I "{root}/hooks/run_cli.py" prune restore <tool>'
     assert f"run `{cmd}` if needed." in out["hookSpecificOutput"]["additionalContext"]
     assert cmd in out["systemMessage"]
 

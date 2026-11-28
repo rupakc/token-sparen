@@ -165,7 +165,12 @@ def test_fake_agent_fixes_bug_and_writes_stream(tmp_path: Path) -> None:
     repo = tmp_path / "fake"
     tk.make_fake_repo(repo)
     config = tmp_path / "config"
-    env = {"CLAUDE_CONFIG_DIR": str(config), "PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
+    env = {
+        "CLAUDE_CONFIG_DIR": str(config),
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),  # never the real home, on Windows too
+    }
     proc = subprocess.run(
         [sys.executable, str(tk.FAKE_DIR / "agent.py"), "-p", "fix", "--model", "m1"],
         cwd=repo,

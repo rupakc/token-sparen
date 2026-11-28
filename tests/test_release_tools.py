@@ -525,6 +525,27 @@ def test_normalised_plugin_hash_ignores_only_the_version(tmp_path: Path) -> None
     assert rc.normalised_plugin_hash(a) != rc.normalised_plugin_hash(c)
 
 
+@pytest.mark.parametrize("eol", ["\n", "\r\n"])
+def test_normalised_plugin_hash_is_byte_exact_on_every_os(tmp_path: Path, eol: str) -> None:
+    """Written as bytes (no newline translation): CRLF trees normalise like LF trees do, the
+    line endings themselves still count, and a pretty-printed manifest keeps its bytes."""
+
+    def tree(name: str, version: str, sep: str = eol) -> Path:
+        root = tmp_path / name
+        (root / ".claude-plugin").mkdir(parents=True)
+        (root / "token_sparen").mkdir()
+        manifest = json.dumps({"name": "token-sparen", "version": version}, indent=2)
+        (root / ".claude-plugin" / "plugin.json").write_bytes(manifest.replace("\n", sep).encode())
+        init = f'"""Doc."""{sep}__version__ = "{version}"{sep}'
+        (root / "token_sparen" / "__init__.py").write_bytes(init.encode())
+        return root
+
+    a, b = tree("a", "1.0.0"), tree("b", "1.0.1")
+    assert rc.normalised_plugin_hash(a) == rc.normalised_plugin_hash(b)
+    other = tree("c", "1.0.1", "\n" if eol == "\r\n" else "\r\n")
+    assert rc.normalised_plugin_hash(a) != rc.normalised_plugin_hash(other)
+
+
 def test_patch_with_its_own_evidence_takes_the_full_gate(
     repo: Path, tmp_path: Path, passing_gate: list[tuple[Any, ...]]
 ) -> None:

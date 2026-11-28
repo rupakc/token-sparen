@@ -62,6 +62,10 @@ RELEASE_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 DEV_VERSION = re.compile(r"\d+\.\d+\.\d+\.dev\d+")
 HEADING = re.compile(r"^## \[(?P<v>[^\]]+)\](?: - (?P<d>.*?))?\s*$", re.MULTILINE)
 INIT_VERSION = re.compile(r'^__version__ = "([^"]+)"$', re.MULTILINE)
+# byte-level twins for the normalised plugin hash: every other byte (line endings included) is
+# hashed as it is, so the result is the same on every OS for the same bytes
+_INIT_VERSION_B = re.compile(rb'^(__version__ = )"[^"\r\n]+"(?=\r?$)', re.MULTILINE)
+_MANIFEST_VERSION_B = re.compile(rb'("version"\s*:\s*)"(?:[^"\\\r\n]|\\.)*"')
 EVIDENCE = Path("docs/evidence/e4.json")
 DECISION = Path("docs/release/gate-decision.toml")
 TREATMENT_ARM = "token-sparen"
@@ -351,21 +355,33 @@ def _measures(root: Path, version: str) -> bool:
     return doc is not None and doc.get("plugin_version") == version
 
 
+def _normalise_manifest(data: bytes) -> bytes:
+    """``plugin.json`` with only its top-level ``version`` value replaced by ``"0"``, byte for
+    byte otherwise; raises `ValueError` when it is not JSON. A manifest whose version cannot be
+    located as exactly one ``"version": "..."`` pair is re-serialised canonically instead."""
+    manifest = json.loads(data.decode("utf-8"))
+    if not isinstance(manifest, dict) or "version" not in manifest:
+        return data
+    if len(_MANIFEST_VERSION_B.findall(data)) == 1:
+        out = _MANIFEST_VERSION_B.sub(rb'\1"0"', data)
+        check = json.loads(out.decode("utf-8"))
+        if check == {**manifest, "version": "0"}:
+            return out
+    manifest["version"] = "0"
+    return json.dumps(manifest, sort_keys=True).encode("utf-8")
+
+
 def normalised_plugin_hash(tree: Path) -> str:
     """`plugin_hash` of a built tree with its version taken out: ``version`` in
     ``.claude-plugin/plugin.json`` and ``__version__`` in ``token_sparen/__init__.py`` are
     replaced by ``"0"`` (review I3), so two trees that differ only in their version match."""
     digest = hashlib.sha256()
     for rel in plugin_files(tree):
-        data = (tree / rel).read_bytes()
+        data = (tree / rel).read_bytes()  # bytes as shipped: no newline or encoding translation
         if rel == VERSION_FILES[1]:
-            manifest = json.loads(data.decode("utf-8"))
-            if isinstance(manifest, dict) and "version" in manifest:
-                manifest["version"] = "0"
-            data = json.dumps(manifest, sort_keys=True).encode("utf-8")
+            data = _normalise_manifest(data)
         elif rel == VERSION_FILES[0]:
-            text = INIT_VERSION.sub('__version__ = "0"', data.decode("utf-8"))
-            data = text.encode("utf-8")
+            data = _INIT_VERSION_B.sub(rb'\1"0"', data)
         digest.update(f"{rel}\0{hashlib.sha256(data).hexdigest()}\n".encode())
     return digest.hexdigest()
 

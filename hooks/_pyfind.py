@@ -476,6 +476,37 @@ def warning_text(current_version):
     )
 
 
+def log_fallback(env, error, now=None):
+    """The launcher answered the no-op ``{}`` without running the hook: one ``errors.jsonl``
+    line per reason and day (an O_EXCL marker per reason), so ``doctor`` shows it and the plugin
+    never does nothing silently; best effort, never raises."""
+    now = time.time() if now is None else now
+    try:
+        home = state_root(env)
+        logs = os.path.join(home, "logs")
+        os.makedirs(logs, mode=0o700, exist_ok=True)
+        if not _owned(home):
+            return
+        day = time.strftime("%Y-%m-%d", time.localtime(now))
+        tag = hashlib.sha256(error.encode("utf-8", "replace")).hexdigest()[:12]
+        marker = os.path.join(logs, "launcher-fallback-" + tag + "-" + day)
+        try:
+            os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        except FileExistsError:
+            return
+        for name in os.listdir(logs):
+            if name.startswith("launcher-fallback-") and not name.endswith("-" + day):
+                try:
+                    os.unlink(os.path.join(logs, name))
+                except OSError:
+                    pass
+        rec = {"ts": float(now), "kind": "launcher", "where": "launcher", "error": error}
+        with open(os.path.join(logs, "errors.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except Exception:  # noqa: BLE001 - fail open
+        return
+
+
 def report_missing(env, current_version, now=None):
     """Log one ``errors.jsonl`` line per day (exactly once: an O_EXCL day marker); returns the
     user-facing warning when this call logged it, else ''."""

@@ -80,28 +80,56 @@ def _anchored(literal: str, suffix: str = "") -> re.Pattern[bytes]:
     return re.compile(rf"{lit}(?<![a-z0-9_]{lit}){suffix}(?![a-z0-9_])".encode())
 
 
+def _grouped(anchor: str, words: tuple[tuple[str, str], ...]) -> re.Pattern[bytes]:
+    """One scanner for several ERROR_PATTERNS[0] alternatives (``(word, suffix)``) that all
+    contain the byte ``anchor``: the pattern starts with that byte (the engine's literal-prefix
+    search: one pass over the text for all of them); each alternative matches the rest of its
+    word after its first ``anchor``, then checks with fixed-width look-behinds that the whole
+    word ends there and starts at a word boundary. It finds the same lines as one `_anchored`
+    scanner per word; an anchor rare in ordinary output keeps the pass fast."""
+    alts: list[str] = []
+    for word, suffix in words:
+        k = word.index(anchor)
+        lit = re.escape(word)
+        whole = f"(?<={lit})" if k else ""
+        rest = re.escape(word[k + 1 :])
+        alts.append(f"{rest}{whole}(?<![a-z0-9_]{lit}){suffix}(?![a-z0-9_])")
+    return re.compile(f"{re.escape(anchor)}(?:{'|'.join(alts)})".encode())
+
+
 # Byte-level scanners whose union matches exactly the lines ERROR_PATTERNS matches (ASCII
 # word semantics on both sides; property-tested). First group runs on lower-cased bytes.
+# Each scanner is one full pass over the text (a 10 MB output has a latency budget), so the
+# words are grouped by a byte they share that is rare in ordinary output.
 _LOWER_SCANNERS: tuple[re.Pattern[bytes], ...] = (
     _anchored("error", "s?"),
-    _anchored("exception", "s?"),
-    _anchored("traceback"),
-    _anchored("fail", "(?:s|ed|ure|ures|ing)?"),
-    _anchored("fatal"),
-    _anchored("panic", "(?:ked)?"),
     _anchored("assert", "(?:ion)?"),
-    _anchored("segmentation fault"),
-    _anchored("segfault", "(?:s|ed)?"),
-    _anchored("eacces"),
-    _anchored("access denied"),
-    _anchored("access is denied"),
-    _anchored("undefined reference"),
-    _anchored("command not found"),
+    _grouped(
+        "c",
+        (
+            ("exception", "s?"),
+            ("traceback", ""),
+            ("panic", "(?:ked)?"),
+            ("eacces", ""),
+            ("access denied", ""),
+            ("access is denied", ""),
+        ),
+    ),
+    _grouped(
+        "f",
+        (
+            ("fail", "(?:s|ed|ure|ures|ing)?"),
+            ("fatal", ""),
+            ("segfault", "(?:s|ed)?"),
+            ("segmentation fault", ""),
+            ("undefined reference", ""),
+            ("command not found", ""),
+        ),
+    ),
 )
+# CamelCase ``Error`` / ``Exception`` names and npm's ``ERR!`` share their first byte.
 _RAW_SCANNERS: tuple[re.Pattern[bytes], ...] = (
-    re.compile(rb"Error(?![A-Za-z0-9_])"),
-    re.compile(rb"Exception(?![A-Za-z0-9_])"),
-    re.compile(rb"ERR!(?<![A-Za-z0-9_]ERR!)"),
+    re.compile(rb"E(?:rror(?![A-Za-z0-9_])|xception(?![A-Za-z0-9_])|RR!(?<![A-Za-z0-9_]ERR!))"),
     re.compile("✗".encode()),
 )
 
