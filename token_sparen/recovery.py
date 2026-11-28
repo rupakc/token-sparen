@@ -7,6 +7,7 @@ import hashlib
 import os
 import re
 import secrets
+import shutil
 import stat
 import time
 from collections.abc import Mapping
@@ -211,13 +212,38 @@ def read_full(project_dir: Path, rid: str, env: Mapping[str, str] | None = None)
         return None
 
 
+_SHOW_COMMAND: str | None = None  # resolved once per process (``show_command``)
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def show_command() -> str:
+    """The CLI the marker tells the agent to run: ``token-sparen`` when that console script is
+    on PATH, else the plugin's bundled CLI with the interpreter the hooks use on this platform
+    (``python3``; Windows ``py -3``, else ``python``). v1 review M7: a plugin-only install has no
+    console script, and a failed ``token-sparen show`` costs the agent a round trip."""
+    global _SHOW_COMMAND
+    if _SHOW_COMMAND is None:
+        _SHOW_COMMAND = "token-sparen"
+        bundled = Path(__file__).resolve().parent.parent / "hooks" / "run_cli.py"
+        if shutil.which("token-sparen") is None and bundled.is_file():
+            if _is_windows():
+                python = "py -3" if shutil.which("py") is not None else "python"
+            else:
+                python = "python3"
+            _SHOW_COMMAND = f'{python} -I "{bundled.as_posix()}"'
+    return _SHOW_COMMAND
+
+
 def marker(kept_lines: int, total_lines: int, ref: RecoveryRef) -> str:
     """The elision marker; the path's directories are resolved, never the file itself (a link
     there must not point the agent elsewhere)."""
     where = ref.path.parent.resolve() / ref.path.name
     return (
         f"[token-sparen: kept {kept_lines} of {total_lines} lines · "
-        f"full output: {where} · `token-sparen show {ref.id}`]"
+        f"full output: {where} · `{show_command()} show {ref.id}`]"
     )
 
 

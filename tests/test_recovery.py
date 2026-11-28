@@ -4,6 +4,9 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
+from token_sparen import recovery
 from token_sparen.config import load_config
 from token_sparen.recovery import (
     RecoveryRef,
@@ -18,7 +21,9 @@ def _outputs(project: Path) -> Path:
     return project / ".token-sparen" / "outputs"
 
 
-def test_marker_exact_format(tmp_path: Path) -> None:
+def test_marker_exact_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(recovery, "_SHOW_COMMAND", None)
+    monkeypatch.setattr(recovery.shutil, "which", lambda name: f"/bin/{name}")
     ref = save_full(tmp_path, "hello\n")
     expected = (
         f"[token-sparen: kept 3 of 40 lines · full output: {ref.path.resolve()}"
@@ -26,6 +31,29 @@ def test_marker_exact_format(tmp_path: Path) -> None:
     )
     assert marker(3, 40, ref) == expected
     assert ref.path.is_absolute()
+
+
+@pytest.mark.parametrize(
+    ("osname", "found", "launcher"),
+    [
+        ("posix", set(), "python3"),
+        ("nt", {"py"}, "py -3"),
+        ("nt", set(), "python"),
+    ],
+)
+def test_marker_names_the_bundled_cli_without_a_console_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, osname: str, found: set[str], launcher: str
+) -> None:
+    """v1 review M7: on a plugin-only install there is no ``token-sparen`` on PATH, so the
+    marker names the plugin's bundled CLI (the interpreter the hooks use on that platform)."""
+    monkeypatch.setattr(recovery, "_SHOW_COMMAND", None)
+    monkeypatch.setattr(recovery, "_is_windows", lambda: osname == "nt")
+    monkeypatch.setattr(
+        recovery.shutil, "which", lambda name: f"/bin/{name}" if name in found else None
+    )
+    ref = save_full(tmp_path, "hello\n")
+    bundled = (Path(recovery.__file__).resolve().parents[1] / "hooks" / "run_cli.py").as_posix()
+    assert marker(1, 9, ref).endswith(f' · `{launcher} -I "{bundled}" show {ref.id}`]')
 
 
 def test_save_idempotent_same_id(tmp_path: Path) -> None:

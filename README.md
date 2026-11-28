@@ -9,7 +9,8 @@ shows a live token meter. Everything runs locally.
 
 1. Install: `claude plugin marketplace add rupakc/token-sparen`, then `claude plugin install token-sparen@token-sparen`; start a new session.
 2. Verify: `/token-sparen doctor`, then ask Claude to run `pytest -v` (or any big test run) and look for the `[token-sparen: kept ...]` marker ([details](#install)).
-3. Recover: `token-sparen show <id>` (id in the marker) or read the `full output:` path.
+3. Recover: run the `show` command in the marker (`token-sparen show <id>`, or the plugin's
+   bundled CLI when the `token-sparen` command is not installed) or read the `full output:` path.
 4. See what it did: `/token-sparen` (net tokens saved).
 5. Turn off: `TOKEN_SPAREN_DISABLE=1` before launching Claude Code, `/token-sparen disable` for one session, or `claude plugin disable token-sparen` ([all options](#turning-it-off)).
 

@@ -49,9 +49,12 @@ user needs the full output).
 
 ## Markers and recovery
 A trimmed output ends with:
-`[token-sparen: kept X of Y lines · full output: <path> · `token-sparen show <id>`]`
+`[token-sparen: kept X of Y lines · full output: <path> · `<cli> show <id>`]`
+where `<cli>` is `token-sparen`, or on a plugin-only install the bundled
+`python3 -I "<plugin>/hooks/run_cli.py"` (Windows: `py -3` or `python`).
 - Error lines, failures and stack-trace edges are never elided.
-- To see everything, run `token-sparen show <id>` (12 hex characters), or read the `<path>` file.
+- To see everything, run the marker's command exactly as written (the id is 12 hex characters),
+  or read the `<path>` file.
 - Recover only what you need. Full outputs live in `<project>/.token-sparen/outputs/` (14 days).
 
 ## Commands

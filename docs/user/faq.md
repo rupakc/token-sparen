@@ -6,7 +6,7 @@ No. There is no telemetry and no network access; everything runs locally. See [P
 
 ## Could trimming hide something I need?
 
-Error lines, failures and stack-trace edges are never elided, file contents are not trimmed by default, and the full text of every trim is on disk with its id in the marker: `token-sparen show <id>`. See [Recovering trimmed output](host-guides/claude-code.md#recovering-trimmed-output).
+Error lines, failures and stack-trace edges are never elided, file contents are not trimmed by default, and the full text of every trim is on disk with its id and a `show` command in the marker (`token-sparen show <id>`, or the plugin's bundled CLI on a plugin-only install). See [Recovering trimmed output](host-guides/claude-code.md#recovering-trimmed-output).
 
 ## How much will it save me?
 

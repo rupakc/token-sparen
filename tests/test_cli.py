@@ -88,7 +88,7 @@ def test_run_preserves_exit_code_and_compresses(
     assert rc == 3
     assert "[token-sparen: kept " in out and len(out) < len(text)
     assert "FAILED tests/test_cache.py::test_cache_eviction" in out
-    m = re.search(r"token-sparen show ([0-9a-f]{12})", out)
+    m = re.search(r" show ([0-9a-f]{12})`\]", out)
     assert m
     saved = Path.cwd() / ".token-sparen" / "outputs" / f"{m.group(1)}.txt"
     assert saved.read_text(encoding="utf-8") == text

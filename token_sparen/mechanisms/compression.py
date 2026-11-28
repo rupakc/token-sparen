@@ -527,7 +527,7 @@ def _learn(
     regret.pay(policy, evicted)
 
 
-_SHOW_ID = re.compile(r"`token-sparen show ([0-9a-f]{12})`\]\s*$")
+_SHOW_ID = re.compile(r"`[^`]* show ([0-9a-f]{12})`\]\s*$")  # recovery.marker's command
 
 
 @dataclass(frozen=True)

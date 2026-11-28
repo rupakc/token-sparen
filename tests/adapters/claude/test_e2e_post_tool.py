@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 from sampleoutputs import big_pytest
 from userconf import write_user_config
 
@@ -70,7 +73,7 @@ def test_e2e_post_tool(tmp_path: Path) -> None:
     spec = out["hookSpecificOutput"]
     assert spec["hookEventName"] == "PostToolUse"
     stdout = spec["updatedToolOutput"]["stdout"]
-    assert "[token-sparen: kept " in stdout and "`token-sparen show " in stdout
+    assert "[token-sparen: kept " in stdout and re.search(r" show [0-9a-f]{12}`\]", stdout)
     assert "FAILED tests/test_cache.py::test_cache_eviction" in stdout
     assert len(stdout) < len(text)
     saved = list((tmp_path / "proj" / ".token-sparen" / "outputs").glob("*.txt"))
@@ -149,6 +152,46 @@ def test_e2e_agent_call_site_report_left_whole(tmp_path: Path) -> None:
     )
     static = {"learn": {"enabled": False}}  # the static policy always trims an allowed type
     assert "updatedToolOutput" not in json.dumps(_run("PostToolUse", payload, tmp_path, static))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell and symlinked interpreter")
+def test_e2e_marker_command_runs_on_a_plugin_only_install(tmp_path: Path) -> None:
+    """v1 review M7, end to end: with no ``token-sparen`` console script on PATH (a plugin-only
+    install), the command the marker names, run by a shell as the model's Bash tool would, prints
+    the full output."""
+    (tmp_path / "proj").mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "python3").symlink_to(sys.executable)
+    path = os.pathsep.join([str(bindir), "/usr/bin", "/bin"])
+    assert shutil.which("token-sparen", path=path) is None
+    text = big_pytest()
+    payload = _payload(
+        "PostToolUse",
+        tool_name="Bash",
+        tool_input={"command": "pytest -v"},
+        tool_use_id="tu-show",
+        tool_response={"stdout": text, "stderr": "", "interrupted": False, "isImage": False},
+    )
+    static = {"learn": {"enabled": False}}
+    out = _run("PostToolUse", payload, tmp_path, static, PATH=path)
+    stdout = out["hookSpecificOutput"]["updatedToolOutput"]["stdout"]
+    m = re.search(r"`([^`]+ show [0-9a-f]{12})`\]$", stdout)
+    assert m and "token-sparen show" not in m.group(1), stdout[-300:]
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("TOKEN_SPAREN_", "CLAUDE_"))}
+    env.update(PATH=path, TOKEN_SPAREN_HOME=str(tmp_path / "home"))
+    shown = subprocess.run(
+        ["/bin/sh", "-c", m.group(1)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path / "proj",
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    assert shown.returncode == 0, shown.stderr
+    assert shown.stdout.rstrip("\n") == text.rstrip("\n")
 
 
 def test_e2e_env_narrowing_reaches_the_hook(tmp_path: Path) -> None:
