@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import re
 import subprocess
@@ -51,7 +52,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.build_claude_tree import TreeError, build_claude_tree  # noqa: E402
 from scripts.bump_version import DEV_SOURCE, PLUGIN_NAME, release_source  # noqa: E402
-from scripts.plugin_hash import PLUGIN_PATHS, plugin_hash  # noqa: E402
+from scripts.plugin_hash import PLUGIN_PATHS, plugin_files, plugin_hash  # noqa: E402
 from scripts.render_evidence import check_release_gate, e4_id  # noqa: E402
 
 Mode = Literal["tag", "dry-run"]
@@ -350,11 +351,56 @@ def _measures(root: Path, version: str) -> bool:
     return doc is not None and doc.get("plugin_version") == version
 
 
-def _patch_rule(root: Path, version: str, changelog: str) -> list[str]:
+def normalised_plugin_hash(tree: Path) -> str:
+    """`plugin_hash` of a built tree with its version taken out: ``version`` in
+    ``.claude-plugin/plugin.json`` and ``__version__`` in ``token_sparen/__init__.py`` are
+    replaced by ``"0"`` (review I3), so two trees that differ only in their version match."""
+    digest = hashlib.sha256()
+    for rel in plugin_files(tree):
+        data = (tree / rel).read_bytes()
+        if rel == VERSION_FILES[1]:
+            manifest = json.loads(data.decode("utf-8"))
+            if isinstance(manifest, dict) and "version" in manifest:
+                manifest["version"] = "0"
+            data = json.dumps(manifest, sort_keys=True).encode("utf-8")
+        elif rel == VERSION_FILES[0]:
+            text = INIT_VERSION.sub('__version__ = "0"', data.decode("utf-8"))
+            data = text.encode("utf-8")
+        digest.update(f"{rel}\0{hashlib.sha256(data).hexdigest()}\n".encode())
+    return digest.hexdigest()
+
+
+def tree_reuse_problems(root: Path, measured: str, tree: Path, evidence_hash: str) -> list[str]:
+    """Review I3, authoritative for patch reuse: the measured commit, built by this checkout's
+    tree builder, must still give the evidence's plugin hash (else the builder or the ref
+    changed what ships), and the release tree must equal it once the version is normalised."""
+    with tempfile.TemporaryDirectory(prefix="token-sparen-measured-") as tmp:
+        old = Path(tmp) / "tree"
+        try:
+            build_claude_tree(root, old, ref=measured)
+        except (OSError, TreeError) as exc:
+            return [f"patch rule (d): cannot build the measured tree at {measured[:12]}: {exc}"]
+        problems: list[str] = []
+        if plugin_hash(old) != evidence_hash:
+            problems.append(
+                f"patch rule (d): the measured commit now builds plugin {plugin_hash(old)[:12]}, "
+                f"not the evidence's {evidence_hash[:12]} (the tree builder or the measured ref "
+                "changed); a new E4 confirmation is required"
+            )
+        if normalised_plugin_hash(old) != normalised_plugin_hash(tree):
+            problems.append(
+                "patch rule (d): the release plugin tree differs from the measured one beyond "
+                "the version; a new E4 confirmation is required"
+            )
+    return problems
+
+
+def _patch_rule(root: Path, version: str, changelog: str, tree: Path) -> list[str]:
     """X.Y.Z with Z > 0 (ruling N4 as amended by C1/I1/I2): the reused evidence was releasable
     and measured this MAJOR.MINOR; (a) README states the measured version and hash, (b) the
     section lists runtime changes, (c) no behaviour file (`behaviour_changes`) changed between
-    the measured commit and the release commit."""
+    the measured commit and the release commit (a fast filter), (d) the release plugin tree
+    equals the measured one up to the version (`tree_reuse_problems`, authoritative)."""
     doc, error = _evidence(root)
     if doc is None:
         return [f"patch rule: {error} (a patch ships on the last measured evidence)"]
@@ -386,8 +432,10 @@ def _patch_rule(root: Path, version: str, changelog: str) -> list[str]:
     if verify.returncode != 0:
         problems.append(f"patch rule (c): cannot resolve the measured ref {ref!r}")
         return problems
+    measured = verify.stdout.strip()
+    problems += tree_reuse_problems(root, measured, tree, str(doc.get("plugin_hash", "")))
     try:
-        changed = behaviour_changes(root, verify.stdout.strip())
+        changed = behaviour_changes(root, measured)
     except ValueError as exc:
         problems.append(f"patch rule (c): git diff failed: {exc}")
         return problems
@@ -527,7 +575,7 @@ def release_check(root: Path, *, tag: str | None, mode: Mode) -> list[str]:
         if int(release.group(3)) == 0 or _measures(root, version):
             problems += _gate(root, tree, version)
         else:
-            problems += _patch_rule(root, version, changelog)
+            problems += _patch_rule(root, version, changelog, tree)
     return problems
 
 

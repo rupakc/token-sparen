@@ -402,6 +402,55 @@ def test_patch_rule_allows_non_behaviour_files(
     assert rc.release_check(repo, tag="v1.0.1", mode="tag") == []
 
 
+def test_patch_tree_hash_is_authoritative(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review I3: a plugin change is caught by the tree comparison even if the allow-list
+    filter were relaxed."""
+    monkeypatch.setattr(rc, "_load_gate", lambda: _gate(True))
+    monkeypatch.setattr(rc, "behaviour_changes", lambda root, base, head="HEAD": [])
+    _patch(repo, tmp_path, "token_sparen/cli.py")
+    problems = rc.release_check(repo, tag="v1.0.1", mode="tag")
+    assert any("(d)" in p and "beyond the version" in p for p in problems), problems
+
+
+def test_patch_refuses_a_changed_tree_builder(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review I3: a builder change (scripts/ is on the allow-list) that alters what ships makes
+    the measured commit build a different plugin than the evidence measured."""
+    monkeypatch.setattr(rc, "_load_gate", lambda: _gate(True))
+    _patch(repo, tmp_path, "docs/user/index.md")
+    assert rc.release_check(repo, tag="v1.0.1", mode="tag") == []
+    real = rc.build_claude_tree
+
+    def builder(root: Path, out: Path, *, ref: str = "HEAD") -> list[Path]:
+        written = real(root, out, ref=ref)
+        (out / "token_sparen" / "injected.py").write_text("X = 1\n", encoding="utf-8")
+        return written
+
+    monkeypatch.setattr(rc, "build_claude_tree", builder)
+    problems = rc.release_check(repo, tag="v1.0.1", mode="tag")
+    assert any("(d)" in p and "tree builder" in p for p in problems), problems
+
+
+def test_normalised_plugin_hash_ignores_only_the_version(tmp_path: Path) -> None:
+    def tree(name: str, version: str, extra: str = "") -> Path:
+        root = tmp_path / name
+        (root / ".claude-plugin").mkdir(parents=True)
+        (root / "token_sparen").mkdir()
+        manifest = {"name": "token-sparen", "version": version}
+        (root / ".claude-plugin" / "plugin.json").write_text(json.dumps(manifest), "utf-8")
+        init = f'"""Doc."""\n__version__ = "{version}"\n{extra}'
+        (root / "token_sparen" / "__init__.py").write_text(init, encoding="utf-8")
+        return root
+
+    a, b, c = tree("a", "1.0.0"), tree("b", "1.0.1"), tree("c", "1.0.1", "X = 1\n")
+    assert plugin_hash(a) != plugin_hash(b)
+    assert rc.normalised_plugin_hash(a) == rc.normalised_plugin_hash(b)
+    assert rc.normalised_plugin_hash(a) != rc.normalised_plugin_hash(c)
+
+
 def test_patch_with_its_own_evidence_takes_the_full_gate(
     repo: Path, tmp_path: Path, passing_gate: list[tuple[Any, ...]]
 ) -> None:
@@ -932,6 +981,12 @@ def test_build_raises_and_cleans_up_on_check_failure(repo: Path, tmp_path: Path)
 def test_build_cli(repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert bct.main(["--root", str(repo), "--out", str(tmp_path / "o")]) == 0
     assert plugin_hash(tmp_path / "o") in capsys.readouterr().out
+    # --ref builds an earlier commit (the runbook seeds release/claude from the rc tag)
+    with (repo / "token_sparen" / "cli.py").open("a", encoding="utf-8") as fh:
+        fh.write("\n# later\n")
+    _commit(repo, "later")
+    assert bct.main(["--root", str(repo), "--ref", PIN, "--out", str(tmp_path / "p")]) == 0
+    assert plugin_hash(tmp_path / "p") == plugin_hash(tmp_path / "o")
 
 
 def _hook_env(tmp_path: Path, tree: Path) -> dict[str, str]:

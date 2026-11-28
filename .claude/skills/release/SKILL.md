@@ -22,7 +22,8 @@ actions (the tag is an owner-signed annotated tag).
 3. **Freeze, measure, prepare** (order of record in the runbook's *Cutting a release*): the
    version bump `python scripts/bump_version.py X.Y.Z` comes **before** the `vX.Y.Z-rc1` freeze
    the benchmark measures (the plugin hash includes the version); after the evidence is
-   committed, `python scripts/bump_version.py --prepare-release X.Y.Z YYYY-MM-DD` dates the
+   committed (first release only: the owner seeds `release/claude` from the rc tree first),
+   `python scripts/bump_version.py --prepare-release X.Y.Z YYYY-MM-DD` dates the
    heading and points the marketplace at `release/claude` (release_check refuses otherwise).
    Commit as `chore(release): vX.Y.Z`, push `main`, wait for CI to be green, and run
    `python scripts/release_check.py --mode tag --tag vX.Y.Z` locally.

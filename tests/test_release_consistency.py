@@ -227,6 +227,11 @@ def test_changelog_has_pre1_marker_below_unreleased() -> None:
     assert "[1.0.0]" not in text.split(MARKER, 1)[0]  # the bump creates it, nothing writes it
 
 
+def _seeded(root: Path) -> bool:
+    """`release/claude` exists on origin (no network in tests)."""
+    return True
+
+
 def _market(root: Path) -> dict[str, Any]:
     data = json.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
     assert isinstance(data, dict)
@@ -265,7 +270,7 @@ def test_prepare_release_dates_and_tracks_release_branch(tmp_path: Path) -> None
     root = _make_repo(tmp_path)
     mod.bump(root, "1.0.0", date=None)
     before = _market(root)
-    changed = mod.prepare_release(root, "1.0.0", "2026-12-01")
+    changed = mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=_seeded)
     assert sorted(p.relative_to(root).as_posix() for p in changed) == [
         ".claude-plugin/marketplace.json",
         "CHANGELOG.md",
@@ -293,15 +298,15 @@ def test_prepare_release_refuses_and_writes_nothing(tmp_path: Path) -> None:
     mod = _bump_module()
     root = _make_repo(tmp_path)
     with pytest.raises(ValueError, match="X.Y.Z"):
-        mod.prepare_release(root, "1.0.1.dev0", "2026-12-01")
+        mod.prepare_release(root, "1.0.1.dev0", "2026-12-01", branch_exists=_seeded)
     with pytest.raises(ValueError, match="current version"):
-        mod.prepare_release(root, "1.0.0", "2026-12-01")  # not bumped yet
+        mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=_seeded)  # not bumped yet
     mod.bump(root, "1.0.0", date=None)
     market = root / ".claude-plugin" / "marketplace.json"
     market.write_text('{"plugins": []}', encoding="utf-8")
     snapshot = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
     with pytest.raises(ValueError, match="exactly one"):
-        mod.prepare_release(root, "1.0.0", "2026-12-01")
+        mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=_seeded)
     assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == snapshot
 
 
@@ -313,7 +318,50 @@ def test_cli_prepare_release(
     monkeypatch.setattr(mod, "ROOT", root)
     monkeypatch.setattr(mod, "is_dirty", lambda root: False)
     assert mod.main(["1.0.0"]) == 0
+    monkeypatch.setattr(mod, "remote_branch_exists", lambda root: False)
+    assert mod.main(["--prepare-release", "1.0.0", "2026-12-01"]) == 1
+    assert "does not exist on origin" in capsys.readouterr().err
+    assert _market(root)["plugins"][0]["source"] == "./"
+    monkeypatch.setattr(mod, "remote_branch_exists", _seeded)
     assert mod.main(["--prepare-release", "1.0.0", "2026-12-01"]) == 0
     out = capsys.readouterr().out
     assert "marketplace.json" in out and "CHANGELOG.md" in out
     assert _market(root)["plugins"][0]["source"] == RELEASE_SOURCE
+
+
+def test_prepare_release_refused_until_release_branch_is_seeded(tmp_path: Path) -> None:
+    """Review I2: the marketplace never names a release/claude branch that does not exist."""
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    mod.bump(root, "1.0.0", date=None)
+    snapshot = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    with pytest.raises(ValueError, match="does not exist on origin"):
+        mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=lambda r: False)
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == snapshot
+
+
+def test_remote_branch_exists_without_origin(tmp_path: Path) -> None:
+    mod = _bump_module()
+    assert mod.remote_branch_exists(tmp_path) is False  # not a repository / no origin
+
+
+def test_prepare_release_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review m4: a failure while replacing the second file restores the first one."""
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    mod.bump(root, "1.0.0", date=None)
+    snapshot = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    real = mod.os.replace
+    calls: list[Path] = []
+
+    def flaky(src: Path, dst: Path) -> None:
+        calls.append(Path(dst))
+        if len(calls) == 2:
+            raise OSError("disk full")
+        real(src, dst)
+
+    monkeypatch.setattr(mod.os, "replace", flaky)
+    with pytest.raises(OSError, match="disk full"):
+        mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=_seeded)
+    assert [p.name for p in calls] == ["CHANGELOG.md", "marketplace.json"]
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == snapshot  # no temps

@@ -12,8 +12,8 @@ users add the marketplace from ``main``), no CHANGELOG, tests, evals, bench, doc
 The built tree must meet the plugin directory limits (`tree_problems`); `build_claude_tree`
 raises `TreeError` otherwise and leaves no partial tree behind.
 
-Usage: ``python scripts/build_claude_tree.py --out DIR [--root .]`` prints the file count and
-the plugin hash of the built tree.
+Usage: ``python scripts/build_claude_tree.py --out DIR [--root .] [--ref REF]`` prints the file
+count and the plugin hash of the built tree.
 """
 
 from __future__ import annotations
@@ -319,9 +319,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="build_claude_tree", description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True, type=Path, help="new directory for the tree")
     parser.add_argument("--root", default=ROOT, type=Path, help="repository root (default: repo)")
+    parser.add_argument("--ref", default="HEAD", help="commit, tag or branch to build (HEAD)")
     args = parser.parse_args(argv)
     try:
-        written = build_claude_tree(args.root, args.out)
+        written = build_claude_tree(args.root, args.out, ref=args.ref)
     except (OSError, TreeError) as exc:
         print(f"build_claude_tree: {exc}", file=sys.stderr)
         return 1

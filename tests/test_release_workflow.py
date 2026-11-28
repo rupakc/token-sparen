@@ -255,6 +255,7 @@ def test_permissions_least_privilege(wf: dict[str, Any]) -> None:
         "push-tree": {"contents": "write"},
         "publish-pypi": {"id-token": "write"},
         "finalize": {"contents": "write"},
+        "docs": {"contents": "write", "pages": "write", "id-token": "write"},
     }
     jobs = _jobs(wf)
     assert set(jobs) == set(expected)
@@ -273,7 +274,30 @@ def test_job_order(wf: dict[str, Any]) -> None:
         "push-tree": {"build", "provenance"},
         "publish-pypi": {"build", "push-tree"},
         "finalize": {"build", "publish-pypi"},
+        "docs": {"finalize"},
     }
+
+
+def test_docs_deploy_only_after_a_successful_release(wf: dict[str, Any]) -> None:
+    """Review C1: site and wiki go live only after finalize (approved, PyPI hashes checked,
+    release published), and only for the highest release."""
+    jobs = _jobs(wf)
+    docs = jobs["docs"]
+    assert docs["uses"] == "./.github/workflows/docs-deploy.yml"
+    assert docs["if"] == "github.event_name == 'push' && needs.finalize.outputs.latest == 'true'"
+    assert docs["with"] == {"tag": "${{ github.ref_name }}"}
+    assert docs["secrets"] == {"TOKEN_SPAREN_DENYLIST": "${{ secrets.TOKEN_SPAREN_DENYLIST }}"}
+    fin = jobs["finalize"]
+    assert fin["outputs"] == {"latest": "${{ steps.publish.outputs.latest }}"}
+    (publish,) = [s for s in fin["steps"] if s.get("id") == "publish"]
+    run = publish["run"]
+    assert 'echo "latest=true" >> "$GITHUB_OUTPUT"' in run
+    assert run.index("--draft=false") < run.index("latest=true")
+    # no other workflow deploys the docs on its own trigger
+    deploy = parse_yaml((WORKFLOWS / "docs-deploy.yml").read_text(encoding="utf-8"))
+    assert isinstance(deploy, dict) and set(deploy["on"]) == {"workflow_call"}
+    manual = parse_yaml((WORKFLOWS / "docs.yml").read_text(encoding="utf-8"))
+    assert isinstance(manual, dict) and set(manual["on"]) == {"workflow_dispatch"}
 
 
 def test_dry_run_has_no_tag_checks_or_publishing(wf: dict[str, Any]) -> None:
@@ -459,6 +483,10 @@ def test_tree_push_is_fast_forward_only(wf: dict[str, Any]) -> None:
     guard = 'python3 "$GITHUB_WORKSPACE/scripts/push_tree_guard.py" --tag "$TAG" "${current[@]}"'
     assert guard in run
     assert 'git show "$base:.claude-plugin/plugin.json"' in run
+    assert "exists but has no .claude-plugin/plugin.json" in run  # review m1: a clear error
+    # review I2: a seeded branch (same version) passes only with the identical plugin hash
+    assert 'git archive "$base" | tar -x -C "$RUNNER_TEMP/current-tree"' in run
+    assert '--current-hash "$current_hash" --new-hash "$PLUGIN_HASH"' in run
     assert run.index("nothing to push") < run.index(guard) < run.index(" push origin ")
     ff = 'git merge-base --is-ancestor "$base" "$commit"'
     assert run.index("git commit-tree") < run.index(ff) < run.index(" push origin ")

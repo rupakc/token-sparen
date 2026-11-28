@@ -40,6 +40,22 @@ def test_unreadable_branch_version_fails_closed(current: str) -> None:
     assert guard.downgrade_problems("v9.0.0", current)
 
 
+def test_same_version_only_for_the_identical_seeded_plugin() -> None:
+    """Review I2: the first release seeds release/claude with its measured tree; the release's
+    push-tree may then add the release commit for that same plugin, never a different one."""
+    seeded = _manifest("1.0.0")
+    assert (
+        guard.downgrade_problems("v1.0.0", seeded, current_hash="a" * 64, new_hash="a" * 64) == []
+    )
+    (problem,) = guard.downgrade_problems(
+        "v1.0.0", seeded, current_hash="a" * 64, new_hash="b" * 64
+    )
+    assert "different plugin" in problem
+    assert guard.downgrade_problems("v1.0.0", seeded, current_hash="a" * 64)  # no new hash
+    # an older version is refused even when the hashes happen to be equal
+    assert guard.downgrade_problems("v0.9.0", seeded, current_hash="a" * 64, new_hash="a" * 64)
+
+
 def test_bad_tag_refused() -> None:
     assert guard.downgrade_problems("v1.0.0-rc1", None)
 
@@ -51,4 +67,6 @@ def test_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert guard.main(["--tag", "v1.0.1", "--current-manifest", str(manifest)]) == 1
     assert "::error::" in capsys.readouterr().err
     assert guard.main(["--tag", "v1.0.0"]) == 0
+    same = ["--current-hash", "c" * 64, "--new-hash", "c" * 64]
+    assert guard.main(["--tag", "v1.0.1", "--current-manifest", str(manifest), *same]) == 0
     assert guard.main(["--tag", "v1.0.2", "--current-manifest", str(tmp_path / "missing")]) == 1

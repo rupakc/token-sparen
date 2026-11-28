@@ -6,7 +6,9 @@
 ``python scripts/bump_version.py --set-date 1.0.0 2026-12-01``  replace ``Unreleased`` by a date
 ``python scripts/bump_version.py --prepare-release 1.0.0 2026-12-01``  the release-prep step:
     ``--set-date`` plus pointing ``.claude-plugin/marketplace.json`` at the ``release/claude``
-    branch (ruling B1; ``release_check`` enforces it for every ``X.Y.Z`` release)
+    branch (ruling B1; ``release_check`` enforces it for every ``X.Y.Z`` release). Refused
+    until ``release/claude`` exists on ``origin`` (the first release seeds it; review I2);
+    both files are written atomically.
 
 A version bump writes ``token_sparen/__init__.py``, ``.claude-plugin/plugin.json`` and
 ``CHANGELOG.md``; the release-prep step writes ``CHANGELOG.md`` and
@@ -19,9 +21,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -125,8 +129,7 @@ def bump(root: Path, new: str, *, date: str | None, dry_run: bool = False) -> li
     return [init, plugin, changelog]
 
 
-def set_date(root: Path, version: str, date: str) -> Path:
-    """Replace ``## [version] - Unreleased`` by ``## [version] - date``; nothing else changes."""
+def _dated(root: Path, version: str, date: str) -> tuple[Path, str]:
     if not DATE_RE.match(date):
         raise ValueError(f"bad date {date!r}: expected YYYY-MM-DD")
     changelog = root / "CHANGELOG.md"
@@ -134,7 +137,13 @@ def set_date(root: Path, version: str, date: str) -> Path:
     old = f"## [{version}] - Unreleased"
     if text.count(old) != 1:
         raise ValueError(f"CHANGELOG.md has no single {old!r} heading")
-    _write(changelog, text.replace(old, f"## [{version}] - {date}"))
+    return changelog, text.replace(old, f"## [{version}] - {date}")
+
+
+def set_date(root: Path, version: str, date: str) -> Path:
+    """Replace ``## [version] - Unreleased`` by ``## [version] - date``; nothing else changes."""
+    changelog, text = _dated(root, version, date)
+    _write(changelog, text)
     return changelog
 
 
@@ -159,17 +168,71 @@ def track_release_branch(root: Path) -> Path:
     return path
 
 
-def prepare_release(root: Path, version: str, date: str) -> list[Path]:
+def remote_branch_exists(root: Path, branch: str = RELEASE_BRANCH) -> bool:
+    """True when ``origin`` has ``refs/heads/<branch>`` (``git ls-remote``; no other effect)."""
+    try:
+        proc = subprocess.run(  # noqa: S603
+            ["git", "ls-remote", "--exit-code", "--heads", "origin", f"refs/heads/{branch}"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def _write_all(files: list[tuple[Path, str]]) -> None:
+    """Write every file or none (review m4): each goes to a temp file next to it first, then
+    the temp files replace the targets; a failed replace restores what was already replaced."""
+    temps: list[tuple[Path, Path, str]] = []
+    try:
+        for path, text in files:
+            temp = path.with_name(f".{path.name}.prepare-tmp")
+            _write(temp, text)
+            temps.append((temp, path, path.read_text(encoding="utf-8")))
+        done: list[tuple[Path, str]] = []
+        try:
+            for temp, path, original in temps:
+                os.replace(temp, path)
+                done.append((path, original))
+        except OSError:
+            for path, original in reversed(done):
+                _write(path, original)
+            raise
+    finally:
+        for temp, _, _ in temps:
+            temp.unlink(missing_ok=True)
+
+
+def prepare_release(
+    root: Path,
+    version: str,
+    date: str,
+    *,
+    branch_exists: Callable[[Path], bool] | None = None,
+) -> list[Path]:
     """The release-prep step of ``X.Y.Z`` (ruling B1): date the CHANGELOG heading and point the
-    marketplace at ``release/claude``, in the same ``chore(release)`` commit. Checks everything
-    before writing anything."""
+    marketplace at ``release/claude``, in the same ``chore(release)`` commit.
+
+    Refused unless ``release/claude`` already exists on ``origin`` (review I2: for the first
+    release the runbook seeds it with the measured tree first, so the marketplace never names a
+    missing branch). Checks everything before writing, then writes both files atomically."""
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise ValueError(f"bad release version {version!r}: expected X.Y.Z")
     if current_version(root) != version:
         raise ValueError(f"the current version is {current_version(root)}, not {version}")
-    market, text = _tracked_marketplace(root)
-    changelog = set_date(root, version, date)
-    _write(market, text)
+    market, market_text = _tracked_marketplace(root)
+    changelog, changelog_text = _dated(root, version, date)
+    exists = branch_exists if branch_exists is not None else remote_branch_exists
+    if not exists(root):
+        raise ValueError(
+            f"{RELEASE_BRANCH} does not exist on origin yet; seed it with the measured plugin "
+            "tree first (docs/release/runbook.md, 'Seed release/claude'), so the marketplace "
+            "never points at a missing branch"
+        )
+    _write_all([(changelog, changelog_text), (market, market_text)])
     return [changelog, market]
 
 

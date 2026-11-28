@@ -5,7 +5,8 @@ name: Release
 # tag checks, nothing pushed, attested or published.
 #
 # Order: gate (CI) + verify-tag -> build -> draft-release -> [owner approves `release`]
-# provenance -> push-tree (release/claude) -> [owner approves `pypi`] publish-pypi -> finalize.
+# provenance -> push-tree (release/claude) -> [owner approves `pypi`] publish-pypi -> finalize
+# -> docs (site + wiki, highest release only; docs-deploy.yml).
 # Resume after a failure with "Re-run failed jobs" only (the `dist` artifact is reused, so the
 # hashes stay stable); a full re-run of a tag is allowed only before publish-pypi succeeded.
 on:
@@ -215,10 +216,15 @@ jobs:
             exit 0
           fi
           # never a downgrade: the branch's version must be lower than $TAG's (review M3)
+          # (the same version only when the branch was seeded with this very plugin: review I2)
           current=()
           if [ -n "$base" ]; then
-            git show "$base:.claude-plugin/plugin.json" > "$RUNNER_TEMP/current-plugin.json"
-            current=(--current-manifest "$RUNNER_TEMP/current-plugin.json")
+            git show "$base:.claude-plugin/plugin.json" > "$RUNNER_TEMP/current-plugin.json" \
+              || { echo "::error::$BRANCH exists but has no .claude-plugin/plugin.json; it must hold a plugin tree (never pre-create it empty; see docs/release/runbook.md)"; exit 1; }
+            mkdir "$RUNNER_TEMP/current-tree"
+            git archive "$base" | tar -x -C "$RUNNER_TEMP/current-tree"
+            current_hash=$(python3 "$GITHUB_WORKSPACE/scripts/plugin_hash.py" "$RUNNER_TEMP/current-tree")
+            current=(--current-manifest "$RUNNER_TEMP/current-plugin.json" --current-hash "$current_hash" --new-hash "$PLUGIN_HASH")
           fi
           python3 "$GITHUB_WORKSPACE/scripts/push_tree_guard.py" --tag "$TAG" "${current[@]}"
           commit=$(git commit-tree "$tree_sha" "${parent[@]}" -m "$msg")
@@ -263,6 +269,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      latest: ${{ steps.publish.outputs.latest }}
     env:
       TAG: ${{ github.ref_name }}
       VERSION: ${{ needs.build.outputs.version }}
@@ -286,6 +294,7 @@ jobs:
             [ "$served" = "$digest" ] || { echo "::error::$name: PyPI sha256 '$served' != built $digest"; exit 1; }
           done < dist/SHA256SUMS
       - name: Publish the GitHub Release (latest only if it is the highest release)
+        id: publish
         run: |
           set -euo pipefail
           highest=$( { gh release list --exclude-drafts --exclude-pre-releases --limit 1000 \
@@ -293,3 +302,19 @@ jobs:
                      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
           if [ "$highest" = "$TAG" ]; then latest=--latest; else latest=--latest=false; fi
           gh release edit "$TAG" --draft=false "$latest"
+          if [ "$highest" = "$TAG" ]; then echo "latest=true" >> "$GITHUB_OUTPUT"; else echo "latest=false" >> "$GITHUB_OUTPUT"; fi
+
+  # The public site and wiki, only after a successful, approved release (review C1) and only for
+  # the highest release (a patch on an older line never replaces newer docs).
+  docs:
+    needs: finalize
+    if: github.event_name == 'push' && needs.finalize.outputs.latest == 'true'
+    permissions:
+      contents: write  # the wiki push
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs-deploy.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets:
+      TOKEN_SPAREN_DENYLIST: ${{ secrets.TOKEN_SPAREN_DENYLIST }}
