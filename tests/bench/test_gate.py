@@ -1004,3 +1004,22 @@ def test_rapid_after_the_fact_publications_are_refused(store: Store, real_cap: N
     # the same pushes received a window apart each: within the floor
     paced = [(p.commit, T0 + i * 5.0 * H) for i, p in enumerate(pubs)]
     assert g.gate(ledger=led, **_ref(repo), receipts=paced, **KW).release_verdict == "passed"
+
+
+def test_honest_campaign_with_a_window_opening_after_the_plan_passes(
+    store: Store, real_cap: None
+) -> None:
+    """Follow-up ruling: a quota window that opens soon after the plan lets an honest campaign
+    grade eight runs within two hours; the floor counts the windows the span can touch."""
+    led = store(_confirm(10))
+    repo = publish_all(led, T0)
+    pubs = anchors.read_published(repo, "bench-anchors", "c")
+    assert [p.anchors[-1]["graded_runs"] for p in pubs] == [0, 4, 8, 12, 16, 20, 20]
+    when = [0, 1, 2, 7, 12, 17, 17.01]  # hours after the plan's receipt
+    receipts = [(p.commit, T0 + h * H) for p, h in zip(pubs, when, strict=True)]
+    res = g.gate(ledger=led, **_ref(repo), receipts=receipts, **KW)  # anchors accepted
+    assert not res.advisory and "too_few_paired_tasks" in res.reasons  # 10 tasks: stats only
+    early = [(sha, t - (3 * H if i >= 3 else 0)) for i, (sha, t) in enumerate(receipts)]
+    with pytest.raises(g.GateRefused) as err:  # twelve runs after four hours: too fast
+        g.gate(ledger=led, **_ref(repo), receipts=early, **KW)
+    assert err.value.code == "anchor_too_fast"

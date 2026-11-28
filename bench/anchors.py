@@ -341,9 +341,10 @@ def check_history(
 def _coverage(pubs: Sequence[Publication], times: Sequence[float]) -> list[tuple[str, str]]:
     """Re-review N8: the first publication anchors the plan before any run (zero starts, a
     plan hash), and each later one adds at most `RUN_CAP` graded runs. Re-review N9 (time
-    floor): a publication received at ``t`` anchors at most ``RUN_CAP × ceil((t − t_plan) /
-    5 h)`` graded runs, the scheduler's window cap, so a campaign cannot be published after the
-    fact in rapid pushes. ``times`` = receipt times (commit times when advisory)."""
+    floor): a publication received at ``t`` anchors at most ``RUN_CAP × (ceil((t − t_plan) /
+    5 h) + 1)`` graded runs (the windows the span can touch, the first possibly opening right
+    after the plan), so a campaign cannot be published after the fact in rapid pushes.
+    ``times`` = receipt times (commit times when advisory)."""
     out: list[tuple[str, str]] = []
     head = pubs[0].anchors[-1] if pubs[0].anchors else {}
     if head.get("runs_started") != 0 or head.get("graded_runs") != 0 or not head.get("plan_sha256"):
@@ -356,7 +357,7 @@ def _coverage(pubs: Sequence[Publication], times: Sequence[float]) -> list[tuple
             )
     for p, t in zip(pubs, times, strict=True):
         runs = p.anchors[-1].get("graded_runs") if p.anchors else None
-        allowed = RUN_CAP * max(0, math.ceil((t - times[0]) / MAX_GAP_S))
+        allowed = RUN_CAP * (max(0, math.ceil((t - times[0]) / MAX_GAP_S)) + 1)
         if not isinstance(runs, int) or runs > allowed:
             out.append(
                 ("anchor_too_fast", f"{p.commit[:12]} anchors {runs} graded runs, more than "
