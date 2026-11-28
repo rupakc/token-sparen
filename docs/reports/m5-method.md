@@ -87,8 +87,10 @@ run.
 
 The confirmation ledger and its grades are hash-chained. The chain heads are anchored on the
 public `bench-anchors` branch: the plan's anchor before any run, then one commit per push after
-every graded block (at most four graded runs per publication), at least every 5 h while the
-campaign runs, and once at the end. A server-side receipt workflow dates every push. The release
+every graded block (at most four graded runs per publication), a heartbeat at least every four
+hours while the scheduler is alive (waits included), and once at the end. A server-side receipt
+workflow dates every push. Two publications may lie more than 5 h apart only when the later one
+anchors no additional graded run (the scheduler was stopped and nothing ran unanchored). The release
 job fetches that branch and checks every publication against the final chains with the receipts;
 a local gate has no receipts and is advisory only. The residual risk (records written after the
 last publication of a window) is disclosed in the report.

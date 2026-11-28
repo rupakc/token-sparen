@@ -11,7 +11,9 @@ and once after the campaign. The release gate reads every publication itself fro
 (`read_published`; never a caller-supplied list) and refuses (`check_published`) unless each
 publication extends the previous one, every anchored head lies on the final chains (same record
 at the same count, i.e. a prefix), the last anchor equals the final heads, and no two
-consecutive publications are more than five hours apart (commit times).
+consecutive publications are more than five hours apart (commit times) — unless the later one
+anchors no additional graded run (pause ruling, M5 Task 12: a stopped scheduler may leave a long
+gap as long as nothing ran unanchored; while alive the CLI publishes a heartbeat every 3 h).
 
 Trust (re-review N7): commit times and local refs are set by the publisher, so the
 authoritative check runs in the release job (CI) against a freshly fetched
@@ -331,8 +333,12 @@ def check_history(
             )  # fmt: skip
             return problems
         times = [first[p.commit] for p in pubs]
-    for (_, b), when in zip(itertools.pairwise(pubs), itertools.pairwise(times), strict=True):
-        if when[1] - when[0] > MAX_GAP_S:
+    for (a, b), when in zip(itertools.pairwise(pubs), itertools.pairwise(times), strict=True):
+        # pause ruling (M5 Task 12): a longer gap is allowed only when the publication ending it
+        # anchors no additional graded run (the scheduler was stopped; nothing ran unanchored)
+        before, after = a.anchors[-1].get("graded_runs"), b.anchors[-1].get("graded_runs")
+        idle = isinstance(before, int) and isinstance(after, int) and after == before
+        if when[1] - when[0] > MAX_GAP_S and not idle:
             gap = (when[1] - when[0]) / 3600
             problems.append(("anchor_gap", f"{gap:.1f} h before publication {b.commit[:12]}"))
     return problems + _coverage(pubs, times)

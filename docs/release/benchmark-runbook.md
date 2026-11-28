@@ -127,10 +127,13 @@ confirmation report without it is never published.
    `--plan-only` writes the plan into the ledger, publishes the plan anchor and prints the plan
    hash without starting a run. The run then publishes after every graded block, every three
    hours while it runs or waits, and at the end.
-3. While the campaign is paused (a weekly stop, the breaker, a reboot), publish a heartbeat at
-   least every four hours, for example from a scheduled job:
-   `python -m bench anchors publish`. A gap of more than five hours between publications makes
-   the gate refuse the campaign.
+3. Pauses need no owner action for the anchors. While the scheduler is alive (running or
+   waiting with `--wait`) it publishes a heartbeat at least every four hours. When it has
+   stopped (a weekly stop, the breaker, a reboot), it publishes nothing. Resuming later is
+   fine: the gate accepts a gap of more than five hours between publications only when the
+   publication that ends the gap anchors no additional graded run, and that is always the case
+   when nothing ran in between. Runs anchored across such a gap make the gate refuse the
+   campaign. `python -m bench anchors publish` remains available for a manual publication.
 
 ## Gate
 

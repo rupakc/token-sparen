@@ -1804,7 +1804,10 @@ and the two new issues they found.
   there so the owner can commit `docs/evidence/plan.sha256` first); then one commit per push
   before grading each block (each publication adds at most one block, refused if a block could
   exceed `RUN_CAP`), a heartbeat when the last publication is three hours old (before each run
-  and while sleeping), and once at the end; `anchors publish` for pauses. The anchors clone lives
+  and while sleeping), and once at the end. Pause ruling (coordinator, 2026-11-28): (a) no owner
+  heartbeats; the live scheduler publishes at least every 4 h, `--wait` included; (b) the gate
+  accepts a gap > 5 h only when the publication ending it anchors no additional graded run
+  (`bench.anchors.check_history`); `anchors publish` stays as a manual option. The anchors clone lives
   in the workspace (`anchors-git/`); remote = the repo's `origin` unless `--anchors-remote`.
   `gate` fetches first; with `--github-repo` it uses server receipts, otherwise advisory, and
   `report` refuses an advisory or stale (chain heads changed) gate. Scheduler grader =

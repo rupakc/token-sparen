@@ -25,7 +25,7 @@ or a real campaign (fixed by its first command) and holds one campaign.
 | `power` | the confirmation spec and power verdict (`power.json`) |
 | `gate [--release-hash H] [--github-repo OWNER/NAME]` | release gate; advisory without server receipts |
 | `report --stage S [--publish]` | `e4.json`, `report.md`, figures; `--publish` copies them into the repository |
-| `anchors publish` | a heartbeat publication of the confirmation anchors during a pause |
+| `anchors publish` | a manual publication of the confirmation anchors (optional; the scheduler publishes its own heartbeats) |
 
 Exit codes of `run`: `0` complete, `3` weekly stop, `4` five-hour wait, `5` incomplete, `6`
 breaker, `7` auth, `8` token leak, `9` frozen plugin changed, `10` disk floor; `2` a refusal and

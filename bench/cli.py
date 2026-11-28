@@ -627,6 +627,20 @@ def _gold_ok(ws: Workspace) -> set[str]:
     return preflight_ok(ws.grading)
 
 
+def heartbeat_sleep(
+    seconds: float, sleep: Callable[[float], None], beat: Callable[[], None]
+) -> None:
+    """Sleep in steps of at most `HEARTBEAT_S`, calling ``beat`` after each (pause ruling: while
+    the scheduler is alive, including ``--wait`` pauses, a heartbeat anchor goes out at least
+    every 4 h without any owner action)."""
+    left = seconds
+    while left > 0:
+        step = min(left, HEARTBEAT_S)
+        sleep(step)
+        left -= step
+        beat()
+
+
 class _Heartbeat:
     """Delegates to the backend; a heartbeat anchor publication before each run."""
 
@@ -831,12 +845,7 @@ def _run_stage(
         grade_task(ledger, rig.grader, stage=stage, instance_id=instance_id, gold_ok=gold_ok)
 
     def sleep(seconds: float) -> None:
-        left = seconds
-        while left > 0:
-            step = min(left, HEARTBEAT_S)
-            rig.sleep(step)
-            left -= step
-            beat()
+        heartbeat_sleep(seconds, rig.sleep, beat)
         rig.after_sleep(rig.clock())
 
     if rig.virtual is not None:

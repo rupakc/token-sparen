@@ -254,3 +254,42 @@ def test_ci_runs_the_dry_run_with_least_privilege() -> None:
     for cmd in ("grade", "analyse", "power", "gate", "report"):
         assert f"python -m bench {cmd}" in job
     assert "mypy --strict bench" in ci
+
+
+def _copy(dry_ws: Path, tmp_path: Path) -> tuple[cli.Workspace, Ledger, cli.VirtualClock]:
+    copy = tmp_path / "copy"
+    shutil.copytree(dry_ws, copy, symlinks=True)
+    remote = str(copy / "dry-remote.git")  # never push to the shared workspace's remote
+    env = cli._git_env(isolated=True)
+    cli._git(copy / "anchors-git", "remote", "set-url", "origin", remote, env=env)
+    ws = cli.Workspace(copy, json.loads((copy / "workspace.json").read_text("utf-8")))
+    return ws, _ledger(copy, "confirmation"), cli.VirtualClock(copy / "dry-clock.json")
+
+
+def test_long_wait_publishes_heartbeats(dry_ws: Path, no_real_tools: Path, tmp_path: Path) -> None:
+    """Pause ruling (a): while the scheduler waits, heartbeats go out at least every 4 h."""
+    ws, led, clock = _copy(dry_ws, tmp_path)
+    pub = cli._publisher(ws, clock)
+    before = len(anchors.read_published(pub.clone, "HEAD", "ci"))
+    cli.heartbeat_sleep(26 * 3600.0, clock.sleep, lambda: pub.beat(led))
+    pubs = anchors.read_published(pub.clone, "HEAD", "ci")
+    assert len(pubs) - before >= 8
+    times = [p.at for p in pubs[before - 1 :]]
+    assert all(b - a <= 4 * 3600 for a, b in zip(times, times[1:], strict=False))
+    pub.fetch()
+    assert anchors.check_published(led, anchors.read_published(pub.clone, pub.ref, "ci")) == []
+
+
+def test_scheduler_stopped_for_a_day_then_resumed_without_runs_passes(
+    dry_ws: Path, no_real_tools: Path, tmp_path: Path
+) -> None:
+    """Pause ruling (b): nothing ran while unanchored, so a day-long gap is no anchor problem."""
+    ws, led, clock = _copy(dry_ws, tmp_path)
+    clock.sleep(24 * 3600.0)  # the scheduler was not running: no heartbeat
+    led.append({"kind": "pause", "at": clock(), "reason": "weekly"})
+    pub = cli._publisher(ws, clock)
+    assert pub.publish(led)
+    pub.fetch()
+    pubs = anchors.read_published(pub.clone, pub.ref, "ci")
+    assert pubs[-1].at - pubs[-2].at > anchors.MAX_GAP_S
+    assert anchors.check_published(led, pubs) == []

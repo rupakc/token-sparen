@@ -763,15 +763,47 @@ def test_gate_refuses_missing_final_anchor(store: Store) -> None:
     assert err.value.code == "anchor_not_final"
 
 
-def test_gate_refuses_six_hour_gap(store: Store) -> None:
+def test_gap_without_new_graded_runs_passes(store: Store) -> None:
+    """Pause ruling: the scheduler stopped for a day, then resumed with no run in between."""
     led = store(_confirm())
     repo = publish_all(led, T0)
     led.append({"kind": "pause", "reason": "weekly"})
     anchors.record_anchor(led)
-    publish(led, T0 + 6 * H)
+    publish(led, T0 + 30 * H)
+    res = g.gate(ledger=led, **_ref(repo), **KW)
+    assert res.verdict == "passed"
+
+
+def test_gate_refuses_runs_added_across_a_six_hour_gap(store: Store) -> None:
+    led = store(_confirm())
+    local = anchors.anchors_to_publish(led)
+    publish(led, T0, records=local[:1])  # the plan
+    repo = publish(led, T0 + 6 * H, records=local)  # every run, after the gap
     with pytest.raises(g.GateRefused) as err:
         g.gate(ledger=led, **_ref(repo), **KW)
     assert err.value.code == "anchor_gap"
+
+
+def test_check_history_gap_rule() -> None:
+    docs: list[dict[str, Any]] = []
+    prev = anchors.GENESIS
+    for i, graded in enumerate((0, 1, 1, 2)):
+        d = {"kind": "anchor", "graded_runs": graded, "runs_started": graded, "plan_sha256": "p"}
+        d |= {"n": i, anchors.CHAIN_FIELD: prev}
+        prev = anchors.record_sha256(d)
+        docs.append(d)
+
+    def pub(sha: str, at: float, upto: int) -> anchors.Publication:
+        return anchors.Publication(sha, int(at), tuple(docs[:upto]))
+
+    def codes(pubs: list[anchors.Publication]) -> set[str]:
+        return {c for c, _ in anchors.check_history(pubs, None)}
+
+    # no additional graded run after a day: allowed; one more graded run after six hours: refused
+    assert "anchor_gap" not in codes(
+        [pub("a", T0, 1), pub("b", T0 + H, 2), pub("c", T0 + 26 * H, 3)]
+    )
+    assert "anchor_gap" in codes([pub("a", T0, 1), pub("b", T0 + H, 3), pub("c", T0 + 7 * H, 4)])
 
 
 def test_gate_refuses_without_publications(store: Store, tmp_path: Path) -> None:
@@ -855,7 +887,10 @@ def test_gap_is_computed_from_receipts(store: Store) -> None:
     anchors.record_anchor(led)
     publish(led, T0 + H)  # commit times 1 h apart (set by the publisher)
     *early, last = _shas(repo)
-    receipts = [(sha, T0 + 60.0 * i) for i, sha in enumerate(early)] + [(last, T0 + 7 * H)]
+    shas = [*early, last]  # the plan, then a publication adding runs 7 h later (by receipt)
+    receipts = [(shas[0], float(T0))] + [
+        (sha, T0 + 7 * H + 60.0 * i) for i, sha in enumerate(shas[1:])
+    ]
     with pytest.raises(g.GateRefused) as err:
         g.gate(ledger=led, **_ref(repo), receipts=receipts, **KW)
     assert err.value.code == "anchor_gap"
