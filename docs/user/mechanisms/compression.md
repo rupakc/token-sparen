@@ -30,7 +30,7 @@ Quality warning: the agent usually goes on to use a file's contents (to edit or 
 
 - **Never larger.** The replacement is used only if it is no longer than what the model would have seen anyway and saves at least 15 % of it.
 - **Floor.** Results below 2000 estimated tokens are never modified; a lower `compression.min_tokens` is ignored and `doctor` flags it, a higher one is honoured.
-- **Errors kept.** Error lines, failures and stack-trace edges are never elided.
+- **Errors kept.** Error lines, failures and stack-trace edges are never elided. Besides `error`, `exception`, `fail`, `fatal`, `panic` and `assert`, this covers `npm ERR!`, `Segmentation fault`/`segfault`, `Killed`, `Permission denied`, `EACCES`, `Access is denied`/`access denied`, `undefined reference` and `command not found`.
 - **Never touched:** edit tools (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`), `TodoWrite`, `AskUserQuestion`, `ExitPlanMode`, images and PDFs, and failing tool calls (Claude Code cannot replace the result of a failed call).
 - **Recoverable.** The marker names the id and path: [Recovering trimmed output](../host-guides/claude-code.md#recovering-trimmed-output).
 - **Fail open.** A hook slower than 400 ms, or any error, leaves the output as is; if the recovery file cannot be saved in time (`compression.save_deadline_ms`) the output is left as is.

@@ -794,6 +794,42 @@ def build_cases():
         ],
         command="./gradlew build",
     )
+    # v1 review M10: a build that exits 0 (piped through tee) with failures worded outside
+    # the error/fail vocabulary in the middle; each must stay inline.
+    b = []
+    for i in range(1, 13):
+        b.append(f"#{i} [{i}/14] RUN step-{i}")
+        b += [
+            f"#{i} {j * 0.2:.1f} fetched chunk {j} of layer {i} ({j * 37} kB) from registry mirror"
+            for j in range(22)
+        ]
+        b.append(f"#{i} DONE 2.{i}s")
+        if i == 3:
+            b.append("#3 1.9 npm ERR! code ELIFECYCLE")
+        if i == 5:
+            b.append("#5 3.2 /bin/sh: line 1:   812 Segmentation fault (core dumped) ./gen-assets")
+        if i == 7:
+            b.append("#7 4.4 /bin/sh: line 1:   977 Killed                  node build.js")
+        if i == 9:
+            b.append("#9 0.7 cp: cannot create regular file '/opt/app/bin/tool': Permission denied")
+        if i == 10:
+            b.append("#10 0.9 npm WARN checkPermissions code EACCES path /usr/lib/node_modules")
+    b += ["#14 exporting to image", "#14 naming to example.org/app:dev done", "#14 DONE 0.4s"]
+    m10 = [
+        "#3 1.9 npm ERR! code ELIFECYCLE",
+        "Segmentation fault (core dumped) ./gen-assets",
+        "977 Killed                  node build.js",
+        "cp: cannot create regular file '/opt/app/bin/tool': Permission denied",
+        "npm WARN checkPermissions code EACCES path /usr/lib/node_modules",
+    ]
+    add(
+        "build_silent_failures.txt",
+        "\n".join(b) + "\n",
+        ["build_log"],
+        m10,
+        must_inline=m10,
+        command="docker build . 2>&1 | tee build.log",
+    )
 
 
 # ------------------------------------------------------------------ search
@@ -1015,6 +1051,17 @@ def log_cases():
         ["log"],
         ["Killed process 4412 (java)", "app.service: Failed with result 'oom-kill'."],
         must_inline=["app.service: Failed with result 'oom-kill'."],
+    )
+    L = [
+        line(i, "INFO", f"sync batch {i} copied 40 files to share nas01/builds") for i in range(300)
+    ]
+    L.insert(150, "robocopy: copying C:\\build\\out\\app.dll: Access is denied.")
+    add(
+        "log_windows_denied.txt",
+        "\n".join(L) + "\n",
+        ["log"],
+        ["robocopy: copying C:\\build\\out\\app.dll: Access is denied."],
+        must_inline=["robocopy: copying C:\\build\\out\\app.dll: Access is denied."],
     )
 
 

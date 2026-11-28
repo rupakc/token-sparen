@@ -86,6 +86,21 @@ def test_level_override_from_user_config(tmp_path: Path) -> None:
         "FAIL src/app.test.js",
         "--- FAIL: TestFoo (0.00s)",
         "Exception in thread main",
+        # v1 review M10: failure wording outside the error/fail vocabulary
+        "npm ERR! code ELIFECYCLE",
+        "npm ERR! errno 1",
+        "Segmentation fault (core dumped)",
+        "zsh: segmentation fault  ./a.out",
+        "program segfaulted at 0x0",
+        "Killed",
+        "/bin/sh: line 1:  4242 Killed                  make -j8",
+        "cp: cannot open 'x': Permission denied",
+        "Error: EACCES: open '/srv/x'",
+        "npm WARN checkPermissions EACCES /usr/lib",
+        "Access is denied.",
+        "access denied for user 'app'",
+        "main.o: undefined reference to `vec_push'",
+        "bash: cargo: command not found",
     ],
 )
 def test_error_patterns_match(line: str) -> None:
@@ -93,7 +108,20 @@ def test_error_patterns_match(line: str) -> None:
     assert any(p.search(line) for p in ERROR_PATTERNS)
 
 
-@pytest.mark.parametrize("line", ["terrorist cell", "all good here", "assertive tone", "step 3"])
+@pytest.mark.parametrize(
+    "line",
+    [
+        "terrorist cell",
+        "all good here",
+        "assertive tone",
+        "step 3",
+        "skilled worker",
+        "the job was killed by the user",
+        "ERRATA",
+        "permissions denied-list",
+        "segmentational",
+    ],
+)
 def test_error_patterns_word_bounded(line: str) -> None:
     assert not is_error_line(line)
 
@@ -337,6 +365,26 @@ _PIECES = st.sampled_from(
         "Error",
         "terror",
         "fail",
+        "ERR!",
+        "ERR",
+        "npm ",
+        "!",
+        "Killed",
+        "killed",
+        "sKilled",
+        "segfault",
+        "Segmentation fault",
+        "segmentation",
+        " fault",
+        "Permission denied",
+        "permission ",
+        "denied",
+        "EACCES",
+        "eacces",
+        "Access is denied",
+        "access denied",
+        "undefined reference",
+        "command not found",
         "FAILED",
         "panic",
         "assert",

@@ -36,13 +36,16 @@ ENTRY_POINT_GROUP = "token_sparen.compressors"
 ERROR_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"\b(?:errors?|exceptions?|traceback|fail(?:s|ed|ure|ures|ing)?|fatal|panic(?:ked)?"
-        r"|assert(?:ion)?)\b",
+        r"|assert(?:ion)?|segmentation fault|segfault(?:s|ed)?|permission denied|eacces"
+        r"|access (?:is )?denied|undefined reference|command not found)\b",
         # ASCII-only case folding keeps the byte-level anchor scan exact (no Unicode
         # look-alikes such as U+017F matching "s"); non-ASCII letters count as boundaries,
         # which can only pin more lines, never fewer.
         re.IGNORECASE | re.ASCII,
     ),
     re.compile(r"(?:Error|Exception)\b", re.ASCII),  # CamelCase names: ValueError, IOException
+    re.compile(r"\bERR!", re.ASCII),  # npm ERR! (the npm failure prefix)
+    re.compile(r"\bKilled\b", re.ASCII),  # a shell reporting a SIGKILLed job (OOM killer)
     re.compile("✗"),
 )
 
@@ -69,10 +72,20 @@ _LOWER_SCANNERS: tuple[re.Pattern[bytes], ...] = (
     _anchored("fatal"),
     _anchored("panic", "(?:ked)?"),
     _anchored("assert", "(?:ion)?"),
+    _anchored("segmentation fault"),
+    _anchored("segfault", "(?:s|ed)?"),
+    _anchored("permission denied"),
+    _anchored("eacces"),
+    _anchored("access denied"),
+    _anchored("access is denied"),
+    _anchored("undefined reference"),
+    _anchored("command not found"),
 )
 _RAW_SCANNERS: tuple[re.Pattern[bytes], ...] = (
     re.compile(rb"Error(?![A-Za-z0-9_])"),
     re.compile(rb"Exception(?![A-Za-z0-9_])"),
+    re.compile(rb"ERR!(?<![A-Za-z0-9_]ERR!)"),
+    re.compile(rb"Killed(?<![A-Za-z0-9_]Killed)(?![A-Za-z0-9_])"),
     re.compile("✗".encode()),
 )
 
