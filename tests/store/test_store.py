@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from token_sparen.store import jsonl, jsonstore, paths, session
+from token_sparen.store import jsonl, jsonstore, keycache, paths, session
 
 KEY = "0123456789abcdef"
 
@@ -111,6 +111,39 @@ def test_project_key_outside_any_repo_spawns_no_git(
     _git(repo, "remote", "add", "origin", "https://github.com/a/b")
     assert paths.project_key(repo / "sub") == paths.project_key(repo)
     assert len(calls) == 3  # the two keys above
+
+
+def test_project_key_through_a_symlink_into_a_repo_keeps_the_remote_key(tmp_path: Path) -> None:
+    """Review I1 of a38a57b: ``~/work -> <repo>/services``: git resolves the link and finds the
+    repository, so the git-presence check must walk the realpath too; the hook (path as given)
+    and the CLI (resolved path) get the same remote key, cache or no cache."""
+    repo = tmp_path / "repo"
+    (repo / "deep" / "dir").mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "remote", "add", "origin", "https://github.com/a/b")
+    remote_key = paths.project_key(repo)
+    link = tmp_path / "linkdeep"
+    try:
+        link.symlink_to(repo / "deep", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    for given in (link, link / "dir"):
+        assert paths.project_key(given) == remote_key
+        assert paths.project_key(given.resolve()) == remote_key
+        for home in ("h1", "h2"):  # a cache miss each time: the hook's and the CLI's view
+            env = {"TOKEN_SPAREN_HOME": str(tmp_path / home / given.name)}
+            path = given if home == "h1" else given.resolve()
+            assert keycache.cached_project_key(path, env) == remote_key
+
+
+def test_project_key_of_a_bare_repository_keeps_the_remote_key(tmp_path: Path) -> None:
+    """Review M1 of a38a57b: a bare repository (no ``.git`` entry) still asks git."""
+    bare = tmp_path / "bare.git"
+    bare.mkdir()
+    _git(bare, "init", "-q", "--bare")
+    _git(bare, "remote", "add", "origin", "https://github.com/a/b")
+    assert paths.project_key(bare) == paths.project_key(bare / "refs")
+    assert paths.project_key(bare) != paths.project_key(tmp_path)
 
 
 def test_parallel_writers_no_lost_update(tmp_path: Path) -> None:

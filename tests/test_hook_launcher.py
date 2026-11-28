@@ -751,3 +751,18 @@ def test_log_fallback_rotates_its_day_markers(pyfind: ModuleType, tmp_path: Path
     text = (logs / "errors.jsonl").read_text(encoding="utf-8")
     assert [json.loads(x)["error"] for x in text.splitlines()] == ["a", "b", "a"]
     assert len(list(logs.glob("launcher-fallback-*"))) == 1  # yesterday's markers are gone
+
+
+def test_log_fallback_keys_on_the_reason_not_the_detail(pyfind: ModuleType, tmp_path: Path) -> None:
+    """Review M2 of a38a57b: exception text varying per call (ids, offsets) is detail, not a
+    new reason: one line and one marker a day; the detail is one short line."""
+    env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
+    for i in range(5):
+        pyfind.log_fallback(env, "PostToolUse: ValueError; no-op", f"bad byte at {i}\nnext line")
+    pyfind.log_fallback(env, "PostToolUse: KeyError; no-op", "x" * 1000)
+    logs = tmp_path / "home" / "logs"
+    lines = [json.loads(x) for x in (logs / "errors.jsonl").read_text("utf-8").splitlines()]
+    assert len(lines) == 2, lines
+    assert lines[0]["error"] == "PostToolUse: ValueError; no-op (bad byte at 0 next line)"
+    assert len(lines[1]["error"]) < 200
+    assert len(list(logs.glob("launcher-fallback-*"))) == 2

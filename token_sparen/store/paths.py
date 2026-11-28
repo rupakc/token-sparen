@@ -44,23 +44,29 @@ def normalise_remote(url: str) -> str:
     return f"{host.lower()}/{rest}"
 
 
+def _bare_repo(d: Path) -> bool:
+    """``d`` looks like a bare repository's git dir (``HEAD``, ``objects/``, ``refs/``)."""
+    return (d / "HEAD").is_file() and (d / "objects").is_dir() and (d / "refs").is_dir()
+
+
 def _in_git_tree(project_dir: Path, env: Mapping[str, str]) -> bool:
-    """A ``.git`` entry in ``project_dir`` or any parent, or a ``GIT_DIR`` in the environment:
-    only then can git name a remote. Spares a git spawn per new project outside any repository
-    (on macOS ``/usr/bin/git`` is an xcrun shim whose cold first call can take most of a hook's
-    budget)."""
+    """Can git name a remote for ``project_dir``? Only with a ``GIT_DIR`` in the environment,
+    or a ``.git`` entry (or a bare repository) in the directory or a parent, along the path as
+    given and along its realpath (git resolves a symlinked project dir and discovers the
+    repository physically, so a link into a repository's sub-dir keeps its remote key; the
+    hook passes the path unresolved, the CLI resolved, and both must agree). Spares a git spawn
+    per new project outside any repository (on macOS ``/usr/bin/git`` is an xcrun shim whose
+    cold first call can take most of a hook's budget)."""
     if env.get("GIT_DIR"):
         return True
     try:
-        cur = Path(os.path.abspath(project_dir))
+        chains = {Path(os.path.abspath(project_dir)), Path(os.path.realpath(project_dir))}
+        for cur in chains:
+            for d in (cur, *cur.parents):
+                if os.path.lexists(d / ".git") or _bare_repo(d):
+                    return True
     except (OSError, ValueError):
-        return True
-    for d in (cur, *cur.parents):
-        try:
-            if os.path.lexists(d / ".git"):
-                return True
-        except (OSError, ValueError):
-            return True
+        return True  # cannot tell: let git decide
     return False
 
 

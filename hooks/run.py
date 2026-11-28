@@ -31,11 +31,11 @@ def _noop(message=""):
     sys.stdout.flush()
 
 
-def _log_fallback(env, error):
+def _log_fallback(env, reason, detail=""):
     """One ``errors.jsonl`` line (``_pyfind.log_fallback``) for a no-op the launcher wrote
     itself; never raises."""
     try:
-        _load_pyfind().log_fallback(env, error)
+        _load_pyfind().log_fallback(env, reason, detail)
     except Exception:  # noqa: BLE001 - fail open
         pass
 
@@ -76,8 +76,9 @@ def _hop(argv, env, version):
         except Exception:  # noqa: BLE001
             message = ""
     else:  # report_missing logs the common case; these must not be silent either
-        why = f"could not relaunch on {found[0]}" if found is not None else "launcher broken"
-        _log_fallback(env, f"Python {version[0]}.{version[1]}: {why}; no-op")
+        why = "could not relaunch" if found is not None else "launcher broken"
+        where = found[0] if found is not None else ""
+        _log_fallback(env, f"Python {version[0]}.{version[1]}: {why}; no-op", where)
     _noop(message)
     return 0
 
@@ -100,15 +101,13 @@ def _run() -> int:
         sys.stdout.write("{}\n")
         sys.stdout.flush()
         py = f"{sys.version_info[0]}.{sys.version_info[1]}"
-        why = f"{type(exc).__name__}: {exc}"
-        _log_fallback(
-            os.environ, f"{event_name}: cannot import token_sparen on Python {py} ({why}); no-op"
-        )
+        reason = f"{event_name}: cannot import token_sparen on Python {py}: {type(exc).__name__}"
+        _log_fallback(os.environ, reason + "; no-op", str(exc))
         return 0
     try:
         return main(event_name, sys.stdin, sys.stdout, os.environ)
     except Exception as exc:  # noqa: BLE001 - main never raises; never write twice
-        _log_fallback(os.environ, f"{event_name}: {type(exc).__name__}: {exc}")
+        _log_fallback(os.environ, f"{event_name}: {type(exc).__name__}; no-op", str(exc))
         return 0
 
 

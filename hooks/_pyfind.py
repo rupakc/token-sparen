@@ -476,10 +476,23 @@ def warning_text(current_version):
     )
 
 
-def log_fallback(env, error, now=None):
+DETAIL_MAX = 160  # characters of a fallback's detail kept in its errors.jsonl line
+
+
+def _detail(text):
+    """One short line: control characters (newlines included) become spaces, then truncated."""
+    flat = "".join(" " if ord(c) < 32 or ord(c) == 127 else c for c in str(text))
+    flat = " ".join(flat.split())
+    return flat if len(flat) <= DETAIL_MAX else flat[: DETAIL_MAX - 1] + "\u2026"
+
+
+def log_fallback(env, reason, detail="", now=None):
     """The launcher answered the no-op ``{}`` without running the hook: one ``errors.jsonl``
-    line per reason and day (an O_EXCL marker per reason), so ``doctor`` shows it and the plugin
-    never does nothing silently; best effort, never raises."""
+    line per ``reason`` and day, so ``doctor`` shows it and the plugin never does nothing
+    silently. ``reason`` is the stable part (event, fixed cause, exception type) and alone
+    keys the once-a-day marker (an O_EXCL file); ``detail`` (exception text, a path) varies
+    from call to call, so it only goes into the line, short and on one line. Best effort,
+    never raises."""
     now = time.time() if now is None else now
     try:
         home = state_root(env)
@@ -488,7 +501,7 @@ def log_fallback(env, error, now=None):
         if not _owned(home):
             return
         day = time.strftime("%Y-%m-%d", time.localtime(now))
-        tag = hashlib.sha256(error.encode("utf-8", "replace")).hexdigest()[:12]
+        tag = hashlib.sha256(reason.encode("utf-8", "replace")).hexdigest()[:12]
         marker = os.path.join(logs, "launcher-fallback-" + tag + "-" + day)
         try:
             os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
@@ -500,6 +513,8 @@ def log_fallback(env, error, now=None):
                     os.unlink(os.path.join(logs, name))
                 except OSError:
                     pass
+        shown = _detail(detail) if detail else ""
+        error = reason + (" (" + shown + ")" if shown else "")
         rec = {"ts": float(now), "kind": "launcher", "where": "launcher", "error": error}
         with open(os.path.join(logs, "errors.jsonl"), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec) + "\n")

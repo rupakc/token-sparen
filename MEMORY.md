@@ -1906,3 +1906,10 @@ and the two new issues they found.
   is an xcrun shim; a cold call likely ate the 250 ms save deadline on CI runners). Scanners
   are grouped by a shared rare byte (`c`, `f`, `E`): 8 passes instead of 20 over a 10 MB output,
   same lines (fuzzed). The normalised plugin hash works on bytes (CRLF trees normalise too).
+- 2026-11-28 a38a57b review follow-up: the git-presence gate walks the path as given and its
+  realpath and accepts a bare repository (a symlinked project dir keeps its remote key; hook and
+  CLI agree). The launcher's once-a-day fallback line keys on a stable reason (event, cause,
+  exception type); exception text is a short one-line detail only. Fallback markers stay in
+  `logs/` (nothing else enumerates it; uninstall removes the state root). The normalised plugin
+  hash is byte-exact outside the version: a whitespace-only `plugin.json` edit or another
+  `core.autocrlf` checkout now changes it (stricter, intended).
