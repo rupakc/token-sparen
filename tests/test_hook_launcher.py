@@ -572,6 +572,9 @@ def test_hook_command_resolves_the_interpreter_per_platform(
     proc = _run_hook_command(tmp_path, os.pathsep.join([str(bindir), "/usr/bin", "/bin"]))
     assert proc.returncode == 0, proc.stderr
     assert "[token-sparen: kept " in proc.stdout, proc.stdout[:300] + proc.stderr
+    if shell == "posix":  # a normal hook run on a POSIX shell prints nothing to stderr
+        assert proc.stderr == "", proc.stderr
+    assert "not found" not in proc.stderr, proc.stderr
     calls = log.read_text(encoding="utf-8").splitlines()
     assert calls and calls[0].split()[0] == used, calls
     assert all(c.split()[0] == used for c in calls), calls  # one interpreter, no stub call

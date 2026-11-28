@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{ hash cygpath 2>&- && ! uname -r 2>&- | grep -qi microsoft && { hash py.exe 2>&- && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionStart || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionStart; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionStart; } || echo {}",
+            "command": "{ command -v cygpath >&2 && ! uname -r 2>&- | grep -qi microsoft && { command -v py.exe >&2 && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionStart || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionStart; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionStart; } || echo {}",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{ hash cygpath 2>&- && ! uname -r 2>&- | grep -qi microsoft && { hash py.exe 2>&- && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" UserPromptSubmit || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" UserPromptSubmit; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" UserPromptSubmit; } || echo {}",
+            "command": "{ command -v cygpath >&2 && ! uname -r 2>&- | grep -qi microsoft && { command -v py.exe >&2 && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" UserPromptSubmit || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" UserPromptSubmit; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" UserPromptSubmit; } || echo {}",
             "timeout": 10
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{ hash cygpath 2>&- && ! uname -r 2>&- | grep -qi microsoft && { hash py.exe 2>&- && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreToolUse || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreToolUse; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreToolUse; } || echo {}",
+            "command": "{ command -v cygpath >&2 && ! uname -r 2>&- | grep -qi microsoft && { command -v py.exe >&2 && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreToolUse || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreToolUse; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreToolUse; } || echo {}",
             "timeout": 10
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{ hash cygpath 2>&- && ! uname -r 2>&- | grep -qi microsoft && { hash py.exe 2>&- && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUse || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUse; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUse; } || echo {}",
+            "command": "{ command -v cygpath >&2 && ! uname -r 2>&- | grep -qi microsoft && { command -v py.exe >&2 && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUse || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUse; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUse; } || echo {}",
             "timeout": 10
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{ hash cygpath 2>&- && ! uname -r 2>&- | grep -qi microsoft && { hash py.exe 2>&- && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUseFailure || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUseFailure; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUseFailure; } || echo {}",
+            "command": "{ command -v cygpath >&2 && ! uname -r 2>&- | grep -qi microsoft && { command -v py.exe >&2 && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUseFailure || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUseFailure; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PostToolUseFailure; } || echo {}",
             "timeout": 10
           }
         ]
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{ hash cygpath 2>&- && ! uname -r 2>&- | grep -qi microsoft && { hash py.exe 2>&- && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreCompact || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreCompact; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreCompact; } || echo {}",
+            "command": "{ command -v cygpath >&2 && ! uname -r 2>&- | grep -qi microsoft && { command -v py.exe >&2 && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreCompact || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreCompact; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PreCompact; } || echo {}",
             "timeout": 10
           }
         ]
@@ -74,7 +74,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{ hash cygpath 2>&- && ! uname -r 2>&- | grep -qi microsoft && { hash py.exe 2>&- && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionEnd || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionEnd; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionEnd; } || echo {}",
+            "command": "{ command -v cygpath >&2 && ! uname -r 2>&- | grep -qi microsoft && { command -v py.exe >&2 && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionEnd || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionEnd; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" SessionEnd; } || echo {}",
             "timeout": 10
           }
         ]
@@ -86,7 +86,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{ hash cygpath 2>&- && ! uname -r 2>&- | grep -qi microsoft && { hash py.exe 2>&- && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PermissionDenied || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PermissionDenied; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PermissionDenied; } || echo {}",
+            "command": "{ command -v cygpath >&2 && ! uname -r 2>&- | grep -qi microsoft && { command -v py.exe >&2 && py.exe -3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PermissionDenied || python.exe -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PermissionDenied; } || python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/run.py\" PermissionDenied; } || echo {}",
             "timeout": 10
           }
         ]
