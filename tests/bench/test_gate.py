@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
+import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -175,9 +177,51 @@ def persist(
 Store = Callable[..., Ledger]
 
 
+T0 = 1_800_000_000  # a fixed commit time (epoch seconds)
+H = 3600
+
+
+def publish(led: Ledger, at: int, *, records: list[dict[str, Any]] | None = None) -> Path:
+    """What Task 12's CLI does: commit the local anchors (or ``records``) to the
+    ``bench-anchors`` branch of a repository next to the ledger, at commit time ``at``."""
+    repo = led.path.parent / "anchors-repo"
+    env = {
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_AUTHOR_NAME": "bench",
+        "GIT_AUTHOR_EMAIL": "bench@example.invalid",
+        "GIT_COMMITTER_NAME": "bench",
+        "GIT_COMMITTER_EMAIL": "bench@example.invalid",
+        "GIT_AUTHOR_DATE": f"@{at} +0000",
+        "GIT_COMMITTER_DATE": f"@{at} +0000",
+        "PATH": os.environ.get("PATH", ""),
+        "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+    }
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=env)
+
+    if not repo.exists():
+        repo.mkdir()
+        git("init", "-q", "-b", "bench-anchors")
+        git("config", "commit.gpgSign", "false")
+    target = repo / anchors.branch_path(led.campaign)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    docs = anchors.anchors_to_publish(led) if records is None else records
+    target.write_text("".join(json.dumps(d, sort_keys=True) + "\n" for d in docs), "utf-8")
+    git("add", "-A")
+    git("commit", "-q", "--allow-empty", "-m", "anchors")
+    return repo
+
+
 def _gate(*, ledger: Ledger, **kw: Any) -> g.GateResult:
-    """The gate with the anchors published from this ledger's ``anchors.jsonl``."""
-    return g.gate(ledger=ledger, anchors=anchors.anchors_to_publish(ledger), **kw)
+    """The gate after an honest final publication (anchor of the final heads, committed)."""
+    try:
+        anchors.record_anchor(ledger)
+    except LedgerError:
+        pass  # a broken chain: the gate's own chain check decides
+    repo = publish(ledger, T0)
+    return g.gate(ledger=ledger, repo=repo, anchors_ref="bench-anchors", **kw)
 
 
 def patch_sha(key: str) -> str:
@@ -626,15 +670,89 @@ def test_truncate_both_and_rerun_is_refused_by_anchors(store: Store) -> None:
     and grades.jsonl before them and re-running turned `failed` into `passed` with valid
     chains. An anchor published before the truncation refuses it."""
     led = store(_harmed_last())
-    assert _gate(ledger=led, **KW).verdict == "failed"
-    published = anchors.anchors_to_publish(led)  # pushed before the truncation
+    published = anchors.anchors_to_publish(led)
     assert len(published) == 1 and published[0]["ledger_count"] == len(led.records())
+    repo = publish(led, T0)  # pushed before the truncation
     rerun = _truncate_and_rerun(led, HARMED)
-    with pytest.raises(g.GateRefused, match="anchor"):
-        g.gate(ledger=rerun, anchors=published, **KW)
-    # no published anchor at all → refused
-    with pytest.raises(g.GateRefused, match="no published anchor"):
-        g.gate(ledger=rerun, anchors=[], **KW)
+    anchors.record_anchor(rerun)  # the operator anchors the rewritten state too
+    publish(rerun, T0 + H)
+    with pytest.raises(g.GateRefused, match="anchor") as err:
+        g.gate(ledger=rerun, repo=repo, anchors_ref="bench-anchors", **KW)
+    assert err.value.code == "anchor_not_on_chain"
+
+
+def _ref(repo: Path) -> dict[str, Any]:
+    return {"repo": repo, "anchors_ref": "bench-anchors"}
+
+
+def test_gate_reads_every_published_anchor(store: Store) -> None:
+    """Review N6: a caller can no longer pass a stale subset of the anchors; the gate reads all
+    publications from git. Anchors after the plan and at the end; truncation and re-run; only
+    the first anchor was passed before."""
+    led = store(_harmed_last())  # anchor 1: the full honest campaign
+    repo = publish(led, T0)
+    rerun = _truncate_and_rerun(led, HARMED)
+    # the operator resets the local anchors file to the first anchor's prefix and republishes
+    # only that (a force-push is outside this check; the branch keeps the full history here)
+    publish(rerun, T0 + H, records=anchors.anchors_to_publish(led)[:1])
+    with pytest.raises(g.GateRefused) as err:
+        g.gate(ledger=rerun, **_ref(repo), **KW)
+    assert err.value.code in ("anchor_not_on_chain", "anchor_history_rewritten")
+    with pytest.raises(TypeError):
+        g.gate(ledger=rerun, anchors=[], **_ref(repo), **KW)  # type: ignore[call-arg]
+
+
+def test_gate_happy_path_with_publications_within_five_hours(store: Store) -> None:
+    led = store(_confirm())
+    repo = publish(led, T0)
+    led.append({"kind": "pause", "reason": "weekly"})
+    anchors.record_anchor(led)
+    publish(led, T0 + 4 * H)
+    led.append({"kind": "pause", "reason": "weekly"})
+    anchors.record_anchor(led)
+    publish(led, T0 + 9 * H)
+    res = g.gate(ledger=led, **_ref(repo), **KW)
+    assert res.verdict == "passed" and res.ledger_chain_head == led.chain_head()
+
+
+def test_gate_refuses_missing_final_anchor(store: Store) -> None:
+    led = store(_confirm())
+    repo = publish(led, T0)
+    led.append({"kind": "pause", "reason": "weekly"})  # never anchored and published
+    with pytest.raises(g.GateRefused) as err:
+        g.gate(ledger=led, **_ref(repo), **KW)
+    assert err.value.code == "anchor_not_final"
+    anchors.record_anchor(led)  # anchored locally but not published
+    with pytest.raises(g.GateRefused) as err:
+        g.gate(ledger=led, **_ref(repo), **KW)
+    assert err.value.code == "anchor_not_final"
+
+
+def test_gate_refuses_six_hour_gap(store: Store) -> None:
+    led = store(_confirm())
+    repo = publish(led, T0)
+    led.append({"kind": "pause", "reason": "weekly"})
+    anchors.record_anchor(led)
+    publish(led, T0 + 6 * H)
+    with pytest.raises(g.GateRefused) as err:
+        g.gate(ledger=led, **_ref(repo), **KW)
+    assert err.value.code == "anchor_gap"
+
+
+def test_gate_refuses_without_publications(store: Store, tmp_path: Path) -> None:
+    led = store(_confirm())
+    repo = publish(led, T0)
+    with pytest.raises(g.GateRefused) as err:
+        g.gate(ledger=led, repo=repo, anchors_ref="no-such-branch", **KW)
+    assert err.value.code == "anchors_missing"
+    with pytest.raises(g.GateRefused) as err:  # no anchor file for this campaign
+        other = store(_confirm())
+        g.gate(ledger=other, repo=publish(store(_confirm()), T0), anchors_ref="bench-anchors", **KW)
+    assert err.value.code in ("anchors_missing", "anchor_not_on_chain", "anchor_not_final")
+    rewritten = publish(led, T0 + H, records=[anchors.anchors_to_publish(led)[0] | {"at": 1.0}])
+    with pytest.raises(g.GateRefused) as err:
+        g.gate(ledger=led, **_ref(rewritten), **KW)
+    assert err.value.code == "anchor_history_rewritten"
 
 
 def test_anchors_are_chained_and_prefix_checked(store: Store) -> None:
@@ -645,7 +763,6 @@ def test_anchors_are_chained_and_prefix_checked(store: Store) -> None:
     both = anchors.anchors_to_publish(led)
     assert both[0] == first[0] and both[1][CHAIN_FIELD] == record_sha256(first[0])
     assert anchors.verify_anchors(led, both) == []
-    assert _gate(ledger=led, **KW).verdict == "passed"
     # an edited published anchor, an anchor of another campaign, a broken anchors chain
     forged = [first[0] | {"ledger_head": "e" * 64}]
     assert any("differs" in p for p in anchors.verify_anchors(led, forged))

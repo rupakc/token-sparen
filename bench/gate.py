@@ -35,11 +35,11 @@ measurement.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
-from bench.anchors import verify_anchors
+from bench.anchors import ANCHORS_REF, AnchorError, check_published, read_published
 from bench.e4 import GATE_REASON_CODES
 from bench.grade import grades_chain_head, grades_path
 from bench.ledger import GRADED, Ledger, LedgerError, read_jsonl
@@ -93,7 +93,14 @@ if not set(REASON_CODES) <= set(GATE_REASON_CODES):  # pragma: no cover - a sche
 
 
 class GateRefused(ValueError):
-    """The gate cannot be decided on this ledger (yet)."""
+    """The gate cannot be decided on this ledger (yet). ``code``: a refusal code (refusals
+    never reach e4.json): ``refused`` in general, or a `bench.anchors.check_published` code
+    (``anchors_missing``, ``anchor_history_rewritten``, ``anchor_not_on_chain``,
+    ``anchor_not_final``, ``anchor_gap``)."""
+
+    def __init__(self, message: str, *, code: str = "refused") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -220,17 +227,19 @@ def _rerun_problems(ledger: Ledger, grades: list[dict[str, Any]]) -> list[str]:
 def gate(
     *,
     ledger: Ledger,
-    anchors: Sequence[Mapping[str, Any]],
+    repo: Path,
     release_hash: str,
     e2_ok: bool,
     n_boot: int = 10000,
     seed: int = 0,
+    anchors_ref: str = ANCHORS_REF,
 ) -> GateResult:
     """Release gate on the confirmation ``ledger``: its recorded plan gives the planned tasks,
     the seed, the pins and the power verdict, and the summary is built from it
     (`summarise_ledger`: its runs, exclusions after retries and grades; ruling N2), never
-    supplied by the caller. ``anchors`` = the chain heads published during the campaign
-    (``bench-anchors`` branch; `bench.anchors`): each must lie on the final chains.
+    supplied by the caller. The chain-head anchors are read from git: every commit of
+    ``anchors_ref`` in ``repo`` (`bench.anchors.read_published`, default the fetched
+    ``origin/bench-anchors``), never a caller-supplied list.
     ``n_boot`` and ``seed`` go to `Summary.gate`."""
     if not _HASH.match(release_hash):
         raise ValueError(f"release_hash must be 64 lowercase hex characters, got {release_hash!r}")
@@ -248,11 +257,15 @@ def gate(
         grades = read_jsonl(grades_path(ledger))
     except LedgerError as exc:
         raise GateRefused(f"tamper check: {exc} (ledger or grades hash chain)") from exc
-    anchored = verify_anchors(ledger, anchors)
+    try:
+        published = read_published(repo, anchors_ref, ledger.campaign)
+    except AnchorError as exc:
+        raise GateRefused(f"published anchors: {exc}", code=exc.code) from exc
+    anchored = check_published(ledger, published)
     if anchored:
+        code, detail = anchored[0]
         raise GateRefused(
-            f"published anchor check: {anchored[0]} ({len(anchored)} problem(s)); every "
-            "published chain head must lie on the final ledger and grades chains"
+            f"published anchor check: {detail} ({len(anchored)} problem(s))", code=code
         )
     rerun = _rerun_problems(ledger, grades)
     if rerun:

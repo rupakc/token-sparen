@@ -5,10 +5,13 @@ chain only proves that what remains is a consistent prefix: truncating both file
 re-running would leave valid chains. So during confirmation the scheduler appends the current
 heads of both chains, with their record counts, to ``anchors.jsonl`` next to the ledger after
 every graded task (`record_anchor`; the anchors file is itself append-only and hash-chained).
-Task 12's CLI publishes `anchors_to_publish` (commit and push to a ``bench-anchors`` branch of
-the public repository) at least once per five-hour window, and the release gate verifies that
-every published head lies on the final chains (`verify_anchors`: same record at the same
-count, i.e. a prefix) and refuses otherwise.
+Task 12's CLI publishes `anchors_to_publish` (commits the whole file at `branch_path` and
+pushes the ``bench-anchors`` branch of the public repository) at least once per five-hour window
+and once after the campaign. The release gate reads every publication itself from git
+(`read_published`; never a caller-supplied list) and refuses (`check_published`) unless each
+publication extends the previous one, every anchored head lies on the final chains (same record
+at the same count, i.e. a prefix), the last anchor equals the final heads, and no two
+consecutive publications are more than five hours apart (commit times).
 
 Residual (disclosed in e4.json as ``anchor_window_operator_trust``): records written after the
 last published anchor could still be rewritten by the operator before the next publication.
@@ -16,8 +19,13 @@ last published anchor could still be rewritten by the operator before the next p
 
 from __future__ import annotations
 
+import itertools
+import json
+import os
+import subprocess
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -116,4 +124,92 @@ def verify_anchors(ledger: Ledger, anchors: Sequence[Mapping[str, Any]]) -> list
                 problems.append(f"anchor {i + 1}: the {name} is shorter than anchored")
             elif heads[count] != a[f"{name}_head"]:
                 problems.append(f"anchor {i + 1}: the {name} differs from its anchored prefix")
+    return problems
+
+
+# --------------------------------------------------------------------------- published branch
+
+ANCHORS_REF = "origin/bench-anchors"
+MAX_GAP_S = 5 * 3600  # at least one publication per five-hour window
+_GIT_REDIRECTS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
+
+
+def branch_path(campaign: str) -> str:
+    """Where the CLI publishes a campaign's anchors on the ``bench-anchors`` branch: the whole
+    local ``anchors.jsonl`` (append-only), one commit per publication."""
+    return f"anchors/{campaign}.jsonl"
+
+
+class AnchorError(ValueError):
+    """The published anchors cannot be read (``code``: an e4-independent refusal code)."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class Publication:
+    commit: str
+    at: int  # committer time of the publishing commit (epoch seconds)
+    anchors: tuple[dict[str, Any], ...]  # the file as of that commit
+
+
+def _git(repo: Path, *args: str) -> str:
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_REDIRECTS}
+    env |= {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+    out = subprocess.run(  # noqa: S603
+        ["git", "-C", str(repo), *args],  # noqa: S607
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    if out.returncode != 0:
+        raise AnchorError("anchors_missing", f"git {args[0]}: {out.stderr.strip()[:200]}")
+    return out.stdout
+
+
+def read_published(repo: Path, ref: str, campaign: str) -> list[Publication]:
+    """Every commit of ``ref`` (first-parent history, oldest first) that changed the campaign's
+    anchors file, with the file's content at that commit; read from git objects only."""
+    path = branch_path(campaign)
+    log = _git(repo, "log", "--first-parent", "--reverse", "--format=%H %ct", ref, "--", path)
+    pubs: list[Publication] = []
+    for line in log.splitlines():
+        sha, _, ct = line.partition(" ")
+        text = _git(repo, "show", f"{sha}:{path}")
+        try:
+            docs = [json.loads(x) for x in text.splitlines() if x.strip()]
+        except ValueError as exc:
+            raise AnchorError("anchor_history_rewritten", f"{sha}: not JSON lines") from exc
+        pubs.append(Publication(sha, int(ct), tuple(docs)))
+    if not pubs:
+        raise AnchorError("anchors_missing", f"no published anchors for {campaign} on {ref}")
+    return pubs
+
+
+def check_published(ledger: Ledger, pubs: Sequence[Publication]) -> list[tuple[str, str]]:
+    """(code, detail) problems of the published history against the final chains: each
+    publication extends the previous one (append-only); every anchor lies on the final chains;
+    the last anchor equals the final heads; consecutive publications at most `MAX_GAP_S`
+    apart (commit times)."""
+    if not pubs or not pubs[-1].anchors:
+        return [("anchors_missing", "no published anchor")]
+    problems: list[tuple[str, str]] = []
+    final = list(pubs[-1].anchors)
+    for p in pubs:
+        if not p.anchors or list(p.anchors) != final[: len(p.anchors)]:
+            problems.append(("anchor_history_rewritten", f"{p.commit[:12]} is not a prefix"))
+    problems += [("anchor_not_on_chain", text) for text in verify_anchors(ledger, final)]
+    try:
+        heads = current_heads(ledger)
+    except LedgerError as exc:
+        return [*problems, ("anchor_not_on_chain", str(exc))]
+    if any(final[-1].get(k) != heads[k] for k in ANCHOR_KEYS):
+        problems.append(("anchor_not_final", "the last published anchor is not the final heads"))
+    for a, b in itertools.pairwise(pubs):
+        if b.at - a.at > MAX_GAP_S:
+            gap = (b.at - a.at) / 3600
+            problems.append(("anchor_gap", f"{gap:.1f} h before publication {b.commit[:12]}"))
     return problems
