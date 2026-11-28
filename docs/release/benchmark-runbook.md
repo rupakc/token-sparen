@@ -140,6 +140,9 @@ confirmation report without it is never published.
 ## Confirmation
 
 1. Wait for the M6 pre-freeze tasks, then tag the frozen commit `v1.0.0-rc1` (signed, pushed).
+   That commit must already carry version `1.0.0` (the *Freeze* step of
+   [runbook.md](runbook.md#cutting-a-release-owner)): the plugin hash includes the version, so
+   a bump after the benchmark would no longer match the evidence.
 2. Freeze, record the plan, anchor its hash, then run:
 
    ```
@@ -193,6 +196,9 @@ python -m bench report --stage confirmation --publish --repo "<main checkout>"
 This writes `docs/evidence/e4.json`, the report and its figures into the main checkout (never
 the harness). Run the
 full battery, commit, push; the release job re-verifies the anchors with server receipts.
+Then continue with the release runbook's *Evidence committed* step
+([runbook.md](runbook.md#cutting-a-release-owner)): render the README Evidence, record a gate
+decision if the verdict is `underpowered`, and run the release-prep step before the signed tag.
 
 ## Token revocation
 

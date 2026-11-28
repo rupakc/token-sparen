@@ -5,7 +5,8 @@ name: Release
 # tag checks, nothing pushed, attested or published.
 #
 # Order: gate (CI) + verify-tag -> build -> draft-release -> [owner approves `release`]
-# provenance -> push-tree (release/claude) -> [owner approves `pypi`] publish-pypi -> finalize.
+# provenance -> push-tree (release/claude) -> [owner approves `pypi`] publish-pypi -> finalize
+# -> docs (site + wiki, highest release only; docs-deploy.yml).
 # Resume after a failure with "Re-run failed jobs" only (the `dist` artifact is reused, so the
 # hashes stay stable); a full re-run of a tag is allowed only before publish-pypi succeeded.
 on:
@@ -31,56 +32,15 @@ jobs:
     secrets:
       TOKEN_SPAREN_DENYLIST: ${{ secrets.TOKEN_SPAREN_DENYLIST }}
 
+  # the owner-signed exact-tag-on-main check, shared with docs.yml (review M2)
   verify-tag:
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
     permissions:
       contents: read
-    env:
-      TAG: ${{ github.ref_name }}
-      REPO: ${{ github.repository }}
-      RELEASE_TAGGER: ${{ vars.RELEASE_TAGGER }}
-      RELEASE_SIGNING_KEY: ${{ vars.RELEASE_SIGNING_KEY }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Tag name is exactly vX.Y.Z
-        run: |
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not a release tag"; exit 1; }
-          [ -n "$RELEASE_TAGGER" ] || { echo "::error::repository variable RELEASE_TAGGER is not set"; exit 1; }
-      - name: GitHub verifies an annotated tag signed by the release tagger
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          ref=$(gh api "repos/$REPO/git/ref/tags/$TAG")
-          [ "$(jq -r '.object.type' <<<"$ref")" = "tag" ] || { echo "::error::$TAG is not an annotated tag"; exit 1; }
-          tag_sha=$(jq -r '.object.sha' <<<"$ref")
-          obj=$(gh api "repos/$REPO/git/tags/$tag_sha")
-          jq -e --arg tag "$TAG" --arg tagger "$RELEASE_TAGGER" '
-            .tag == $tag
-            and .object.type == "commit"
-            and .verification.verified == true
-            and .verification.reason == "valid"
-            and (.tagger.email | ascii_downcase) == ($tagger | ascii_downcase)' <<<"$obj" >/dev/null \
-            || { echo "::error::$TAG is not a verified tag signed by the release tagger"; exit 1; }
-          commit=$(jq -r '.object.sha' <<<"$obj")
-          [ "$commit" = "$GITHUB_SHA" ] || { echo "::error::tag commit $commit != $GITHUB_SHA"; exit 1; }
-          echo "TAG_OBJECT=$tag_sha" >> "$GITHUB_ENV"
-      - name: Signature by the owner's key only, tagged commit on main with the release subject
-        run: |
-          set -euo pipefail
-          # actions/checkout may replace an annotated tag by a lightweight one: fetch it as is
-          git fetch --no-tags --force origin "+refs/tags/$TAG:refs/tags/$TAG" "+refs/heads/main:refs/remotes/origin/main"
-          [ "$(git rev-parse "refs/tags/$TAG")" = "$TAG_OBJECT" ] || { echo "::error::local tag object differs"; exit 1; }
-          python3 scripts/release_trust.py trust --email "$RELEASE_TAGGER" --key-env RELEASE_SIGNING_KEY --signers "$RUNNER_TEMP/allowed_signers"
-          python3 scripts/release_trust.py verify-tag "$TAG" --email "$RELEASE_TAGGER"
-          commit=$(git rev-parse "$TAG^{commit}")
-          git merge-base --is-ancestor "$commit" origin/main || { echo "::error::$TAG is not on main"; exit 1; }
-          subject=$(git log -1 --format=%s "$commit")
-          [ "$subject" = "chore(release): $TAG" ] || { echo "::error::tagged commit subject is '$subject', expected 'chore(release): $TAG'"; exit 1; }
+    uses: ./.github/workflows/verify-tag.yml
+    with:
+      tag: ${{ github.ref_name }}
+      expect-sha: ${{ github.sha }}
 
   build:
     needs: [gate, verify-tag]
@@ -115,6 +75,8 @@ jobs:
           set -euo pipefail
           # the gate-decision signature (git %G?) must be checked against the owner's key only
           python scripts/release_trust.py trust --email "$RELEASE_TAGGER" --key-env RELEASE_SIGNING_KEY --signers "$RUNNER_TEMP/allowed_signers"
+          # the seed check (review NEW-I1) reads release/claude as fetched just now
+          git fetch --no-tags --force origin "+refs/heads/release/claude:refs/remotes/origin/release/claude"
           python scripts/release_check.py --mode tag --tag "$TAG"
       - name: Release check (dry run)
         if: github.event_name != 'push'
@@ -255,7 +217,23 @@ jobs:
             echo "release/claude already holds $TAG (re-run): nothing to push"
             exit 0
           fi
+          # never a downgrade: the branch's version must be lower than $TAG's (review M3)
+          # (the same version only when the branch was seeded with this very plugin: review I2)
+          current=()
+          if [ -n "$base" ]; then
+            git show "$base:.claude-plugin/plugin.json" > "$RUNNER_TEMP/current-plugin.json" \
+              || { echo "::error::$BRANCH exists but has no .claude-plugin/plugin.json; it must hold a plugin tree (never pre-create it empty; see docs/release/runbook.md)"; exit 1; }
+            mkdir "$RUNNER_TEMP/current-tree"
+            git archive "$base" | tar -x -C "$RUNNER_TEMP/current-tree"
+            current_hash=$(python3 "$GITHUB_WORKSPACE/scripts/plugin_hash.py" "$RUNNER_TEMP/current-tree")
+            current=(--current-manifest "$RUNNER_TEMP/current-plugin.json" --current-hash "$current_hash" --new-hash "$PLUGIN_HASH")
+          fi
+          python3 "$GITHUB_WORKSPACE/scripts/push_tree_guard.py" --tag "$TAG" "${current[@]}"
           commit=$(git commit-tree "$tree_sha" "${parent[@]}" -m "$msg")
+          # and a fast-forward of the current head by construction; checked, never forced
+          if [ -n "$base" ]; then
+            git merge-base --is-ancestor "$base" "$commit" || { echo "::error::not a fast-forward of $BRANCH"; exit 1; }
+          fi
           now=$(git ls-remote --heads origin "refs/heads/$BRANCH" | cut -f1)
           [ "$now" = "$base" ] || { echo "::error::$BRANCH moved since this job started; refusing"; exit 1; }
           # a plain push: the remote rejects anything that is not a fast-forward of $base
@@ -293,6 +271,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      latest: ${{ steps.publish.outputs.latest }}
     env:
       TAG: ${{ github.ref_name }}
       VERSION: ${{ needs.build.outputs.version }}
@@ -316,6 +296,7 @@ jobs:
             [ "$served" = "$digest" ] || { echo "::error::$name: PyPI sha256 '$served' != built $digest"; exit 1; }
           done < dist/SHA256SUMS
       - name: Publish the GitHub Release (latest only if it is the highest release)
+        id: publish
         run: |
           set -euo pipefail
           highest=$( { gh release list --exclude-drafts --exclude-pre-releases --limit 1000 \
@@ -323,3 +304,19 @@ jobs:
                      | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
           if [ "$highest" = "$TAG" ]; then latest=--latest; else latest=--latest=false; fi
           gh release edit "$TAG" --draft=false "$latest"
+          if [ "$highest" = "$TAG" ]; then echo "latest=true" >> "$GITHUB_OUTPUT"; else echo "latest=false" >> "$GITHUB_OUTPUT"; fi
+
+  # The public site and wiki, only after a successful, approved release (review C1) and only for
+  # the highest release (a patch on an older line never replaces newer docs).
+  docs:
+    needs: finalize
+    if: github.event_name == 'push' && needs.finalize.outputs.latest == 'true'
+    permissions:
+      contents: write  # the wiki push
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/docs-deploy.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets:
+      TOKEN_SPAREN_DENYLIST: ${{ secrets.TOKEN_SPAREN_DENYLIST }}

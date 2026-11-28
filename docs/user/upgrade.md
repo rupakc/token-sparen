@@ -13,7 +13,7 @@ Start a new Claude Code session afterwards so the new hooks load. Run `/token-sp
 
 ## Upgrading the command-line tool
 
-If you installed the optional CLI: `pipx upgrade token-sparen`. Keep it on the same version as the plugin. The plugin's hooks always use the plugin's own bundled copy, and the `/token-sparen` skill runs that bundled CLI first (`token-sparen` on your `PATH` is only a fallback). `doctor` prints the plugin version and the version of the `token-sparen` on your `PATH`, and warns when they differ: `CLI x differs from plugin y; the plugin's hooks use y`. It is a warning only.
+If you installed a console command from a checkout (`pip install .`), update the checkout and run `pip install .` again. Keep it on the same version as the plugin. The plugin's hooks always use the plugin's own bundled copy, and the `/token-sparen` skill runs that bundled CLI first (`token-sparen` on your `PATH` is only a fallback). `doctor` prints the plugin version and the version of the `token-sparen` on your `PATH`, and warns when they differ: `CLI x differs from plugin y; the plugin's hooks use y`. It is a warning only.
 
 ## What is kept
 

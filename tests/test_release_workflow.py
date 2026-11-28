@@ -17,6 +17,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
 RELEASE = WORKFLOWS / "release.yml"
+VERIFY_TAG = WORKFLOWS / "verify-tag.yml"
 PUBLISHING = ("draft-release", "provenance", "push-tree", "publish-pypi", "finalize")
 PUSH_ONLY = ("verify-tag", *PUBLISHING)
 SHA_PIN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}")
@@ -240,7 +241,7 @@ def test_release_tag_filter_is_strict_semver(wf: dict[str, Any]) -> None:
     for tag in ("v1.0.0-rc1", "v0.4.0-m4", "v0.5.0-screen1", "v1.0", "1.0.0", "v1.0.0.1", "vX.0.0"):
         assert not rx.fullmatch(tag), tag
     # verify-tag re-checks the exact regex (defence in depth beside the trigger filter)
-    assert r"^v[0-9]+\.[0-9]+\.[0-9]+$" in _runs(_jobs(wf)["verify-tag"])
+    assert r"^v[0-9]+\.[0-9]+\.[0-9]+$" in _runs(_verify_tag_job())
 
 
 def test_permissions_least_privilege(wf: dict[str, Any]) -> None:
@@ -254,6 +255,7 @@ def test_permissions_least_privilege(wf: dict[str, Any]) -> None:
         "push-tree": {"contents": "write"},
         "publish-pypi": {"id-token": "write"},
         "finalize": {"contents": "write"},
+        "docs": {"contents": "write", "pages": "write", "id-token": "write"},
     }
     jobs = _jobs(wf)
     assert set(jobs) == set(expected)
@@ -272,7 +274,30 @@ def test_job_order(wf: dict[str, Any]) -> None:
         "push-tree": {"build", "provenance"},
         "publish-pypi": {"build", "push-tree"},
         "finalize": {"build", "publish-pypi"},
+        "docs": {"finalize"},
     }
+
+
+def test_docs_deploy_only_after_a_successful_release(wf: dict[str, Any]) -> None:
+    """Review C1: site and wiki go live only after finalize (approved, PyPI hashes checked,
+    release published), and only for the highest release."""
+    jobs = _jobs(wf)
+    docs = jobs["docs"]
+    assert docs["uses"] == "./.github/workflows/docs-deploy.yml"
+    assert docs["if"] == "github.event_name == 'push' && needs.finalize.outputs.latest == 'true'"
+    assert docs["with"] == {"tag": "${{ github.ref_name }}"}
+    assert docs["secrets"] == {"TOKEN_SPAREN_DENYLIST": "${{ secrets.TOKEN_SPAREN_DENYLIST }}"}
+    fin = jobs["finalize"]
+    assert fin["outputs"] == {"latest": "${{ steps.publish.outputs.latest }}"}
+    (publish,) = [s for s in fin["steps"] if s.get("id") == "publish"]
+    run = publish["run"]
+    assert 'echo "latest=true" >> "$GITHUB_OUTPUT"' in run
+    assert run.index("--draft=false") < run.index("latest=true")
+    # no other workflow deploys the docs on its own trigger
+    deploy = parse_yaml((WORKFLOWS / "docs-deploy.yml").read_text(encoding="utf-8"))
+    assert isinstance(deploy, dict) and set(deploy["on"]) == {"workflow_call"}
+    manual = parse_yaml((WORKFLOWS / "docs.yml").read_text(encoding="utf-8"))
+    assert isinstance(manual, dict) and set(manual["on"]) == {"workflow_dispatch"}
 
 
 def test_dry_run_has_no_tag_checks_or_publishing(wf: dict[str, Any]) -> None:
@@ -337,9 +362,17 @@ def test_publish_order_pypi_after_tree_push(wf: dict[str, Any]) -> None:
     assert "push-tree" in ancestors("publish-pypi")
     assert "publish-pypi" in ancestors("finalize")
     assert "publish-pypi" not in ancestors("push-tree")
-    # only push-tree writes release/claude
+    # only push-tree writes release/claude; build only fetches it for the seed check (NEW-I1)
+    seed_fetch = (
+        'git fetch --no-tags --force origin "+refs/heads/release/claude:'
+        'refs/remotes/origin/release/claude"'
+    )
     for name, job in jobs.items():
         text = _runs(job) + str(job.get("env", {}))
+        if name == "build":
+            assert text.count(seed_fetch) == 1
+            assert text.index(seed_fetch) < text.index("release_check.py --mode tag")
+            text = text.replace(seed_fetch, "").replace("reads release/claude as", "")
         if name != "push-tree":
             assert "release/claude" not in text and " push " not in text, name
 
@@ -376,12 +409,41 @@ def test_draft_release_step_is_idempotent(wf: dict[str, Any]) -> None:
     assert "--draft=false" not in run  # only finalize publishes the release
 
 
-def test_verify_tag_checks_signer_and_main_ancestry(wf: dict[str, Any]) -> None:
+def _verify_tag_job() -> dict[str, Any]:
+    doc = parse_yaml(VERIFY_TAG.read_text(encoding="utf-8"))
+    assert isinstance(doc, dict)
+    assert set(doc["on"]) == {"workflow_call"}  # reusable only: never triggered by itself
+    inputs = doc["on"]["workflow_call"]["inputs"]
+    assert inputs["tag"]["required"] is True and inputs["expect-sha"]["default"] == ""
+    assert doc["permissions"] == {}
+    (job,) = doc["jobs"].values()
+    assert job["permissions"] == {"contents": "read"}
+    for step in job["steps"]:
+        ref = step.get("uses")
+        if ref is not None:
+            assert SHA_PIN.fullmatch(ref), ref
+            if ref.startswith("actions/checkout@"):
+                assert step["with"]["persist-credentials"] is False
+    assert isinstance(job, dict)
+    return job
+
+
+def test_verify_tag_is_the_shared_reusable_workflow(wf: dict[str, Any]) -> None:
+    """Review M2: release.yml and docs.yml run the same verification job."""
     job = _jobs(wf)["verify-tag"]
+    assert job["uses"] == "./.github/workflows/verify-tag.yml"
+    assert job["with"] == {"tag": "${{ github.ref_name }}", "expect-sha": "${{ github.sha }}"}
+    assert "secrets" not in job
+
+
+def test_verify_tag_checks_signer_and_main_ancestry(wf: dict[str, Any]) -> None:
+    job = _verify_tag_job()
     run = _runs(job)
     env = job["env"]
     assert env["RELEASE_TAGGER"] == "${{ vars.RELEASE_TAGGER }}"
     assert env["RELEASE_SIGNING_KEY"] == "${{ vars.RELEASE_SIGNING_KEY }}"
+    assert env["TAG"] == "${{ inputs.tag }}" and env["EXPECT_SHA"] == "${{ inputs.expect-sha }}"
+    assert r"^v[0-9]+\.[0-9]+\.[0-9]+$" in run
     for needle in (
         'gh api "repos/$REPO/git/ref/tags/$TAG"',
         '\'.object.type\' <<<"$ref")" = "tag"',  # annotated tags only
@@ -389,7 +451,7 @@ def test_verify_tag_checks_signer_and_main_ancestry(wf: dict[str, Any]) -> None:
         ".verification.verified == true",
         '.verification.reason == "valid"',
         "(.tagger.email | ascii_downcase) == ($tagger | ascii_downcase)",
-        '"$commit" = "$GITHUB_SHA"',
+        '[ "$commit" = "$EXPECT_SHA" ]',
         # the owner's key is the only trusted key; the tag must verify against it
         'scripts/release_trust.py trust --email "$RELEASE_TAGGER" --key-env RELEASE_SIGNING_KEY',
         'scripts/release_trust.py verify-tag "$TAG"',
@@ -425,6 +487,18 @@ def test_tree_push_is_fast_forward_only(wf: dict[str, Any]) -> None:
     assert '[ "$now" = "$base" ]' in run
     assert run.index('[ "$now" = "$base" ]') < run.index(" push origin ")
     assert '"$PLUGIN_HASH" ]' in run  # the pushed tree is the built tree
+    # review M3: never a downgrade (checked after the idempotent re-run exit, before the push)
+    guard = 'python3 "$GITHUB_WORKSPACE/scripts/push_tree_guard.py" --tag "$TAG" "${current[@]}"'
+    assert guard in run
+    assert 'git show "$base:.claude-plugin/plugin.json"' in run
+    assert "exists but has no .claude-plugin/plugin.json" in run  # review m1: a clear error
+    # review I2: a seeded branch (same version) passes only with the identical plugin hash
+    assert 'git archive "$base" | tar -x -C "$RUNNER_TEMP/current-tree"' in run
+    assert '--current-hash "$current_hash" --new-hash "$PLUGIN_HASH"' in run
+    assert run.index("nothing to push") < run.index(guard) < run.index(" push origin ")
+    ff = 'git merge-base --is-ancestor "$base" "$commit"'
+    assert run.index("git commit-tree") < run.index(ff) < run.index(" push origin ")
+    assert (ROOT / "scripts" / "push_tree_guard.py").is_file()
 
 
 def test_gate_passes_only_the_denylist_secret(wf: dict[str, Any]) -> None:

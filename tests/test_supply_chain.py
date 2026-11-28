@@ -10,8 +10,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
 PLUGIN_TREE = ("hooks", "skills", ".claude-plugin", "token_sparen")
-CONTENTS_WRITE_JOBS = frozenset({"draft-release", "push-tree", "finalize", "wiki"})
-ID_TOKEN_JOBS = frozenset({"provenance", "publish-pypi", "deploy-pages"})
+# `docs` (release.yml) and `deploy` (docs.yml) only call docs-deploy.yml, whose `wiki` and
+# `deploy-pages` jobs use the grants (a caller must hold what its reusable workflow's jobs use)
+CONTENTS_WRITE_JOBS = frozenset(
+    {"draft-release", "push-tree", "finalize", "wiki", "docs", "deploy"}
+)
+ID_TOKEN_JOBS = frozenset({"provenance", "publish-pypi", "deploy-pages", "docs", "deploy"})
 _USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)(.*)$")
 _PINNED = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}")
 # isolated (`-I`): a repository's committed settings env must not inject PYTHONPATH/PYTHONSTARTUP

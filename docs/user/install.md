@@ -9,7 +9,9 @@ claude plugin marketplace add rupakc/token-sparen
 claude plugin install token-sparen@token-sparen
 ```
 
-The marketplace entry tracks the `release/claude` branch of the repository (the built plugin tree), not `main`. Start a new Claude Code session afterwards (or reload plugins) so the hooks are picked up. That is all the plugin needs; it has no runtime dependencies beyond Python 3.11 or newer.
+Start a new Claude Code session afterwards (or reload plugins) so the hooks are picked up. That is all the plugin needs; it has no runtime dependencies beyond Python 3.11 or newer.
+
+**Which code this installs.** Once the first release is out, the marketplace entry points at the `release/claude` branch of the repository: the built plugin tree of the latest owner-signed release, the one the published benchmark measured. Until then the entry points at `main` itself (`"source": "./"` in the repository's `.claude-plugin/marketplace.json`), so you get the unreleased development head of `main`. The release-prep commit of the first release switches the entry to `release/claude` for good. `"ref": "release/claude"` in that file means releases only. To try unreleased code on purpose, use the dev install below.
 
 
 Installing from the Anthropic plugin directory, once the plugin is listed there, uses the same plugin files and the same `/token-sparen` skill.
@@ -26,16 +28,11 @@ This loads the plugin for that session only. Nothing is installed; see [CONTRIBU
 
 ## Optional command-line tool
 
-You do not need the `token-sparen` command. In Claude Code, ask for `/token-sparen` (stats), `/token-sparen doctor` or `/token-sparen disable`; the skill runs the CLI bundled with the plugin. For use in your own terminal:
+You do not need the `token-sparen` command. In Claude Code, ask for `/token-sparen` (stats), `/token-sparen doctor` or `/token-sparen disable`; the skill runs the CLI bundled with the plugin.
 
-```
-pipx install token-sparen
-```
+To run the bundled copy from your own terminal, call the plugin's launcher: `python3 -I <plugin dir>/hooks/run_cli.py <args>` (it re-launches on a Python 3.11 or newer the same way the hooks do). The plugin directory is the `installPath` entry for `token-sparen` in `~/.claude/plugins/installed_plugins.json`.
 
-The package is not published on PyPI yet; until it is, run `pip install .` from a checkout of the repository.
-
-
-To run the bundled copy from a terminal instead, call the plugin's launcher: `python3 -I <plugin dir>/hooks/run_cli.py <args>` (it re-launches on a Python 3.11 or newer the same way the hooks do). The plugin directory is the `installPath` entry for `token-sparen` in `~/.claude/plugins/installed_plugins.json`.
+The package is **not published on PyPI yet**. Do not install a `token-sparen` package from PyPI or any other index until a release's notes say it is published there; until then the only other way to get a `token-sparen` command on your `PATH` is `pip install .` from a checkout of the repository.
 
 Keep the CLI and the plugin on the same version: the plugin's hooks always use the plugin's own copy. `doctor` warns when they differ; see [Upgrade](upgrade.md).
 

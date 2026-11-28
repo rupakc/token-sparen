@@ -18,11 +18,11 @@ The settings edits token-sparen can make live outside its state folder, so delet
 
    This restores your original `statusLine` exactly (or removes the key), but only if you did not edit it after installing. If you did, it is left as it is and the command says so: open `settings.json` (in `$CLAUDE_CONFIG_DIR`, else `~/.claude`) and set or delete the `statusLine` key yourself; your original is in `settings.json.token-sparen.bak`.
 
-3. Remove the plugin (and the CLI, if you installed it for your terminal):
+3. Remove the plugin (and the console command, if you installed one with `pip install .`, from that environment):
 
    ```
    claude plugin uninstall token-sparen@token-sparen
-   pipx uninstall token-sparen
+   pip uninstall token-sparen
    ```
 
 4. Delete its data (plain text, safe to delete): `~/.token-sparen/` (or the directory in `TOKEN_SPAREN_HOME`) and each project's `<project>/.token-sparen/`. Backups named `*.token-sparen.bak` next to your settings files can go too once you have checked them.

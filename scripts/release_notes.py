@@ -55,8 +55,8 @@ def _footer(version: str, digest: str) -> str:
         "## Install\n\n"
         "Claude Code plugin:\n\n"
         "```\n"
-        # TODO(M6 Task 14 Step 6): until marketplace.json's source is release/claude, this
-        # marketplace resolves to main (ruling M6-B3; Task 14 Step 6 switches it after v1.0.0).
+        # release_check refuses a release whose marketplace entry is not release/claude (ruling
+        # B1), so this resolves to the released tree
         f"claude plugin marketplace add {REPO}\n"
         "claude plugin install token-sparen@token-sparen\n"
         "```\n\n"
