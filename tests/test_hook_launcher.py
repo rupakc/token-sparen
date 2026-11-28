@@ -475,7 +475,9 @@ def test_pythonpath_cannot_inject_modules(tmp_path: Path, forced: bool) -> None:
     env = _hook_env(tmp_path, **extra)
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
     for groups in hooks.values():
-        assert groups[0]["hooks"][0]["command"].startswith("python3 -I ")
+        command = groups[0]["hooks"][0]["command"]
+        for name in ("python3", "py.exe -3", "python.exe"):  # each starts isolated
+            assert f"exec {name} -I " in command, (name, command)
     proc = subprocess.run(
         [sys.executable, "-I", str(ROOT / "hooks" / "run.py"), "PostToolUse"],
         input=_post_payload(tmp_path / "proj"),
@@ -493,6 +495,65 @@ def test_pythonpath_cannot_inject_modules(tmp_path: Path, forced: bool) -> None:
     if forced:
         calls = log.read_text(encoding="utf-8").splitlines()
         assert calls and all(c.startswith("-I ") for c in calls)  # probe and re-exec
+
+
+def _fake(bindir: Path, name: str, log: Path, *, drop: str | None = None, rc: int = 0) -> None:
+    """A fake interpreter on PATH that logs its name; it runs the current Python (dropping one
+    ``drop`` argument, as ``py`` consumes ``-3``), or exits ``rc`` like the Store alias stub."""
+    body = f'echo "{name} $*" >> "{log}"\n'
+    if rc:
+        body += f"exit {rc}\n"
+    else:
+        shift = f'[ "$1" = "{drop}" ] && shift\n' if drop else ""
+        body += f'{shift}exec "{sys.executable}" "$@"\n'
+    path = bindir / name
+    path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    path.chmod(0o755)
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("windows", "present", "used"),
+    [
+        (False, ("python3", "py", "python"), "python3"),  # a POSIX ``py`` may be another tool
+        (True, ("python3", "py.exe", "python.exe"), "py.exe"),  # python3: the Store alias stub
+        (True, ("python3", "python.exe"), "python.exe"),
+    ],
+)
+def test_hook_command_resolves_the_interpreter_per_platform(
+    tmp_path: Path, windows: bool, present: tuple[str, ...], used: str
+) -> None:
+    """v1 review M9: on Windows (Git Bash) the hooks start ``py.exe -3`` or ``python.exe``, never
+    a bare ``python3`` (often missing or the Store alias stub); elsewhere ``python3`` as before.
+    Windows is simulated by fake ``*.exe`` names on PATH."""
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir()
+    log = tmp_path / "interp.log"
+    for name in present:
+        stub = name == "python3" and windows
+        decoy = name == "py" and not windows  # e.g. an unrelated ``py`` tool: must not run
+        rc = 9009 if stub else 2 if decoy else 0
+        _fake(bindir, name, log, drop="-3" if name == "py.exe" else None, rc=rc)
+    env = _hook_env(tmp_path, PATH=os.pathsep.join([str(bindir), "/usr/bin", "/bin"]))
+    hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    command = hooks["PostToolUse"][0]["hooks"][0]["command"]
+    proc = subprocess.run(
+        ["/bin/sh", "-c", command.replace("${CLAUDE_PLUGIN_ROOT}", ROOT.as_posix())],
+        input=_post_payload(tmp_path / "proj"),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path / "proj",
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "[token-sparen: kept " in proc.stdout, proc.stdout[:300] + proc.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert calls and calls[0].split()[0] == used, calls
+    assert all(c.split()[0] == used for c in calls), calls  # one interpreter, no stub call
+    assert " -I " in f" {calls[0]} "
 
 
 # --- TOKEN_SPAREN_PYTHON safety (a committed settings env can set it) ----------------------------

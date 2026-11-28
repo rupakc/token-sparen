@@ -550,27 +550,42 @@ def _host_platform() -> str:
     return sys.platform
 
 
-def python3_missing_hint(platform: str, which: Callable[[str], str | None] | None = None) -> str:
-    """Why ``python3`` matters and, on Windows, what to use instead for the CLI."""
+def hook_interpreter(
+    platform: str, which: Callable[[str], str | None] | None = None
+) -> list[str] | None:
+    """The interpreter command hooks.json starts on ``platform`` (resolved on PATH), or None.
+    Windows (Git Bash): the ``py`` launcher with ``-3``, else ``python``, else ``python3`` (a bare
+    ``python3`` there is often missing or the Store alias stub, v1 review M9); elsewhere
+    ``python3``."""
     which = shutil.which if which is None else which
-    text = "python3 not found on PATH; hooks run python3"
+    names: tuple[tuple[str, ...], ...] = (
+        (("py", "-3"), ("python",), ("python3",)) if platform == "win32" else (("python3",),)
+    )
+    for name, *rest in names:
+        path = which(name)
+        if path is not None:
+            return [path, *rest]
+    return None
+
+
+def _hook_label(argv: list[str]) -> str:
+    return " ".join([Path(argv[0]).stem, *argv[1:]])
+
+
+def python3_missing_hint(platform: str) -> str:
+    """Why no hook interpreter matters and what to install."""
     if platform != "win32":
-        return text
-    if which("py") is not None:
-        other = "py -3"
-    elif which("python") is not None:
-        other = "python"
-    else:
-        return f"{text}. Install Python >= 3.11 (python.org or the Microsoft Store) with PATH set"
+        return "python3 not found on PATH; hooks run python3"
     return (
-        f"{text}. `{other}` exists: run the CLI as `{other} -m token_sparen`, and make `python3` "
-        "resolve (Microsoft Store Python provides it) so the hooks can start"
+        "no py, python or python3 on PATH; on Windows the hooks run `py -3` (the Python "
+        "launcher), else `python`. Install Python >= 3.11 from python.org (it includes `py`) "
+        "and restart Claude Code"
     )
 
 
 def _round_trip(root: Path) -> tuple[bool, str]:
-    py = shutil.which("python3")
-    if py is None:
+    interp = hook_interpreter(_host_platform())
+    if interp is None:
         return False, python3_missing_hint(_host_platform())
     with tempfile.TemporaryDirectory(prefix="token-sparen-doctor-") as tmp:
         project = Path(tmp) / "proj"
@@ -598,7 +613,7 @@ def _round_trip(root: Path) -> tuple[bool, str]:
         )
         try:
             proc = subprocess.run(  # noqa: S603
-                [py, "-I", str(root / "hooks" / "run.py"), "PostToolUse"],
+                [*interp, "-I", str(root / "hooks" / "run.py"), "PostToolUse"],
                 input=_fake_pytest_payload(project),
                 capture_output=True,
                 text=True,
@@ -643,16 +658,17 @@ def _load_pyfind(root: Path) -> ModuleType | None:
 
 
 def _python3_version(pyfind: ModuleType | None = None) -> tuple[int, int] | None:
-    """Version of the ``python3`` on PATH (the one hooks.json starts), via ``_pyfind.probe``."""
-    py = shutil.which("python3")
-    if py is None:
+    """Version of the interpreter hooks.json starts here (``hook_interpreter``), via
+    ``_pyfind.probe``."""
+    interp = hook_interpreter(_host_platform())
+    if interp is None:
         return None
     if pyfind is not None:
-        got = pyfind.probe([py])
+        got = pyfind.probe(interp)
         return None if got is None else (int(got[0]), int(got[1]))
     try:
         out = subprocess.run(  # noqa: S603
-            [py, "-c", "import sys;print(sys.version_info[0], sys.version_info[1])"],
+            [*interp, "-c", "import sys;print(sys.version_info[0], sys.version_info[1])"],
             capture_output=True,
             text=True,
             timeout=20,
@@ -716,27 +732,29 @@ def version_skew(
 
 
 def _hook_python(env: Mapping[str, str], root: Path) -> tuple[str, str]:
-    """(mark, detail) for the interpreter the hooks actually run: ``python3`` itself when it is
-    >= 3.11, else what the launcher would re-launch on (searched fresh, not from the cache)."""
-    py = shutil.which("python3")
-    if py is None:
+    """(mark, detail) for the interpreter the hooks actually run (``hook_interpreter``): itself
+    when it is >= 3.11, else what the launcher would re-launch on (searched fresh, not from the
+    cache)."""
+    interp = hook_interpreter(_host_platform())
+    if interp is None:
         return _WARN, python3_missing_hint(_host_platform())
+    py, name = interp[0], _hook_label(interp)
     pyfind = _load_pyfind(root)
     ver = _python3_version(pyfind)
     if ver is None:
         return _WARN, f"{py} did not report its version"
     shown = f"{ver[0]}.{ver[1]}"
     if ver >= (3, 11):
-        return _OK, f"python3 {shown} at {py} (hooks run it directly)"
+        return _OK, f"{name} {shown} at {py} (hooks run it directly)"
     if pyfind is None:
-        return _WARN, f"python3 is {shown} < 3.11 and hooks/_pyfind.py is missing"
+        return _WARN, f"{name} is {shown} < 3.11 and hooks/_pyfind.py is missing"
     found = pyfind.find_python(dict(env), ver, self_exe=py, root=str(root), use_cache=False)
     if found is None:
         return _BAD, (
-            f"python3 is {shown} and no Python >= 3.11 was found, so the hooks do nothing. "
+            f"{name} is {shown} and no Python >= 3.11 was found, so the hooks do nothing. "
             "Install Python 3.11 or newer, or set TOKEN_SPAREN_PYTHON to its path"
         )
-    return _OK, f"{found[0]} (found via {found[1]}; python3 is {shown}, hooks re-launch on it)"
+    return _OK, f"{found[0]} (found via {found[1]}; {name} is {shown}, hooks re-launch on it)"
 
 
 def _doctor(args: argparse.Namespace) -> int:

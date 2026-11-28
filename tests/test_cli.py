@@ -493,18 +493,36 @@ def test_explicit_session_beats_last_active(env: dict[str, str]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("platform", "found", "needles"),
+    ("platform", "found", "argv"),
     [
-        ("win32", {"py", "python"}, ("py -3 -m token_sparen", "python3")),
-        ("win32", {"python"}, ("python -m token_sparen", "python3")),
-        ("win32", set(), ("python.org", "python3")),
-        ("linux", set(), ("hooks run python3",)),
+        ("win32", {"py", "python", "python3"}, ["py", "-3"]),
+        ("win32", {"python", "python3"}, ["python"]),
+        ("win32", {"python3"}, ["python3"]),
+        ("win32", set(), None),
+        ("linux", {"py", "python", "python3"}, ["python3"]),
+        ("linux", {"py", "python"}, None),
     ],
 )
-def test_python3_missing_hint(platform: str, found: set[str], needles: tuple[str, ...]) -> None:
+def test_hook_interpreter_matches_hooks_json(
+    platform: str, found: set[str], argv: list[str] | None
+) -> None:
+    """v1 review M9: doctor checks the interpreter hooks.json starts on this platform (Windows:
+    the py launcher, else python, else python3; elsewhere python3)."""
     import token_sparen.cli as cli
 
-    text = cli.python3_missing_hint(platform, lambda name: f"/x/{name}" if name in found else None)
+    which = lambda name: f"/x/{name}" if name in found else None  # noqa: E731
+    got = cli.hook_interpreter(platform, which)
+    assert got == (None if argv is None else [f"/x/{argv[0]}", *argv[1:]])
+
+
+@pytest.mark.parametrize(
+    ("platform", "needles"),
+    [("win32", ("py -3", "python.org")), ("linux", ("hooks run python3",))],
+)
+def test_python3_missing_hint(platform: str, needles: tuple[str, ...]) -> None:
+    import token_sparen.cli as cli
+
+    text = cli.python3_missing_hint(platform)
     for needle in needles:
         assert needle in text
     if platform != "win32":
@@ -516,11 +534,11 @@ def test_doctor_windows_hint(
 ) -> None:
     import token_sparen.cli as cli
 
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "C:/py.exe" if name == "py" else None)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     monkeypatch.setattr(cli, "_host_platform", lambda: "win32")
     main(["doctor"])
     captured = capsys.readouterr()
-    assert "py -3 -m token_sparen" in captured.out, captured.err
+    assert "py -3" in captured.out and "python.org" in captured.out, captured.err
 
 
 def test_config_set_session_layer_reaches_hooks(

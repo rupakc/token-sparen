@@ -15,7 +15,14 @@ ID_TOKEN_JOBS = frozenset({"provenance", "publish-pypi", "deploy-pages"})
 _USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)(.*)$")
 _PINNED = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}")
 # isolated (`-I`): a repository's committed settings env must not inject PYTHONPATH/PYTHONSTARTUP
-_HOOK_COMMAND = re.compile(r'python3 -I "\$\{CLAUDE_PLUGIN_ROOT\}/hooks/[a-z_]+\.py"( \w+)?')
+# Windows (Git Bash): the py launcher, else python.exe, never a bare python3 (often missing or
+# the Store alias stub); elsewhere python3 (v1 review M9). Every interpreter starts with -I.
+_HOOK_SCRIPT = r'"\$\{CLAUDE_PLUGIN_ROOT\}/hooks/[a-z_]+\.py"( \w+)?'
+_HOOK_COMMAND = re.compile(
+    rf"hash py\.exe 2>&- && exec py\.exe -3 -I (?P<script>{_HOOK_SCRIPT}); "
+    rf"hash python\.exe 2>&- && exec python\.exe -I (?P=script); "
+    rf"exec python3 -I (?P=script)"
+)
 
 
 def _workflows() -> list[Path]:

@@ -824,7 +824,8 @@ def _hook_argv(tree: Path, event: str) -> list[str]:
     """The hooks.json command for ``event`` as Claude Code runs it (plugin root expanded)."""
     hooks = json.loads((tree / "hooks" / "hooks.json").read_text("utf-8"))["hooks"]
     command = hooks[event][0]["hooks"][0]["command"]
-    argv = shlex.split(command.replace("${CLAUDE_PLUGIN_ROOT}", tree.as_posix()))
+    posix = command.split("; ")[-1].removeprefix("exec ")  # the python3 clause (not Windows)
+    argv = shlex.split(posix.replace("${CLAUDE_PLUGIN_ROOT}", tree.as_posix()))
     assert argv[0] == "python3"
     return [sys.executable, *argv[1:]]
 

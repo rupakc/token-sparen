@@ -81,6 +81,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from token_sparen import recovery
 from token_sparen.config import Config, flag, log_error, state_home, user_config
 from token_sparen.emit import Gate
 from token_sparen.estimate import estimate_tokens
@@ -1182,7 +1183,7 @@ def cli_command(env: Mapping[str, str]) -> str:
     """The CLI as the user can run it: the plugin's own launcher when the plugin root is known
     (a plugin-only install has no ``token-sparen`` on PATH), else ``token-sparen``."""
     root = env.get("CLAUDE_PLUGIN_ROOT")
-    return f'python3 -I "{root}/hooks/run_cli.py"' if root else "token-sparen"
+    return f'{recovery.hook_python()} -I "{root}/hooks/run_cli.py"' if root else "token-sparen"
 
 
 def status_lines(

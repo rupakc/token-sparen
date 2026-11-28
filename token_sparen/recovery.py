@@ -229,12 +229,16 @@ def show_command() -> str:
         _SHOW_COMMAND = "token-sparen"
         bundled = Path(__file__).resolve().parent.parent / "hooks" / "run_cli.py"
         if shutil.which("token-sparen") is None and bundled.is_file():
-            if _is_windows():
-                python = "py -3" if shutil.which("py") is not None else "python"
-            else:
-                python = "python3"
-            _SHOW_COMMAND = f'{python} -I "{bundled.as_posix()}"'
+            _SHOW_COMMAND = f'{hook_python()} -I "{bundled.as_posix()}"'
     return _SHOW_COMMAND
+
+
+def hook_python() -> str:
+    """The interpreter command hooks.json starts on this platform, for commands shown to the
+    user or the agent: ``python3``; on Windows the ``py -3`` launcher, else ``python``."""
+    if _is_windows():
+        return "py -3" if shutil.which("py") is not None else "python"
+    return "python3"
 
 
 def marker(kept_lines: int, total_lines: int, ref: RecoveryRef) -> str:

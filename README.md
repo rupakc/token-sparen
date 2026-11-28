@@ -37,7 +37,7 @@ No published benchmark results yet. Results appear here only from the live bench
   Replacing a tool result needs the `updatedToolOutput` hook feature, which older hosts do not
   have: hooks would run, but nothing would be trimmed.
 - Python >= 3.11 somewhere on your machine. No other runtime dependencies. The hooks start
-  `python3 -I`; if that `python3` is older (macOS ships 3.9, Ubuntu 22.04 3.10), the launcher
+  `python3 -I` (on Windows `py -3 -I`, else `python -I`); if that `python3` is older (macOS ships 3.9, Ubuntu 22.04 3.10), the launcher
   finds a newer Python and re-runs the hook on it: `TOKEN_SPAREN_PYTHON` (a path or command
   name, if you set one), then `python3.15` ... `python3.11` and `python3` on your `PATH` (on
   Windows also `py -3.15` ... `py -3.11` and `py -3`), then `uv python find ">=3.11"` if `uv`
@@ -58,8 +58,10 @@ No published benchmark results yet. Results appear here only from the live bench
   variables); otherwise it is skipped with one line in `logs/errors.jsonl`. Some installers
   (for example python.org's macOS framework, group `admin` writable) fail this check; such a
   Python is still found through `PATH` (`python3.12` etc.).
-- macOS and Linux. Windows: hooks need a `python3` on `PATH` to start (`token-sparen doctor`
-  suggests `py -3` or `python` if it is missing), and the statusline launcher is not supported yet.
+- macOS and Linux. Windows: the hooks run in Git Bash (Claude Code's default shell there) and
+  start the Python launcher `py -3`, else `python` (never a bare `python3`, often missing or the
+  Microsoft Store alias there); a PowerShell-only setup (no Git Bash) is not supported, nor is
+  the statusline launcher yet. `token-sparen doctor` names the interpreter the hooks use.
 
 **Troubleshooting: "token-sparen is inactive" / nothing is ever trimmed.** The hooks found no
 Python >= 3.11. They keep your session working (fail open), show this warning at most once a day
