@@ -347,8 +347,9 @@ def test_writes_only_owned_rules_and_backup(env: dict[str, str], proj: Path) -> 
     assert data["permissions"]["deny"] == ["Bash(rm *)", "WebSearch", "WebFetch"]
     assert data["permissions"]["allow"] == ["Read"] and data["env"] == {"X": "1"}
     assert _owned(env, proj) == ["WebFetch"]  # WebSearch was the user's rule
-    backup = _local(proj).with_name("settings.local.json.token-sparen.bak")
+    backup = proj / ".token-sparen" / "settings.local.json.token-sparen.bak"
     assert backup.read_text(encoding="utf-8") == raw
+    assert not _local(proj).with_name("settings.local.json.token-sparen.bak").exists()
     # the user edits the file; a later prune never overwrites the pristine backup
     data["permissions"]["deny"].append("Bash(curl *)")
     _local(proj).write_text(json.dumps(data), encoding="utf-8")
@@ -704,7 +705,8 @@ def test_writer_refuses_bad_shapes_and_handles_missing_files(tmp_path: Path) -> 
     assert res.ok and res.changed == ["B"] and res.skipped == ["A"]
     assert res.created == {"dir": False, "file": False, "permissions": False, "deny": False}
     assert settings.add_deny_rules(path, ["A", "B"]).changed == []  # nothing new: no write
-    backup = path.with_name(path.name + settings.BACKUP_SUFFIX)
+    backup = settings.backup_path(path)
+    assert backup == tmp_path / ".token-sparen" / "settings.local.json.token-sparen.bak"
     assert backup.exists()
     res = settings.remove_deny_rules(path, ["B", "Z"], {}, True)
     assert res.changed == ["B"] and res.skipped == ["Z"]
@@ -1311,11 +1313,65 @@ def test_unignored_or_non_git_checkout_is_never_written(
 
 
 # minor 4: the backup is refreshed at the start of a cycle in which we own no rule there
+def _untracked(proj: Path) -> list[str]:
+    out = subprocess.run(
+        ["git", "-C", str(proj), "status", "--porcelain", "--untracked-files=all"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return [ln[3:] for ln in out.splitlines() if ln.startswith("??")]
+
+
+# v1 review M5: the backup holds the user's local settings (env secrets, allow rules); it must
+# never show up as an untracked file a later `git add -A` would commit.
+def test_backup_is_never_an_untracked_file(env: dict[str, str], proj: Path) -> None:
+    subprocess.run(["git", "-C", str(proj), "add", ".gitignore"], check=True)
+    _enable(env, proj)
+    _local(proj).parent.mkdir()
+    _local(proj).write_text('{"env": {"API_TOKEN": "s3cret"}}', encoding="utf-8")
+    _three(env, proj)
+    assert _deny(proj) == ["WebFetch", "WebSearch"]
+    assert settings.backup_path(_local(proj)).is_file()
+    assert _untracked(proj) == []
+
+
+def test_legacy_backup_next_to_the_settings_file_is_moved(env: dict[str, str], proj: Path) -> None:
+    """A backup left next to the settings file by an earlier version moves under the ignored
+    ``.token-sparen/`` on the next write, so it stops being an untracked file."""
+    subprocess.run(["git", "-C", str(proj), "add", ".gitignore"], check=True)
+    _enable(env, proj)
+    _local(proj).parent.mkdir()
+    _local(proj).write_text('{"permissions": {"deny": []}}', encoding="utf-8")
+    legacy = _local(proj).with_name("settings.local.json.token-sparen.bak")
+    legacy.write_text('{"permissions": {"deny": ["Old"]}}', encoding="utf-8")
+    _three(env, proj)
+    assert not legacy.exists()
+    moved = settings.backup_path(_local(proj))
+    assert moved.read_text(encoding="utf-8") == '{"permissions": {"deny": []}}'  # pre-cycle file
+    assert _untracked(proj) == []
+
+
+def test_backup_location_not_ignored_means_never_written(env: dict[str, str], proj: Path) -> None:
+    """A repository that commits ``.token-sparen/.gitignore`` without ``*`` would expose the
+    backup: git cannot confirm it is ignored, so nothing is written."""
+    (proj / ".token-sparen").mkdir()
+    (proj / ".token-sparen" / ".gitignore").write_text("outputs/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(proj), "add", "-f", ".token-sparen/.gitignore"], check=True)
+    assert settings.git_exposure(proj) == "backup"
+    _enable(env, proj)
+    _local(proj).parent.mkdir()
+    _local(proj).write_text("{}", encoding="utf-8")
+    _three(env, proj)
+    assert _deny(proj) == []
+    assert not settings.backup_path(_local(proj)).exists()
+
+
 def test_stale_backup_is_refreshed_when_we_own_nothing(env: dict[str, str], proj: Path) -> None:
     _enable(env, proj)
     _local(proj).parent.mkdir()
     _local(proj).write_text('{"permissions": {"deny": []}}', encoding="utf-8")
-    backup = _local(proj).with_name("settings.local.json.token-sparen.bak")
+    backup = proj / ".token-sparen" / "settings.local.json.token-sparen.bak"
     _three(env, proj)
     data = json.loads(_local(proj).read_text(encoding="utf-8"))
     data["env"] = {"LATER": "1"}  # a user edit while our rules are in place

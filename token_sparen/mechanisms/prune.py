@@ -153,7 +153,8 @@ class DenyWriter(Protocol):
 
     def exposure(self, project_dir: Path) -> str | None:
         """None only when the settings file is confirmed untracked and ignored; otherwise why
-        it is exposed (``"tracked"``, ``"unignored"``, ``"unknown"``): never written."""
+        it is exposed (``"tracked"``, ``"unignored"``, ``"backup"``, ``"unknown"``): never
+        written."""
         ...
 
     def add(
@@ -890,6 +891,12 @@ def _exposure_notice(exposure: str, target: Path) -> str:
         return (
             f"token-sparen: {target} is not covered by .gitignore, so tool pruning did not "
             "write it (its rules could be committed); add it to .gitignore to allow it."
+        )
+    if exposure == "backup":
+        return (
+            f"token-sparen: git does not ignore .token-sparen/ next to {target}, where tool "
+            "pruning keeps the settings backup, so it did not write it (the backup could be "
+            "committed); add .token-sparen/ to .gitignore to allow it."
         )
     return (
         f"token-sparen: git could not confirm that {target} is untracked and ignored (not a "

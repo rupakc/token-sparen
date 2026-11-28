@@ -783,7 +783,8 @@ attribute reward to it. Tier governs exploration (§7.6).
   with no output and `git check-ignore` exit 0); a tracked, not-ignored or non-git file, any
   other git outcome (missing, failing, timing out, `GIT_DIR`-style variables set), a symbolic
   link or a file that is not a strict JSON object is never written, with a notice. Before the
-  first rule the file is backed up once to `settings.local.json.token-sparen.bak` (refreshed
+  first rule the file is backed up once to `<project>/.token-sparen/settings.local.json.token-sparen.bak`
+  (git-ignored; git must confirm that too, v1 review M5; refreshed
   when a new round starts in a file where token-sparen owns no rule); writes are atomic after a
   re-check of the file; a rule the user already had is never claimed. Ownership (owned rules,
   created containers, the crash-safety journal written before each settings write, leases,

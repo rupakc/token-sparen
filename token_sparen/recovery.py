@@ -92,6 +92,20 @@ def _create_once(path: Path, data: str) -> None:
         fh.write(data.encode("utf-8"))
 
 
+def private_root(project_dir: Path) -> Path:
+    """``<project>/.token-sparen`` as a real private directory holding its ``*`` .gitignore
+    (created once; an existing entry is left alone). OSError when it is a link. Callers that
+    put user data there confirm with git that it is ignored (a repository may commit its own
+    ``.gitignore`` there)."""
+    root = _root(project_dir)
+    _refuse_links(root)
+    private_mkdir(root)
+    _real_dirs(root)
+    with contextlib.suppress(OSError):
+        _create_once(root / ".gitignore", "*\n")
+    return root
+
+
 def registry_dir(project_dir: Path, env: Mapping[str, str]) -> Path:
     """The ids this install wrote for this checkout, one empty file per id:
     ``<state root>/recovery/<16 hex>/<id>``, keyed by a hash of the checkout's real path (no raw

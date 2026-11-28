@@ -1298,7 +1298,7 @@ def _prune_cmd(args: argparse.Namespace) -> int:
         print(
             "token-sparen prune: enabled for this project (opt-in). MCP servers available but "
             f"never used across enough sessions will be denied in {target} (backed up once to "
-            f"{target.name}{settings.BACKUP_SUFFIX}), only while the project is idle; savings "
+            f"{settings.backup_path(target)}), only while the project is idle; savings "
             "are modest (their tool names and server instructions). Undo with "
             "`token-sparen prune restore <tool>`, `restore --all` or `prune disable`."
         )
@@ -1319,6 +1319,7 @@ def _prune_cmd(args: argparse.Namespace) -> int:
             why = {
                 "tracked": "it is tracked by git",
                 "unignored": "it is not covered by .gitignore",
+                "backup": "git does not ignore .token-sparen/, where its backup is kept",
             }.get(exposure, "git cannot confirm it is untracked and ignored")
             print(f"warning: nothing will be written to {target} while {why}.")
         return 0
@@ -1384,7 +1385,7 @@ def _prune_downgraded(
     if why is not None:
         print(f"token-sparen prune: {why}", file=err)
     elif candidates:
-        backup = target.name + settings.BACKUP_SUFFIX
+        backup = settings.backup_path(target)
         print(
             f'to undo by hand, remove from "permissions"."deny" in {target} the entries '
             f"below that you did not add yourself (they are not in {backup}):",

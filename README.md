@@ -289,7 +289,8 @@ Everything stays on your machine, but some of it is plain text you should know a
 - `<project>/.claude/settings.local.json`: **only** if you opt in to
   [tool pruning](docs/user/mechanisms/tool-pruning.md), and only when git confirms the file is untracked and
   ignored: bare `permissions.deny` entries, appended by the background session-end fold, with a
-  backup `settings.local.json.token-sparen.bak` next to it and exact restore (`prune restore
+  backup `<project>/.token-sparen/settings.local.json.token-sparen.bak` (git-ignored like the
+  recovery files; written only once git confirms that too) and exact restore (`prune restore
   --all`, `prune disable`).
 - Hooks fail open: any internal error or a hook slower than 400 ms returns "no change" and logs one
   line to `errors.jsonl`.

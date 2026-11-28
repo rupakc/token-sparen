@@ -49,9 +49,12 @@ is used, and prunes it again only after fresh unused sessions.
 
 What it writes: only those deny entries, appended to `permissions.deny`; every other key and
 every rule you wrote stays as it is, and a rule you already had is never claimed. Before the
-first change the file is copied once to `settings.local.json.token-sparen.bak`; writes are atomic
-and re-check the file just before replacing it. The file is written only when git confirms it is
-untracked and covered by `.gitignore`; a file that is tracked, not ignored, outside a git work
+first change the file is copied once to `<project>/.token-sparen/settings.local.json.token-sparen.bak`
+(inside the git-ignored `.token-sparen/` folder, so the copy of your local settings is never an
+untracked file a `git add -A` would commit; a backup an older version left next to the file is
+moved there); writes are atomic and re-check the file just before replacing it. The file is
+written only when git confirms it is untracked and covered by `.gitignore`, and that the backup
+location is ignored too; a file that is tracked, not ignored, outside a git work
 tree, or whose status git cannot report (git missing, failing or too slow, or `GIT_DIR`-style
 variables pointing elsewhere) is never written, nor a symbolic link (or a file inside a linked
 `.claude` folder), nor one that is not a strict JSON object (comments, duplicate keys); you are
