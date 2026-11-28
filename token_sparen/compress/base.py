@@ -58,7 +58,14 @@ ERROR_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile("✗"),
 )
 
-_WS = rb"[ \t\r\x0b\x0c]"  # ASCII whitespace except the newline (str ``\s`` within one line)
+# Shape-anchored patterns (``Killed``, ``Permission denied``) would need a line-start or
+# whitespace-led byte regex, which defeats the engine's literal-prefix search (a 10 MB output
+# then misses its latency budget). Their literal is scanned instead and each (rare) hit's line
+# is judged by ``is_error_line``: (pattern, scans the lower-cased bytes).
+_VERIFIED_SCANNERS: tuple[tuple[re.Pattern[bytes], bool], ...] = (
+    (re.compile(rb"permission denied"), True),
+    (re.compile(rb"Killed"), False),
+)
 
 
 def _anchored(literal: str, suffix: str = "") -> re.Pattern[bytes]:
@@ -85,8 +92,6 @@ _LOWER_SCANNERS: tuple[re.Pattern[bytes], ...] = (
     _anchored("assert", "(?:ion)?"),
     _anchored("segmentation fault"),
     _anchored("segfault", "(?:s|ed)?"),
-    re.compile(rb":" + _WS + rb"*permission denied(?![a-z0-9_])"),
-    re.compile(rb"(?m)^" + _WS + rb"*permission denied(?![a-z0-9_])"),
     _anchored("eacces"),
     _anchored("access denied"),
     _anchored("access is denied"),
@@ -97,10 +102,6 @@ _RAW_SCANNERS: tuple[re.Pattern[bytes], ...] = (
     re.compile(rb"Error(?![A-Za-z0-9_])"),
     re.compile(rb"Exception(?![A-Za-z0-9_])"),
     re.compile(rb"ERR!(?<![A-Za-z0-9_]ERR!)"),
-    re.compile(rb"(?m)^" + _WS + rb"*Killed(?::" + _WS + rb"*[0-9]+)?" + _WS + rb"*$"),
-    re.compile(rb"[0-9]" + _WS + rb"+Killed(?![^ \t\r\n\x0b\x0c])"),
-    re.compile(rb"Killed(?<![A-Za-z0-9_]Killed) process [0-9]"),
-    re.compile(rb"Killed(?<![A-Za-z0-9_]Killed) \(signal"),
     re.compile("✗".encode()),
 )
 
@@ -185,6 +186,25 @@ def error_line_indices(
                 if nxt == -1:
                     break
                 m = pat.search(hay, nxt)
+    for pat, lower in _VERIFIED_SCANNERS:
+        hay = low if lower else data
+        m = pat.search(hay)
+        idx = 0
+        last = 0
+        while m is not None:
+            pos = m.start()
+            idx += hay.count(b"\n", last, pos)
+            last = pos
+            start = data.rfind(b"\n", 0, pos) + 1
+            end = data.find(b"\n", pos)
+            end = len(data) if end == -1 else end
+            if idx not in found and is_error_line(data[start:end].decode("utf-8", "surrogatepass")):
+                found.add(idx)
+                if stop_at is not None and len(found) >= stop_at:
+                    return sorted(found)
+            if end == len(data):
+                break
+            m = pat.search(hay, end)
     return sorted(found)
 
 
