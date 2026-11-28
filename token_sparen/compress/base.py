@@ -36,7 +36,7 @@ ENTRY_POINT_GROUP = "token_sparen.compressors"
 ERROR_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"\b(?:errors?|exceptions?|traceback|fail(?:s|ed|ure|ures|ing)?|fatal|panic(?:ked)?"
-        r"|assert(?:ion)?|segmentation fault|segfault(?:s|ed)?|permission denied|eacces"
+        r"|assert(?:ion)?|segmentation fault|segfault(?:s|ed)?|eacces"
         r"|access (?:is )?denied|undefined reference|command not found)\b",
         # ASCII-only case folding keeps the byte-level anchor scan exact (no Unicode
         # look-alikes such as U+017F matching "s"); non-ASCII letters count as boundaries,
@@ -45,9 +45,20 @@ ERROR_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     re.compile(r"(?:Error|Exception)\b", re.ASCII),  # CamelCase names: ValueError, IOException
     re.compile(r"\bERR!", re.ASCII),  # npm ERR! (the npm failure prefix)
-    re.compile(r"\bKilled\b", re.ASCII),  # a shell reporting a SIGKILLed job (OOM killer)
+    # A SIGKILLed job in its error-line shapes only (prose such as "Killed the flaky retry" in a
+    # git log is not pinned, v1 review M-a): the shell's bare ``Killed`` / ``Killed: 9``, a job
+    # line ``4242 Killed  make``, the kernel's ``Killed process N`` and ``Killed (signal 9)``.
+    re.compile(
+        r"^\s*Killed(?::\s*\d+)?\s*$|\d\s+Killed(?!\S)|\bKilled process \d|\bKilled \(signal",
+        re.ASCII,
+    ),
+    # ``Permission denied`` as a message after a colon (``cp: x: Permission denied``, ``zsh:
+    # permission denied: ./x``) or at the start of a line (``Permission denied (publickey).``)
+    re.compile(r":\s*permission denied\b|^\s*permission denied\b", re.IGNORECASE | re.ASCII),
     re.compile("✗"),
 )
+
+_WS = rb"[ \t\r\x0b\x0c]"  # ASCII whitespace except the newline (str ``\s`` within one line)
 
 
 def _anchored(literal: str, suffix: str = "") -> re.Pattern[bytes]:
@@ -74,7 +85,8 @@ _LOWER_SCANNERS: tuple[re.Pattern[bytes], ...] = (
     _anchored("assert", "(?:ion)?"),
     _anchored("segmentation fault"),
     _anchored("segfault", "(?:s|ed)?"),
-    _anchored("permission denied"),
+    re.compile(rb":" + _WS + rb"*permission denied(?![a-z0-9_])"),
+    re.compile(rb"(?m)^" + _WS + rb"*permission denied(?![a-z0-9_])"),
     _anchored("eacces"),
     _anchored("access denied"),
     _anchored("access is denied"),
@@ -85,7 +97,10 @@ _RAW_SCANNERS: tuple[re.Pattern[bytes], ...] = (
     re.compile(rb"Error(?![A-Za-z0-9_])"),
     re.compile(rb"Exception(?![A-Za-z0-9_])"),
     re.compile(rb"ERR!(?<![A-Za-z0-9_]ERR!)"),
-    re.compile(rb"Killed(?<![A-Za-z0-9_]Killed)(?![A-Za-z0-9_])"),
+    re.compile(rb"(?m)^" + _WS + rb"*Killed(?::" + _WS + rb"*[0-9]+)?" + _WS + rb"*$"),
+    re.compile(rb"[0-9]" + _WS + rb"+Killed(?![^ \t\r\n\x0b\x0c])"),
+    re.compile(rb"Killed(?<![A-Za-z0-9_]Killed) process [0-9]"),
+    re.compile(rb"Killed(?<![A-Za-z0-9_]Killed) \(signal"),
     re.compile("✗".encode()),
 )
 

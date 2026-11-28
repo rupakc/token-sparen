@@ -1884,3 +1884,15 @@ and the two new issues they found.
   it off (`false_only`). The epoch logic stays for opted-in users. The skill also pre-approves
   the Windows `py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"` forms of the same safe
   subcommands (SKILL.md limit raised to 85 lines for them).
+- v1 fixes B round 2 (2026-11-28 rulings C1, I1, I2, minors): the hook command is
+  `{ hash cygpath && ! uname -r | grep -qi microsoft && { py.exe -3 -I … || python.exe -I …; } ||
+  python3 -I …; } || echo {}` (exact text in `tests/hookcmd.py`): `.exe` interpreters only in a
+  Windows shell that ships cygpath (Git Bash, MSYS, Cygwin) and is not WSL; any failure prints
+  the no-op `{}` and exits 0, so a hook never blocks (WSL appends the Windows PATH, where
+  `py.exe` cannot open a Linux path and exits 2). I1: Agent/Task results are never compressed
+  (`compression._skipped`: category `agent`, whatever `allow_ctypes` says). I2: doctor's orphan
+  warning needs tool pruning's backup of the settings file (attribution by backup diff); no
+  backup, no warning. M-a: `Killed` is pinned only in its error-line shapes (bare / `Killed: N`
+  line, `N Killed`, `Killed process N`, `Killed (signal`), `Permission denied` only after a colon
+  or at line start; byte scanners mirror them (fuzzed). E2 `build_silent_failures` also pins
+  `undefined reference` and `command not found`.

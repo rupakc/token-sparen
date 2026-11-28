@@ -539,6 +539,8 @@ needles = [
   "977 Killed                  node build.js",
   "cp: cannot create regular file '/opt/app/bin/tool': Permission denied",
   "npm WARN checkPermissions code EACCES path /usr/lib/node_modules",
+  "undefined reference to `vec_push'",
+  "/bin/sh: 1: cargo: command not found",
 ]
 must_inline = [
   "#3 1.9 npm ERR! code ELIFECYCLE",
@@ -546,6 +548,8 @@ must_inline = [
   "977 Killed                  node build.js",
   "cp: cannot create regular file '/opt/app/bin/tool': Permission denied",
   "npm WARN checkPermissions code EACCES path /usr/lib/node_modules",
+  "undefined reference to `vec_push'",
+  "/bin/sh: 1: cargo: command not found",
 ]
 
 [[case]]

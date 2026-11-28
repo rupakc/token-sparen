@@ -267,6 +267,7 @@
 #11 4.0 fetched chunk 20 of layer 11 (740 kB) from registry mirror
 #11 4.2 fetched chunk 21 of layer 11 (777 kB) from registry mirror
 #11 DONE 2.11s
+#11 0.5 /usr/bin/ld: main.o: in function `main': undefined reference to `vec_push'
 #12 [12/14] RUN step-12
 #12 0.0 fetched chunk 0 of layer 12 (0 kB) from registry mirror
 #12 0.2 fetched chunk 1 of layer 12 (37 kB) from registry mirror
@@ -291,6 +292,7 @@
 #12 4.0 fetched chunk 20 of layer 12 (740 kB) from registry mirror
 #12 4.2 fetched chunk 21 of layer 12 (777 kB) from registry mirror
 #12 DONE 2.12s
+#12 0.1 /bin/sh: 1: cargo: command not found
 #14 exporting to image
 #14 naming to example.org/app:dev done
 #14 DONE 0.4s

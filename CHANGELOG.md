@@ -45,9 +45,11 @@ trimming is worth its risk. Quality comes first: when in doubt, nothing is trimm
   context epoch (compaction, `/clear`, resume, fork, a re-sent earlier prompt) and 30 minutes.
 - More failure lines are always kept (`npm ERR!`, segmentation faults, `Killed`, permission
   errors, `undefined reference`, `command not found`); a failing test keeps its whole
-  assertion diff; a subagent's report is never trimmed as search output.
+  assertion diff; a subagent's report is never trimmed.
 - The recovery marker names the bundled command-line tool when `token-sparen` is not
-  installed; Windows hooks start `py -3` or `python` instead of `python3`.
+  installed; Windows hooks (Git Bash) start `py -3` or `python` instead of `python3`, WSL and
+  other POSIX shells keep `python3`, and a hook whose interpreter is missing or fails answers
+  "no change" instead of blocking.
 - Tool pruning keeps its settings backup inside the git-ignored `.token-sparen/` folder, and
   `doctor` lists deny rules left without an ownership record.
 

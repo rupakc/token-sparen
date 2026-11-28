@@ -864,6 +864,12 @@ def build_cases():
             b.append("#9 0.7 cp: cannot create regular file '/opt/app/bin/tool': Permission denied")
         if i == 10:
             b.append("#10 0.9 npm WARN checkPermissions code EACCES path /usr/lib/node_modules")
+        if i == 11:
+            b.append(
+                "#11 0.5 /usr/bin/ld: main.o: in function `main': undefined reference to `vec_push'"
+            )
+        if i == 12:
+            b.append("#12 0.1 /bin/sh: 1: cargo: command not found")
     b += ["#14 exporting to image", "#14 naming to example.org/app:dev done", "#14 DONE 0.4s"]
     m10 = [
         "#3 1.9 npm ERR! code ELIFECYCLE",
@@ -871,6 +877,8 @@ def build_cases():
         "977 Killed                  node build.js",
         "cp: cannot create regular file '/opt/app/bin/tool': Permission denied",
         "npm WARN checkPermissions code EACCES path /usr/lib/node_modules",
+        "undefined reference to `vec_push'",
+        "/bin/sh: 1: cargo: command not found",
     ]
     add(
         "build_silent_failures.txt",
