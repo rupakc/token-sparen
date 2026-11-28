@@ -251,7 +251,8 @@ Everything stays on your machine, but some of it is plain text you should know a
     rotated to `decisions.jsonl.1` past 20 MB, which outcome lines make happen sooner), `sessions/<id>.json` (session overlay: the **last user prompt, up to 2000
     characters**, recently read/edited **file paths**, the last 10 tool categories (for the
     learning engine's task phase), identifiers used for task-boundary
-    detection, the token ledger and read de-dupe memory, and the session's learned evidence, bucket
+    detection, 16-hex hashes of the session's prompts (to notice a re-sent prompt after
+    `/rewind`), the token ledger and read de-dupe memory, and the session's learned evidence, bucket
     labels and numbers only), `sessions/regret/<id>.json` (for each trim of the last few turns: the
     normalised command, up to 64 distinctive words of the trimmed part of the output stored
     **only as hashes** (not plain text) and up to 32 **file paths** it mentions, used to notice when

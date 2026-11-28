@@ -2,7 +2,9 @@
 
 **Hook:** PreToolUse and PostToolUse on file reads. **Default:** on. **Learned:** yes.
 
-Re-reading an unchanged file that is still in context (within 8 turns, not compacted since, and of at least 2000 estimated tokens) returns a short pointer, `[token-sparen: unchanged since turn N ...]`, instead of the file again.
+Re-reading an unchanged file that is still in context (within 8 turns and 30 minutes, in the same context epoch, and of at least 2000 estimated tokens) returns a short pointer, `[token-sparen: unchanged since turn N ...]`, instead of the file again.
+
+A pointer only ever refers to a read from the same **context epoch**: a new epoch starts at a compaction (`/compact` or automatic), `/clear`, a resumed or forked session, and when you send a prompt you already sent in this session (that is what `/rewind` and "Summarize from here" lead to: they fire no hook, but put the earlier prompt back into the input). Claude Code may also clear old tool results after a long pause without telling hooks, hence the 30-minute limit. A rewind after which you edit the prompt before sending it cannot be detected; within 8 turns and 30 minutes the pointer may then refer to a read that is gone, and the model re-reads with a range (the pointer says how), or you can turn the mechanism off.
 
 This is not covered by `trim_file_contents`: it replaces a repeat of something the model already has, not the first read. It is a learned decision like [compression](compression.md): a small share of re-reads always returns the full file, and with learning off it always returns the pointer.
 

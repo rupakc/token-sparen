@@ -10,6 +10,7 @@ for repository facts (``facts.miners``; never read by a hook).
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from collections.abc import Mapping
@@ -99,6 +100,12 @@ def handle_prompt(event: Event, cfg: Config, *, env: Mapping[str, str] | None = 
         turn = state.get("turn")
         prior = turn if isinstance(turn, int) and not isinstance(turn, bool) else 0
         state["turn"] = prior + 1
+        if _repeats_earlier_prompt(state, event.prompt or ""):
+            # /rewind (restore conversation, summarize from here) fires no hook but puts the
+            # earlier prompt back into the input: what was read after it may be gone, so read
+            # de-dupe starts a new context epoch (v1 review M13)
+            state["reads"] = {}
+            state["last_compact_turn"] = prior + 1
         state["last_prompt"] = prompt
         _set_transcript(state, event)
         return state
@@ -106,6 +113,26 @@ def handle_prompt(event: Event, cfg: Config, *, env: Mapping[str, str] | None = 
     _update(overlay_path(event, env), apply, env)
     record_active(event, env=env)
     return Action()
+
+
+PROMPT_HASHES = "prompt_hashes"
+PROMPT_HASHES_MAX = 64
+
+
+def _repeats_earlier_prompt(state: dict[str, Any], prompt: str) -> bool:
+    """Record ``prompt`` (a 16-hex hash, newest last, bounded); True if the session sent the same
+    prompt before. An empty prompt is never recorded."""
+    if not prompt.strip():
+        return False
+    digest = hashlib.sha256(prompt.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+    raw = state.get(PROMPT_HASHES)
+    seen = [h for h in raw if isinstance(h, str)] if isinstance(raw, list) else []
+    repeated = digest in seen
+    if repeated:
+        seen.remove(digest)
+    seen.append(digest)
+    state[PROMPT_HASHES] = seen[-PROMPT_HASHES_MAX:]
+    return repeated
 
 
 TRANSCRIPT_KEY = "transcript"  # read by learn.overlay (fold) only
