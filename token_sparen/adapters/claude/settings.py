@@ -452,6 +452,12 @@ def _legacy_backup(path: Path) -> Path:
     return path.with_name(path.name + BACKUP_SUFFIX)
 
 
+def has_backup(path: Path) -> bool:
+    """Tool pruning left its backup of ``path`` (current or legacy location): evidence that it
+    wrote deny rules to this file."""
+    return _backup_in_use(path).is_file()
+
+
 def _backup_in_use(path: Path) -> Path:
     """The backup to read: the current location, else a legacy one left by an older version."""
     current = backup_path(path)

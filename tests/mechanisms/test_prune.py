@@ -1397,6 +1397,23 @@ def test_doctor_warns_about_deny_rules_whose_ownership_record_is_gone(
     assert str(_local(proj)) in line and "by hand" in line
 
 
+def test_doctor_is_silent_about_deny_rules_it_cannot_attribute(
+    env: dict[str, str],
+    proj: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """v1 review I2: a project that never used tool pruning (no backup, no record) may deny
+    tools in the same format itself; doctor never suggests removing those."""
+    _local(proj).parent.mkdir()
+    _local(proj).write_text(
+        '{"permissions": {"deny": ["WebFetch", "mcp__github", "Bash(rm:*)"]}}', encoding="utf-8"
+    )
+    assert _doctor_lines(monkeypatch, capsys) == []
+    shutil.rmtree(_home(env), ignore_errors=True)
+    assert _doctor_lines(monkeypatch, capsys) == []
+
+
 def test_stale_backup_is_refreshed_when_we_own_nothing(env: dict[str, str], proj: Path) -> None:
     _enable(env, proj)
     _local(proj).parent.mkdir()

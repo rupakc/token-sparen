@@ -822,16 +822,19 @@ def _doctor(args: argparse.Namespace) -> int:
 
 
 def _orphan_deny_rules(env: Mapping[str, str]) -> str | None:
-    """A warning when this project's ``.claude/settings.local.json`` holds deny rules in tool
-    pruning's format that the ownership registry does not know (v1 review M6: deleting the state
-    root drops the registry, so nothing would restore them and ``prune restore`` finds nothing),
-    else None. A rule the user added in that format matches too, so it is only listed."""
+    """A warning when this project's ``.claude/settings.local.json`` holds deny rules that tool
+    pruning can be shown to have added (in its format and absent from the backup it took before
+    its first rule) but that the ownership registry does not know (v1 review M6: deleting the
+    state root drops the registry, so nothing would restore them), else None. Without that
+    backup nothing is attributable, so nothing is said (v1 review I2); rules are only listed."""
     from token_sparen.adapters.claude import settings
     from token_sparen.mechanisms import prune
 
     try:
         project = _prune_project(argparse.Namespace(project=None))
         target = settings.local_settings_path(project)
+        if not settings.has_backup(target):
+            return None  # tool pruning never wrote here (or left no trace): nothing to attribute
         candidates, why = settings.downgrade_candidates(project)
         if why is not None or not candidates:
             return None
@@ -845,9 +848,10 @@ def _orphan_deny_rules(env: Mapping[str, str]) -> str | None:
         return None
     listed = ", ".join(json.dumps(r) for r in orphans)
     return (
-        f"{target} denies {listed} in token-sparen's format, but no ownership record for them "
-        "exists (was ~/.token-sparen deleted?), so they are never restored automatically; "
-        'unless you added them yourself, remove them from "permissions"."deny" by hand'
+        f"{target} denies {listed}, added after tool pruning's backup of it, but no "
+        "ownership record for them exists (was ~/.token-sparen deleted?), so they are never "
+        'restored automatically; unless you added them yourself, remove them from "permissions".'
+        '"deny" by hand'
     )
 
 

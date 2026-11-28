@@ -11,7 +11,7 @@ The settings edits token-sparen can make live outside its state folder, so delet
    token-sparen prune disable
    ```
 
-   To find the projects where pruning is on, look in each of your projects for a `.token-sparen/settings.local.json.token-sparen.bak` (older versions put it next to `.claude/settings.local.json`), or run `token-sparen prune status` in a project to see its state. If you already deleted `~/.token-sparen/`, `token-sparen doctor` (run in the project) lists the deny rules in token-sparen's format that no record covers any more; remove the ones you did not add yourself from `"permissions"."deny"` by hand.
+   To find the projects where pruning is on, look in each of your projects for a `.token-sparen/settings.local.json.token-sparen.bak` (older versions put it next to `.claude/settings.local.json`), or run `token-sparen prune status` in a project to see its state. If you already deleted `~/.token-sparen/`, `token-sparen doctor` (run in the project, while its `.token-sparen/` folder with the pruning backup still exists) lists the deny rules added after that backup that no record covers any more; remove the ones you did not add yourself from `"permissions"."deny"` by hand.
 
 2. If you installed the [statusline](mechanisms/statusline.md), restore your original `statusLine` setting:
 
