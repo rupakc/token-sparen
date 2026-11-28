@@ -75,12 +75,8 @@ def _repo_hits(patterns: Sequence[re.Pattern[str]]) -> Iterator[str]:
         path = ROOT / rel
         if not path.is_file():
             continue
-        try:
-            text = path.read_bytes().decode("utf-8")
-        except UnicodeDecodeError:
-            continue  # binary file
-        for line_no in scan_text(text, patterns):
-            yield f"{rel}:{line_no}"
+        # review m-R4: a text file that is not UTF-8 is scanned too; only NUL marks binary
+        yield from _content_hits(rel, path.read_bytes(), patterns)
 
 
 def _named(name: str, patterns: Sequence[re.Pattern[str]]) -> bool:

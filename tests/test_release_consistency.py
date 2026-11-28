@@ -8,6 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -16,6 +17,15 @@ SCRIPTS = ROOT / "scripts"
 HEADING = re.compile(r"^## \[(?P<v>[^\]]+)\](?: - (?P<d>.+))?$", re.MULTILINE)
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(\.dev\d+)?$")
 MARKER = "<!-- pre-1.0 milestones -->"
+RELEASE_SOURCE = {"source": "github", "repo": "rupakc/token-sparen", "ref": "release/claude"}
+DEV_MARKETPLACE = json.dumps(
+    {
+        "name": "token-sparen",
+        "owner": {"name": "Rupak Chakraborty"},
+        "plugins": [{"name": "token-sparen", "source": "./", "description": "d"}],
+    },
+    indent=2,
+)
 
 
 def _bump_module() -> ModuleType:
@@ -44,6 +54,7 @@ def _make_repo(tmp_path: Path) -> Path:
         dest = tmp_path / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / rel, dest)
+    (tmp_path / ".claude-plugin" / "marketplace.json").write_text(DEV_MARKETPLACE, encoding="utf-8")
     changelog = tmp_path / "CHANGELOG.md"
     text = changelog.read_text(encoding="utf-8")
     if MARKER not in text:
@@ -214,3 +225,95 @@ def test_changelog_has_pre1_marker_below_unreleased() -> None:
     assert text.count(MARKER) == 1
     assert text.index("## [Unreleased]") < text.index(MARKER) < text.index("## Pre-1.0 milestones")
     assert "[1.0.0]" not in text.split(MARKER, 1)[0]  # the bump creates it, nothing writes it
+
+
+def _market(root: Path) -> dict[str, Any]:
+    data = json.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    return data
+
+
+def test_marketplace_tracks_release_branch() -> None:
+    """Ruling B1: from the release-prep commit of the first release on, the marketplace users
+    add from ``main`` installs the gated ``release/claude`` tree, never ``main`` itself. Before
+    that (no dated release heading above the milestone marker) ``./`` is the dev install."""
+    from scripts import release_check as rc
+
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    (entry,) = [p for p in _market(ROOT)["plugins"] if p["name"] == "token-sparen"]
+    required = rc.marketplace_required(changelog)
+    if required:
+        assert entry["source"] == RELEASE_SOURCE
+    else:
+        assert entry["source"] in ("./", RELEASE_SOURCE)
+    assert rc.marketplace_problems(ROOT, required=required) == []
+
+
+def test_marketplace_required_once_a_release_is_dated() -> None:
+    from scripts import release_check as rc
+
+    head = "# Changelog\n\n## [Unreleased]\n\n"
+    tail = f"{MARKER}\n\n## [0.4.0] - 2026-11-20\n"
+    assert not rc.marketplace_required(head + tail)  # pre-1.0 milestones never count
+    assert not rc.marketplace_required(head + "## [1.0.0] - Unreleased\n\n" + tail)  # rc freeze
+    assert rc.marketplace_required(head + "## [1.0.0] - 2026-12-01\n\n" + tail)
+    assert rc.marketplace_required(head + "## [1.0.1] - Unreleased\n\n## [1.0.0] - 2026-12-01\n")
+
+
+def test_prepare_release_dates_and_tracks_release_branch(tmp_path: Path) -> None:
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    mod.bump(root, "1.0.0", date=None)
+    before = _market(root)
+    changed = mod.prepare_release(root, "1.0.0", "2026-12-01")
+    assert sorted(p.relative_to(root).as_posix() for p in changed) == [
+        ".claude-plugin/marketplace.json",
+        "CHANGELOG.md",
+    ]
+    assert "## [1.0.0] - 2026-12-01" in (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    after = _market(root)
+    (entry,) = after["plugins"]
+    assert entry["source"] == RELEASE_SOURCE
+    old_entry = before["plugins"][0]
+    assert {k: v for k, v in entry.items() if k != "source"} == {
+        k: v for k, v in old_entry.items() if k != "source"
+    }
+    assert {k: v for k, v in after.items() if k != "plugins"} == {
+        k: v for k, v in before.items() if k != "plugins"
+    }
+    # the next dev bump keeps tracking release/claude (nothing points it back at ./)
+    mod.bump(root, "1.0.1.dev0", date=None)
+    assert _market(root)["plugins"][0]["source"] == RELEASE_SOURCE
+    assert mod.track_release_branch(root) == root / ".claude-plugin" / "marketplace.json"
+    assert _market(root) == after  # idempotent
+    assert b"\r" not in (root / ".claude-plugin" / "marketplace.json").read_bytes()
+
+
+def test_prepare_release_refuses_and_writes_nothing(tmp_path: Path) -> None:
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    with pytest.raises(ValueError, match="X.Y.Z"):
+        mod.prepare_release(root, "1.0.1.dev0", "2026-12-01")
+    with pytest.raises(ValueError, match="current version"):
+        mod.prepare_release(root, "1.0.0", "2026-12-01")  # not bumped yet
+    mod.bump(root, "1.0.0", date=None)
+    market = root / ".claude-plugin" / "marketplace.json"
+    market.write_text('{"plugins": []}', encoding="utf-8")
+    snapshot = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    with pytest.raises(ValueError, match="exactly one"):
+        mod.prepare_release(root, "1.0.0", "2026-12-01")
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == snapshot
+
+
+def test_cli_prepare_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    monkeypatch.setattr(mod, "ROOT", root)
+    monkeypatch.setattr(mod, "is_dirty", lambda root: False)
+    assert mod.main(["1.0.0"]) == 0
+    assert mod.main(["--prepare-release", "1.0.0", "2026-12-01"]) == 0
+    out = capsys.readouterr().out
+    assert "marketplace.json" in out and "CHANGELOG.md" in out
+    assert _market(root)["plugins"][0]["source"] == RELEASE_SOURCE

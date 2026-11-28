@@ -32,6 +32,7 @@ from scripts.plugin_hash import plugin_files, plugin_hash
 ROOT = Path(__file__).resolve().parent.parent
 E4_EXAMPLE = ROOT / "tests" / "bench" / "fixtures" / "e4_example.json"
 PIN = "v1.0.0-rc1"
+RELEASE_SOURCE = {"source": "github", "repo": "rupakc/token-sparen", "ref": "release/claude"}
 
 README = """# token-sparen
 
@@ -135,6 +136,16 @@ def _set_version(repo: Path, version: str, *, date: str = "2026-12-01") -> None:
     )
 
 
+def _marketplace(repo: Path, source: Any) -> None:
+    doc = {
+        "name": "token-sparen",
+        "owner": {"name": "Test"},
+        "plugins": [{"name": "token-sparen", "source": source, "description": "d"}],
+    }
+    path = repo / ".claude-plugin" / "marketplace.json"
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
 def _make_base(dest: Path) -> Path:
     dest.mkdir(parents=True)
     tracked = _git(ROOT, "ls-files", "-z", "--", *bct.PLUGIN_SOURCES).split("\0")
@@ -142,7 +153,7 @@ def _make_base(dest: Path) -> Path:
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / rel, target)
-    (dest / ".claude-plugin" / "marketplace.json").write_text("{}\n", encoding="utf-8")
+    _marketplace(dest, RELEASE_SOURCE)
     (dest / "README.md").write_text(README, encoding="utf-8")
     for rel, text in DEV_FILES.items():
         target = dest / rel
@@ -285,14 +296,21 @@ def _patch(
         before()
     target = repo / touched
     target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("a", encoding="utf-8") as fh:
-        fh.write("\n# patch fix\n")
-    measured = json.loads((repo / "docs/evidence/e4.json").read_text("utf-8"))["plugin_hash"]
+    if target.suffix == ".json":
+        data = json.loads(target.read_text(encoding="utf-8"))
+        data["patched"] = True
+        target.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    else:
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write("\n# patch fix\n")
+    evidence = json.loads((repo / "docs/evidence/e4.json").read_text("utf-8"))
     readme = repo / "README.md"
     readme.write_text(
         readme.read_text("utf-8").replace(
             "| table | rendered |",
-            f"| table | rendered |\n\nMeasured on {PIN}, plugin {measured[:12]}.",
+            # the claims sentence as `render_evidence --write README.md` writes it (review m-R1)
+            f"| table | rendered |\n\nMeasured on 1 task. Plugin version "
+            f"{evidence['plugin_version']}, plugin hash `{evidence['plugin_hash']}`, harness.",
         ),
         encoding="utf-8",
     )
@@ -307,7 +325,7 @@ def test_patch_rule_allows_labelled_runtime_fix(
 ) -> None:
     calls: list[tuple[Any, ...]] = []
     monkeypatch.setattr(rc, "_load_gate", lambda: _gate(False, calls))
-    _patch(repo, tmp_path, "token_sparen/cli.py")
+    _patch(repo, tmp_path, "docs/user/index.md")
     assert rc.release_check(repo, tag="v1.0.1", mode="tag") == []
     assert calls == [], "a patch release is judged by the patch rule, not a new E4 gate"
     # (b) the runtime changes must be listed
@@ -319,9 +337,9 @@ def test_patch_rule_allows_labelled_runtime_fix(
     changelog.write_text(text, "utf-8")
     # (a) README must state the measured version and plugin hash
     readme = repo / "README.md"
-    readme.write_text(readme.read_text("utf-8").replace(f"Measured on {PIN}", "Measured"), "utf-8")
+    readme.write_text(readme.read_text("utf-8").replace("Plugin version 1.0.0", "Plugin"), "utf-8")
     problems = rc.release_check(repo, tag="v1.0.1", mode="tag")
-    assert any("measured" in p.lower() and PIN in p for p in problems), problems
+    assert any("(a)" in p and "Plugin version 1.0.0, plugin hash" in p for p in problems), problems
 
 
 @pytest.mark.parametrize(
@@ -336,9 +354,20 @@ def test_patch_rule_allows_labelled_runtime_fix(
         "token_sparen/config.py",
         "hooks/run.py",
         "skills/token-sparen/SKILL.md",
+        # review M1: the rule is an allow-list, so files nobody listed are behaviour too
+        "token_sparen/facts/inject.py",
+        "token_sparen/estimate.py",
+        "token_sparen/recovery.py",
+        "token_sparen/cli.py",
+        "token_sparen/store/new_module.py",
+        "token_sparen/__init__.py",  # more than the version line
+        ".claude-plugin/plugin.json",  # more than the version field
+        ".github/workflows/ci.yml",
+        ".claude/skills/release/SKILL.md",
+        "pyproject.toml",
     ],
 )
-def test_patch_rule_refuses_params_or_learn_change(
+def test_patch_rule_refuses_behaviour_change(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, touched: str
 ) -> None:
     monkeypatch.setattr(rc, "_load_gate", lambda: _gate(True))
@@ -347,13 +376,115 @@ def test_patch_rule_refuses_params_or_learn_change(
     assert any(touched in p and "new E4" in p for p in problems), problems
 
 
+@pytest.mark.parametrize(
+    "touched",
+    [
+        "docs/user/index.md",
+        "docs/release/new-page.md",
+        "tests/test_example.py",
+        "bench/runner.py",
+        "evals/case.txt",
+        "scripts/tool.py",
+        "MEMORY.md",
+        "CONTRIBUTING.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "NOTICE",
+        "SECURITY.md",
+        "LICENSE",
+    ],
+)
+def test_patch_rule_allows_non_behaviour_files(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, touched: str
+) -> None:
+    monkeypatch.setattr(rc, "_load_gate", lambda: _gate(True))
+    _patch(repo, tmp_path, touched)
+    assert rc.release_check(repo, tag="v1.0.1", mode="tag") == []
+
+
+def test_patch_with_its_own_evidence_takes_the_full_gate(
+    repo: Path, tmp_path: Path, passing_gate: list[tuple[Any, ...]]
+) -> None:
+    """A runtime patch cannot reuse evidence; measured itself, it is judged like an X.Y.0."""
+    _set_version(repo, "1.0.1", date="2026-12-10")
+    with (repo / "token_sparen" / "cli.py").open("a", encoding="utf-8") as fh:
+        fh.write("\n# runtime fix\n")
+    _commit(repo, "fix: runtime")
+    path = _write_evidence(repo, _tree_hash(repo, tmp_path))
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["plugin_version"] = "1.0.1"
+    path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    _commit(repo, "chore(release): v1.0.1")
+    assert rc.release_check(repo, tag="v1.0.1", mode="tag") == []
+    assert passing_gate, "the full E4 gate judged the measured patch"
+
+
+def test_behaviour_changes_allow_list(repo: Path) -> None:
+    """Version-only edits and the marketplace switch are not behaviour; a rename out of the
+    plugin counts on its old side; a plugin path never counts as documentation."""
+    base = _git(repo, "rev-parse", "HEAD").strip()
+    _set_version(repo, "1.0.1")
+    _marketplace(repo, "./")
+    _commit(repo, "chore: version and marketplace only")
+    assert rc.behaviour_changes(repo, base) == []
+    _git(repo, "mv", "token_sparen/estimate.py", "docs/estimate.py")
+    _commit(repo, "move a module out of the plugin")
+    assert rc.behaviour_changes(repo, base) == ["token_sparen/estimate.py"]
+    with pytest.raises(ValueError):
+        rc.behaviour_changes(repo, "no-such-ref")
+    assert rc._in_plugin("token_sparen/docs/x.md") and rc._in_plugin(".claude-plugin/plugin.json")
+    assert not rc._in_plugin("docs/x.md") and not rc._in_plugin(".claude-plugin/marketplace.json")
+
+
+def test_version_only_comparison() -> None:
+    assert rc._version_only('{"a": 1, "version": "1"}', '{"version": "2", "a": 1}', "p.json")
+    assert not rc._version_only('{"a": 1}', '{"a": 2}', "p.json")
+    assert not rc._version_only("{bad", "{}", "p.json")
+    assert not rc._version_only("[1]", "[1]", "p.json")
+    init = '"""Doc."""\n__version__ = "{}"\n'
+    assert rc._version_only(init.format("1.0.0"), init.format("1.0.1"), "x/__init__.py")
+    assert not rc._version_only(init.format("1"), init.format("1") + "X = 1\n", "x/__init__.py")
+
+
+@pytest.mark.parametrize("mode", ["tag", "dry-run"])
+def test_release_requires_marketplace_on_release_branch(
+    repo: Path, tmp_path: Path, passing_gate: list[tuple[Any, ...]], mode: str
+) -> None:
+    """Ruling B1: a release (a dated X.Y.Z heading) installs the gated tree, never main."""
+    _released(repo, tmp_path)
+    assert rc.release_check(repo, tag="v1.0.0", mode=mode) == []  # type: ignore[arg-type]
+    for source in ("./", {"source": "github", "repo": "rupakc/token-sparen"}, None):
+        _marketplace(repo, source)
+        _commit(repo, "chore: marketplace")
+        problems = rc.release_check(repo, tag="v1.0.0", mode=mode)  # type: ignore[arg-type]
+        assert any("marketplace.json" in p and "release/claude" in p for p in problems), problems
+    (repo / ".claude-plugin" / "marketplace.json").write_text("{", encoding="utf-8")
+    _commit(repo, "chore: broken marketplace")
+    problems = rc.release_check(repo, tag="v1.0.0", mode=mode)  # type: ignore[arg-type]
+    assert any("marketplace.json unreadable" in p for p in problems), problems
+
+
+def test_dry_run_allows_dev_marketplace_before_the_first_release(repo: Path) -> None:
+    _set_version(repo, "1.0.0", date="Unreleased")  # the rc freeze: not yet prepared
+    _marketplace(repo, "./")
+    assert rc.release_check(repo, tag=None, mode="dry-run") == []
+    _marketplace(repo, "../elsewhere")
+    problems = rc.release_check(repo, tag=None, mode="dry-run")
+    assert any("neither" in p for p in problems), problems
+    doc = json.loads((repo / ".claude-plugin" / "marketplace.json").read_text("utf-8"))
+    doc["plugins"] = []
+    (repo / ".claude-plugin" / "marketplace.json").write_text(json.dumps(doc), "utf-8")
+    problems = rc.release_check(repo, tag=None, mode="dry-run")
+    assert any("exactly one" in p for p in problems), problems
+
+
 @pytest.mark.parametrize("verdict", ["failed", "underpowered"])
 def test_patch_refuses_evidence_that_never_passed(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verdict: str
 ) -> None:
     """Review C1: a patch must not ride on failed or un-overridden underpowered evidence."""
     monkeypatch.setattr(rc, "_load_gate", lambda: _gate(True))
-    _patch(repo, tmp_path, "token_sparen/cli.py", verdict=verdict)
+    _patch(repo, tmp_path, "docs/user/index.md", verdict=verdict)
     problems = rc.release_check(repo, tag="v1.0.1", mode="tag")
     assert any("patch rule" in p and ("verdict" in p or "decision" in p) for p in problems), (
         problems
@@ -372,7 +503,7 @@ def test_patch_reuses_underpowered_evidence_with_signed_ship_decision(
         _git(repo, "add", "-A")
         _git(repo, "commit", "-q", "-S", "-m", "docs: owner decision")
 
-    _patch(repo, tmp_path, "token_sparen/cli.py", verdict="underpowered", before=decide)
+    _patch(repo, tmp_path, "docs/user/index.md", verdict="underpowered", before=decide)
     assert rc.release_check(repo, tag="v1.0.1", mode="tag") == []
     _decision(repo, decision="hold")
     _git(repo, "add", "-A")
@@ -387,7 +518,7 @@ def test_patch_rule_same_major_minor_only(
 ) -> None:
     """Review I1: evidence for 1.0.0 never covers an unmeasured 1.1.x or 2.0.x."""
     monkeypatch.setattr(rc, "_load_gate", lambda: _gate(True))
-    _patch(repo, tmp_path, "token_sparen/cli.py", version=version)
+    _patch(repo, tmp_path, "docs/user/index.md", version=version)
     problems = rc.release_check(repo, tag=f"v{version}", mode="tag")
     assert any("own E4 confirmation" in p for p in problems), problems
 
@@ -412,7 +543,7 @@ def test_patch_rule_needs_resolvable_measured_ref(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(rc, "_load_gate", lambda: _gate(True))
-    _patch(repo, tmp_path, "token_sparen/cli.py")
+    _patch(repo, tmp_path, "docs/user/index.md")
     _git(repo, "tag", "-d", PIN)
     problems = rc.release_check(repo, tag="v1.0.1", mode="tag")
     assert any(PIN in p and "resolve" in p for p in problems), problems

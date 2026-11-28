@@ -328,7 +328,10 @@ def test_plugin_manifest_valid() -> None:
     market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
     assert market["name"] == "token-sparen"
     assert market["owner"]["name"] == "Rupak Chakraborty"
-    assert [p["source"] for p in market["plugins"]] == ["./"]
+    # `./` until the first release's prep commit, then the release/claude tree (ruling B1;
+    # tests/test_release_consistency.py::test_marketplace_tracks_release_branch decides which)
+    release = {"source": "github", "repo": "rupakc/token-sparen", "ref": "release/claude"}
+    assert [p["source"] in ("./", release) for p in market["plugins"]] == [True]
     assert market["plugins"][0]["name"] == "token-sparen"
 
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]

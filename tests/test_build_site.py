@@ -288,5 +288,22 @@ def test_docs_workflow_refuses_prereleases_and_off_main_tags() -> None:
     assert "needs: tag" in text and "needs: build" in text
 
 
+def test_docs_workflow_verifies_the_signed_tag_before_building() -> None:
+    """Review M2: site and wiki deploy only after the same owner-signed exact-tag-on-main check
+    as release.yml (the shared verify-tag.yml)."""
+    text = _active(ROOT / ".github" / "workflows" / "docs.yml")
+    verify = text.split("\n  verify:")[1].split("\n  build:")[0]
+    assert "uses: ./.github/workflows/verify-tag.yml" in verify
+    assert "tag: ${{ needs.tag.outputs.tag }}" in verify
+    assert "expect-sha: ${{ github.event_name == 'push' && github.sha || '' }}" in verify
+    assert "secrets" not in verify and "write" not in verify
+    build = text.split("\n  build:")[1].split("\n  deploy-pages:")[0]
+    assert "needs: [tag, verify]" in build
+    wiki = text.split("\n  wiki:")[1]
+    assert "verify" in wiki.split("\n")[1]  # needs: [tag, verify, build]
+    # review m-R3: no shared pip cache in the job that holds the deny-list secret
+    assert "cache: pip" not in build and "pip install --no-cache-dir" in build
+
+
 def test_site_url_matches_release_tooling() -> None:
     assert bs.SITE_URL == build_claude_tree.SITE_URL == "https://rupakc.github.io/token-sparen/"

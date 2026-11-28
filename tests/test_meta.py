@@ -76,6 +76,18 @@ def _denylist() -> Any:
 _HOME_PATH = "/Use" + "rs/someone/x"  # built at runtime so this file stays clean
 
 
+def test_denylist_repo_mode_scans_non_utf8_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review m-R4: a Latin-1 text file is scanned, not skipped as binary."""
+    cd = _denylist()
+    (tmp_path / "latin1.txt").write_bytes("caf\xe9\n".encode("latin-1") + _HOME_PATH.encode())
+    (tmp_path / "blob.bin").write_bytes(b"\x00" + _HOME_PATH.encode())
+    monkeypatch.setattr(cd, "ROOT", tmp_path)
+    monkeypatch.setattr(cd, "tracked_files", lambda: ["latin1.txt", "blob.bin", "gone.txt"])
+    assert list(cd._repo_hits(cd.build_patterns(""))) == ["latin1.txt:2"]
+
+
 def test_denylist_path_mode_scans_tree(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     cd = _denylist()
     tree = tmp_path / "site"

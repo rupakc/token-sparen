@@ -4,15 +4,19 @@ Both modes: ``token_sparen.__version__`` equals ``.claude-plugin/plugin.json``; 
 exactly one heading for the version; the `release/claude` tree builds and meets the directory
 limits. ``tag`` mode adds: the tag matches ``^v\\d+\\.\\d+\\.\\d+$`` exactly (milestone and RC tags
 such as ``v0.4.0-m4``, ``v0.5.0-screen1`` or ``v1.0.0-rc1`` never release) and equals ``v`` +
-version; the CHANGELOG heading is dated (not ``Unreleased``); for ``X.Y.0`` the E4 release gate
+version; the CHANGELOG heading is dated (not ``Unreleased``); for ``X.Y.0`` (and for a patch
+whose committed evidence measured that patch itself) the E4 release gate
 (`render_evidence.check_release_gate`) passes on the built tree and the evidence's plugin hash
 equals the built tree's; for a patch ``X.Y.Z`` (Z > 0) the patch rule (ruling N4, amended by
 C1/I1/I2) applies instead: the reused evidence measured an earlier release of the same
 MAJOR.MINOR, its verdict is ``passed`` (or ``underpowered`` with a valid signed ``ship``
-decision for that evidence), the README states the measured version and hash, the CHANGELOG
-lists the runtime changes, and no behaviour file (``BEHAVIOUR_PATHS``) changed between the
-measured commit and the release commit. Tag mode also requires a clean work tree. ``dry-run``
-needs no tag and no evidence and skips the gate.
+decision for that evidence), the README states the measured version and hash (as
+``render_evidence`` writes them), the CHANGELOG lists the runtime changes, and nothing but
+non-behaviour files changed between the measured commit and the release commit (review M1: an
+allow-list, `behaviour_changes`; everything else is behaviour). Tag mode also requires a clean
+work tree and a marketplace entry that installs the ``release/claude`` tree (ruling B1,
+`marketplace_problems`); ``dry-run`` requires that too once the CHANGELOG has a dated release
+heading (`marketplace_required`). ``dry-run`` needs no tag and no evidence and skips the gate.
 
 Owner override (ruling M5-B1, file format fixed by the M6 controller): only when the evidence's
 gate verdict is ``underpowered`` (never ``failed``, never missing evidence) is a committed
@@ -46,7 +50,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.build_claude_tree import TreeError, build_claude_tree  # noqa: E402
-from scripts.plugin_hash import plugin_hash  # noqa: E402
+from scripts.bump_version import DEV_SOURCE, PLUGIN_NAME, release_source  # noqa: E402
+from scripts.plugin_hash import PLUGIN_PATHS, plugin_hash  # noqa: E402
 from scripts.render_evidence import check_release_gate, e4_id  # noqa: E402
 
 Mode = Literal["tag", "dry-run"]
@@ -60,18 +65,30 @@ EVIDENCE = Path("docs/evidence/e4.json")
 DECISION = Path("docs/release/gate-decision.toml")
 TREATMENT_ARM = "token-sparen"
 RUNTIME_HEADING = "### Runtime changes"
-# ruling I2: a patch that touches any of these between the measured commit and the release
-# commit changes behaviour and needs a new E4 confirmation
-BEHAVIOUR_PATHS = (
-    "token_sparen/params/",
-    "token_sparen/learn/",
-    "token_sparen/mechanisms/",
-    "token_sparen/compress/",
-    "token_sparen/adapters/",
-    "hooks/",
-    "skills/",
+# Review M1 (rule inverted): every path changed between the measured commit and a patch release
+# commit is behaviour, and needs a new E4 confirmation, unless it is on this allow-list and
+# outside the hashed plugin content (`PLUGIN_PATHS`). Only the version line may change in the
+# two version files (`VERSION_FILES`).
+NON_BEHAVIOUR_PATHS = ("docs/", "tests/", "bench/", "evals/", "scripts/")
+NON_BEHAVIOUR_FILES = frozenset(
+    {
+        "README.md",
+        "CHANGELOG.md",
+        "LICENSE",
+        "NOTICE",
+        "SECURITY.md",
+        "CONTRIBUTING.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "MEMORY.md",
+        # distribution metadata, unhashed and not shipped; the release-prep commit (ruling B1)
+        # points it at release/claude
+        ".claude-plugin/marketplace.json",
+    }
 )
-BEHAVIOUR_FILES = frozenset({"token_sparen/config.py"})
+VERSION_FILES = ("token_sparen/__init__.py", ".claude-plugin/plugin.json")
+MARKETPLACE = Path(".claude-plugin/marketplace.json")
+MILESTONE_MARKER = "<!-- pre-1.0 milestones -->"
 UNRELEASED = "Unreleased"
 DECISION_KEYS = frozenset({"version", "decision", "rationale", "date", "e4_id"})
 
@@ -326,22 +343,34 @@ def _reusable(root: Path, version: str, doc: dict[str, Any]) -> list[str]:
     return problems
 
 
+def _measures(root: Path, version: str) -> bool:
+    """True when the committed evidence measured ``version`` itself: a patch with behaviour
+    changes that got its own E4 run is judged by the full gate, like an ``X.Y.0``."""
+    doc, _ = _evidence(root)
+    return doc is not None and doc.get("plugin_version") == version
+
+
 def _patch_rule(root: Path, version: str, changelog: str) -> list[str]:
     """X.Y.Z with Z > 0 (ruling N4 as amended by C1/I1/I2): the reused evidence was releasable
     and measured this MAJOR.MINOR; (a) README states the measured version and hash, (b) the
-    section lists runtime changes, (c) no behaviour file (`BEHAVIOUR_PATHS`) changed between
+    section lists runtime changes, (c) no behaviour file (`behaviour_changes`) changed between
     the measured commit and the release commit."""
     doc, error = _evidence(root)
     if doc is None:
         return [f"patch rule: {error} (a patch ships on the last measured evidence)"]
     problems = _reusable(root, version, doc)
     ref = _measured_ref(doc) or str(doc.get("plugin_version", ""))
-    digest = str(doc.get("plugin_hash", ""))[:12]
     readme = root / "README.md"
     text = readme.read_text(encoding="utf-8") if readme.is_file() else ""
-    if f"measured on {ref}".lower() not in text.lower() or f"plugin {digest}" not in text:
+    # review m-R1: the phrase `render_evidence --write README.md` emits for this evidence
+    stated = (
+        f"Plugin version {doc.get('plugin_version', '')}, "
+        f"plugin hash `{doc.get('plugin_hash', '')}`"
+    )
+    if stated not in text:
         problems.append(
-            f"patch rule (a): README Evidence must state 'measured on {ref}, plugin {digest}'"
+            f"patch rule (a): README Evidence must state the measured evidence ('{stated}'; "
+            "run scripts/render_evidence.py --write README.md)"
         )
     body = section(changelog, version)
     runtime = re.search(
@@ -357,17 +386,96 @@ def _patch_rule(root: Path, version: str, changelog: str) -> list[str]:
     if verify.returncode != 0:
         problems.append(f"patch rule (c): cannot resolve the measured ref {ref!r}")
         return problems
-    diff = _git(root, "diff", "--name-only", f"{verify.stdout.strip()}..HEAD")
-    if diff.returncode != 0:
-        problems.append(f"patch rule (c): git diff failed: {diff.stderr.strip()}")
+    try:
+        changed = behaviour_changes(root, verify.stdout.strip())
+    except ValueError as exc:
+        problems.append(f"patch rule (c): git diff failed: {exc}")
         return problems
-    for rel in diff.stdout.splitlines():
-        if rel.startswith(BEHAVIOUR_PATHS) or rel in BEHAVIOUR_FILES:
-            problems.append(
-                f"patch rule (c): {rel} changed since {ref}: behaviour changed, "
-                "a new E4 confirmation is required"
-            )
+    for rel in changed:
+        problems.append(
+            f"patch rule (c): {rel} changed since {ref}: behaviour changed (only docs, tests, "
+            "bench, evals, unshipped scripts, the listed top-level texts and the version line "
+            "may change), a new E4 confirmation is required"
+        )
     return problems
+
+
+def _in_plugin(rel: str) -> bool:
+    return any(rel == p or (p.endswith("/") and rel.startswith(p)) for p in PLUGIN_PATHS)
+
+
+def _version_only(before: str, after: str, rel: str) -> bool:
+    """True when ``rel`` differs between the two texts only in its version."""
+    if rel.endswith(".json"):
+        try:
+            old, new = json.loads(before), json.loads(after)
+        except ValueError:
+            return False
+        if not (isinstance(old, dict) and isinstance(new, dict)):
+            return False
+        old.pop("version", None)
+        new.pop("version", None)
+        return bool(old == new)
+    return INIT_VERSION.sub("", before) == INIT_VERSION.sub("", after)
+
+
+def behaviour_changes(root: Path, base: str, head: str = "HEAD") -> list[str]:
+    """Review M1: every path changed between ``base`` and ``head`` that counts as behaviour.
+
+    Everything is behaviour except a path on the allow-list (`NON_BEHAVIOUR_PATHS`,
+    `NON_BEHAVIOUR_FILES`) that is outside the hashed plugin content, and a version-only edit of
+    a `VERSION_FILES` file. Renames count on both sides (``--no-renames``). Raises `ValueError`
+    when git cannot diff."""
+    diff = _git(root, "diff", "--name-only", "--no-renames", f"{base}..{head}")
+    if diff.returncode != 0:
+        raise ValueError(diff.stderr.strip())
+    changed: list[str] = []
+    for rel in diff.stdout.splitlines():
+        if not _in_plugin(rel) and (
+            rel in NON_BEHAVIOUR_FILES or rel.startswith(NON_BEHAVIOUR_PATHS)
+        ):
+            continue
+        if rel in VERSION_FILES:
+            old = _git(root, "show", f"{base}:{rel}")
+            new = _git(root, "show", f"{head}:{rel}")
+            if old.returncode == new.returncode == 0 and _version_only(old.stdout, new.stdout, rel):
+                continue
+        changed.append(rel)
+    return changed
+
+
+def marketplace_required(changelog: str) -> bool:
+    """Ruling B1: the marketplace must track ``release/claude`` once a release is prepared, i.e.
+    once the CHANGELOG has a dated ``X.Y.Z`` heading above the pre-1.0 milestone marker (the
+    release-prep commit and everything after it). The rc freeze (``- Unreleased``) is not."""
+    current = changelog.split(MILESTONE_MARKER, 1)[0]
+    return any(RELEASE_VERSION.fullmatch(v) and _is_date(d or "") for v, d in _headings(current))
+
+
+def marketplace_problems(root: Path, *, required: bool) -> list[str]:
+    """Why ``.claude-plugin/marketplace.json`` is wrong: it must hold exactly one
+    ``token-sparen`` entry whose source is the ``release/claude`` ref (``required``) or, before
+    the first release only, ``./`` (the development head)."""
+    where = MARKETPLACE.as_posix()
+    try:
+        data = json.loads((root / MARKETPLACE).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [f"{where} unreadable: {exc}"]
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    mine = [p for p in plugins or [] if isinstance(p, dict) and p.get("name") == PLUGIN_NAME]
+    if len(mine) != 1:
+        return [f"{where}: needs exactly one {PLUGIN_NAME!r} plugin entry"]
+    source = mine[0].get("source")
+    if source == release_source():
+        return []
+    if required:
+        return [
+            f"{where}: the {PLUGIN_NAME} source is {source!r}; a release must install the gated "
+            f"tree {release_source()!r} (run scripts/bump_version.py --prepare-release)"
+        ]
+    if source != DEV_SOURCE:
+        return [f"{where}: source {source!r} is neither {DEV_SOURCE!r} nor {release_source()!r}"]
+    return []
 
 
 def _dirty(root: Path) -> list[str]:
@@ -402,7 +510,8 @@ def release_check(root: Path, *, tag: str | None, mode: Mode) -> list[str]:
         else:
             tree_ok = True
         if mode == "dry-run" or version is None:
-            return problems
+            return problems + marketplace_problems(root, required=marketplace_required(changelog))
+        problems += marketplace_problems(root, required=True)
         if tag is None:
             return [*problems, "tag mode needs --tag vX.Y.Z"]
         problems += _dirty(root)
@@ -415,7 +524,7 @@ def release_check(root: Path, *, tag: str | None, mode: Mode) -> list[str]:
             return [*problems, f"version {version} is a development version; never released"]
         if not tree_ok:
             return problems
-        if int(release.group(3)) == 0:
+        if int(release.group(3)) == 0 or _measures(root, version):
             problems += _gate(root, tree, version)
         else:
             problems += _patch_rule(root, version, changelog)
