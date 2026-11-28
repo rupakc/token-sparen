@@ -12,7 +12,11 @@ Thompson-sampling bandit with a hard quality constraint) steers every hook decis
 regret detection, a session `fold` and a circuit breaker; `replay` (E1) and `ope` (E3) evaluate
 offline into private reports. Defaults are quality-first: file contents are never trimmed and only
 an allow-list of content types is offered for compression. M3: repo-fact learning, opt-in
-tool pruning and the learned failure-loop guard (`mechanisms/loopguard.py`) are in.
+tool pruning and the learned failure-loop guard (`mechanisms/loopguard.py`) are in. M5: the live
+benchmark E4 lives in `bench/` (dev-time, never imported by the package): `python -m bench` runs
+screening, the power step, the confirmation and the release gate (`bench/README.md`, method
+`docs/reports/m5-method.md`, owner runbook `docs/release/benchmark-runbook.md`); `run --dry-run`
+exercises the whole pipeline with fakes in CI.
 Spec: `docs/specs/2026-11-25-token-sparen-design.md`; plan: `docs/plans/2026-11-25-token-sparen-m0-m3.md`;
 decisions: `MEMORY.md`.
 
@@ -38,6 +42,7 @@ pytest
 ruff check .
 ruff format --check .
 mypy --strict token_sparen
+mypy --strict bench
 python evals/e2/run.py --strict
 TOKEN_SPAREN_PERF_FACTOR=1.5 pytest -m perf --no-cov
 python scripts/check_wheel.py

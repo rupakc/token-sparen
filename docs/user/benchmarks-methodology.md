@@ -16,7 +16,7 @@ No published results are included in this source. The release build fills this b
 | E1 | Offline replay of transcripts through the same compression path the hook uses | the maintainer's own local sessions (private, never committed) or yours | `token-sparen replay` |
 | E2 | Fact preservation: compressed output must still contain every needle fact | a public synthetic corpus, deterministic, run in CI | `evals/e2/run.py --strict`, must stay at 100 % |
 | E3 | Off-policy evaluation of logged decisions (IPS, self-normalised IPS, doubly robust, with bootstrap intervals) | decision logs | `token-sparen ope` |
-| E4 | Live benchmark of Claude Code on real tasks, plugin arm against a plain Claude Code arm, graded by the official grader | a public software-engineering task set (SWE-bench Verified Mini) | published as the Evidence block |
+| E4 | Live benchmark of Claude Code on real tasks, plugin arm against a plain Claude Code arm, graded by the official grader | a public software-engineering task set (SWE-bench Verified Mini, extended with SWE-bench Verified tasks when the power step needs more) | published as the Evidence block |
 
 E1 and E3 are private by design: figures derived from anyone's sessions are never committed or published, and results are cited by report id only.
 
@@ -29,6 +29,38 @@ E1 and E3 are private by design: figures derived from anyone's sessions are neve
 - A release passes only if the evidence exists, its plugin hash equals the hash of the tree being released and its gate result is `passed`. The one override is an `underpowered` result together with an owner-written `docs/release/gate-decision.toml`; a `failed` or missing result can never be overridden, and the README and site then state the underpowered result with its intervals.
 - Tuned parameters are chosen offline with the hill-climbing harness: grids declared in advance, one look at a held-out split, accept all or nothing, with the method in [`docs/reports/m4-method.md`](docs/reports/m4-method.md). Test windows are recorded and never reused.
 - Pages and README never state a savings, quality or cost result outside the Evidence block; this is enforced by a test.
+
+## How E4 runs
+
+The harness in `bench/` is driven by `python -m bench` (method:
+[`docs/reports/m5-method.md`](docs/reports/m5-method.md)).
+
+- **Stages.** A screening stage compares every arm (plain Claude Code, a concise-prompt control,
+  token-sparen, its output-style variant, a cold-start ablation and the competitors in their
+  documented defaults) on the Mini tasks; it is descriptive only. A power step then sizes the
+  confirmation from the screening data, so that a plugin with no true quality difference passes
+  the −5 pp margin with high probability. The confirmation compares token-sparen with plain
+  Claude Code (plus extra descriptive arms only while quota allows) on that many tasks, seed
+  zero only. If no affordable size reaches the required power, the result is `underpowered`:
+  not a failure, published with its intervals, and the owner decides about the release.
+- **Isolation.** Each run happens in the task's own container with its own Claude Code
+  configuration; the plugin under test is a read-only copy of a tagged commit whose hash is
+  checked before every run. The only credential is a dedicated token, revoked after the
+  campaign.
+- **Grading.** The official SWE-bench harness grades every patch locally on the same image the
+  agent ran in. A task whose reference patch does not pass twice is dropped before any agent run
+  and listed in the report.
+- **Statistics.** Quality: the confirmatory lower bound of the paired difference is the smaller
+  of a task-clustered bootstrap bound and a paired score bound; tasks excluded for one arm are
+  re-run, and any remaining excess of token-sparen exclusions counts against token-sparen. The
+  conditional exact McNemar interval is published alongside. Cost: the paired BCa bootstrap 95 %
+  interval of the median per-task ratio, from list prices with every token class.
+- **Tamper evidence.** The confirmation's ledger is hash-chained and its chain heads are pushed
+  to a public branch during the campaign; the release job checks them against server-side push
+  receipts before a result can be released.
+- **Reproducibility.** `python -m bench run --dry-run --campaign demo --out <folder outside any
+  repository>` runs the whole pipeline on synthetic tasks with no Docker, no account and no
+  credential; CI runs it on every change.
 
 
 ## Measuring it on your own sessions (offline, private)

@@ -11,7 +11,9 @@ and once after the campaign. The release gate reads every publication itself fro
 (`read_published`; never a caller-supplied list) and refuses (`check_published`) unless each
 publication extends the previous one, every anchored head lies on the final chains (same record
 at the same count, i.e. a prefix), the last anchor equals the final heads, and no two
-consecutive publications are more than five hours apart (commit times).
+consecutive publications are more than five hours apart (commit times) — unless the later one
+anchors no additional graded run (pause ruling, M5 Task 12: a stopped scheduler may leave a long
+gap as long as nothing ran unanchored; while alive the CLI publishes a heartbeat every 3 h).
 
 Trust (re-review N7): commit times and local refs are set by the publisher, so the
 authoritative check runs in the release job (CI) against a freshly fetched
@@ -331,8 +333,12 @@ def check_history(
             )  # fmt: skip
             return problems
         times = [first[p.commit] for p in pubs]
-    for (_, b), when in zip(itertools.pairwise(pubs), itertools.pairwise(times), strict=True):
-        if when[1] - when[0] > MAX_GAP_S:
+    for (a, b), when in zip(itertools.pairwise(pubs), itertools.pairwise(times), strict=True):
+        # pause ruling (M5 Task 12): a longer gap is allowed only when the publication ending it
+        # anchors no additional graded run (the scheduler was stopped; nothing ran unanchored)
+        before, after = a.anchors[-1].get("graded_runs"), b.anchors[-1].get("graded_runs")
+        idle = isinstance(before, int) and isinstance(after, int) and after == before
+        if when[1] - when[0] > MAX_GAP_S and not idle:
             gap = (when[1] - when[0]) / 3600
             problems.append(("anchor_gap", f"{gap:.1f} h before publication {b.commit[:12]}"))
     return problems + _coverage(pubs, times)
@@ -414,9 +420,25 @@ def verify_release(
     return problems
 
 
+PLAN_FILE = "docs/evidence/plan.sha256"  # committed in the main checkout before the first run
+
+
+def check_plan_file(path: Path, plan_sha256: object) -> list[tuple[str, str]]:
+    """The plan hash committed outside the ledger (``docs/evidence/plan.sha256``, first token)
+    must equal the recorded plan's hash (M5 Task 10 ruling; Task 12 review M6)."""
+    try:
+        words = path.read_text(encoding="utf-8").split()
+    except OSError:
+        return [("plan_hash_not_committed", f"{PLAN_FILE} is missing")]
+    if not words or not isinstance(plan_sha256, str) or words[0] != plan_sha256:
+        return [("plan_hash_not_committed", f"{PLAN_FILE} differs from the recorded plan")]
+    return []
+
+
 def main(argv: list[str] | None = None) -> int:
     """``python -m bench.anchors verify-release --evidence E --repo R --ref REF
-    --github-repo OWNER/NAME``: the release job's check (token from ``GH_TOKEN``)."""
+    --github-repo OWNER/NAME [--plan-file P]``: the release job's check (token from
+    ``GH_TOKEN``), including the committed plan hash."""
     parser = argparse.ArgumentParser(prog="python -m bench.anchors")
     sub = parser.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("verify-release")
@@ -424,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--repo", type=Path, default=Path("."))
     v.add_argument("--ref", default=ANCHORS_REF)
     v.add_argument("--github-repo", required=True)
+    v.add_argument("--plan-file", type=Path, default=Path(PLAN_FILE))
     args = parser.parse_args(argv)
     evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
     if evidence.get("stage") != "confirmation":
@@ -436,6 +459,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     receipts = fetch_receipts(args.github_repo, os.environ.get("GH_TOKEN"))
     problems = verify_release(evidence, pubs, receipts)
+    problems += check_plan_file(args.plan_file, (evidence.get("gate") or {}).get("plan_sha256"))
     for code, detail in problems:
         print(f"{code}: {detail}", file=sys.stderr)
     if not problems:
