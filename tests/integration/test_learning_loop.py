@@ -360,7 +360,8 @@ def test_read_dedupe_goes_through_engine(tmp_path: Path) -> None:
     f.write_text("\n".join(f"value_{i} = {i}  # padding text" for i in range(1200)), "utf-8")
     content = f.read_text(encoding="utf-8")
     for i in range(2):
-        d.prompt()
+        # distinct prompts: a re-sent earlier prompt (as after /rewind) starts a new epoch
+        d.hook("UserPromptSubmit", prompt=f"continue with step {i}")
         d.hook(
             "PostToolUse",
             tool_name="Read",
