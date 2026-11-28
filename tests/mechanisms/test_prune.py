@@ -421,6 +421,7 @@ def test_user_config_enables_and_project_may_disable(env: dict[str, str], proj: 
     assert not _local(proj).exists()
 
 
+@pytest.mark.env_drop_expected
 def test_env_cannot_enable_or_widen(
     plain_env: dict[str, str], proj: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

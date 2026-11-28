@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 from perfutil import P95_ROUNDS, p95, perf_factor
 from sampleoutputs import big_pytest
+from userconf import to_user_config, write_user_config
 
 from token_sparen.adapters.claude import entry
 from token_sparen.mechanisms import compression
@@ -56,10 +57,8 @@ def test_counterfactual_reward_hook_p95(tmp_path: Path, monkeypatch: pytest.Monk
         }
         if counterfactual:
             # user-only option: the env layer is narrowing-only, so it goes in the user config
-            (root / "home").mkdir()
-            (root / "home" / "config.toml").write_text(
-                '[learn]\nsavings_reward = "counterfactual"\n'
-            )
+            write_user_config(root / "home", {"learn": {"savings_reward": "counterfactual"}})
+        env = to_user_config(env)  # sample rate 0 widens: user config (env only narrows)
         times: list[float] = []
         calls[0] = 0
         for i in range(CALLS):

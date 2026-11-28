@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 from perfutil import best_p95, perf_factor
+from userconf import to_user_config
 
 from token_sparen.adapters.claude import entry, settings
 from token_sparen.mechanisms import prune
@@ -76,6 +77,7 @@ def test_prune_hooks_under_budget_with_a_full_store(tmp_path: Path) -> None:
         "TOKEN_SPAREN_ADAPTER__LATENCY_SAMPLE_RATE": "0",
         "TOKEN_SPAREN_TEST_SEED": "1",
     }
+    env = to_user_config(env)  # sample rate 0 widens: user config (env only narrows)
     _store(home, proj, env)
     budget = P95_BUDGET_MS * perf_factor()
     pre = _p95("PreToolUse", {"tool_name": "Grep", "tool_input": {"pattern": "x"}}, env, budget)

@@ -271,6 +271,7 @@ def test_user_opt_in_widens(tmp_path: Path) -> None:
     assert compression.gated(_bash(tmp_path, "./x", "x"), "diff", cfg) == "ctype_not_allowed"
 
 
+@pytest.mark.env_drop_expected
 def test_user_file_widens_env_cannot(tmp_path: Path) -> None:
     (tmp_path / "e").mkdir()
     assert _cfg(tmp_path / "e", COMPRESSION__ALLOW_CTYPES="text,diff").get(

@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from perfutil import best_p95, perf_factor
 from sampleoutputs import big_pytest
+from userconf import to_user_config
 
 from token_sparen.adapters.claude import entry
 
@@ -35,6 +36,7 @@ def test_hook_latency_p95(tmp_path: Path) -> None:
             "TOKEN_SPAREN_ADAPTER__LATENCY_SAMPLE_RATE": "0",
             "TOKEN_SPAREN_TEST_SEED": "1",
         }
+        env = to_user_config(env)  # sample rate 0 widens: user config (env only narrows)
         times: list[float] = []
         for i in range(CALLS):
             payload = {
