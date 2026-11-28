@@ -326,8 +326,10 @@ DISCLOSURE_TEXT: Mapping[str, str] = {
     "anchor_window_operator_trust": "Tamper evidence: the confirmation ledger and grades are "
     "hash-chained, and their chain heads were published to a public branch during the campaign "
     "at least once per five-hour window; the release gate checks that every published head lies "
-    "on the final chains. Records written after the last published anchor could still have been "
-    "rewritten by the operator before the next publication.",
+    "on the final chains, and a publication may anchor no more graded runs than the per-window run "
+    "cap allows since the plan was published. Anchoring bounds operator rewriting but cannot "
+    "exclude it: records written after the last published anchor could still have been rewritten "
+    "by the operator within that window, before the next publication.",
     "platform": "Platform: the pool holds only SWE-bench Verified tasks with an arm64 image (the "
     "agent runs in the image it is graded in); the counts of tasks without one are listed "
     "above, and tasks excluded by the grading preflight are listed below.",

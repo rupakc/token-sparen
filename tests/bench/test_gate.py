@@ -226,7 +226,8 @@ def publish_all(led: Ledger, start: int, *, step: int = 600) -> Path:
     repo = led.path.parent / "anchors-repo"
     done = 0
     if repo.exists():
-        done = len(anchors.read_published(repo, "bench-anchors", led.campaign)[-1].anchors)
+        last = anchors.read_published(repo, "bench-anchors", led.campaign)[-1]
+        done, start = len(last.anchors), max(start, last.at + step)
     local = anchors.anchors_to_publish(led)
     for i in range(done, len(local)):
         publish(led, start + (i - done) * step, records=local[: i + 1])
@@ -976,9 +977,30 @@ def test_more_than_the_run_cap_between_publications_is_refused(
 
 def test_plan_anchor_happy_path(store: Store, real_cap: None) -> None:
     led = store(_confirm(10))
-    repo = publish_all(led, T0, step=H)  # plan anchor, then one per two tasks, hourly
+    repo = publish_all(led, T0, step=5 * H)  # plan anchor, then one per two tasks, per window
     pubs = anchors.read_published(repo, "bench-anchors", "c")
     assert pubs[0].anchors[-1]["graded_runs"] == 0 and len(pubs) == 1 + 10 * 2 // 4 + 1
     receipts = [(p.commit, float(p.at) + 30) for p in pubs]
     res = g.gate(ledger=led, **_ref(repo), receipts=receipts, **KW)
     assert res.release_verdict in ("passed", "failed") and not res.advisory
+
+
+def test_rapid_after_the_fact_publications_are_refused(store: Store, real_cap: None) -> None:
+    """Re-review N9 probe: the campaign run unpublished, then the plan anchor, fifty anchors
+    and the final one pushed a minute apart (52 pushes, each with a real receipt). The
+    receipt-time floor allows four graded runs per five hours since the plan was received."""
+    led = store(_confirm())
+    repo = publish_all(led, T0, step=60)
+    pubs = anchors.read_published(repo, "bench-anchors", "c")
+    assert len(pubs) == 52 and all(b.anchors[-1]["graded_runs"] - a.anchors[-1]["graded_runs"]
+                                   <= 4 for a, b in itertools.pairwise(pubs))  # fmt: skip
+    receipts = [(p.commit, float(p.at)) for p in pubs]
+    with pytest.raises(g.GateRefused) as err:
+        g.gate(ledger=led, **_ref(repo), receipts=receipts, **KW)
+    assert err.value.code == "anchor_too_fast"
+    evidence = {"stage": "confirmation", "campaign": "c", "gate": {}}
+    server = [anchors.Receipt(a, b) for a, b in receipts]
+    assert "anchor_too_fast" in [c for c, _ in anchors.verify_release(evidence, pubs, server)]
+    # the same pushes received a window apart each: within the floor
+    paced = [(p.commit, T0 + i * 5.0 * H) for i, p in enumerate(pubs)]
+    assert g.gate(ledger=led, **_ref(repo), receipts=paced, **KW).release_verdict == "passed"

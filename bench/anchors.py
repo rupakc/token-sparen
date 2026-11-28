@@ -36,6 +36,7 @@ import argparse
 import datetime as dt
 import itertools
 import json
+import math
 import os
 import subprocess
 import sys
@@ -334,12 +335,15 @@ def check_history(
         if when[1] - when[0] > MAX_GAP_S:
             gap = (when[1] - when[0]) / 3600
             problems.append(("anchor_gap", f"{gap:.1f} h before publication {b.commit[:12]}"))
-    return problems + _coverage(pubs)
+    return problems + _coverage(pubs, times)
 
 
-def _coverage(pubs: Sequence[Publication]) -> list[tuple[str, str]]:
+def _coverage(pubs: Sequence[Publication], times: Sequence[float]) -> list[tuple[str, str]]:
     """Re-review N8: the first publication anchors the plan before any run (zero starts, a
-    plan hash), and each later one adds at most `RUN_CAP` graded runs."""
+    plan hash), and each later one adds at most `RUN_CAP` graded runs. Re-review N9 (time
+    floor): a publication received at ``t`` anchors at most ``RUN_CAP × ceil((t − t_plan) /
+    5 h)`` graded runs, the scheduler's window cap, so a campaign cannot be published after the
+    fact in rapid pushes. ``times`` = receipt times (commit times when advisory)."""
     out: list[tuple[str, str]] = []
     head = pubs[0].anchors[-1] if pubs[0].anchors else {}
     if head.get("runs_started") != 0 or head.get("graded_runs") != 0 or not head.get("plan_sha256"):
@@ -350,6 +354,15 @@ def _coverage(pubs: Sequence[Publication]) -> list[tuple[str, str]]:
             out.append(
                 ("anchor_too_many_runs", f"{b.commit[:12]} adds more than {RUN_CAP} graded runs")
             )
+    for p, t in zip(pubs, times, strict=True):
+        runs = p.anchors[-1].get("graded_runs") if p.anchors else None
+        allowed = RUN_CAP * max(0, math.ceil((t - times[0]) / MAX_GAP_S))
+        if not isinstance(runs, int) or runs > allowed:
+            out.append(
+                ("anchor_too_fast", f"{p.commit[:12]} anchors {runs} graded runs, more than "
+                 f"{allowed} possible since the plan was received")
+            )  # fmt: skip
+            break
     return out
 
 
