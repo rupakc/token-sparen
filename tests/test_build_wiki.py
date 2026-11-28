@@ -103,9 +103,9 @@ def test_real_docs_wiki_has_no_dangling_links(tmp_path: Path) -> None:
 
 
 def test_docs_workflow_wiki_job() -> None:
-    text = _active(ROOT / ".github" / "workflows" / "docs.yml")
+    text = _active(ROOT / ".github" / "workflows" / "docs-deploy.yml")
     job = text.split("\n  wiki:")[1]
-    assert "needs: [tag, build]" in job and "contents: write" in job
+    assert "needs: build" in job and "contents: write" in job
     assert "pages: write" not in job and "id-token" not in job
     assert "repository: ${{ github.repository }}.wiki" in job
     assert "OWNER ACTION O3" in job

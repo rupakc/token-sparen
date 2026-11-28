@@ -294,6 +294,7 @@ def test_pipeline_read_dedupe_pointer_and_compact(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.env_drop_expected
 def test_default_read_untouched_then_reread_deduped(tmp_path: Path) -> None:
     """Quality first: a big Read is shown in full; read de-dupe is off by default (v1 ruling on
     M13), so the re-read is shown in full too; opted in, it becomes a pointer."""

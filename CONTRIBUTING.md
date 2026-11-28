@@ -14,7 +14,9 @@ python -m venv .venv
 
 The documentation build needs the `docs` extra (`pip install -e ".[docs]"`, Python-Markdown).
 To try the plugin from a checkout, run Claude Code with `claude --plugin-dir .` (a development
-install); users install from the marketplace, which tracks the `release/claude` branch.
+install); users install from the marketplace. Its entry in `.claude-plugin/marketplace.json` is
+`./` (the head of `main`) until the first release's prep commit
+(`scripts/bump_version.py --prepare-release`) points it at the `release/claude` branch for good.
 
 ## Documentation
 

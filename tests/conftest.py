@@ -10,6 +10,7 @@ from typing import Any
 
 import perfutil  # noqa: F401  (reads TOKEN_SPAREN_PERF_FACTOR before any fixture deletes it)
 import pytest
+from envguard import _no_ignored_widening_env  # noqa: F401  (autouse fixture)
 
 
 @pytest.fixture(autouse=True)

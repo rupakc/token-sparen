@@ -53,6 +53,7 @@ def test_bad_toml_falls_back(tmp_path: Path) -> None:
     assert rec["where"] == "config"
 
 
+@pytest.mark.env_drop_expected
 def test_env_value_parsing(tmp_path: Path) -> None:
     env = _env(
         tmp_path / "h",
@@ -80,6 +81,7 @@ def test_env_value_parsing(tmp_path: Path) -> None:
     assert cfg.get("a") is None  # unlisted keys are user-only: a variable may only narrow
 
 
+@pytest.mark.env_drop_expected
 def test_env_overrides_non_table(tmp_path: Path) -> None:
     env = _env(tmp_path / "h", TOKEN_SPAREN_COMPRESSION__MIN_TOKENS__X="1")
     assert _env_overrides(env) == {"compression": {"min_tokens": {"x": 1}}}
@@ -102,6 +104,7 @@ def test_default_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.get("compression.min_tokens") == 2000
 
 
+@pytest.mark.env_drop_expected
 def test_session_overrides_are_merged_last(tmp_path: Path) -> None:
     home, proj = tmp_path / "home", tmp_path / "proj"
     proj.mkdir()

@@ -1,0 +1,73 @@
+name: Verify release tag
+
+# Reusable check shared by release.yml and docs.yml (review M2): the tag is exactly vX.Y.Z, an
+# annotated tag that GitHub verifies as signed by RELEASE_TAGGER, whose signature git verifies
+# with only the owner's public key (RELEASE_SIGNING_KEY) trusted, on a commit that is on main
+# and whose subject is `chore(release): vX.Y.Z`. `expect-sha`, when given, must be the tagged
+# commit (a tag push passes github.sha; a docs republish by dispatch passes nothing).
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      expect-sha:
+        type: string
+        required: false
+        default: ""
+
+permissions: {}
+
+jobs:
+  verify-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ inputs.tag }}
+      EXPECT_SHA: ${{ inputs.expect-sha }}
+      REPO: ${{ github.repository }}
+      RELEASE_TAGGER: ${{ vars.RELEASE_TAGGER }}
+      RELEASE_SIGNING_KEY: ${{ vars.RELEASE_SIGNING_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Tag name is exactly vX.Y.Z
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not a release tag"; exit 1; }
+          [ -n "$RELEASE_TAGGER" ] || { echo "::error::repository variable RELEASE_TAGGER is not set"; exit 1; }
+      - name: GitHub verifies an annotated tag signed by the release tagger
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ref=$(gh api "repos/$REPO/git/ref/tags/$TAG")
+          [ "$(jq -r '.object.type' <<<"$ref")" = "tag" ] || { echo "::error::$TAG is not an annotated tag"; exit 1; }
+          tag_sha=$(jq -r '.object.sha' <<<"$ref")
+          obj=$(gh api "repos/$REPO/git/tags/$tag_sha")
+          jq -e --arg tag "$TAG" --arg tagger "$RELEASE_TAGGER" '
+            .tag == $tag
+            and .object.type == "commit"
+            and .verification.verified == true
+            and .verification.reason == "valid"
+            and (.tagger.email | ascii_downcase) == ($tagger | ascii_downcase)' <<<"$obj" >/dev/null \
+            || { echo "::error::$TAG is not a verified tag signed by the release tagger"; exit 1; }
+          commit=$(jq -r '.object.sha' <<<"$obj")
+          if [ -n "$EXPECT_SHA" ]; then
+            [ "$commit" = "$EXPECT_SHA" ] || { echo "::error::tag commit $commit != $EXPECT_SHA"; exit 1; }
+          fi
+          echo "TAG_OBJECT=$tag_sha" >> "$GITHUB_ENV"
+      - name: Signature by the owner's key only, tagged commit on main with the release subject
+        run: |
+          set -euo pipefail
+          # actions/checkout may replace an annotated tag by a lightweight one: fetch it as is
+          git fetch --no-tags --force origin "+refs/tags/$TAG:refs/tags/$TAG" "+refs/heads/main:refs/remotes/origin/main"
+          [ "$(git rev-parse "refs/tags/$TAG")" = "$TAG_OBJECT" ] || { echo "::error::local tag object differs"; exit 1; }
+          python3 scripts/release_trust.py trust --email "$RELEASE_TAGGER" --key-env RELEASE_SIGNING_KEY --signers "$RUNNER_TEMP/allowed_signers"
+          python3 scripts/release_trust.py verify-tag "$TAG" --email "$RELEASE_TAGGER"
+          commit=$(git rev-parse "$TAG^{commit}")
+          git merge-base --is-ancestor "$commit" origin/main || { echo "::error::$TAG is not on main"; exit 1; }
+          subject=$(git log -1 --format=%s "$commit")
+          [ "$subject" = "chore(release): $TAG" ] || { echo "::error::tagged commit subject is '$subject', expected 'chore(release): $TAG'"; exit 1; }

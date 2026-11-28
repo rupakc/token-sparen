@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from sampleoutputs import big_pytest
+from userconf import write_user_config
 
 from token_sparen import recovery
 from token_sparen.adapters.claude import entry
@@ -34,7 +35,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
             monkeypatch.delenv(k)
     monkeypatch.setenv("TOKEN_SPAREN_HOME", str(home))
     monkeypatch.chdir(proj)
-    return {"TOKEN_SPAREN_HOME": str(home), "CLAUDE_PROJECT_DIR": str(proj)}
+    out = {"TOKEN_SPAREN_HOME": str(home), "CLAUDE_PROJECT_DIR": str(proj)}
+    write_user_config(home, {"adapter": {"latency_budget_ms": 5000}})  # widening: not env
+    return out
 
 
 def _child(tmp_path: Path, text: str, code: int = 0, err: str = "") -> list[str]:
@@ -243,7 +246,6 @@ def test_stats_net_matches_the_statusline(
 
 def _doctor_env(env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"])
-    monkeypatch.setenv("TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS", "5000")
 
 
 def test_doctor_ok_in_tmp_home(
@@ -330,7 +332,7 @@ def test_session_disable_makes_hooks_noop(env: dict[str, str]) -> None:
             "isImage": False,
         },
     }
-    hook_env = {**env, "TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS": "5000"}
+    hook_env = dict(env)
 
     def call() -> str:
         out = io.StringIO()
@@ -447,7 +449,7 @@ def test_skill_file() -> None:
 
 def _hook(event: str, payload: dict[str, object], env: dict[str, str]) -> str:
     out = io.StringIO()
-    hook_env = {**env, "TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS": "5000"}
+    hook_env = dict(env)
     entry.main(event, io.StringIO(json.dumps(payload)), out, hook_env)
     return out.getvalue().strip()
 
@@ -605,8 +607,7 @@ def test_config_set_compression_hold_stops_trimming_in_that_session(
         }
         return _hook("PostToolUse", payload, env)
 
-    learn_off = {**env, "TOKEN_SPAREN_LEARN__ENABLED": "false"}
-    env.update(learn_off)
+    write_user_config(Path(env["TOKEN_SPAREN_HOME"]), {"learn": {"enabled": False}})
     assert "updatedToolOutput" in post("h2", 1)  # static standard trims
     assert main(["config", "set", "learn.hold.compression", "yes", "--session", "h2"]) == 0
     assert post("h2", 2) == "{}"

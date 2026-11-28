@@ -82,9 +82,14 @@ claude plugin marketplace add rupakc/token-sparen
 claude plugin install token-sparen@token-sparen
 ```
 
-The marketplace entry tracks the `release/claude` branch of this repository (the built plugin
-tree). To work on token-sparen itself, see [CONTRIBUTING.md](CONTRIBUTING.md) for the development
-install.
+**Which code this installs.** Once the first release is out, the marketplace entry points at the
+`release/claude` branch of this repository: the built plugin tree of the latest owner-signed
+release, the one the published benchmark measured. Until then the entry points at `main` itself
+(`"source": "./"` in `.claude-plugin/marketplace.json`), so you get the unreleased development
+head of `main`. The release-prep commit of the first release switches the entry to
+`release/claude` for good. To check which one you have, open `.claude-plugin/marketplace.json`
+in this repository: `"ref": "release/claude"` means releases only. To work on token-sparen itself, or to try unreleased code on purpose, use the
+development install in [CONTRIBUTING.md](CONTRIBUTING.md) (`claude --plugin-dir <checkout>`).
 
 That is all the plugin needs. Start a new Claude Code session afterwards (or reload plugins) so
 the hooks are picked up.
@@ -96,8 +101,10 @@ for you. To run it yourself in a terminal, call the bundled launcher from the pl
 Python >= 3.11 the same way the hooks do). The plugin directory is the
 `installPath` entry for `token-sparen` in `~/.claude/plugins/installed_plugins.json`.
 
-Optional: the `token-sparen` console command (handy in your own terminal). It is **not published on PyPI yet**;
-from a checkout of this repository run `pip install .`.
+Optional: a `token-sparen` console command on your `PATH`. It is **not published on PyPI yet**,
+so do not install a `token-sparen` package from PyPI or any other index until a release's notes
+say it is published there. Until then use the bundled launcher above, or run `pip install .` from
+a checkout of this repository.
 
 **Verify.** Three steps:
 
@@ -194,8 +201,8 @@ to delete once tool pruning's rules and the statusline are undone (steps 1 and 2
    `token-sparen` command, run `python3 -I "<plugin dir>/hooks/run_cli.py" <args>` instead
    (Windows: `py -3 -I`), before removing the plugin.
 2. `token-sparen statusline uninstall`: restores your original `statusLine`.
-3. `claude plugin uninstall token-sparen@token-sparen` (and `pipx uninstall token-sparen` or the
-   like if you installed the CLI for your terminal).
+3. `claude plugin uninstall token-sparen@token-sparen` (and `pip uninstall token-sparen` in the
+   environment where you ran `pip install .`, if you installed the console command).
 4. Delete `~/.token-sparen/` and each project's `.token-sparen/` folder. Backups named
    `*.token-sparen.bak` next to your settings files can go too once you have checked them.
 

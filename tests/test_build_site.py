@@ -214,34 +214,31 @@ def _active(path: Path) -> str:
     return "\n".join(ln for ln in lines if ln.strip() and not ln.lstrip().startswith("#"))
 
 
-def test_docs_workflow_deploys_only_release_tags() -> None:
-    text = _active(ROOT / ".github" / "workflows" / "docs.yml")
+def test_docs_deploy_is_reusable_and_builds_only_the_given_tag() -> None:
+    text = _active(ROOT / ".github" / "workflows" / "docs-deploy.yml")
     flat = " ".join(text.split())
-    assert "tags: ['v[0-9]+.[0-9]+.[0-9]+']" in text
-    assert "workflow_dispatch" in text
-    assert "branches" not in text and "pull_request" not in text
-    assert not re.search(r"^\s*schedule:", text, re.M)
-    # dispatch (and tag pushes) build the release tag, never main
-    assert "--sort=-v:refname" in text
-    assert "ref: ${{ needs.tag.outputs.tag }}" in text
-    assert "ref: main" not in text and "refs/heads/main" not in text
-    assert "ref: ${{ github.sha }}" not in text
-    # least privilege
     top = text.split("jobs:")[0]
-    assert re.search(r"^permissions:\n  contents: read$", top, re.M)
-    assert "write" not in top
-    deploy = text.split("  deploy-pages:")[1]
+    # never triggered by itself: only release.yml (after finalize) and docs.yml call it
+    assert re.search(r"^on:\n  workflow_call:$", top, re.M)
+    for trigger in ("push:", "tags:", "workflow_dispatch", "pull_request", "schedule", "release:"):
+        assert trigger not in top, trigger
+    assert re.search(r"^permissions: \{\}$", top, re.M)
+    build = text.split("\n  build:")[1].split("\n  deploy-pages:")[0]
+    assert "ref: ${{ inputs.tag }}" in build and "ref: main" not in text
+    assert "^v[0-9]+\\.[0-9]+\\.[0-9]+$" in build  # exact release tag, re-checked
+    assert "permissions:\n      contents: read" in build and "write" not in build
+    assert build.count("persist-credentials: false") == 1
+    deploy = text.split("\n  deploy-pages:")[1].split("\n  wiki:")[0]
     assert "pages: write" in deploy and "id-token: write" in deploy
     assert "environment:" in deploy and "github-pages" in deploy
-    before_deploy = text.split("  deploy-pages:")[0]
-    assert "write" not in before_deploy
-    assert before_deploy.count("persist-credentials: false") >= 2
     # deny-list over the generated tree: secret passed explicitly, fails closed, before upload
     assert "scripts/check_denylist.py --path _site --require-private-words" in flat
     assert "TOKEN_SPAREN_DENYLIST: ${{ secrets.TOKEN_SPAREN_DENYLIST }}" in text
     assert "secrets: inherit" not in text
     assert text.index("check_denylist.py") < text.index("upload-pages-artifact")
     assert "python scripts/build_site.py --out _site" in flat
+    # review m-R3: no shared pip cache in the job that holds the deny-list secret
+    assert "cache: pip" not in build and "pip install --no-cache-dir" in build
 
 
 def test_docs_extra_pins_markdown() -> None:
@@ -281,11 +278,35 @@ def test_raw_html_and_unsafe_urls_never_reach_the_site(tmp_path: Path) -> None:
     assert "note" not in body
 
 
-def test_docs_workflow_refuses_prereleases_and_off_main_tags() -> None:
+def test_docs_workflow_is_a_verified_redeploy_of_a_published_release() -> None:
+    """Review C1/I1: docs.yml only re-deploys an explicit, already published release tag, after
+    the same owner-signed verification as a release; it never deploys on a tag push."""
     text = _active(ROOT / ".github" / "workflows" / "docs.yml")
-    assert "grep -Eq '^v[0-9]+\\.[0-9]+\\.[0-9]+$'" in text
-    assert "git merge-base --is-ancestor" in text and "origin/main" in text
-    assert "needs: tag" in text and "needs: build" in text
+    top = text.split("jobs:")[0]
+    assert "workflow_dispatch:" in top and "tag:" in top and "required: true" in top
+    for trigger in ("push:", "tags:", "pull_request", "schedule", "workflow_run", "release:"):
+        assert trigger not in top, trigger
+    assert re.search(r"^permissions:\n  contents: read$", top, re.M)
+    released = text.split("\n  released:")[1].split("\n  verify:")[0]
+    assert "TAG: ${{ inputs.tag }}" in released  # via env, never inline in run
+    assert "^v[0-9]+\\.[0-9]+\\.[0-9]+$" in released
+    assert '[ "$GITHUB_REF" = "refs/tags/$TAG" ]' in released
+    assert 'git merge-base --is-ancestor "$TAG^{commit}" origin/main' in released
+    assert 'gh release view "$TAG" --json tagName,isDraft,isPrerelease' in released
+    assert '[ "$state" = "$TAG false false" ]' in released
+    assert "write" not in released
+    verify = text.split("\n  verify:")[1].split("\n  deploy:")[0]
+    assert "needs: released" in verify
+    assert "uses: ./.github/workflows/verify-tag.yml" in verify
+    assert "tag: ${{ inputs.tag }}" in verify and 'expect-sha: ""' in verify
+    assert "secrets" not in verify and "write" not in verify
+    deploy = text.split("\n  deploy:")[1]
+    assert "needs: [released, verify]" in deploy
+    assert "uses: ./.github/workflows/docs-deploy.yml" in deploy
+    assert "TOKEN_SPAREN_DENYLIST: ${{ secrets.TOKEN_SPAREN_DENYLIST }}" in deploy
+    assert "${{ inputs.tag }}" not in "".join(
+        ln for ln in text.splitlines() if ln.strip().startswith(("run:", "[", "git", "gh"))
+    )
 
 
 def test_site_url_matches_release_tooling() -> None:

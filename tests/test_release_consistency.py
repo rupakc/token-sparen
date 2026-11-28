@@ -8,6 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -16,6 +17,15 @@ SCRIPTS = ROOT / "scripts"
 HEADING = re.compile(r"^## \[(?P<v>[^\]]+)\](?: - (?P<d>.+))?$", re.MULTILINE)
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(\.dev\d+)?$")
 MARKER = "<!-- pre-1.0 milestones -->"
+RELEASE_SOURCE = {"source": "github", "repo": "rupakc/token-sparen", "ref": "release/claude"}
+DEV_MARKETPLACE = json.dumps(
+    {
+        "name": "token-sparen",
+        "owner": {"name": "Rupak Chakraborty"},
+        "plugins": [{"name": "token-sparen", "source": "./", "description": "d"}],
+    },
+    indent=2,
+)
 
 
 def _bump_module() -> ModuleType:
@@ -44,6 +54,7 @@ def _make_repo(tmp_path: Path) -> Path:
         dest = tmp_path / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(ROOT / rel, dest)
+    (tmp_path / ".claude-plugin" / "marketplace.json").write_text(DEV_MARKETPLACE, encoding="utf-8")
     changelog = tmp_path / "CHANGELOG.md"
     text = changelog.read_text(encoding="utf-8")
     if MARKER not in text:
@@ -214,3 +225,187 @@ def test_changelog_has_pre1_marker_below_unreleased() -> None:
     assert text.count(MARKER) == 1
     assert text.index("## [Unreleased]") < text.index(MARKER) < text.index("## Pre-1.0 milestones")
     assert "[1.0.0]" not in text.split(MARKER, 1)[0]  # the bump creates it, nothing writes it
+
+
+def _seeded(root: Path) -> bool:
+    """`release/claude` exists on origin (no network in tests)."""
+    return True
+
+
+def _good_seed(root: Path, version: str) -> list[str]:
+    """The seeded `release/claude` holds the measured plugin (no network in tests)."""
+    return []
+
+
+def _market(root: Path) -> dict[str, Any]:
+    data = json.loads((root / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    return data
+
+
+def test_marketplace_tracks_release_branch() -> None:
+    """Ruling B1: from the release-prep commit of the first release on, the marketplace users
+    add from ``main`` installs the gated ``release/claude`` tree, never ``main`` itself. Before
+    that (no dated release heading above the milestone marker) ``./`` is the dev install."""
+    from scripts import release_check as rc
+
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    (entry,) = [p for p in _market(ROOT)["plugins"] if p["name"] == "token-sparen"]
+    required = rc.marketplace_required(changelog)
+    if required:
+        assert entry["source"] == RELEASE_SOURCE
+    else:
+        assert entry["source"] in ("./", RELEASE_SOURCE)
+    assert rc.marketplace_problems(ROOT, required=required) == []
+
+
+def test_marketplace_required_once_a_release_is_dated() -> None:
+    from scripts import release_check as rc
+
+    head = "# Changelog\n\n## [Unreleased]\n\n"
+    tail = f"{MARKER}\n\n## [0.4.0] - 2026-11-20\n"
+    assert not rc.marketplace_required(head + tail)  # pre-1.0 milestones never count
+    assert not rc.marketplace_required(head + "## [1.0.0] - Unreleased\n\n" + tail)  # rc freeze
+    assert rc.marketplace_required(head + "## [1.0.0] - 2026-12-01\n\n" + tail)
+    assert rc.marketplace_required(head + "## [1.0.1] - Unreleased\n\n## [1.0.0] - 2026-12-01\n")
+
+
+def test_prepare_release_dates_and_tracks_release_branch(tmp_path: Path) -> None:
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    mod.bump(root, "1.0.0", date=None)
+    before = _market(root)
+    changed = mod.prepare_release(
+        root, "1.0.0", "2026-12-01", branch_exists=_seeded, seed_check=_good_seed
+    )
+    assert sorted(p.relative_to(root).as_posix() for p in changed) == [
+        ".claude-plugin/marketplace.json",
+        "CHANGELOG.md",
+    ]
+    assert "## [1.0.0] - 2026-12-01" in (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    after = _market(root)
+    (entry,) = after["plugins"]
+    assert entry["source"] == RELEASE_SOURCE
+    old_entry = before["plugins"][0]
+    assert {k: v for k, v in entry.items() if k != "source"} == {
+        k: v for k, v in old_entry.items() if k != "source"
+    }
+    assert {k: v for k, v in after.items() if k != "plugins"} == {
+        k: v for k, v in before.items() if k != "plugins"
+    }
+    # the next dev bump keeps tracking release/claude (nothing points it back at ./)
+    mod.bump(root, "1.0.1.dev0", date=None)
+    assert _market(root)["plugins"][0]["source"] == RELEASE_SOURCE
+    assert mod.track_release_branch(root) == root / ".claude-plugin" / "marketplace.json"
+    assert _market(root) == after  # idempotent
+    assert b"\r" not in (root / ".claude-plugin" / "marketplace.json").read_bytes()
+
+
+def test_prepare_release_refuses_and_writes_nothing(tmp_path: Path) -> None:
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    with pytest.raises(ValueError, match="X.Y.Z"):
+        mod.prepare_release(
+            root, "1.0.1.dev0", "2026-12-01", branch_exists=_seeded, seed_check=_good_seed
+        )
+    with pytest.raises(ValueError, match="current version"):
+        mod.prepare_release(
+            root, "1.0.0", "2026-12-01", branch_exists=_seeded, seed_check=_good_seed
+        )  # not bumped yet
+    mod.bump(root, "1.0.0", date=None)
+    market = root / ".claude-plugin" / "marketplace.json"
+    market.write_text('{"plugins": []}', encoding="utf-8")
+    snapshot = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    with pytest.raises(ValueError, match="exactly one"):
+        mod.prepare_release(
+            root, "1.0.0", "2026-12-01", branch_exists=_seeded, seed_check=_good_seed
+        )
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == snapshot
+
+
+def test_cli_prepare_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    monkeypatch.setattr(mod, "ROOT", root)
+    monkeypatch.setattr(mod, "is_dirty", lambda root: False)
+    assert mod.main(["1.0.0"]) == 0
+    monkeypatch.setattr(mod, "remote_branch_exists", lambda root: False)
+    assert mod.main(["--prepare-release", "1.0.0", "2026-12-01"]) == 1
+    assert "does not exist on origin" in capsys.readouterr().err
+    assert _market(root)["plugins"][0]["source"] == "./"
+    monkeypatch.setattr(mod, "remote_branch_exists", _seeded)
+    monkeypatch.setattr(mod, "fetched_seed_problems", lambda root, v: ["seed is wrong"])
+    assert mod.main(["--prepare-release", "1.0.0", "2026-12-01"]) == 1
+    assert "seed is wrong" in capsys.readouterr().err
+    assert _market(root)["plugins"][0]["source"] == "./"
+    monkeypatch.setattr(mod, "fetched_seed_problems", _good_seed)
+    assert mod.main(["--prepare-release", "1.0.0", "2026-12-01"]) == 0
+    out = capsys.readouterr().out
+    assert "marketplace.json" in out and "CHANGELOG.md" in out
+    assert _market(root)["plugins"][0]["source"] == RELEASE_SOURCE
+
+
+def test_prepare_release_refused_until_release_branch_is_seeded(tmp_path: Path) -> None:
+    """Review I2: the marketplace never names a release/claude branch that does not exist."""
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    mod.bump(root, "1.0.0", date=None)
+    snapshot = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    with pytest.raises(ValueError, match="does not exist on origin"):
+        mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=lambda r: False)
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == snapshot
+
+
+def test_prepare_release_refuses_a_wrong_seed(tmp_path: Path) -> None:
+    """Review NEW-I1: a seed whose plugin is not the measured one is refused before any write."""
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    mod.bump(root, "1.0.0", date=None)
+    snapshot = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    seen: list[tuple[Path, str]] = []
+
+    def wrong(r: Path, v: str) -> list[str]:
+        seen.append((r, v))
+        return ["release/claude holds 1.0.0 but not the measured plugin"]
+
+    with pytest.raises(ValueError, match="not the measured plugin"):
+        mod.prepare_release(root, "1.0.0", "2026-12-01", branch_exists=_seeded, seed_check=wrong)
+    assert seen == [(root, "1.0.0")]
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == snapshot
+
+
+def test_fetched_seed_problems_without_origin(tmp_path: Path) -> None:
+    mod = _bump_module()
+    (problem,) = mod.fetched_seed_problems(tmp_path, "1.0.0")
+    assert "cannot fetch release/claude" in problem
+
+
+def test_remote_branch_exists_without_origin(tmp_path: Path) -> None:
+    mod = _bump_module()
+    assert mod.remote_branch_exists(tmp_path) is False  # not a repository / no origin
+
+
+def test_prepare_release_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review m4: a failure while replacing the second file restores the first one."""
+    mod = _bump_module()
+    root = _make_repo(tmp_path)
+    mod.bump(root, "1.0.0", date=None)
+    snapshot = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    real = mod.os.replace
+    calls: list[Path] = []
+
+    def flaky(src: Path, dst: Path) -> None:
+        calls.append(Path(dst))
+        if len(calls) == 2:
+            raise OSError("disk full")
+        real(src, dst)
+
+    monkeypatch.setattr(mod.os, "replace", flaky)
+    with pytest.raises(OSError, match="disk full"):
+        mod.prepare_release(
+            root, "1.0.0", "2026-12-01", branch_exists=_seeded, seed_check=_good_seed
+        )
+    assert [p.name for p in calls] == ["CHANGELOG.md", "marketplace.json"]
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == snapshot  # no temps

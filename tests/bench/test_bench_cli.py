@@ -206,13 +206,18 @@ def test_real_campaign_refused_on_windows(
 
 
 def test_dry_workspace_cannot_publish_or_run_real(
-    dry_ws: Path, no_real_tools: Path, capsys: pytest.CaptureFixture[str]
+    dry_ws: Path,
+    no_real_tools: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(sc, "_HOST_OS", "posix")  # the refusal under test, not the platform's
     out = str(dry_ws)
     assert cli.main(["report", "--stage", "confirmation", "--publish", "--out", out]) == 2
     assert "dry run" in capsys.readouterr().err
     argv = ["run", "--stage", "screening", "--campaign", "ci", "--model", "m", "--out", out]
     assert cli.main(argv) == 2
+    assert "dry run" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(os.name == "nt", reason="real workspaces are refused on Windows")
@@ -424,8 +429,13 @@ def test_windows_refuses_real_workspaces_before_writing(
 
 
 def test_power_refuses_a_pre_screening_calibration(
-    dry_ws: Path, no_real_tools: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    dry_ws: Path,
+    no_real_tools: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(sc, "_HOST_OS", "posix")  # a real workspace would be refused on Windows
     ws, _, _ = _real_copy(dry_ws, tmp_path)
     assert cli.main(["power", "--out", str(ws.root)]) == 2
     assert "calibrate" in capsys.readouterr().err

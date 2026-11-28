@@ -11,7 +11,7 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
-from userconf import write_user_config
+from userconf import to_user_config, write_user_config
 
 from token_sparen.config import Config, load_config
 from token_sparen.events import Event, EventKind, ToolCall
@@ -29,7 +29,7 @@ POINTER = (
 def _env(tmp_path: Path, **over: str) -> dict[str, str]:
     env = {"TOKEN_SPAREN_HOME": str(tmp_path / "home")}
     env.update({f"TOKEN_SPAREN_{k}": v for k, v in over.items()})
-    return env
+    return to_user_config(env)  # env only narrows; widening overrides live in the user file
 
 
 def _cfg(tmp_path: Path, **over: str) -> Config:
@@ -43,6 +43,7 @@ def _opted_in(tmp_path: Path) -> None:
     write_user_config(tmp_path / "home", {"read_dedupe": {"enabled": True}})
 
 
+@pytest.mark.env_drop_expected
 def test_off_by_default_and_only_the_user_file_opts_in(tmp_path: Path) -> None:
     path = _file(tmp_path)
     (tmp_path / "home" / "config.toml").unlink()
@@ -52,7 +53,9 @@ def test_off_by_default_and_only_the_user_file_opts_in(tmp_path: Path) -> None:
     (tmp_path / "proj" / "token-sparen.toml").write_text(
         "[read_dedupe]\nenabled = true\n", encoding="utf-8"
     )
-    assert _read(tmp_path, path, cfg=_cfg(tmp_path, READ_DEDUPE__ENABLED="true")).is_noop()
+    raw = {"TOKEN_SPAREN_HOME": str(tmp_path / "home"), "TOKEN_SPAREN_READ_DEDUPE__ENABLED": "true"}
+    env_cfg = load_config(tmp_path / "proj", raw)  # a widening env var is ignored, not opted in
+    assert _read(tmp_path, path, cfg=env_cfg).is_noop()
     assert _read(tmp_path, path).is_noop()
     assert _decisions(tmp_path) == []
 
