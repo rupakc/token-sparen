@@ -118,7 +118,7 @@ def _fresh(ts: Any, now: float) -> bool:
 
 
 def _enabled(cfg: Config) -> bool:
-    return flag(cfg.get("read_dedupe.enabled"), True)
+    return flag(cfg.get("read_dedupe.enabled"), False)  # opt-in (v1 ruling on M13)
 
 
 def handle_post_tool(

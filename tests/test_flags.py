@@ -43,7 +43,7 @@ def _cfg(section: str, key: str, value: Any) -> Config:
 # (reader, section, key, default when unset)
 READERS: list[tuple[Callable[[Config], bool], str, str, bool]] = [
     (guards._enabled, "guards", "enabled", True),
-    (read_dedupe._enabled, "read_dedupe", "enabled", True),
+    (read_dedupe._enabled, "read_dedupe", "enabled", False),  # opt-in (v1 ruling on M13)
     (governor._enabled, "governor", "enabled", True),
     (governor._hard_stop, "governor", "hard_stop", False),
     (compression.trims_file_contents, "compression", "trim_file_contents", False),

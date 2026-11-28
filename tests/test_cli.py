@@ -411,9 +411,10 @@ def test_slash_command_is_a_skill() -> None:
     # `prune restore` only removes deny rules token-sparen wrote: always safe
     safe = ("stats", "show", "doctor", "session disable", "prune restore")
     boot = 'python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"'
+    win = 'py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"'  # Windows form (v1 review M9)
     assert tools == [f"Bash(token-sparen {c}:*)" for c in safe] + [
         f"Bash({boot} {c}:*)" for c in safe
-    ]
+    ] + [f"Bash({win} {c}:*)" for c in safe]
     assert not any("session:" in t or "session enable" in t for t in tools)
     assert "argument-hint:" in front
     for bare in ("python3:*", "python:*", "sh:*", "bash:*", "token-sparen:*", 'run_cli.py":*'):
@@ -423,6 +424,7 @@ def test_slash_command_is_a_skill() -> None:
     assert [t for t in tools if " prune" in t] == [
         "Bash(token-sparen prune restore:*)",
         f"Bash({boot} prune restore:*)",
+        f"Bash({win} prune restore:*)",
     ]
     assert "permission prompt" in body
     assert "explicitly" in body and "/token-sparen" in body
@@ -438,7 +440,7 @@ def test_skill_file() -> None:
     front = text.split("---")[1]
     assert "name: token-sparen" in front
     assert "Use when the user asks about token usage, trimmed outputs" in front
-    assert len(text.splitlines()) <= 80
+    assert len(text.splitlines()) <= 85  # 80 lines of body plus the Windows pre-approvals
     for needle in ("token-sparen show", "token-sparen stats", "TOKEN_SPAREN_DISABLE"):
         assert needle in text
 

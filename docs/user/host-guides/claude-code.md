@@ -8,7 +8,7 @@ All of this is on by default unless marked opt-in. Nothing is sent anywhere. Req
 - **Never larger.** A replacement is used only if it is no longer than what the model would have seen anyway and saves at least 15 % of it.
 - **Never touched.** Results under 2000 tokens, edit tools, `TodoWrite`, `AskUserQuestion`, `ExitPlanMode`, images and PDFs, and failing tool calls (Claude Code cannot replace the result of a failed call).
 - **Guards** block a few unbounded commands: [Guards](../mechanisms/guards.md).
-- **Read de-duplication** returns a short pointer for an unchanged file that is still in context: [Read de-duplication](../mechanisms/read-dedupe.md).
+- **Read de-duplication** (opt-in, off by default) returns a short pointer for an unchanged file that is still in context; it is off because a `/rewind` with an edited prompt cannot be detected: [Read de-duplication](../mechanisms/read-dedupe.md).
 - **Notices** in your terminal (no model tokens) about budget and context use, and a hint to `/compact` at a task boundary: [Governor](../mechanisms/governor.md), [Boundary](../mechanisms/boundary.md).
 - **Failure-loop guard** adds one short line when the same error repeats within a turn: [Failure-loop guard](../mechanisms/loop-guard.md).
 - **Learned repository facts** at session start: [Facts](../mechanisms/facts.md).
@@ -45,7 +45,7 @@ A trimmed result ends with a marker:
 | Everything | `TOKEN_SPAREN_DISABLE=1` (every hook becomes a no-op; any of `1`, `true`, `yes`, `on`). It must be in the environment Claude Code is **launched** from; setting it in a running session's shell is too late. Or `claude plugin disable token-sparen` (`claude plugin enable token-sparen` undoes it) |
 | Everything, this session only | `/token-sparen disable` (and `enable`), or `token-sparen session disable` (without `--session` it acts on this project's most recently active session, if active in the last 6 hours) |
 | All trimming of tool output | `[learn.hold] compression = true` in `~/.token-sparen/config.toml`; for one session `token-sparen config set learn.hold.compression true`. A project's `token-sparen.toml` may set it too. Config-only alternative: `[compression] allow_ctypes = []`. Guards and read de-duplication stay on |
-| Read pointers only | `[learn.hold] read_dedupe = true` or `read_dedupe.enabled = false` |
+| Read pointers only | off unless you opted in; `read_dedupe.enabled = false` (or `[learn.hold] read_dedupe = true`) |
 | Learned repository facts | `token-sparen facts disable` (this project), `[facts] enabled = false`, or `token-sparen facts forget <id>` |
 | Failure-loop guard | `[loopguard] enabled = false` (`[learn.hold] loopguard = true` only keeps the most patient setting) |
 | Output-style directive | Off unless you opted in; `[output_style] enabled = false` |

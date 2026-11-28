@@ -1878,3 +1878,9 @@ and the two new issues they found.
   at. An edited prompt after a rewind stays undetectable (documented).
 - m-Q4: conftest guards `subprocess.Popen`: an explicit `env` must carry a temporary `HOME`
   (`USERPROFILE` on Windows), else the test fails.
+- Owner ruling (2026-11-28, on the M13 residual): because a /rewind with an edited prompt cannot be
+  detected, `read_dedupe.enabled` defaults to false in v1.0 (quality first). Opt-in only from the
+  user's `config.toml` (or a session override); a project file or `TOKEN_SPAREN_*` can only keep
+  it off (`false_only`). The epoch logic stays for opted-in users. The skill also pre-approves
+  the Windows `py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"` forms of the same safe
+  subcommands (SKILL.md limit raised to 85 lines for them).

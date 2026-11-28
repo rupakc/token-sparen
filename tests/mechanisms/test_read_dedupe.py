@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
+from userconf import write_user_config
 
 from token_sparen.config import Config, load_config
 from token_sparen.events import Event, EventKind, ToolCall
@@ -33,6 +34,27 @@ def _env(tmp_path: Path, **over: str) -> dict[str, str]:
 
 def _cfg(tmp_path: Path, **over: str) -> Config:
     return load_config(tmp_path / "proj", _env(tmp_path, **over))
+
+
+@pytest.fixture(autouse=True)
+def _opted_in(tmp_path: Path) -> None:
+    """Read de-dupe is off by default since v1.0 (ruling on M13): these tests opt in the only
+    way a user can, in their own config.toml."""
+    write_user_config(tmp_path / "home", {"read_dedupe": {"enabled": True}})
+
+
+def test_off_by_default_and_only_the_user_file_opts_in(tmp_path: Path) -> None:
+    path = _file(tmp_path)
+    (tmp_path / "home" / "config.toml").unlink()
+    _read(tmp_path, path)
+    assert _read(tmp_path, path).is_noop()  # default: off, nothing recorded or decided
+    assert _decisions(tmp_path) == [] and "reads" not in _overlay(tmp_path)
+    (tmp_path / "proj" / "token-sparen.toml").write_text(
+        "[read_dedupe]\nenabled = true\n", encoding="utf-8"
+    )
+    assert _read(tmp_path, path, cfg=_cfg(tmp_path, READ_DEDUPE__ENABLED="true")).is_noop()
+    assert _read(tmp_path, path).is_noop()
+    assert _decisions(tmp_path) == []
 
 
 def _content(lines: int = 1500) -> str:

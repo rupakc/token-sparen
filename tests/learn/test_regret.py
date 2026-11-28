@@ -729,7 +729,7 @@ def test_read_dedupe_pointer_tracked_with_engine(tmp_path: Path) -> None:
         output_text=content,
     )
     rec = Recorder(arm="pointer")
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, READ_DEDUPE__ENABLED="true")  # opt-in since v1.0
     read_dedupe.handle_post_tool(ev, rec, cfg, env=_env(tmp_path))
     act = read_dedupe.handle_post_tool(ev, rec, cfg, env=_env(tmp_path))
     assert act.replace_output is not None

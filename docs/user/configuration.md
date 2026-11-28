@@ -48,7 +48,7 @@ table, measured from your config and session overrides.
 | `compression.trim_file_contents` | false | also trim file contents (Read, `cat`, `head`, ...); see the quality warning above |
 | `guards.enabled` | true | block the unbounded commands ([Guards](mechanisms/guards.md)) |
 | `guards.max_read_bytes` | 5000000 | size limit for `cat`/Read without a range |
-| `read_dedupe.enabled` | true | return a pointer for unchanged re-reads |
+| `read_dedupe.enabled` | false | return a pointer for unchanged re-reads (opt-in; see [Read de-duplication](mechanisms/read-dedupe.md)) |
 | `read_dedupe.max_turn_gap` | 8 | pointer only if the earlier read is this recent |
 | `governor.enabled` | true | budget and context notices |
 | `governor.session_budget_tokens` | 500000000 | economy budget the notices and hard stop use |

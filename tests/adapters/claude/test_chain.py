@@ -271,6 +271,7 @@ def test_pipeline_read_dedupe_pointer_and_compact(tmp_path: Path) -> None:
         tmp_path,
         TOKEN_SPAREN_COMPRESSION__MIN_TOKENS="999999999",
         TOKEN_SPAREN_LEARN__ENABLED="false",
+        TOKEN_SPAREN_READ_DEDUPE__ENABLED="true",  # opt-in (off by default since v1.0)
     )
     _run("UserPromptSubmit", {"session_id": "s-r", "prompt": "look"}, env)
     assert _run("PostToolUse", _read_payload(path), env) == {}
@@ -294,10 +295,19 @@ def test_pipeline_read_dedupe_pointer_and_compact(tmp_path: Path) -> None:
 
 
 def test_default_read_untouched_then_reread_deduped(tmp_path: Path) -> None:
-    """Quality first: a big Read is shown in full, so an unchanged re-read becomes a pointer."""
+    """Quality first: a big Read is shown in full; read de-dupe is off by default (v1 ruling on
+    M13), so the re-read is shown in full too; opted in, it becomes a pointer."""
     path = tmp_path / "big.py"
     path.write_text(_code(3000), encoding="utf-8")
     env = _env(tmp_path, TOKEN_SPAREN_LEARN__ENABLED="false")
+    assert _run("PostToolUse", _read_payload(path), env) == {}
+    assert _run("PostToolUse", _read_payload(path), env) == {}  # default: off
+    project = tmp_path / "proj" / "token-sparen.toml"  # a project cannot opt in
+    project.write_text("[read_dedupe]\nenabled = true\n", encoding="utf-8")
+    narrowed = {**env, "TOKEN_SPAREN_READ_DEDUPE__ENABLED": "true"}  # nor can the environment
+    assert _run("PostToolUse", _read_payload(path), narrowed) == {}
+    project.unlink()
+    env = _env(tmp_path, TOKEN_SPAREN_LEARN__ENABLED="false", TOKEN_SPAREN_READ_DEDUPE__ENABLED="1")
     assert _run("PostToolUse", _read_payload(path), env) == {}
     second = _run("PostToolUse", _read_payload(path), env)["hookSpecificOutput"]
     assert "unchanged since turn" in second["updatedToolOutput"]["file"]["content"]

@@ -11,7 +11,7 @@ only after the previous one has been observed at least 20 times with a low regre
 levels sooner), so early sessions trim less than later ones. A share of decisions always keeps the output untouched (roughly one in five at first on a new project), as a baseline. The
 subagent brief stays off (it is not learned until a benchmark shows it does not hurt quality).
 `[learn] enabled = false` switches learning off, but that is not a way to trim less: it uses fixed
-defaults (standard compression, read de-dupe pointers), which trim more than a cold learner. To
+defaults (standard compression, and read de-dupe pointers if you opted in), which trim more than a cold learner. To
 trim nothing, use the hold in [Turning it off](host-guides/claude-code.md#turning-it-off). A project's `token-sparen.toml`
 can only make learning more careful (see [What a project file may change](configuration.md)); it
 cannot turn learning off, so a project that wants less trimming sets

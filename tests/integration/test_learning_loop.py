@@ -354,7 +354,11 @@ def test_subagent_brief_held_at_safe_arm(tmp_path: Path) -> None:
 def test_read_dedupe_goes_through_engine(tmp_path: Path) -> None:
     # Read outputs are not compressed here, so the first read reaches the model in full
     d = Driver(
-        tmp_path / "home", tmp_path / "proj", "s-rd", TOKEN_SPAREN_COMPRESSION__SKIP_TOOLS="Read"
+        tmp_path / "home",
+        tmp_path / "proj",
+        "s-rd",
+        TOKEN_SPAREN_COMPRESSION__SKIP_TOOLS="Read",
+        TOKEN_SPAREN_READ_DEDUPE__ENABLED="true",  # opt-in since v1.0
     )
     f = d.proj / "big.py"
     f.write_text("\n".join(f"value_{i} = {i}  # padding text" for i in range(1200)), "utf-8")

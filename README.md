@@ -134,8 +134,10 @@ All of this is on by default unless marked opt-in. Nothing is sent anywhere. Eac
   or `~` without `-maxdepth`, recursive search into `node_modules`/`.git`/`dist`/`build`/`.venv`,
   `cat` or Read of a text file over 5 MB without a range, `ls -R` on `/` or `~`) with a reason that
   names the bounded alternative. Turn off with `guards.enabled = false`.
-- **[Read de-duplication](docs/user/mechanisms/read-dedupe.md)** returns a short pointer for an
-  unchanged file that is still in context.
+- **[Read de-duplication](docs/user/mechanisms/read-dedupe.md)** (opt-in, off by default) returns
+  a short pointer for an unchanged file that is still in context. It is off because a `/rewind`
+  with an edited prompt cannot be detected, so a pointer could refer to a read that is gone;
+  turn it on with `[read_dedupe] enabled = true` in `~/.token-sparen/config.toml`.
 - **Notices (terminal only, no model tokens)** from the [governor](docs/user/mechanisms/governor.md)
   and [boundary](docs/user/mechanisms/boundary.md) mechanisms; an opt-in hard stop is off by default.
 - **[Failure-loop guard](docs/user/mechanisms/loop-guard.md):** one short redirect line when the same
@@ -167,7 +169,7 @@ A trimmed result ends with a marker:
 | Everything | `TOKEN_SPAREN_DISABLE=1` (every hook becomes a no-op; any of `1`, `true`, `yes`, `on`). It must be in the environment Claude Code is **launched** from; setting it in a running session's shell is too late. Or `claude plugin disable token-sparen` (and `claude plugin enable token-sparen`) |
 | Everything, this session only | `/token-sparen disable` (and `/token-sparen enable`), or `token-sparen session disable` (with no `--session` it acts on this project's most recently active session, if active in the last 6 hours; otherwise pass `--session ID`) |
 | All trimming of tool output | `[learn.hold] compression = true` in `~/.token-sparen/config.toml` (any truthy spelling: `true`, `1`, `yes`, `on`). It keeps compression and the learned pre-trim at their safe arm, whether learning is on or off, so nothing is trimmed. For one session only: `token-sparen config set learn.hold.compression true`. A project's `token-sparen.toml` may set it too. Config-only alternative: `[compression] allow_ctypes = []` (no content type may be trimmed). Guards and read de-duplication stay on |
-| Read pointers only | `[learn.hold] read_dedupe = true` or `read_dedupe.enabled = false` |
+| Read pointers only | off unless you opted in; `read_dedupe.enabled = false` (or `[learn.hold] read_dedupe = true`) |
 | Learned repository facts | `token-sparen facts disable` (this project; `facts enable` undoes it), `[facts] enabled = false` (everywhere; a project's `token-sparen.toml` may set it too), or `token-sparen facts forget <id>` for one fact (see [Learned repository facts](docs/user/mechanisms/facts.md)) |
 | Failure-loop guard | `[loopguard] enabled = false` (a project's `token-sparen.toml` may set it too). `[learn.hold] loopguard = true` does not switch it off, it only keeps the most patient setting |
 | Output-style directive | off unless you opted in (`[output_style] enabled = true` in your `config.toml`, or `token-sparen config set output_style.enabled true` for one session); `enabled = false` switches it off again (a project's `token-sparen.toml` or a `TOKEN_SPAREN_*` variable may only set that) |

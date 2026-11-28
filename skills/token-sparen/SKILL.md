@@ -13,6 +13,11 @@ allowed-tools:
   - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" doctor:*)'
   - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" session disable:*)'
   - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" prune restore:*)'
+  - 'Bash(py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" stats:*)'
+  - 'Bash(py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" show:*)'
+  - 'Bash(py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" doctor:*)'
+  - 'Bash(py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" session disable:*)'
+  - 'Bash(py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" prune restore:*)'
 ---
 
 # token-sparen
@@ -70,7 +75,7 @@ A trimmed output ends with (the bundled CLI in place of `token-sparen` if that i
 - Everywhere: `TOKEN_SPAREN_DISABLE=1` where Claude Code starts, or `claude plugin disable token-sparen`.
 - All trimming: `[learn.hold] compression = true` in `~/.token-sparen/config.toml` (one session:
   `token-sparen config set learn.hold.compression true --session ${CLAUDE_SESSION_ID}`) or
-  `[compression] allow_ctypes = []`. Read pointers: `[learn.hold] read_dedupe = true`.
+  `[compression] allow_ctypes = []`. Read pointers are off unless the user opted in.
 - Change config only when the user asks. Needs Claude Code >= 2.1.121.
 
 ## Configuration

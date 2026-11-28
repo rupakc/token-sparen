@@ -236,10 +236,13 @@ def test_skill_preapprovals_are_read_only_or_restoring() -> None:
     rules = re.findall(r"^\s*-\s*'?(Bash\(.*\))'?\s*$", front, re.MULTILINE)
     assert rules
     allowed = {f"Bash(token-sparen {c}:*)" for c in PREAPPROVED} | {
-        f'Bash(python3 -I "${{CLAUDE_PLUGIN_ROOT}}/hooks/run_cli.py" {c}:*)' for c in PREAPPROVED
+        f'Bash({py} -I "${{CLAUDE_PLUGIN_ROOT}}/hooks/run_cli.py" {c}:*)'
+        for c in PREAPPROVED
+        for py in ("python3", "py -3")  # POSIX and Windows bundled-CLI forms (v1 review M9)
     }
     for rule in rules:
         assert rule in allowed, f"unexpected pre-approval {rule}"
+    assert set(rules) == allowed  # every safe subcommand in every form, nothing else
     tools = re.findall(r"^\s*-\s*'?([A-Za-z]+)", front.split("allowed-tools:", 1)[1], re.M)
     assert set(tools) == {"Bash"}, tools  # no Write, Edit or other tool is pre-approved
 
