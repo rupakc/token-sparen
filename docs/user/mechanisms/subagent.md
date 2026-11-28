@@ -2,7 +2,7 @@
 
 **Hook:** PreToolUse. **Default:** the decision point exists, its arm is **off**. **Learned:** not until a benchmark shows it does not hurt quality.
 
-A decision point that can append a short "be concise" brief to subagent prompts exists, but it stays off by default and is not learned. Subagent replies and other plain text are shown in full.
+A decision point that can append a short "be concise" brief to subagent prompts exists, but it stays off by default and is not learned. Subagent replies are always shown in full: no compressor trims them, whatever they contain.
 
 | Key | Default | Meaning |
 |---|---|---|

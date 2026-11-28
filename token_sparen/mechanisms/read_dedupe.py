@@ -8,8 +8,12 @@ short pointer. Conservative by construction:
 
 - the earlier output must have reached the model in full (``forget`` drops an entry whose output
   another mechanism replaced, e.g. compression);
-- PreCompact and SessionStart(compact|clear) clear the table, and an entry older than
-  ``last_compact_turn`` is never used;
+- pointers stay within one context epoch (v1 review M13): PreCompact and
+  SessionStart(compact|clear|resume|fork) clear the table, and so does a prompt that repeats an
+  earlier one of the session (``tracking.handle_prompt``: /rewind fires no hook but puts the
+  earlier prompt back into the input); an entry older than ``last_compact_turn`` is never used;
+- the earlier read is at most ``MAX_AGE_S`` old (Claude Code may clear old tool results after an
+  idle gap without any hook);
 - an Edit/Write/MultiEdit/NotebookEdit of the path (PreToolUse) drops its entries;
 - the earlier read is at most ``[read_dedupe] max_turn_gap`` turns old;
 - outputs below 2000 estimated tokens are never replaced.
@@ -40,8 +44,12 @@ POINTER = (
 MIN_TOKENS = 2000  # invariant floor: smaller outputs are never modified
 MAX_ENTRIES = 200
 MAX_TURN_GAP = 8  # older reads may have scrolled out of the model's attention; re-send them
+# Claude Code may clear older tool results after an idle gap (reportedly about an hour) and no
+# hook says so: a read older than this is delivered in full.
+MAX_AGE_S = 30 * 60
 _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
-_RESET_SOURCES = frozenset({"compact", "clear"})
+# a resumed or forked conversation may come back with old tool results cleared
+_RESET_SOURCES = frozenset({"compact", "clear", "resume", "fork"})
 
 Replaceable = Callable[[Event], bool]
 
@@ -102,8 +110,15 @@ def _turn(state: Mapping[str, Any], key: str) -> int:
     return _int_or_none(state.get(key)) or 0
 
 
+def _fresh(ts: Any, now: float) -> bool:
+    """A read recorded at ``ts`` is recent enough to point at (no timestamp: never)."""
+    if not isinstance(ts, int | float) or isinstance(ts, bool):
+        return False
+    return 0 <= now - ts <= MAX_AGE_S
+
+
 def _enabled(cfg: Config) -> bool:
-    return flag(cfg.get("read_dedupe.enabled"), True)
+    return flag(cfg.get("read_dedupe.enabled"), False)  # opt-in (v1 ruling on M13)
 
 
 def handle_post_tool(
@@ -139,6 +154,7 @@ def handle_post_tool(
     gap = _int_or_none(cfg.get("read_dedupe.max_turn_gap", MAX_TURN_GAP))
     max_gap = MAX_TURN_GAP if gap is None or gap < 0 else gap
     found: dict[str, int] = {}
+    now = time.time()
 
     def apply(state: dict[str, Any]) -> None:
         reads = _reads(state)
@@ -146,6 +162,7 @@ def handle_post_tool(
         prior = reads.get(key)
         if (
             isinstance(prior, dict)
+            and _fresh(prior.get("ts"), now)
             and prior.get("mtime_ns") == st.st_mtime_ns
             and prior.get("size") == st.st_size
             and prior.get("sha1") == sha1
@@ -165,6 +182,7 @@ def handle_post_tool(
             "offset": _int_or_none(tool.input.get("offset")),
             "limit": _int_or_none(tool.input.get("limit")),
             "turn": turn,
+            "ts": now,
         }
         while len(reads) > max_entries:
             reads.pop(next(iter(reads)))
@@ -305,7 +323,8 @@ def on_pre_compact(event: Event, *, env: Mapping[str, str] | None = None) -> Act
 
 
 def on_session_start(event: Event, *, env: Mapping[str, str] | None = None) -> Action:
-    """SessionStart after a compaction or /clear: the earlier reads are no longer in context."""
+    """SessionStart after a compaction, /clear, resume or fork: the earlier reads may no longer
+    be in context."""
     env = os.environ if env is None else env
     if event.extra.get("source") not in _RESET_SOURCES:
         return Action()

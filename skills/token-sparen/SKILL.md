@@ -13,6 +13,11 @@ allowed-tools:
   - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" doctor:*)'
   - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" session disable:*)'
   - 'Bash(python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" prune restore:*)'
+  - 'Bash(py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" stats:*)'
+  - 'Bash(py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" show:*)'
+  - 'Bash(py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" doctor:*)'
+  - 'Bash(py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" session disable:*)'
+  - 'Bash(py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" prune restore:*)'
 ---
 
 # token-sparen
@@ -22,19 +27,19 @@ the model sees them, and keeps the full text on disk so nothing is lost. File co
 `cat`, ...) and plain text such as subagent replies are shown in full by default.
 
 ## Running the CLI
-Run the plugin's bundled CLI, exactly `python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>`:
-it is the plugin's own version, the one its hooks use. Only if that cannot run (no `python3`, or
-the file is missing), run `token-sparen <args>` (same arguments; it may be another version). If
-neither runs, reply that token-sparen works in Claude Code only and run nothing else. Below,
-`token-sparen <args>` means whichever ran. Pre-approved: `stats`, `show`, `doctor`, `session disable`,
-`prune restore <tool>` (when you need a tool the session-start line lists as pruned). Others
-(`statusline install`, `config set`, `prune enable`, ...) get the permission prompt: only when asked.
+Run the plugin's bundled CLI, exactly `python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py" <args>`
+(on Windows `py -3 -I`, else `python -I`, in place of `python3 -I`): it is the plugin's own
+version, the one its hooks use. Only if that cannot run (no Python, or the file is missing), run
+`token-sparen <args>` (same arguments; it may be another version). If neither runs, reply that
+token-sparen works in Claude Code only and run nothing else. Below, `token-sparen <args>` means
+whichever ran. Pre-approved: `stats`, `show`, `doctor`, `session disable`, `prune restore <tool>`
+(when you need a tool the session-start line lists as pruned). Others (`statusline install`,
+`config set`, `prune enable`, ...) get the permission prompt: only when asked.
 
 ## /token-sparen
 Argument given: `$ARGUMENTS`. Follow these steps only when the user explicitly typed
 `/token-sparen`; if this skill was loaded for a question (e.g. how to recover a trimmed output),
-answer from the sections below; do not run `stats` (run `token-sparen show <id>` only if the
-user needs the full output).
+answer from the sections below; do not run `stats` (`token-sparen show <id>` only if needed).
 1. `/token-sparen` with no argument, or `stats`: run
    `token-sparen stats --session ${CLAUDE_SESSION_ID}` and summarise net tokens saved (gross
    minus recovery reads minus injected tokens) and trims in two or three lines, then give the
@@ -48,10 +53,10 @@ user needs the full output).
 4. Anything else: run `token-sparen doctor` and report any failing check.
 
 ## Markers and recovery
-A trimmed output ends with:
+A trimmed output ends with (the bundled CLI in place of `token-sparen` if that is not installed):
 `[token-sparen: kept X of Y lines · full output: <path> · `token-sparen show <id>`]`
 - Error lines, failures and stack-trace edges are never elided.
-- To see everything, run `token-sparen show <id>` (12 hex characters), or read the `<path>` file.
+- To see everything, run the marker's command as written (12 hex id), or read the `<path>` file.
 - Recover only what you need. Full outputs live in `<project>/.token-sparen/outputs/` (14 days).
 
 ## Commands
@@ -70,7 +75,7 @@ A trimmed output ends with:
 - Everywhere: `TOKEN_SPAREN_DISABLE=1` where Claude Code starts, or `claude plugin disable token-sparen`.
 - All trimming: `[learn.hold] compression = true` in `~/.token-sparen/config.toml` (one session:
   `token-sparen config set learn.hold.compression true --session ${CLAUDE_SESSION_ID}`) or
-  `[compression] allow_ctypes = []`. Read pointers: `[learn.hold] read_dedupe = true`.
+  `[compression] allow_ctypes = []`. Read pointers are off unless the user opted in.
 - Change config only when the user asks. Needs Claude Code >= 2.1.121.
 
 ## Configuration

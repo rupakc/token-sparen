@@ -81,6 +81,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from token_sparen import recovery
 from token_sparen.config import Config, flag, log_error, state_home, user_config
 from token_sparen.emit import Gate
 from token_sparen.estimate import estimate_tokens
@@ -153,7 +154,8 @@ class DenyWriter(Protocol):
 
     def exposure(self, project_dir: Path) -> str | None:
         """None only when the settings file is confirmed untracked and ignored; otherwise why
-        it is exposed (``"tracked"``, ``"unignored"``, ``"unknown"``): never written."""
+        it is exposed (``"tracked"``, ``"unignored"``, ``"backup"``, ``"unknown"``): never
+        written."""
         ...
 
     def add(
@@ -368,6 +370,15 @@ def _file(doc: dict[str, Any], fkey: str, project_dir: Path) -> dict[str, Any]:
 def owned_in(doc: Mapping[str, Any], fkey: str) -> list[str]:
     entry = _files(doc).get(fkey)
     return _strs(entry.get("owned")) if isinstance(entry, dict) else []
+
+
+def known_in(doc: Mapping[str, Any], fkey: str) -> set[str]:
+    """Rules the registry records for this settings file: ours (owned) and the user's
+    (foreign)."""
+    entry = _files(doc).get(fkey)
+    if not isinstance(entry, dict):
+        return set()
+    return set(_strs(entry.get("owned"))) | set(_strs(entry.get("foreign")))
 
 
 def all_owned(doc: Mapping[str, Any]) -> list[str]:
@@ -891,6 +902,12 @@ def _exposure_notice(exposure: str, target: Path) -> str:
             f"token-sparen: {target} is not covered by .gitignore, so tool pruning did not "
             "write it (its rules could be committed); add it to .gitignore to allow it."
         )
+    if exposure == "backup":
+        return (
+            f"token-sparen: git does not ignore .token-sparen/ next to {target}, where tool "
+            "pruning keeps the settings backup, so it did not write it (the backup could be "
+            "committed); add .token-sparen/ to .gitignore to allow it."
+        )
     return (
         f"token-sparen: git could not confirm that {target} is untracked and ignored (not a "
         "git work tree, or git missing, failing or too slow), so tool pruning did not write it."
@@ -1175,7 +1192,7 @@ def cli_command(env: Mapping[str, str]) -> str:
     """The CLI as the user can run it: the plugin's own launcher when the plugin root is known
     (a plugin-only install has no ``token-sparen`` on PATH), else ``token-sparen``."""
     root = env.get("CLAUDE_PLUGIN_ROOT")
-    return f'python3 -I "{root}/hooks/run_cli.py"' if root else "token-sparen"
+    return f'{recovery.hook_python()} -I "{root}/hooks/run_cli.py"' if root else "token-sparen"
 
 
 def status_lines(

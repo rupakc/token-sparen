@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from collections.abc import Mapping
@@ -10,7 +11,7 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
-from userconf import to_user_config
+from userconf import to_user_config, write_user_config
 
 from token_sparen.config import Config, load_config
 from token_sparen.events import Event, EventKind, ToolCall
@@ -33,6 +34,30 @@ def _env(tmp_path: Path, **over: str) -> dict[str, str]:
 
 def _cfg(tmp_path: Path, **over: str) -> Config:
     return load_config(tmp_path / "proj", _env(tmp_path, **over))
+
+
+@pytest.fixture(autouse=True)
+def _opted_in(tmp_path: Path) -> None:
+    """Read de-dupe is off by default since v1.0 (ruling on M13): these tests opt in the only
+    way a user can, in their own config.toml."""
+    write_user_config(tmp_path / "home", {"read_dedupe": {"enabled": True}})
+
+
+@pytest.mark.env_drop_expected
+def test_off_by_default_and_only_the_user_file_opts_in(tmp_path: Path) -> None:
+    path = _file(tmp_path)
+    (tmp_path / "home" / "config.toml").unlink()
+    _read(tmp_path, path)
+    assert _read(tmp_path, path).is_noop()  # default: off, nothing recorded or decided
+    assert _decisions(tmp_path) == [] and "reads" not in _overlay(tmp_path)
+    (tmp_path / "proj" / "token-sparen.toml").write_text(
+        "[read_dedupe]\nenabled = true\n", encoding="utf-8"
+    )
+    raw = {"TOKEN_SPAREN_HOME": str(tmp_path / "home"), "TOKEN_SPAREN_READ_DEDUPE__ENABLED": "true"}
+    env_cfg = load_config(tmp_path / "proj", raw)  # a widening env var is ignored, not opted in
+    assert _read(tmp_path, path, cfg=env_cfg).is_noop()
+    assert _read(tmp_path, path).is_noop()
+    assert _decisions(tmp_path) == []
 
 
 def _content(lines: int = 1500) -> str:
@@ -193,8 +218,10 @@ def test_read_dedupe_full_after_compact(tmp_path: Path) -> None:
     assert _read(tmp_path, path).replace_output == POINTER.format(n=2)
 
 
-@pytest.mark.parametrize("source", ["compact", "clear"])
+@pytest.mark.parametrize("source", ["compact", "clear", "resume", "fork"])
 def test_session_start_compact_or_clear_resets(tmp_path: Path, source: str) -> None:
+    """v1 review M13: a resumed or forked conversation may come back with older tool results
+    cleared, so it starts a new context epoch like /clear and compaction."""
     path = _file(tmp_path)
     env = _env(tmp_path)
     _read(tmp_path, path)
@@ -204,13 +231,72 @@ def test_session_start_compact_or_clear_resets(tmp_path: Path, source: str) -> N
     assert _read(tmp_path, path).is_noop()
 
 
-@pytest.mark.parametrize("source", ["startup", "resume", None])
+@pytest.mark.parametrize("source", ["startup", None])
 def test_session_start_other_sources_keep_table(tmp_path: Path, source: str | None) -> None:
     path = _file(tmp_path)
     _read(tmp_path, path)
     extra = {} if source is None else {"source": source}
     read_dedupe.on_session_start(_event(tmp_path, "session_start", extra=extra))
     assert _read(tmp_path, path).replace_output is not None
+
+
+def _say(tmp_path: Path, prompt: str) -> None:
+    ev = dataclasses.replace(_event(tmp_path, "prompt"), prompt=prompt)
+    tracking.handle_prompt(ev, _cfg(tmp_path), env=_env(tmp_path))
+
+
+def test_resent_earlier_prompt_starts_a_new_epoch(tmp_path: Path) -> None:
+    """v1 review M13: /rewind (restore conversation, summarize from here) fires no hook, but it
+    puts the earlier prompt back into the input; sending it again means the reads after it may be
+    gone from context, so no pointer may refer to a read from before."""
+    path = _file(tmp_path)
+    _say(tmp_path, "fix the parser for nested lists")  # turn 1
+    _read(tmp_path, path)
+    _say(tmp_path, "now add tests for it")  # turn 2
+    _read(tmp_path, path, arms={"read_dedupe": "off"})
+    _say(tmp_path, "fix the parser for nested lists")  # turn 3: rewound and re-sent
+    assert _read(tmp_path, path).is_noop()  # the turn-1 read may no longer be in context
+    assert _read(tmp_path, path).replace_output == POINTER.format(n=3)  # same epoch again
+
+
+def test_new_prompts_keep_the_epoch(tmp_path: Path) -> None:
+    path = _file(tmp_path)
+    _say(tmp_path, "fix the parser for nested lists")
+    _read(tmp_path, path)
+    _say(tmp_path, "now add tests for it")
+    assert _read(tmp_path, path).replace_output == POINTER.format(n=1)
+
+
+def test_read_older_than_max_age_never_pointed(tmp_path: Path) -> None:
+    """v1 review M13: the host may clear old tool results after an idle gap (no hook fires), so
+    a read older than ``MAX_AGE_S`` is delivered in full."""
+    path = _file(tmp_path)
+    _prompt(tmp_path)
+    _read(tmp_path, path)
+    sp = session.session_path(tmp_path / "home", KEY, "s-1")
+
+    def age(state: dict[str, Any]) -> dict[str, Any]:
+        for entry in state["reads"].values():
+            entry["ts"] -= read_dedupe.MAX_AGE_S + 1
+        return state
+
+    session.update_session(sp, age)
+    assert _read(tmp_path, path).is_noop()
+    assert _read(tmp_path, path).replace_output == POINTER.format(n=1)  # refreshed entry
+
+
+def test_entry_without_timestamp_never_pointed(tmp_path: Path) -> None:
+    path = _file(tmp_path)
+    _read(tmp_path, path)
+    sp = session.session_path(tmp_path / "home", KEY, "s-1")
+
+    def drop(state: dict[str, Any]) -> dict[str, Any]:
+        for entry in state["reads"].values():
+            entry.pop("ts", None)
+        return state
+
+    session.update_session(sp, drop)
+    assert _read(tmp_path, path).is_noop()
 
 
 def test_stale_entry_before_compact_turn_ignored(tmp_path: Path) -> None:

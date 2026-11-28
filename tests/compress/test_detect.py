@@ -132,6 +132,20 @@ def test_hint_wins_over_content() -> None:
     assert detect(PLAIN, ToolCall("Grep", "search", {"pattern": "x"}, None)) == "search"
 
 
+@pytest.mark.parametrize("name", ["Agent", "Task"])
+def test_agent_report_is_never_search(name: str) -> None:
+    """v1 review M11: a subagent's report listing call sites is the main agent's only view of the
+    work, so it is never classified (and cut) as search output, even when its input names a
+    search command."""
+    report = "\n".join(f"src/mod_{i}.py:{i + 3}: call_site_{i}(old_api)" for i in range(240))
+    assert sniff(report) == "search"  # the content alone looks like grep output
+    for tool_input in ({"prompt": "find every call site"}, {"command": "rg old_api"}):
+        tool = ToolCall(name=name, category="agent", input=tool_input, use_id="u1")
+        assert detect(report, tool) == "text"
+    other = FIXTURES["test_report"]
+    assert detect(other, ToolCall(name, "agent", {"prompt": "x"}, None)) == "test_report"
+
+
 def test_no_hint_falls_back_to_sniffing() -> None:
     assert detect(FIXTURES["table"], _shell("ls")) == "table"
     assert detect(FIXTURES["table"], ToolCall("Read", "read", {"file_path": "a"}, None)) == "table"

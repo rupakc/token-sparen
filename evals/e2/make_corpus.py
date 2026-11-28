@@ -415,6 +415,56 @@ def test_cases():
         ],
         command="pytest -q",
     )
+    # v1 review M12: one failure among 400 passes with a long assertion diff; the "Full diff"
+    # lines are what the agent needs to fix the test, so they stay inline.
+    t = pytest_report(33, 16, [], verbose=True).splitlines()
+    cut = t.index(
+        "=================================== FAILURES ==================================="
+    )
+    t[cut - 1 : cut - 1] = ["tests/test_orders.py::test_order_totals FAILED [ 99%]"]
+    cut += 1
+    diff = ["E       AssertionError: assert {'id': 1, ...} == {'id': 1, ...}", "E         "]
+    diff += ["E         Omitting 4 identical items, use -vv to show", "E         Differing items:"]
+    diff += [
+        f"E         {{'line_{k}': {k * 10}}} != {{'line_{k}': {k * 10 + 1}}}" for k in range(12)
+    ]
+    diff += ["E         ", "E         Full diff:", "E           {"]
+    for k in range(12):
+        diff += [
+            f"E         -     'line_{k}': {k * 10 + 1},",
+            f"E         +     'line_{k}': {k * 10},",
+        ]
+    diff += [
+        "E         -     'currency': 'EUR',",
+        "E         +     'currency': 'eur',",
+        "E           }",
+    ]
+    t[cut + 1 : cut + 1] = [
+        "_______ test_order_totals _______",
+        "",
+        "    def test_order_totals():",
+        "        got = totals(load_orders())",
+        ">       assert got == EXPECTED",
+        *diff,
+        "",
+        "tests/test_orders.py:41: AssertionError",
+    ]
+    t.insert(-1, "FAILED tests/test_orders.py::test_order_totals - AssertionError: assert {...")
+    t[-1] = t[-1].replace("0 failed, 400 passed", "1 failed, 400 passed")
+    m12 = [
+        "E         +     'currency': 'eur',",
+        "E         -     'line_11': 111,",
+        "E         +     'line_11': 110,",
+        ">       assert got == EXPECTED",
+    ]
+    add(
+        "pytest_assert_diff.txt",
+        "\n".join(t) + "\n",
+        ["test_report"],
+        [*m12, "1 failed, 400 passed"],
+        must_inline=m12,
+        command="pytest -v",
+    )
     # error buried mid-output (sniffed, no command)
     t = pytest_report(32, 25, [], verbose=True).splitlines()
     mid = len(t) // 2
@@ -794,6 +844,50 @@ def build_cases():
         ],
         command="./gradlew build",
     )
+    # v1 review M10: a build that exits 0 (piped through tee) with failures worded outside
+    # the error/fail vocabulary in the middle; each must stay inline.
+    b = []
+    for i in range(1, 13):
+        b.append(f"#{i} [{i}/14] RUN step-{i}")
+        b += [
+            f"#{i} {j * 0.2:.1f} fetched chunk {j} of layer {i} ({j * 37} kB) from registry mirror"
+            for j in range(22)
+        ]
+        b.append(f"#{i} DONE 2.{i}s")
+        if i == 3:
+            b.append("#3 1.9 npm ERR! code ELIFECYCLE")
+        if i == 5:
+            b.append("#5 3.2 /bin/sh: line 1:   812 Segmentation fault (core dumped) ./gen-assets")
+        if i == 7:
+            b.append("#7 4.4 /bin/sh: line 1:   977 Killed                  node build.js")
+        if i == 9:
+            b.append("#9 0.7 cp: cannot create regular file '/opt/app/bin/tool': Permission denied")
+        if i == 10:
+            b.append("#10 0.9 npm WARN checkPermissions code EACCES path /usr/lib/node_modules")
+        if i == 11:
+            b.append(
+                "#11 0.5 /usr/bin/ld: main.o: in function `main': undefined reference to `vec_push'"
+            )
+        if i == 12:
+            b.append("#12 0.1 /bin/sh: 1: cargo: command not found")
+    b += ["#14 exporting to image", "#14 naming to example.org/app:dev done", "#14 DONE 0.4s"]
+    m10 = [
+        "#3 1.9 npm ERR! code ELIFECYCLE",
+        "Segmentation fault (core dumped) ./gen-assets",
+        "977 Killed                  node build.js",
+        "cp: cannot create regular file '/opt/app/bin/tool': Permission denied",
+        "npm WARN checkPermissions code EACCES path /usr/lib/node_modules",
+        "undefined reference to `vec_push'",
+        "/bin/sh: 1: cargo: command not found",
+    ]
+    add(
+        "build_silent_failures.txt",
+        "\n".join(b) + "\n",
+        ["build_log"],
+        m10,
+        must_inline=m10,
+        command="docker build . 2>&1 | tee build.log",
+    )
 
 
 # ------------------------------------------------------------------ search
@@ -1015,6 +1109,17 @@ def log_cases():
         ["log"],
         ["Killed process 4412 (java)", "app.service: Failed with result 'oom-kill'."],
         must_inline=["app.service: Failed with result 'oom-kill'."],
+    )
+    L = [
+        line(i, "INFO", f"sync batch {i} copied 40 files to share nas01/builds") for i in range(300)
+    ]
+    L.insert(150, "robocopy: copying C:\\build\\out\\app.dll: Access is denied.")
+    add(
+        "log_windows_denied.txt",
+        "\n".join(L) + "\n",
+        ["log"],
+        ["robocopy: copying C:\\build\\out\\app.dll: Access is denied."],
+        must_inline=["robocopy: copying C:\\build\\out\\app.dll: Access is denied."],
     )
 
 

@@ -153,24 +153,20 @@ def _big() -> str:
     return "\n".join(f"step {i}: scanned module_{i}.py, nothing relevant" for i in range(3000))
 
 
-def test_oversized_agent_string_result_is_compressed(tmp_path: Path) -> None:
-    out = _agent_post(tmp_path, _big())
-    new = out["hookSpecificOutput"]["updatedToolOutput"]
-    assert isinstance(new, str) and len(new) < len(_big())
-    assert "[token-sparen: kept" in new and "full output:" in new
+def test_oversized_agent_string_result_is_never_compressed(tmp_path: Path) -> None:
+    """v1 review I1: a subagent's report is never trimmed by a generic compressor, even with
+    plain text allowed."""
+    assert _agent_post(tmp_path, _big()) == {}
 
 
 def test_agent_plain_text_result_untouched_by_default(tmp_path: Path) -> None:
     assert _agent_post(tmp_path, _big(), widen=False) == {}
 
 
-def test_agent_structured_result_is_compressed(tmp_path: Path) -> None:
-    # Claude Code's documented Agent result object: content text blocks are compressed
+def test_agent_structured_result_is_never_compressed(tmp_path: Path) -> None:
+    # Claude Code's documented Agent result object: its text blocks stay whole too (I1)
     resp = {"content": [{"type": "text", "text": _big()}], "totalDurationMs": 5}
-    new = _agent_post(tmp_path, resp)["hookSpecificOutput"]["updatedToolOutput"]
-    assert new["totalDurationMs"] == 5
-    (block,) = new["content"]
-    assert len(block["text"]) < len(_big()) and "[token-sparen: kept" in block["text"]
+    assert _agent_post(tmp_path, resp) == {}
 
 
 def test_agent_result_with_non_text_block_is_left_untouched(tmp_path: Path) -> None:

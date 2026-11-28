@@ -86,7 +86,10 @@ pretrim_head = 10
 # pretrim_bounded_keep_ratio = 0.35
 
 [read_dedupe]
-enabled = true
+# Off by default (owner ruling 2026-11-28, v1 review M13): a /rewind with an edited prompt cannot
+# be detected, so a pointer could refer to content no longer in context. Opt in from your own
+# ~/.token-sparen/config.toml; a project file or TOKEN_SPAREN_* may only keep it off.
+enabled = false
 min_tokens = 2000  # never below 2000 (invariant: smaller outputs are never modified)
 max_entries = 200  # reads remembered per session (oldest dropped first)
 max_turn_gap = 8  # pointer only if the earlier read is at most this many turns old

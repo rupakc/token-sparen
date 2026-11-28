@@ -550,27 +550,42 @@ def _host_platform() -> str:
     return sys.platform
 
 
-def python3_missing_hint(platform: str, which: Callable[[str], str | None] | None = None) -> str:
-    """Why ``python3`` matters and, on Windows, what to use instead for the CLI."""
+def hook_interpreter(
+    platform: str, which: Callable[[str], str | None] | None = None
+) -> list[str] | None:
+    """The interpreter command hooks.json starts on ``platform`` (resolved on PATH), or None.
+    Windows (Git Bash): the ``py`` launcher with ``-3``, else ``python``, else ``python3`` (a bare
+    ``python3`` there is often missing or the Store alias stub, v1 review M9); elsewhere
+    ``python3``."""
     which = shutil.which if which is None else which
-    text = "python3 not found on PATH; hooks run python3"
+    names: tuple[tuple[str, ...], ...] = (
+        (("py", "-3"), ("python",), ("python3",)) if platform == "win32" else (("python3",),)
+    )
+    for name, *rest in names:
+        path = which(name)
+        if path is not None:
+            return [path, *rest]
+    return None
+
+
+def _hook_label(argv: list[str]) -> str:
+    return " ".join([Path(argv[0]).stem, *argv[1:]])
+
+
+def python3_missing_hint(platform: str) -> str:
+    """Why no hook interpreter matters and what to install."""
     if platform != "win32":
-        return text
-    if which("py") is not None:
-        other = "py -3"
-    elif which("python") is not None:
-        other = "python"
-    else:
-        return f"{text}. Install Python >= 3.11 (python.org or the Microsoft Store) with PATH set"
+        return "python3 not found on PATH; hooks run python3"
     return (
-        f"{text}. `{other}` exists: run the CLI as `{other} -m token_sparen`, and make `python3` "
-        "resolve (Microsoft Store Python provides it) so the hooks can start"
+        "no py, python or python3 on PATH; on Windows the hooks run `py -3` (the Python "
+        "launcher), else `python`. Install Python >= 3.11 from python.org (it includes `py`) "
+        "and restart Claude Code"
     )
 
 
 def _round_trip(root: Path) -> tuple[bool, str]:
-    py = shutil.which("python3")
-    if py is None:
+    interp = hook_interpreter(_host_platform())
+    if interp is None:
         return False, python3_missing_hint(_host_platform())
     with tempfile.TemporaryDirectory(prefix="token-sparen-doctor-") as tmp:
         project = Path(tmp) / "proj"
@@ -598,7 +613,7 @@ def _round_trip(root: Path) -> tuple[bool, str]:
         )
         try:
             proc = subprocess.run(  # noqa: S603
-                [py, "-I", str(root / "hooks" / "run.py"), "PostToolUse"],
+                [*interp, "-I", str(root / "hooks" / "run.py"), "PostToolUse"],
                 input=_fake_pytest_payload(project),
                 capture_output=True,
                 text=True,
@@ -643,16 +658,17 @@ def _load_pyfind(root: Path) -> ModuleType | None:
 
 
 def _python3_version(pyfind: ModuleType | None = None) -> tuple[int, int] | None:
-    """Version of the ``python3`` on PATH (the one hooks.json starts), via ``_pyfind.probe``."""
-    py = shutil.which("python3")
-    if py is None:
+    """Version of the interpreter hooks.json starts here (``hook_interpreter``), via
+    ``_pyfind.probe``."""
+    interp = hook_interpreter(_host_platform())
+    if interp is None:
         return None
     if pyfind is not None:
-        got = pyfind.probe([py])
+        got = pyfind.probe(interp)
         return None if got is None else (int(got[0]), int(got[1]))
     try:
         out = subprocess.run(  # noqa: S603
-            [py, "-c", "import sys;print(sys.version_info[0], sys.version_info[1])"],
+            [*interp, "-c", "import sys;print(sys.version_info[0], sys.version_info[1])"],
             capture_output=True,
             text=True,
             timeout=20,
@@ -716,27 +732,29 @@ def version_skew(
 
 
 def _hook_python(env: Mapping[str, str], root: Path) -> tuple[str, str]:
-    """(mark, detail) for the interpreter the hooks actually run: ``python3`` itself when it is
-    >= 3.11, else what the launcher would re-launch on (searched fresh, not from the cache)."""
-    py = shutil.which("python3")
-    if py is None:
+    """(mark, detail) for the interpreter the hooks actually run (``hook_interpreter``): itself
+    when it is >= 3.11, else what the launcher would re-launch on (searched fresh, not from the
+    cache)."""
+    interp = hook_interpreter(_host_platform())
+    if interp is None:
         return _WARN, python3_missing_hint(_host_platform())
+    py, name = interp[0], _hook_label(interp)
     pyfind = _load_pyfind(root)
     ver = _python3_version(pyfind)
     if ver is None:
         return _WARN, f"{py} did not report its version"
     shown = f"{ver[0]}.{ver[1]}"
     if ver >= (3, 11):
-        return _OK, f"python3 {shown} at {py} (hooks run it directly)"
+        return _OK, f"{name} {shown} at {py} (hooks run it directly)"
     if pyfind is None:
-        return _WARN, f"python3 is {shown} < 3.11 and hooks/_pyfind.py is missing"
+        return _WARN, f"{name} is {shown} < 3.11 and hooks/_pyfind.py is missing"
     found = pyfind.find_python(dict(env), ver, self_exe=py, root=str(root), use_cache=False)
     if found is None:
         return _BAD, (
-            f"python3 is {shown} and no Python >= 3.11 was found, so the hooks do nothing. "
+            f"{name} is {shown} and no Python >= 3.11 was found, so the hooks do nothing. "
             "Install Python 3.11 or newer, or set TOKEN_SPAREN_PYTHON to its path"
         )
-    return _OK, f"{found[0]} (found via {found[1]}; python3 is {shown}, hooks re-launch on it)"
+    return _OK, f"{found[0]} (found via {found[1]}; {name} is {shown}, hooks re-launch on it)"
 
 
 def _doctor(args: argparse.Namespace) -> int:
@@ -782,6 +800,9 @@ def _doctor(args: argparse.Namespace) -> int:
         add(_OK if good else _BAD, "hook round-trip", detail)
     if sys.platform == "win32":
         add(_OK, "statusline", "launcher not supported on Windows yet (skipped)")
+    orphans = _orphan_deny_rules(env)
+    if orphans is not None:
+        add(_WARN, "tool pruning", orphans)
     try:
         leftovers = [p for p in home.rglob("*.tmp-*") if p.is_file()]
     except OSError:
@@ -798,6 +819,40 @@ def _doctor(args: argparse.Namespace) -> int:
     for mark, name, detail in results:
         print(f"{mark} {name}: {detail}")
     return 1 if any(m == _BAD for m, _, _ in results) else 0
+
+
+def _orphan_deny_rules(env: Mapping[str, str]) -> str | None:
+    """A warning when this project's ``.claude/settings.local.json`` holds deny rules that tool
+    pruning can be shown to have added (in its format and absent from the backup it took before
+    its first rule) but that the ownership registry does not know (v1 review M6: deleting the
+    state root drops the registry, so nothing would restore them), else None. Without that
+    backup nothing is attributable, so nothing is said (v1 review I2); rules are only listed."""
+    from token_sparen.adapters.claude import settings
+    from token_sparen.mechanisms import prune
+
+    try:
+        project = _prune_project(argparse.Namespace(project=None))
+        target = settings.local_settings_path(project)
+        if not settings.has_backup(target):
+            return None  # tool pruning never wrote here (or left no trace): nothing to attribute
+        candidates, why = settings.downgrade_candidates(project)
+        if why is not None or not candidates:
+            return None
+        key = keycache.cached_project_key(project, env)
+        doc = prune.read_doc(state_home(env), key, env, checkout=project)
+        known = prune.known_in(doc, prune.file_key(target))
+    except Exception:  # noqa: BLE001 - a newer or broken registry: prune status explains it
+        return None
+    orphans = [r for r in candidates if r not in known]
+    if not orphans:
+        return None
+    listed = ", ".join(json.dumps(r) for r in orphans)
+    return (
+        f"{target} denies {listed}, added after tool pruning's backup of it, but no "
+        "ownership record for them exists (was ~/.token-sparen deleted?), so they are never "
+        'restored automatically; unless you added them yourself, remove them from "permissions".'
+        '"deny" by hand'
+    )
 
 
 def _launcher_path() -> Path:
@@ -1298,7 +1353,7 @@ def _prune_cmd(args: argparse.Namespace) -> int:
         print(
             "token-sparen prune: enabled for this project (opt-in). MCP servers available but "
             f"never used across enough sessions will be denied in {target} (backed up once to "
-            f"{target.name}{settings.BACKUP_SUFFIX}), only while the project is idle; savings "
+            f"{settings.backup_path(target)}), only while the project is idle; savings "
             "are modest (their tool names and server instructions). Undo with "
             "`token-sparen prune restore <tool>`, `restore --all` or `prune disable`."
         )
@@ -1319,6 +1374,7 @@ def _prune_cmd(args: argparse.Namespace) -> int:
             why = {
                 "tracked": "it is tracked by git",
                 "unignored": "it is not covered by .gitignore",
+                "backup": "git does not ignore .token-sparen/, where its backup is kept",
             }.get(exposure, "git cannot confirm it is untracked and ignored")
             print(f"warning: nothing will be written to {target} while {why}.")
         return 0
@@ -1384,7 +1440,7 @@ def _prune_downgraded(
     if why is not None:
         print(f"token-sparen prune: {why}", file=err)
     elif candidates:
-        backup = target.name + settings.BACKUP_SUFFIX
+        backup = settings.backup_path(target)
         print(
             f'to undo by hand, remove from "permissions"."deny" in {target} the entries '
             f"below that you did not add yourself (they are not in {backup}):",

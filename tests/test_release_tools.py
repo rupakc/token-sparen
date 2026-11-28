@@ -10,6 +10,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -1083,7 +1084,9 @@ def _hook_argv(tree: Path, event: str) -> list[str]:
     """The hooks.json command for ``event`` as Claude Code runs it (plugin root expanded)."""
     hooks = json.loads((tree / "hooks" / "hooks.json").read_text("utf-8"))["hooks"]
     command = hooks[event][0]["hooks"][0]["command"]
-    argv = shlex.split(command.replace("${CLAUDE_PLUGIN_ROOT}", tree.as_posix()))
+    posix = re.search(r'python3 -I "[^"]+" \w+', command)  # the POSIX clause (not Windows)
+    assert posix is not None, command
+    argv = shlex.split(posix.group(0).replace("${CLAUDE_PLUGIN_ROOT}", tree.as_posix()))
     assert argv[0] == "python3"
     return [sys.executable, *argv[1:]]
 

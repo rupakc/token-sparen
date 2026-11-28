@@ -7,6 +7,7 @@ import hashlib
 import os
 import re
 import secrets
+import shutil
 import stat
 import time
 from collections.abc import Mapping
@@ -90,6 +91,20 @@ def _create_once(path: Path, data: str) -> None:
     fd = os.open(path, flags, 0o600)
     with os.fdopen(fd, "wb") as fh:
         fh.write(data.encode("utf-8"))
+
+
+def private_root(project_dir: Path) -> Path:
+    """``<project>/.token-sparen`` as a real private directory holding its ``*`` .gitignore
+    (created once; an existing entry is left alone). OSError when it is a link. Callers that
+    put user data there confirm with git that it is ignored (a repository may commit its own
+    ``.gitignore`` there)."""
+    root = _root(project_dir)
+    _refuse_links(root)
+    private_mkdir(root)
+    _real_dirs(root)
+    with contextlib.suppress(OSError):
+        _create_once(root / ".gitignore", "*\n")
+    return root
 
 
 def registry_dir(project_dir: Path, env: Mapping[str, str]) -> Path:
@@ -197,13 +212,42 @@ def read_full(project_dir: Path, rid: str, env: Mapping[str, str] | None = None)
         return None
 
 
+_SHOW_COMMAND: str | None = None  # resolved once per process (``show_command``)
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def show_command() -> str:
+    """The CLI the marker tells the agent to run: ``token-sparen`` when that console script is
+    on PATH, else the plugin's bundled CLI with the interpreter the hooks use on this platform
+    (``python3``; Windows ``py -3``, else ``python``). v1 review M7: a plugin-only install has no
+    console script, and a failed ``token-sparen show`` costs the agent a round trip."""
+    global _SHOW_COMMAND
+    if _SHOW_COMMAND is None:
+        _SHOW_COMMAND = "token-sparen"
+        bundled = Path(__file__).resolve().parent.parent / "hooks" / "run_cli.py"
+        if shutil.which("token-sparen") is None and bundled.is_file():
+            _SHOW_COMMAND = f'{hook_python()} -I "{bundled.as_posix()}"'
+    return _SHOW_COMMAND
+
+
+def hook_python() -> str:
+    """The interpreter command hooks.json starts on this platform, for commands shown to the
+    user or the agent: ``python3``; on Windows the ``py -3`` launcher, else ``python``."""
+    if _is_windows():
+        return "py -3" if shutil.which("py") is not None else "python"
+    return "python3"
+
+
 def marker(kept_lines: int, total_lines: int, ref: RecoveryRef) -> str:
     """The elision marker; the path's directories are resolved, never the file itself (a link
     there must not point the agent elsewhere)."""
     where = ref.path.parent.resolve() / ref.path.name
     return (
         f"[token-sparen: kept {kept_lines} of {total_lines} lines · "
-        f"full output: {where} · `token-sparen show {ref.id}`]"
+        f"full output: {where} · `{show_command()} show {ref.id}`]"
     )
 
 

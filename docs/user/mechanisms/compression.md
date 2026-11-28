@@ -12,7 +12,7 @@ When a tool result is at least 2000 estimated tokens and is one of the allowed k
 
 ## What is shown in full by default
 
-File contents: the Read tool; any tool (MCP included) whose name says it reads a file (`read_file`, `ReadFile`, `get_file_contents`, `file_read`, `read_text`, `cat_file`, `view_file`, `open_file`); and any shell or PowerShell command with a part that prints a file, wherever it sits in a chain, pipe or loop (`cat`, `head`, `tail`, `sed -n`, `less`, `bat`, `nl`, `awk`, `jq <file>`, `xxd`, `git show <rev>:<path>`, `Get-Content`, and similar, also inside `$(...)`, `eval`, `ssh` or `docker exec` wrappers, and any command whose stdin is redirected from a file). Plain text, tables and stack traces from any tool (Agent/Task and web results included) are also shown in full and never reach the learner.
+File contents: the Read tool; any tool (MCP included) whose name says it reads a file (`read_file`, `ReadFile`, `get_file_contents`, `file_read`, `read_text`, `cat_file`, `view_file`, `open_file`); and any shell or PowerShell command with a part that prints a file, wherever it sits in a chain, pipe or loop (`cat`, `head`, `tail`, `sed -n`, `less`, `bat`, `nl`, `awk`, `jq <file>`, `xxd`, `git show <rev>:<path>`, `Get-Content`, and similar, also inside `$(...)`, `eval`, `ssh` or `docker exec` wrappers, and any command whose stdin is redirected from a file). Plain text, tables and stack traces from any tool (web results included) are also shown in full and never reach the learner. A subagent's report (Agent/Task) is never trimmed at all, whatever it looks like (a log, a test run, call sites, JSON), and whatever `allow_ctypes` says: it is the main agent's only view of the subagent's work.
 
 File-content detection is best effort: an unusual binary or wrapper may slip through, and scripts you run (`./x.sh`, `bash x.sh`) are not inspected.
 
@@ -30,7 +30,8 @@ Quality warning: the agent usually goes on to use a file's contents (to edit or 
 
 - **Never larger.** The replacement is used only if it is no longer than what the model would have seen anyway and saves at least 15 % of it.
 - **Floor.** Results below 2000 estimated tokens are never modified; a lower `compression.min_tokens` is ignored and `doctor` flags it, a higher one is honoured.
-- **Errors kept.** Error lines, failures and stack-trace edges are never elided.
+- **Failing tests kept.** In a test report, every failing test keeps its whole assertion detail (pytest `E` lines and the failing source line, expected/received diffs, cargo `left:`/`right:`); only its other lines are capped by `test_report.block_lines`, and passing tests become a count.
+- **Errors kept.** Error lines, failures and stack-trace edges are never elided. Besides `error`, `exception`, `fail`, `fatal`, `panic` and `assert`, this covers `npm ERR!`, `Segmentation fault`/`segfault`, a killed job (`Killed`, `Killed: 9`, `4242 Killed  make`, `Killed process N`), `Permission denied` as a message (after a colon or at the start of a line), `EACCES`, `Access is denied`/`access denied`, `undefined reference` and `command not found`.
 - **Never touched:** edit tools (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`), `TodoWrite`, `AskUserQuestion`, `ExitPlanMode`, images and PDFs, and failing tool calls (Claude Code cannot replace the result of a failed call).
 - **Recoverable.** The marker names the id and path: [Recovering trimmed output](../host-guides/claude-code.md#recovering-trimmed-output).
 - **Fail open.** A hook slower than 400 ms, or any error, leaves the output as is; if the recovery file cannot be saved in time (`compression.save_deadline_ms`) the output is left as is.

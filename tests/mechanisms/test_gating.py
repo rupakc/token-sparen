@@ -187,6 +187,44 @@ def test_plain_text_from_other_tools_untouched(tmp_path: Path, tool: str) -> Non
     _untouched(tmp_path, _event(tmp_path, _tool(tool, {"prompt": "x"}), plain_text()))
 
 
+ALL_TYPES = [
+    "json",
+    "diff",
+    "stacktrace",
+    "test_report",
+    "compiler",
+    "build_log",
+    "search",
+    "pplx",
+    "log",
+    "table",
+    "text",
+]
+
+
+def _agent_log_report(lines: int = 400) -> str:
+    """The review's probe: a subagent report made of log lines (sniffed as ``log``)."""
+    return "\n".join(
+        f"2026-11-28T10:{i // 60 % 60:02d}:{i % 60:02d}Z INFO worker-{i % 7} processed batch {i}"
+        for i in range(lines)
+    )
+
+
+@pytest.mark.parametrize("tool", ["Agent", "Task"])
+@pytest.mark.parametrize("make", [_agent_log_report, big_pytest, big_json, big_diff])
+def test_agent_results_are_never_trimmed(tmp_path: Path, tool: str, make: Any) -> None:
+    """v1 review I1: a subagent's report is the main agent's only view of its work, so no
+    generic compressor trims it, whatever it looks like (log, test report, JSON, diff), even with
+    every content type allowed and the static policy (which always trims an allowed type)."""
+    ev = _event(tmp_path, _tool(tool, {"prompt": "x"}), make())
+    _untouched(tmp_path, ev)
+    wide = _cfg(tmp_path)
+    wide = Config(
+        data={**wide.data, "compression": {**wide.data["compression"], "allow_ctypes": ALL_TYPES}}
+    )
+    _untouched(tmp_path, ev, wide)
+
+
 def test_grep_tool_search_results_allowed(tmp_path: Path) -> None:
     ev = _event(tmp_path, _tool("Grep", {"pattern": "x"}), "x")
     assert compression.gated(ev, "search", _cfg(tmp_path)) is None

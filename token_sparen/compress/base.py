@@ -36,14 +36,35 @@ ENTRY_POINT_GROUP = "token_sparen.compressors"
 ERROR_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"\b(?:errors?|exceptions?|traceback|fail(?:s|ed|ure|ures|ing)?|fatal|panic(?:ked)?"
-        r"|assert(?:ion)?)\b",
+        r"|assert(?:ion)?|segmentation fault|segfault(?:s|ed)?|eacces"
+        r"|access (?:is )?denied|undefined reference|command not found)\b",
         # ASCII-only case folding keeps the byte-level anchor scan exact (no Unicode
         # look-alikes such as U+017F matching "s"); non-ASCII letters count as boundaries,
         # which can only pin more lines, never fewer.
         re.IGNORECASE | re.ASCII,
     ),
     re.compile(r"(?:Error|Exception)\b", re.ASCII),  # CamelCase names: ValueError, IOException
+    re.compile(r"\bERR!", re.ASCII),  # npm ERR! (the npm failure prefix)
+    # A SIGKILLed job in its error-line shapes only (prose such as "Killed the flaky retry" in a
+    # git log is not pinned, v1 review M-a): the shell's bare ``Killed`` / ``Killed: 9``, a job
+    # line ``4242 Killed  make``, the kernel's ``Killed process N`` and ``Killed (signal 9)``.
+    re.compile(
+        r"^\s*Killed(?::\s*\d+)?\s*$|\d\s+Killed(?!\S)|\bKilled process \d|\bKilled \(signal",
+        re.ASCII,
+    ),
+    # ``Permission denied`` as a message after a colon (``cp: x: Permission denied``, ``zsh:
+    # permission denied: ./x``) or at the start of a line (``Permission denied (publickey).``)
+    re.compile(r":\s*permission denied\b|^\s*permission denied\b", re.IGNORECASE | re.ASCII),
     re.compile("✗"),
+)
+
+# Shape-anchored patterns (``Killed``, ``Permission denied``) would need a line-start or
+# whitespace-led byte regex, which defeats the engine's literal-prefix search (a 10 MB output
+# then misses its latency budget). Their literal is scanned instead and each (rare) hit's line
+# is judged by ``is_error_line``: (pattern, scans the lower-cased bytes).
+_VERIFIED_SCANNERS: tuple[tuple[re.Pattern[bytes], bool], ...] = (
+    (re.compile(rb"permission denied"), True),
+    (re.compile(rb"Killed"), False),
 )
 
 
@@ -69,10 +90,18 @@ _LOWER_SCANNERS: tuple[re.Pattern[bytes], ...] = (
     _anchored("fatal"),
     _anchored("panic", "(?:ked)?"),
     _anchored("assert", "(?:ion)?"),
+    _anchored("segmentation fault"),
+    _anchored("segfault", "(?:s|ed)?"),
+    _anchored("eacces"),
+    _anchored("access denied"),
+    _anchored("access is denied"),
+    _anchored("undefined reference"),
+    _anchored("command not found"),
 )
 _RAW_SCANNERS: tuple[re.Pattern[bytes], ...] = (
     re.compile(rb"Error(?![A-Za-z0-9_])"),
     re.compile(rb"Exception(?![A-Za-z0-9_])"),
+    re.compile(rb"ERR!(?<![A-Za-z0-9_]ERR!)"),
     re.compile("✗".encode()),
 )
 
@@ -157,6 +186,25 @@ def error_line_indices(
                 if nxt == -1:
                     break
                 m = pat.search(hay, nxt)
+    for pat, lower in _VERIFIED_SCANNERS:
+        hay = low if lower else data
+        m = pat.search(hay)
+        idx = 0
+        last = 0
+        while m is not None:
+            pos = m.start()
+            idx += hay.count(b"\n", last, pos)
+            last = pos
+            start = data.rfind(b"\n", 0, pos) + 1
+            end = data.find(b"\n", pos)
+            end = len(data) if end == -1 else end
+            if idx not in found and is_error_line(data[start:end].decode("utf-8", "surrogatepass")):
+                found.add(idx)
+                if stop_at is not None and len(found) >= stop_at:
+                    return sorted(found)
+            if end == len(data):
+                break
+            m = pat.search(hay, end)
     return sorted(found)
 
 

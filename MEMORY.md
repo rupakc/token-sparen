@@ -1843,3 +1843,58 @@ and the two new issues they found.
   redacted. Token file opened with O_NOFOLLOW and checked by fstat. `docs/evidence/plan.sha256`
   is checked before the first confirmation run, by the CLI gate and by `bench.anchors
   verify-release` (`--plan-file`, default that path).
+
+## 2026-11-28 v1 cold-review runtime fixes (M5-M7, M9-M13, m-Q4)
+- M5: tool pruning's backup is `<project>/.token-sparen/settings.local.json.token-sparen.bak`
+  (`settings.backup_path`), never next to the settings file; `git_exposure` also needs git to
+  confirm the backup path is ignored (else exposure `backup`: nothing written). A legacy backup
+  next to the file is moved on the next write and still read by `downgrade_candidates`.
+- M6: `doctor` warns (`tool pruning`) when `.claude/settings.local.json` has deny rules in our
+  format that the registry does not know (owned or foreign), i.e. after `rm -r ~/.token-sparen`;
+  listed only, never removed (ruling R-1). Uninstall/Reset docs: `prune restore --all` (+ `prune
+  disable`) and `statusline uninstall` before deleting the state root; bundled-CLI form given.
+- M7: the marker command is `recovery.show_command()`: `token-sparen` if on PATH, else
+  `python3 -I "<plugin>/hooks/run_cli.py"` (Windows `py -3`, else `python`); resolved once per
+  process. `compression._SHOW_ID` accepts either form; regret's `_SHOW` already did.
+- M9: hooks.json runs `hash py.exe 2>&- && exec py.exe -3 -I ...; hash python.exe 2>&- && exec
+  python.exe -I ...; exec python3 -I ...`. Only Windows (Git Bash) has `*.exe` names, so POSIX
+  keeps `python3`; no `$`, `/` outside `${CLAUDE_PLUGIN_ROOT}` (build_claude_tree's check).
+  PowerShell-only Windows (no Git Bash) is unsupported (documented). `cli.hook_interpreter`
+  mirrors the order for doctor.
+- M10: ERROR_PATTERNS add `npm ERR!`, `Killed` (case-sensitive), segmentation fault/segfault,
+  permission denied, EACCES, access (is) denied, undefined reference, command not found; byte
+  scanners mirror them. E2: `build_silent_failures`, `log_windows_denied`.
+- M11: `detect` never returns `search` for an Agent/Task result (category `agent`): `text`.
+- M12: the test-report compressor pins every assertion-detail line of a failing block (pytest `E`
+  and `>` lines, `-`/`+` diff lines, expected/received/actual/left/right labels); E2
+  `pytest_assert_diff`.
+- M13 (host research from the hooks and checkpointing docs, no Claude runs): context signals are
+  SessionStart source startup|resume|clear|compact|fork, PreCompact, PostCompact; `/rewind`
+  (restore conversation, summarize from here) fires no hook but restores the earlier prompt into
+  the input; old tool results may be cleared after an idle gap (third-party analyses, no hook);
+  subagent hooks carry `agent_id`. Ruling applied: pointers only within one context epoch:
+  resume/fork also reset, a re-sent earlier prompt (16-hex hashes in the overlay, last 64)
+  starts a new epoch, and a read older than `read_dedupe.MAX_AGE_S` (30 min) is never pointed
+  at. An edited prompt after a rewind stays undetectable (documented).
+- m-Q4: conftest guards `subprocess.Popen`: an explicit `env` must carry a temporary `HOME`
+  (`USERPROFILE` on Windows), else the test fails.
+- Owner ruling (2026-11-28, on the M13 residual): because a /rewind with an edited prompt cannot be
+  detected, `read_dedupe.enabled` defaults to false in v1.0 (quality first). Opt-in only from the
+  user's `config.toml` (or a session override); a project file or `TOKEN_SPAREN_*` can only keep
+  it off (`false_only`). The epoch logic stays for opted-in users. The skill also pre-approves
+  the Windows `py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"` forms of the same safe
+  subcommands (SKILL.md limit raised to 85 lines for them).
+- v1 fixes B round 2 (2026-11-28 rulings C1, I1, I2, minors): the hook command is
+  `{ command -v cygpath >&2 && ! uname -r | grep -qi microsoft && { py.exe -3 -I … || python.exe -I …; } ||
+  python3 -I …; } || echo {}` (exact text in `tests/hookcmd.py`): `.exe` interpreters only in a
+  Windows shell that ships cygpath (Git Bash, MSYS, Cygwin) and is not WSL; any failure prints
+  the no-op `{}` and exits 0, so a hook never blocks (WSL appends the Windows PATH, where
+  `py.exe` cannot open a Linux path and exits 2). I1: Agent/Task results are never compressed
+  (`compression._skipped`: category `agent`, whatever `allow_ctypes` says). I2: doctor's orphan
+  warning needs tool pruning's backup of the settings file (attribution by backup diff); no
+  backup, no warning. M-a: `Killed` is pinned only in its error-line shapes (bare / `Killed: N`
+  line, `N Killed`, `Killed process N`, `Killed (signal`), `Permission denied` only after a colon
+  or at line start; byte scanners mirror them (fuzzed). E2 `build_silent_failures` also pins
+  `undefined reference` and `command not found`.
+- `command -v`, not `hash`: macOS bash prints `hash: cygpath: not found` even with stderr closed;
+  `command -v` is silent on a miss, so a POSIX hook run has empty stderr (tested).

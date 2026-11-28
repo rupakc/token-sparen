@@ -1,0 +1,298 @@
+#1 [1/14] RUN step-1
+#1 0.0 fetched chunk 0 of layer 1 (0 kB) from registry mirror
+#1 0.2 fetched chunk 1 of layer 1 (37 kB) from registry mirror
+#1 0.4 fetched chunk 2 of layer 1 (74 kB) from registry mirror
+#1 0.6 fetched chunk 3 of layer 1 (111 kB) from registry mirror
+#1 0.8 fetched chunk 4 of layer 1 (148 kB) from registry mirror
+#1 1.0 fetched chunk 5 of layer 1 (185 kB) from registry mirror
+#1 1.2 fetched chunk 6 of layer 1 (222 kB) from registry mirror
+#1 1.4 fetched chunk 7 of layer 1 (259 kB) from registry mirror
+#1 1.6 fetched chunk 8 of layer 1 (296 kB) from registry mirror
+#1 1.8 fetched chunk 9 of layer 1 (333 kB) from registry mirror
+#1 2.0 fetched chunk 10 of layer 1 (370 kB) from registry mirror
+#1 2.2 fetched chunk 11 of layer 1 (407 kB) from registry mirror
+#1 2.4 fetched chunk 12 of layer 1 (444 kB) from registry mirror
+#1 2.6 fetched chunk 13 of layer 1 (481 kB) from registry mirror
+#1 2.8 fetched chunk 14 of layer 1 (518 kB) from registry mirror
+#1 3.0 fetched chunk 15 of layer 1 (555 kB) from registry mirror
+#1 3.2 fetched chunk 16 of layer 1 (592 kB) from registry mirror
+#1 3.4 fetched chunk 17 of layer 1 (629 kB) from registry mirror
+#1 3.6 fetched chunk 18 of layer 1 (666 kB) from registry mirror
+#1 3.8 fetched chunk 19 of layer 1 (703 kB) from registry mirror
+#1 4.0 fetched chunk 20 of layer 1 (740 kB) from registry mirror
+#1 4.2 fetched chunk 21 of layer 1 (777 kB) from registry mirror
+#1 DONE 2.1s
+#2 [2/14] RUN step-2
+#2 0.0 fetched chunk 0 of layer 2 (0 kB) from registry mirror
+#2 0.2 fetched chunk 1 of layer 2 (37 kB) from registry mirror
+#2 0.4 fetched chunk 2 of layer 2 (74 kB) from registry mirror
+#2 0.6 fetched chunk 3 of layer 2 (111 kB) from registry mirror
+#2 0.8 fetched chunk 4 of layer 2 (148 kB) from registry mirror
+#2 1.0 fetched chunk 5 of layer 2 (185 kB) from registry mirror
+#2 1.2 fetched chunk 6 of layer 2 (222 kB) from registry mirror
+#2 1.4 fetched chunk 7 of layer 2 (259 kB) from registry mirror
+#2 1.6 fetched chunk 8 of layer 2 (296 kB) from registry mirror
+#2 1.8 fetched chunk 9 of layer 2 (333 kB) from registry mirror
+#2 2.0 fetched chunk 10 of layer 2 (370 kB) from registry mirror
+#2 2.2 fetched chunk 11 of layer 2 (407 kB) from registry mirror
+#2 2.4 fetched chunk 12 of layer 2 (444 kB) from registry mirror
+#2 2.6 fetched chunk 13 of layer 2 (481 kB) from registry mirror
+#2 2.8 fetched chunk 14 of layer 2 (518 kB) from registry mirror
+#2 3.0 fetched chunk 15 of layer 2 (555 kB) from registry mirror
+#2 3.2 fetched chunk 16 of layer 2 (592 kB) from registry mirror
+#2 3.4 fetched chunk 17 of layer 2 (629 kB) from registry mirror
+#2 3.6 fetched chunk 18 of layer 2 (666 kB) from registry mirror
+#2 3.8 fetched chunk 19 of layer 2 (703 kB) from registry mirror
+#2 4.0 fetched chunk 20 of layer 2 (740 kB) from registry mirror
+#2 4.2 fetched chunk 21 of layer 2 (777 kB) from registry mirror
+#2 DONE 2.2s
+#3 [3/14] RUN step-3
+#3 0.0 fetched chunk 0 of layer 3 (0 kB) from registry mirror
+#3 0.2 fetched chunk 1 of layer 3 (37 kB) from registry mirror
+#3 0.4 fetched chunk 2 of layer 3 (74 kB) from registry mirror
+#3 0.6 fetched chunk 3 of layer 3 (111 kB) from registry mirror
+#3 0.8 fetched chunk 4 of layer 3 (148 kB) from registry mirror
+#3 1.0 fetched chunk 5 of layer 3 (185 kB) from registry mirror
+#3 1.2 fetched chunk 6 of layer 3 (222 kB) from registry mirror
+#3 1.4 fetched chunk 7 of layer 3 (259 kB) from registry mirror
+#3 1.6 fetched chunk 8 of layer 3 (296 kB) from registry mirror
+#3 1.8 fetched chunk 9 of layer 3 (333 kB) from registry mirror
+#3 2.0 fetched chunk 10 of layer 3 (370 kB) from registry mirror
+#3 2.2 fetched chunk 11 of layer 3 (407 kB) from registry mirror
+#3 2.4 fetched chunk 12 of layer 3 (444 kB) from registry mirror
+#3 2.6 fetched chunk 13 of layer 3 (481 kB) from registry mirror
+#3 2.8 fetched chunk 14 of layer 3 (518 kB) from registry mirror
+#3 3.0 fetched chunk 15 of layer 3 (555 kB) from registry mirror
+#3 3.2 fetched chunk 16 of layer 3 (592 kB) from registry mirror
+#3 3.4 fetched chunk 17 of layer 3 (629 kB) from registry mirror
+#3 3.6 fetched chunk 18 of layer 3 (666 kB) from registry mirror
+#3 3.8 fetched chunk 19 of layer 3 (703 kB) from registry mirror
+#3 4.0 fetched chunk 20 of layer 3 (740 kB) from registry mirror
+#3 4.2 fetched chunk 21 of layer 3 (777 kB) from registry mirror
+#3 DONE 2.3s
+#3 1.9 npm ERR! code ELIFECYCLE
+#4 [4/14] RUN step-4
+#4 0.0 fetched chunk 0 of layer 4 (0 kB) from registry mirror
+#4 0.2 fetched chunk 1 of layer 4 (37 kB) from registry mirror
+#4 0.4 fetched chunk 2 of layer 4 (74 kB) from registry mirror
+#4 0.6 fetched chunk 3 of layer 4 (111 kB) from registry mirror
+#4 0.8 fetched chunk 4 of layer 4 (148 kB) from registry mirror
+#4 1.0 fetched chunk 5 of layer 4 (185 kB) from registry mirror
+#4 1.2 fetched chunk 6 of layer 4 (222 kB) from registry mirror
+#4 1.4 fetched chunk 7 of layer 4 (259 kB) from registry mirror
+#4 1.6 fetched chunk 8 of layer 4 (296 kB) from registry mirror
+#4 1.8 fetched chunk 9 of layer 4 (333 kB) from registry mirror
+#4 2.0 fetched chunk 10 of layer 4 (370 kB) from registry mirror
+#4 2.2 fetched chunk 11 of layer 4 (407 kB) from registry mirror
+#4 2.4 fetched chunk 12 of layer 4 (444 kB) from registry mirror
+#4 2.6 fetched chunk 13 of layer 4 (481 kB) from registry mirror
+#4 2.8 fetched chunk 14 of layer 4 (518 kB) from registry mirror
+#4 3.0 fetched chunk 15 of layer 4 (555 kB) from registry mirror
+#4 3.2 fetched chunk 16 of layer 4 (592 kB) from registry mirror
+#4 3.4 fetched chunk 17 of layer 4 (629 kB) from registry mirror
+#4 3.6 fetched chunk 18 of layer 4 (666 kB) from registry mirror
+#4 3.8 fetched chunk 19 of layer 4 (703 kB) from registry mirror
+#4 4.0 fetched chunk 20 of layer 4 (740 kB) from registry mirror
+#4 4.2 fetched chunk 21 of layer 4 (777 kB) from registry mirror
+#4 DONE 2.4s
+#5 [5/14] RUN step-5
+#5 0.0 fetched chunk 0 of layer 5 (0 kB) from registry mirror
+#5 0.2 fetched chunk 1 of layer 5 (37 kB) from registry mirror
+#5 0.4 fetched chunk 2 of layer 5 (74 kB) from registry mirror
+#5 0.6 fetched chunk 3 of layer 5 (111 kB) from registry mirror
+#5 0.8 fetched chunk 4 of layer 5 (148 kB) from registry mirror
+#5 1.0 fetched chunk 5 of layer 5 (185 kB) from registry mirror
+#5 1.2 fetched chunk 6 of layer 5 (222 kB) from registry mirror
+#5 1.4 fetched chunk 7 of layer 5 (259 kB) from registry mirror
+#5 1.6 fetched chunk 8 of layer 5 (296 kB) from registry mirror
+#5 1.8 fetched chunk 9 of layer 5 (333 kB) from registry mirror
+#5 2.0 fetched chunk 10 of layer 5 (370 kB) from registry mirror
+#5 2.2 fetched chunk 11 of layer 5 (407 kB) from registry mirror
+#5 2.4 fetched chunk 12 of layer 5 (444 kB) from registry mirror
+#5 2.6 fetched chunk 13 of layer 5 (481 kB) from registry mirror
+#5 2.8 fetched chunk 14 of layer 5 (518 kB) from registry mirror
+#5 3.0 fetched chunk 15 of layer 5 (555 kB) from registry mirror
+#5 3.2 fetched chunk 16 of layer 5 (592 kB) from registry mirror
+#5 3.4 fetched chunk 17 of layer 5 (629 kB) from registry mirror
+#5 3.6 fetched chunk 18 of layer 5 (666 kB) from registry mirror
+#5 3.8 fetched chunk 19 of layer 5 (703 kB) from registry mirror
+#5 4.0 fetched chunk 20 of layer 5 (740 kB) from registry mirror
+#5 4.2 fetched chunk 21 of layer 5 (777 kB) from registry mirror
+#5 DONE 2.5s
+#5 3.2 /bin/sh: line 1:   812 Segmentation fault (core dumped) ./gen-assets
+#6 [6/14] RUN step-6
+#6 0.0 fetched chunk 0 of layer 6 (0 kB) from registry mirror
+#6 0.2 fetched chunk 1 of layer 6 (37 kB) from registry mirror
+#6 0.4 fetched chunk 2 of layer 6 (74 kB) from registry mirror
+#6 0.6 fetched chunk 3 of layer 6 (111 kB) from registry mirror
+#6 0.8 fetched chunk 4 of layer 6 (148 kB) from registry mirror
+#6 1.0 fetched chunk 5 of layer 6 (185 kB) from registry mirror
+#6 1.2 fetched chunk 6 of layer 6 (222 kB) from registry mirror
+#6 1.4 fetched chunk 7 of layer 6 (259 kB) from registry mirror
+#6 1.6 fetched chunk 8 of layer 6 (296 kB) from registry mirror
+#6 1.8 fetched chunk 9 of layer 6 (333 kB) from registry mirror
+#6 2.0 fetched chunk 10 of layer 6 (370 kB) from registry mirror
+#6 2.2 fetched chunk 11 of layer 6 (407 kB) from registry mirror
+#6 2.4 fetched chunk 12 of layer 6 (444 kB) from registry mirror
+#6 2.6 fetched chunk 13 of layer 6 (481 kB) from registry mirror
+#6 2.8 fetched chunk 14 of layer 6 (518 kB) from registry mirror
+#6 3.0 fetched chunk 15 of layer 6 (555 kB) from registry mirror
+#6 3.2 fetched chunk 16 of layer 6 (592 kB) from registry mirror
+#6 3.4 fetched chunk 17 of layer 6 (629 kB) from registry mirror
+#6 3.6 fetched chunk 18 of layer 6 (666 kB) from registry mirror
+#6 3.8 fetched chunk 19 of layer 6 (703 kB) from registry mirror
+#6 4.0 fetched chunk 20 of layer 6 (740 kB) from registry mirror
+#6 4.2 fetched chunk 21 of layer 6 (777 kB) from registry mirror
+#6 DONE 2.6s
+#7 [7/14] RUN step-7
+#7 0.0 fetched chunk 0 of layer 7 (0 kB) from registry mirror
+#7 0.2 fetched chunk 1 of layer 7 (37 kB) from registry mirror
+#7 0.4 fetched chunk 2 of layer 7 (74 kB) from registry mirror
+#7 0.6 fetched chunk 3 of layer 7 (111 kB) from registry mirror
+#7 0.8 fetched chunk 4 of layer 7 (148 kB) from registry mirror
+#7 1.0 fetched chunk 5 of layer 7 (185 kB) from registry mirror
+#7 1.2 fetched chunk 6 of layer 7 (222 kB) from registry mirror
+#7 1.4 fetched chunk 7 of layer 7 (259 kB) from registry mirror
+#7 1.6 fetched chunk 8 of layer 7 (296 kB) from registry mirror
+#7 1.8 fetched chunk 9 of layer 7 (333 kB) from registry mirror
+#7 2.0 fetched chunk 10 of layer 7 (370 kB) from registry mirror
+#7 2.2 fetched chunk 11 of layer 7 (407 kB) from registry mirror
+#7 2.4 fetched chunk 12 of layer 7 (444 kB) from registry mirror
+#7 2.6 fetched chunk 13 of layer 7 (481 kB) from registry mirror
+#7 2.8 fetched chunk 14 of layer 7 (518 kB) from registry mirror
+#7 3.0 fetched chunk 15 of layer 7 (555 kB) from registry mirror
+#7 3.2 fetched chunk 16 of layer 7 (592 kB) from registry mirror
+#7 3.4 fetched chunk 17 of layer 7 (629 kB) from registry mirror
+#7 3.6 fetched chunk 18 of layer 7 (666 kB) from registry mirror
+#7 3.8 fetched chunk 19 of layer 7 (703 kB) from registry mirror
+#7 4.0 fetched chunk 20 of layer 7 (740 kB) from registry mirror
+#7 4.2 fetched chunk 21 of layer 7 (777 kB) from registry mirror
+#7 DONE 2.7s
+#7 4.4 /bin/sh: line 1:   977 Killed                  node build.js
+#8 [8/14] RUN step-8
+#8 0.0 fetched chunk 0 of layer 8 (0 kB) from registry mirror
+#8 0.2 fetched chunk 1 of layer 8 (37 kB) from registry mirror
+#8 0.4 fetched chunk 2 of layer 8 (74 kB) from registry mirror
+#8 0.6 fetched chunk 3 of layer 8 (111 kB) from registry mirror
+#8 0.8 fetched chunk 4 of layer 8 (148 kB) from registry mirror
+#8 1.0 fetched chunk 5 of layer 8 (185 kB) from registry mirror
+#8 1.2 fetched chunk 6 of layer 8 (222 kB) from registry mirror
+#8 1.4 fetched chunk 7 of layer 8 (259 kB) from registry mirror
+#8 1.6 fetched chunk 8 of layer 8 (296 kB) from registry mirror
+#8 1.8 fetched chunk 9 of layer 8 (333 kB) from registry mirror
+#8 2.0 fetched chunk 10 of layer 8 (370 kB) from registry mirror
+#8 2.2 fetched chunk 11 of layer 8 (407 kB) from registry mirror
+#8 2.4 fetched chunk 12 of layer 8 (444 kB) from registry mirror
+#8 2.6 fetched chunk 13 of layer 8 (481 kB) from registry mirror
+#8 2.8 fetched chunk 14 of layer 8 (518 kB) from registry mirror
+#8 3.0 fetched chunk 15 of layer 8 (555 kB) from registry mirror
+#8 3.2 fetched chunk 16 of layer 8 (592 kB) from registry mirror
+#8 3.4 fetched chunk 17 of layer 8 (629 kB) from registry mirror
+#8 3.6 fetched chunk 18 of layer 8 (666 kB) from registry mirror
+#8 3.8 fetched chunk 19 of layer 8 (703 kB) from registry mirror
+#8 4.0 fetched chunk 20 of layer 8 (740 kB) from registry mirror
+#8 4.2 fetched chunk 21 of layer 8 (777 kB) from registry mirror
+#8 DONE 2.8s
+#9 [9/14] RUN step-9
+#9 0.0 fetched chunk 0 of layer 9 (0 kB) from registry mirror
+#9 0.2 fetched chunk 1 of layer 9 (37 kB) from registry mirror
+#9 0.4 fetched chunk 2 of layer 9 (74 kB) from registry mirror
+#9 0.6 fetched chunk 3 of layer 9 (111 kB) from registry mirror
+#9 0.8 fetched chunk 4 of layer 9 (148 kB) from registry mirror
+#9 1.0 fetched chunk 5 of layer 9 (185 kB) from registry mirror
+#9 1.2 fetched chunk 6 of layer 9 (222 kB) from registry mirror
+#9 1.4 fetched chunk 7 of layer 9 (259 kB) from registry mirror
+#9 1.6 fetched chunk 8 of layer 9 (296 kB) from registry mirror
+#9 1.8 fetched chunk 9 of layer 9 (333 kB) from registry mirror
+#9 2.0 fetched chunk 10 of layer 9 (370 kB) from registry mirror
+#9 2.2 fetched chunk 11 of layer 9 (407 kB) from registry mirror
+#9 2.4 fetched chunk 12 of layer 9 (444 kB) from registry mirror
+#9 2.6 fetched chunk 13 of layer 9 (481 kB) from registry mirror
+#9 2.8 fetched chunk 14 of layer 9 (518 kB) from registry mirror
+#9 3.0 fetched chunk 15 of layer 9 (555 kB) from registry mirror
+#9 3.2 fetched chunk 16 of layer 9 (592 kB) from registry mirror
+#9 3.4 fetched chunk 17 of layer 9 (629 kB) from registry mirror
+#9 3.6 fetched chunk 18 of layer 9 (666 kB) from registry mirror
+#9 3.8 fetched chunk 19 of layer 9 (703 kB) from registry mirror
+#9 4.0 fetched chunk 20 of layer 9 (740 kB) from registry mirror
+#9 4.2 fetched chunk 21 of layer 9 (777 kB) from registry mirror
+#9 DONE 2.9s
+#9 0.7 cp: cannot create regular file '/opt/app/bin/tool': Permission denied
+#10 [10/14] RUN step-10
+#10 0.0 fetched chunk 0 of layer 10 (0 kB) from registry mirror
+#10 0.2 fetched chunk 1 of layer 10 (37 kB) from registry mirror
+#10 0.4 fetched chunk 2 of layer 10 (74 kB) from registry mirror
+#10 0.6 fetched chunk 3 of layer 10 (111 kB) from registry mirror
+#10 0.8 fetched chunk 4 of layer 10 (148 kB) from registry mirror
+#10 1.0 fetched chunk 5 of layer 10 (185 kB) from registry mirror
+#10 1.2 fetched chunk 6 of layer 10 (222 kB) from registry mirror
+#10 1.4 fetched chunk 7 of layer 10 (259 kB) from registry mirror
+#10 1.6 fetched chunk 8 of layer 10 (296 kB) from registry mirror
+#10 1.8 fetched chunk 9 of layer 10 (333 kB) from registry mirror
+#10 2.0 fetched chunk 10 of layer 10 (370 kB) from registry mirror
+#10 2.2 fetched chunk 11 of layer 10 (407 kB) from registry mirror
+#10 2.4 fetched chunk 12 of layer 10 (444 kB) from registry mirror
+#10 2.6 fetched chunk 13 of layer 10 (481 kB) from registry mirror
+#10 2.8 fetched chunk 14 of layer 10 (518 kB) from registry mirror
+#10 3.0 fetched chunk 15 of layer 10 (555 kB) from registry mirror
+#10 3.2 fetched chunk 16 of layer 10 (592 kB) from registry mirror
+#10 3.4 fetched chunk 17 of layer 10 (629 kB) from registry mirror
+#10 3.6 fetched chunk 18 of layer 10 (666 kB) from registry mirror
+#10 3.8 fetched chunk 19 of layer 10 (703 kB) from registry mirror
+#10 4.0 fetched chunk 20 of layer 10 (740 kB) from registry mirror
+#10 4.2 fetched chunk 21 of layer 10 (777 kB) from registry mirror
+#10 DONE 2.10s
+#10 0.9 npm WARN checkPermissions code EACCES path /usr/lib/node_modules
+#11 [11/14] RUN step-11
+#11 0.0 fetched chunk 0 of layer 11 (0 kB) from registry mirror
+#11 0.2 fetched chunk 1 of layer 11 (37 kB) from registry mirror
+#11 0.4 fetched chunk 2 of layer 11 (74 kB) from registry mirror
+#11 0.6 fetched chunk 3 of layer 11 (111 kB) from registry mirror
+#11 0.8 fetched chunk 4 of layer 11 (148 kB) from registry mirror
+#11 1.0 fetched chunk 5 of layer 11 (185 kB) from registry mirror
+#11 1.2 fetched chunk 6 of layer 11 (222 kB) from registry mirror
+#11 1.4 fetched chunk 7 of layer 11 (259 kB) from registry mirror
+#11 1.6 fetched chunk 8 of layer 11 (296 kB) from registry mirror
+#11 1.8 fetched chunk 9 of layer 11 (333 kB) from registry mirror
+#11 2.0 fetched chunk 10 of layer 11 (370 kB) from registry mirror
+#11 2.2 fetched chunk 11 of layer 11 (407 kB) from registry mirror
+#11 2.4 fetched chunk 12 of layer 11 (444 kB) from registry mirror
+#11 2.6 fetched chunk 13 of layer 11 (481 kB) from registry mirror
+#11 2.8 fetched chunk 14 of layer 11 (518 kB) from registry mirror
+#11 3.0 fetched chunk 15 of layer 11 (555 kB) from registry mirror
+#11 3.2 fetched chunk 16 of layer 11 (592 kB) from registry mirror
+#11 3.4 fetched chunk 17 of layer 11 (629 kB) from registry mirror
+#11 3.6 fetched chunk 18 of layer 11 (666 kB) from registry mirror
+#11 3.8 fetched chunk 19 of layer 11 (703 kB) from registry mirror
+#11 4.0 fetched chunk 20 of layer 11 (740 kB) from registry mirror
+#11 4.2 fetched chunk 21 of layer 11 (777 kB) from registry mirror
+#11 DONE 2.11s
+#11 0.5 /usr/bin/ld: main.o: in function `main': undefined reference to `vec_push'
+#12 [12/14] RUN step-12
+#12 0.0 fetched chunk 0 of layer 12 (0 kB) from registry mirror
+#12 0.2 fetched chunk 1 of layer 12 (37 kB) from registry mirror
+#12 0.4 fetched chunk 2 of layer 12 (74 kB) from registry mirror
+#12 0.6 fetched chunk 3 of layer 12 (111 kB) from registry mirror
+#12 0.8 fetched chunk 4 of layer 12 (148 kB) from registry mirror
+#12 1.0 fetched chunk 5 of layer 12 (185 kB) from registry mirror
+#12 1.2 fetched chunk 6 of layer 12 (222 kB) from registry mirror
+#12 1.4 fetched chunk 7 of layer 12 (259 kB) from registry mirror
+#12 1.6 fetched chunk 8 of layer 12 (296 kB) from registry mirror
+#12 1.8 fetched chunk 9 of layer 12 (333 kB) from registry mirror
+#12 2.0 fetched chunk 10 of layer 12 (370 kB) from registry mirror
+#12 2.2 fetched chunk 11 of layer 12 (407 kB) from registry mirror
+#12 2.4 fetched chunk 12 of layer 12 (444 kB) from registry mirror
+#12 2.6 fetched chunk 13 of layer 12 (481 kB) from registry mirror
+#12 2.8 fetched chunk 14 of layer 12 (518 kB) from registry mirror
+#12 3.0 fetched chunk 15 of layer 12 (555 kB) from registry mirror
+#12 3.2 fetched chunk 16 of layer 12 (592 kB) from registry mirror
+#12 3.4 fetched chunk 17 of layer 12 (629 kB) from registry mirror
+#12 3.6 fetched chunk 18 of layer 12 (666 kB) from registry mirror
+#12 3.8 fetched chunk 19 of layer 12 (703 kB) from registry mirror
+#12 4.0 fetched chunk 20 of layer 12 (740 kB) from registry mirror
+#12 4.2 fetched chunk 21 of layer 12 (777 kB) from registry mirror
+#12 DONE 2.12s
+#12 0.1 /bin/sh: 1: cargo: command not found
+#14 exporting to image
+#14 naming to example.org/app:dev done
+#14 DONE 0.4s

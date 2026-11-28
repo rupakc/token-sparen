@@ -278,3 +278,21 @@ def test_ownership_rule(
         target.mkdir()
     _fake_stat(monkeypatch, target if exists else tmp_path, uid=uid, mode=mode)
     assert config._owned(str(target if exists else target / "new")) is expected
+
+
+# v1 review m-Q4: a probe whose TOKEN_SPAREN_HOME is rejected falls back to ~/.token-sparen; the
+# suite's real-home guard (conftest) also covers processes a test starts with its own env.
+@pytest.mark.parametrize("home", [None, "real"])
+def test_real_home_guard_catches_subprocess_probes(tmp_path: Path, home: str | None) -> None:
+    import conftest
+
+    var = "USERPROFILE" if os.name == "nt" else "HOME"
+    env = {"PATH": os.environ.get("PATH", ""), "TOKEN_SPAREN_HOME": str(tmp_path / "proj")}
+    if home == "real":
+        env[var] = str(conftest._REAL_HOME)
+    with pytest.raises(AssertionError, match="temporary directory"):
+        subprocess.run([sys.executable, "-I", "-c", "pass"], env=env, check=False)
+    env[var] = str(tmp_path / "home")
+    assert (
+        subprocess.run([sys.executable, "-I", "-c", "pass"], env=env, check=False).returncode == 0
+    )

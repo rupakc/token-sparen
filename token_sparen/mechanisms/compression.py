@@ -134,7 +134,9 @@ def _min_tokens(cfg: Config, env: Mapping[str, str], project_key: str) -> float:
 
 def _skipped(event: Event, cfg: Config) -> bool:
     tool = event.tool
-    if tool is None or tool.category == "edit":
+    # a subagent's report (category ``agent``) is the main agent's only view of its work: no
+    # generic compressor trims it, whatever it looks like (v1 review I1)
+    if tool is None or tool.category in ("edit", "agent"):
         return True
     raw = cfg.get("compression.skip_tools")
     if isinstance(raw, str):  # env override: comma-separated names
@@ -303,7 +305,8 @@ def min_tokens(cfg: Config) -> float:
 
 
 def skipped(event: Event, cfg: Config) -> bool:
-    """Never compressed: no tool, the edit category, ``skip_tools`` or the hard skip floor."""
+    """Never compressed: no tool, the edit or agent category, ``skip_tools`` or the hard skip
+    floor."""
     return _skipped(event, cfg)
 
 
@@ -527,7 +530,7 @@ def _learn(
     regret.pay(policy, evicted)
 
 
-_SHOW_ID = re.compile(r"`token-sparen show ([0-9a-f]{12})`\]\s*$")
+_SHOW_ID = re.compile(r"`[^`]* show ([0-9a-f]{12})`\]\s*$")  # recovery.marker's command
 
 
 @dataclass(frozen=True)

@@ -4,18 +4,27 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 from sampleoutputs import big_pytest
 from userconf import write_user_config
 
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def _run(event: str, payload: dict[str, Any], tmp_path: Path, **extra: str) -> dict[str, Any]:
+def _run(
+    event: str,
+    payload: dict[str, Any],
+    tmp_path: Path,
+    user: dict[str, Any] | None = None,
+    **extra: str,
+) -> dict[str, Any]:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("TOKEN_SPAREN_", "CLAUDE_"))}
     env.update(
         {
@@ -26,7 +35,7 @@ def _run(event: str, payload: dict[str, Any], tmp_path: Path, **extra: str) -> d
         }
     )
     # slow CI runners: a larger budget widens, so it goes in the user's file (env only narrows)
-    write_user_config(tmp_path / "home", {"adapter": {"latency_budget_ms": 5000}})
+    write_user_config(tmp_path / "home", {"adapter": {"latency_budget_ms": 5000}, **(user or {})})
     proc = subprocess.run(
         [sys.executable, "-I", str(ROOT / "hooks" / "run.py"), event],
         input=json.dumps(payload),
@@ -64,7 +73,7 @@ def test_e2e_post_tool(tmp_path: Path) -> None:
     spec = out["hookSpecificOutput"]
     assert spec["hookEventName"] == "PostToolUse"
     stdout = spec["updatedToolOutput"]["stdout"]
-    assert "[token-sparen: kept " in stdout and "`token-sparen show " in stdout
+    assert "[token-sparen: kept " in stdout and re.search(r" show [0-9a-f]{12}`\]", stdout)
     assert "FAILED tests/test_cache.py::test_cache_eviction" in stdout
     assert len(stdout) < len(text)
     saved = list((tmp_path / "proj" / ".token-sparen" / "outputs").glob("*.txt"))
@@ -90,7 +99,8 @@ def test_e2e_failure_event_is_noop_on_claude(tmp_path: Path) -> None:
     assert not (tmp_path / "proj" / ".token-sparen" / "outputs").exists()
 
 
-def test_e2e_agent_result_compressed(tmp_path: Path) -> None:
+def test_e2e_agent_result_never_compressed(tmp_path: Path) -> None:
+    """v1 review I1: a subagent's report (here a test run it quotes) is never trimmed."""
     (tmp_path / "proj").mkdir()
     text = big_pytest()
     half = len(text.splitlines()) // 2
@@ -110,14 +120,75 @@ def test_e2e_agent_result_compressed(tmp_path: Path) -> None:
         tool_use_id="tu-agent",
         tool_response=response,
     )
-    new = _run("PostToolUse", payload, tmp_path)["hookSpecificOutput"]["updatedToolOutput"]
-    assert {k: v for k, v in new.items() if k != "content"} == {
-        k: v for k, v in response.items() if k != "content"
+    static = {"learn": {"enabled": False}}  # the static policy always trims an allowed type
+    out = _run("PostToolUse", payload, tmp_path, static)
+    assert "updatedToolOutput" not in json.dumps(out)
+    assert not (tmp_path / "proj" / ".token-sparen" / "outputs").exists()
+
+
+def test_e2e_agent_call_site_report_left_whole(tmp_path: Path) -> None:
+    """v1 review M11 (probed): a subagent listing 240 call sites is not cut like grep output."""
+    (tmp_path / "proj").mkdir()
+    report = "\n".join(
+        f"src/pkg/mod_{i % 12}.py:{i + 3}: result = legacy_client.fetch(user_id={i}, retries=3)"
+        for i in range(240)
+    )
+    response = {
+        "status": "completed",
+        "agentId": "agent-8",
+        "content": [{"type": "text", "text": report}],
+        "totalTokens": 999,
+        "usage": {"input_tokens": 10, "output_tokens": 20},
     }
-    (block,) = new["content"]
-    assert block["type"] == "text" and "[token-sparen: kept " in block["text"]
-    assert len(block["text"]) <= len("\n".join(blocks))  # never more than the model saw
-    assert "FAILED tests/test_cache.py::test_cache_eviction" in block["text"]
+    payload = _payload(
+        "PostToolUse",
+        tool_name="Agent",
+        tool_input={"prompt": "list every call site of legacy_client.fetch"},
+        tool_use_id="tu-agent-sites",
+        tool_response=response,
+    )
+    static = {"learn": {"enabled": False}}  # the static policy always trims an allowed type
+    assert "updatedToolOutput" not in json.dumps(_run("PostToolUse", payload, tmp_path, static))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell and symlinked interpreter")
+def test_e2e_marker_command_runs_on_a_plugin_only_install(tmp_path: Path) -> None:
+    """v1 review M7, end to end: with no ``token-sparen`` console script on PATH (a plugin-only
+    install), the command the marker names, run by a shell as the model's Bash tool would, prints
+    the full output."""
+    (tmp_path / "proj").mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "python3").symlink_to(sys.executable)
+    path = os.pathsep.join([str(bindir), "/usr/bin", "/bin"])
+    assert shutil.which("token-sparen", path=path) is None
+    text = big_pytest()
+    payload = _payload(
+        "PostToolUse",
+        tool_name="Bash",
+        tool_input={"command": "pytest -v"},
+        tool_use_id="tu-show",
+        tool_response={"stdout": text, "stderr": "", "interrupted": False, "isImage": False},
+    )
+    static = {"learn": {"enabled": False}}
+    out = _run("PostToolUse", payload, tmp_path, static, PATH=path)
+    stdout = out["hookSpecificOutput"]["updatedToolOutput"]["stdout"]
+    m = re.search(r"`([^`]+ show [0-9a-f]{12})`\]$", stdout)
+    assert m and "token-sparen show" not in m.group(1), stdout[-300:]
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("TOKEN_SPAREN_", "CLAUDE_"))}
+    env.update(PATH=path, TOKEN_SPAREN_HOME=str(tmp_path / "home"))
+    shown = subprocess.run(
+        ["/bin/sh", "-c", m.group(1)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path / "proj",
+        env=env,
+        timeout=60,
+        check=False,
+    )
+    assert shown.returncode == 0, shown.stderr
+    assert shown.stdout.rstrip("\n") == text.rstrip("\n")
 
 
 def test_e2e_env_narrowing_reaches_the_hook(tmp_path: Path) -> None:

@@ -34,7 +34,7 @@ from token_sparen.store import session
 KEY = "0123456789abcdef"
 MARKER = re.compile(
     r"\[token-sparen: kept (\d+) of (\d+) lines · full output: (.+) · "
-    r"`token-sparen show ([0-9a-f]{12})`\]$"
+    r"`(?:token-sparen|python3? -I \"[^\"]+/hooks/run_cli\.py\") show ([0-9a-f]{12})`\]$"
 )
 
 

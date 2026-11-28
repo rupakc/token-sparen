@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from token_sparen import recovery
 from token_sparen.config import state_home
 from token_sparen.mechanisms import prune
 from token_sparen.mechanisms.prune import WriteResult
@@ -411,12 +412,15 @@ def uninstall_statusline(
 
 # --------------------------------------------------------------------------- tool pruning
 # Deny rules in the project's ``.claude/settings.local.json`` (``mechanisms.prune``). The same
-# rules as the statusline write: strict JSON object or refuse, one pristine backup
-# (``settings.local.json.token-sparen.bak``), atomic replace after a stamp re-check (one re-read
-# and retry), symlinks followed. Only ``permissions.deny`` entries are added or removed; every
-# other key keeps its value and order. The file is written only when git positively confirms it
-# is untracked and ignored; any other answer (tracked, not ignored, not a work tree, git missing,
-# failing, slow or pointed elsewhere by GIT_DIR-style variables) means "exposed": never written.
+# rules as the statusline write: strict JSON object or refuse, one pristine backup, atomic
+# replace after a stamp re-check (one re-read and retry), symlinks followed. Only
+# ``permissions.deny`` entries are added or removed; every other key keeps its value and order.
+# The backup lives in ``<project>/.token-sparen/settings.local.json.token-sparen.bak`` (v1 review
+# M5: next to the settings file no usual ignore rule covers it, so ``git add -A`` would commit
+# the user's local settings). The file is written only when git positively confirms that it and
+# the backup are untracked and ignored; any other answer (tracked, not ignored, not a work tree,
+# git missing, failing, slow or pointed elsewhere by GIT_DIR-style variables) means "exposed":
+# never written.
 LOCAL_SETTINGS = Path(".claude") / "settings.local.json"
 GIT_TIMEOUT_S = 2.0
 # variables that point git at another repository or index: its answer would not be about ours
@@ -432,6 +436,33 @@ GIT_LOCATION_VARS = (
 
 def local_settings_path(project_dir: Path) -> Path:
     return project_dir / LOCAL_SETTINGS
+
+
+def backup_path(path: Path) -> Path:
+    """Tool pruning's pristine backup of a project's ``.claude/<name>``:
+    ``<project>/.token-sparen/<name>.token-sparen.bak`` (git-ignored like the recovery files).
+    Any other path keeps its backup next to it."""
+    if path.parent.name == ".claude":
+        return path.parent.parent / ".token-sparen" / (path.name + BACKUP_SUFFIX)
+    return _legacy_backup(path)
+
+
+def _legacy_backup(path: Path) -> Path:
+    """Where versions before 1.0 put the backup: next to the file (not git-ignored)."""
+    return path.with_name(path.name + BACKUP_SUFFIX)
+
+
+def has_backup(path: Path) -> bool:
+    """Tool pruning left its backup of ``path`` (current or legacy location): evidence that it
+    wrote deny rules to this file."""
+    return _backup_in_use(path).is_file()
+
+
+def _backup_in_use(path: Path) -> Path:
+    """The backup to read: the current location, else a legacy one left by an older version."""
+    current = backup_path(path)
+    legacy = _legacy_backup(path)
+    return legacy if not current.exists() and legacy.is_file() else current
 
 
 def _git(project_dir: Path, *args: str) -> tuple[int, bytes] | None:
@@ -453,8 +484,10 @@ def _git(project_dir: Path, *args: str) -> tuple[int, bytes] | None:
 
 def git_exposure(project_dir: Path) -> str | None:
     """None only on positive confirmation (``ls-files`` exits 0 with no output and
-    ``check-ignore`` exits 0); else ``"tracked"``, ``"unignored"`` (untracked, check-ignore exit
-    1) or ``"unknown"`` (anything else). Only None may be written."""
+    ``check-ignore`` exits 0, for the settings file and for its backup under ``.token-sparen/``);
+    else ``"tracked"``, ``"unignored"`` (untracked, check-ignore exit 1), ``"backup"`` (the
+    backup location is not ignored) or ``"unknown"`` (anything else). Only None may be
+    written."""
     if any(os.environ.get(k) for k in GIT_LOCATION_VARS):
         return "unknown"
     rel = LOCAL_SETTINGS.as_posix()
@@ -466,9 +499,19 @@ def git_exposure(project_dir: Path) -> str | None:
     ignored = _git(project_dir, "check-ignore", "-q", "--", rel)
     if ignored is None:
         return "unknown"
-    if ignored[0] == 0:
+    if ignored[0] != 0:
+        return "unignored" if ignored[0] == 1 else "unknown"
+    try:
+        recovery.private_root(project_dir)  # its ``*`` .gitignore covers the backup
+    except OSError:
+        return "unknown"
+    backup = backup_path(local_settings_path(project_dir)).relative_to(project_dir).as_posix()
+    covered = _git(project_dir, "check-ignore", "-q", "--", backup)
+    if covered is None:
+        return "unknown"
+    if covered[0] == 0:
         return None
-    return "unignored" if ignored[0] == 1 else "unknown"
+    return "backup" if covered[0] == 1 else "unknown"
 
 
 def _deny_list(data: dict[str, Any]) -> list[Any]:
@@ -524,11 +567,13 @@ def add_deny_rules(
         try:
             if journal is not None:
                 journal(new, created)
-            backup = target.with_name(target.name + BACKUP_SUFFIX)
+            backup = _move_legacy_backup(path)
             if fresh_backup and not existed:
                 with contextlib.suppress(FileNotFoundError):
                     backup.unlink()  # stale: there is no file to back up now
             if existed and (fresh_backup or not backup.exists()):
+                if backup.parent.name == ".token-sparen":
+                    recovery.private_root(backup.parent.parent)
                 shutil.copy2(target, backup)
             perms = data.setdefault("permissions", {})
             perms["deny"] = [*deny, *new]
@@ -539,6 +584,21 @@ def add_deny_rules(
             return _prune_failure(exc)
         return WriteResult(True, new, present, created)
     raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _move_legacy_backup(path: Path) -> Path:
+    """The backup location for ``path``; a legacy backup next to the file is moved there first
+    (or dropped when the current location already holds one)."""
+    backup = backup_path(path)
+    legacy = _legacy_backup(path)
+    if legacy != backup and legacy.is_file() and not legacy.is_symlink():
+        if backup.exists():
+            legacy.unlink()
+        else:
+            if backup.parent.name == ".token-sparen":
+                recovery.private_root(backup.parent.parent)
+            os.replace(legacy, backup)
+    return backup
 
 
 def _linked(path: Path) -> bool:
@@ -592,7 +652,7 @@ def remove_deny_rules(
             else:
                 _write(target, data, stamp)
                 if cleanup:
-                    _drop_backup(target, data)
+                    _drop_backup(path, data)
         except (OSError, ValueError, _Changed) as exc:
             if isinstance(exc, _Changed) and attempt == 0:
                 continue
@@ -601,14 +661,14 @@ def remove_deny_rules(
     raise AssertionError("unreachable")  # pragma: no cover
 
 
-def _drop_backup(target: Path, data: Mapping[str, Any]) -> None:
+def _drop_backup(path: Path, data: Mapping[str, Any]) -> None:
     """Our backup is redundant once the file holds exactly its content again."""
-    backup = target.with_name(target.name + BACKUP_SUFFIX)
-    try:
-        if json.loads(backup.read_text(encoding="utf-8")) == data:
-            backup.unlink()
-    except (OSError, ValueError):
-        return
+    for backup in dict.fromkeys((backup_path(path), _legacy_backup(path))):
+        try:
+            if json.loads(backup.read_text(encoding="utf-8")) == data:
+                backup.unlink()
+        except (OSError, ValueError):
+            continue
 
 
 def _ours_by_format(rule: Any) -> bool:
@@ -629,7 +689,7 @@ def downgrade_candidates(
     caller shows it as a manual edit. ``tool``: only the rules covering it. Returns
     (candidates, None) or ([], why none could be listed)."""
     target = local_settings_path(project_dir)
-    backup = target.with_name(target.name + BACKUP_SUFFIX)
+    backup = _backup_in_use(target)
     if not target.is_file():
         return [], None
     current = deny_rules(target)

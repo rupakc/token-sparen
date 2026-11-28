@@ -7,6 +7,8 @@ import re
 import tomllib
 from pathlib import Path
 
+from hookcmd import hook_command
+
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
 PLUGIN_TREE = ("hooks", "skills", ".claude-plugin", "token_sparen")
@@ -19,7 +21,9 @@ ID_TOKEN_JOBS = frozenset({"provenance", "publish-pypi", "deploy-pages", "docs",
 _USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)(.*)$")
 _PINNED = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}")
 # isolated (`-I`): a repository's committed settings env must not inject PYTHONPATH/PYTHONSTARTUP
-_HOOK_COMMAND = re.compile(r'python3 -I "\$\{CLAUDE_PLUGIN_ROOT\}/hooks/[a-z_]+\.py"( \w+)?')
+# The exact command (tests/hookcmd.py): python3 on POSIX shells and WSL, the py launcher or
+# python.exe only in a Windows shell, every interpreter with -I, and a fail-open `{}` fallback.
+_HOOK_EVENT = re.compile(r'"\$\{CLAUDE_PLUGIN_ROOT\}/hooks/run\.py" (\w+)')
 
 
 def _workflows() -> list[Path]:
@@ -198,7 +202,8 @@ def test_hook_commands_only_plugin_root() -> None:
     ]
     assert commands
     for command in commands:
-        assert _HOOK_COMMAND.fullmatch(command), command
+        m = _HOOK_EVENT.search(command)
+        assert m and command == hook_command(m.group(1)), command
         script = command.split('"')[1].replace("${CLAUDE_PLUGIN_ROOT}/", "")
         assert (ROOT / script).is_file(), script
 
@@ -233,10 +238,13 @@ def test_skill_preapprovals_are_read_only_or_restoring() -> None:
     rules = re.findall(r"^\s*-\s*'?(Bash\(.*\))'?\s*$", front, re.MULTILINE)
     assert rules
     allowed = {f"Bash(token-sparen {c}:*)" for c in PREAPPROVED} | {
-        f'Bash(python3 -I "${{CLAUDE_PLUGIN_ROOT}}/hooks/run_cli.py" {c}:*)' for c in PREAPPROVED
+        f'Bash({py} -I "${{CLAUDE_PLUGIN_ROOT}}/hooks/run_cli.py" {c}:*)'
+        for c in PREAPPROVED
+        for py in ("python3", "py -3")  # POSIX and Windows bundled-CLI forms (v1 review M9)
     }
     for rule in rules:
         assert rule in allowed, f"unexpected pre-approval {rule}"
+    assert set(rules) == allowed  # every safe subcommand in every form, nothing else
     tools = re.findall(r"^\s*-\s*'?([A-Za-z]+)", front.split("allowed-tools:", 1)[1], re.M)
     assert set(tools) == {"Bash"}, tools  # no Write, Edit or other tool is pre-approved
 

@@ -338,6 +338,24 @@ must_inline = [
 ]
 
 [[case]]
+file = "pytest_assert_diff.txt"
+command = "pytest -v"
+types = ["test_report"]
+needles = [
+  "E         +     'currency': 'eur',",
+  "E         -     'line_11': 111,",
+  "E         +     'line_11': 110,",
+  ">       assert got == EXPECTED",
+  "1 failed, 400 passed",
+]
+must_inline = [
+  "E         +     'currency': 'eur',",
+  "E         -     'line_11': 111,",
+  "E         +     'line_11': 110,",
+  ">       assert got == EXPECTED",
+]
+
+[[case]]
 file = "pytest_error_buried.txt"
 types = ["test_report"]
 needles = [
@@ -512,6 +530,29 @@ must_inline = [
 ]
 
 [[case]]
+file = "build_silent_failures.txt"
+command = "docker build . 2>&1 | tee build.log"
+types = ["build_log"]
+needles = [
+  "#3 1.9 npm ERR! code ELIFECYCLE",
+  "Segmentation fault (core dumped) ./gen-assets",
+  "977 Killed                  node build.js",
+  "cp: cannot create regular file '/opt/app/bin/tool': Permission denied",
+  "npm WARN checkPermissions code EACCES path /usr/lib/node_modules",
+  "undefined reference to `vec_push'",
+  "/bin/sh: 1: cargo: command not found",
+]
+must_inline = [
+  "#3 1.9 npm ERR! code ELIFECYCLE",
+  "Segmentation fault (core dumped) ./gen-assets",
+  "977 Killed                  node build.js",
+  "cp: cannot create regular file '/opt/app/bin/tool': Permission denied",
+  "npm WARN checkPermissions code EACCES path /usr/lib/node_modules",
+  "undefined reference to `vec_push'",
+  "/bin/sh: 1: cargo: command not found",
+]
+
+[[case]]
 file = "grep_50th_file.txt"
 command = "grep -rn TODO src"
 types = ["search"]
@@ -669,6 +710,16 @@ needles = [
 ]
 must_inline = [
   "app.service: Failed with result 'oom-kill'.",
+]
+
+[[case]]
+file = "log_windows_denied.txt"
+types = ["log"]
+needles = [
+  "robocopy: copying C:\\build\\out\\app.dll: Access is denied.",
+]
+must_inline = [
+  "robocopy: copying C:\\build\\out\\app.dll: Access is denied.",
 ]
 
 [[case]]

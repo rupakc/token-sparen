@@ -86,7 +86,8 @@ def test_pytest_error_line_beyond_block_lines_kept_with_gap() -> None:
     out = _run(TestReportCompressor(), "pytest_fail.txt", AGGRESSIVE)
     lines = out.split("\n")
     i = lines.index("E           KeyError: 'k0'")
-    assert re.match(r"… \[\d+ lines elided\]", lines[i - 1])
+    assert lines[i - 1] == ">           cache.get(f'k{k}')"  # the failing source line (M12)
+    assert re.match(r"… \[\d+ lines elided\]", lines[i - 2])
 
 
 def test_all_pass_report_is_one_line_summary() -> None:
@@ -145,6 +146,114 @@ def test_cargo_failures_preserved() -> None:
     assert "mod_a::case_3" not in out
     assert "[22 passed tests elided]" in out
     _errors_survive(_fx("cargo_fail.txt"), out)
+
+
+def _pytest_one_failure(detail: list[str]) -> str:
+    passes = [f"tests/test_p{i}.py::test_ok PASSED [ {i % 100:2d}%]" for i in range(400)]
+    return "\n".join(
+        [
+            "============================= test session starts ==============================",
+            "collected 401 items",
+            "",
+            *passes,
+            "tests/test_orders.py::test_totals FAILED [100%]",
+            "",
+            "=================================== FAILURES ===================================",
+            "_______ test_totals _______",
+            "",
+            "    def test_totals():",
+            *[f"        step_{k} = prepare({k})" for k in range(40)],
+            ">       assert got == EXPECTED",
+            *detail,
+            "",
+            "tests/test_orders.py:41: AssertionError",
+            "=========================== short test summary info ============================",
+            "FAILED tests/test_orders.py::test_totals - AssertionError: assert {...",
+            "========================= 1 failed, 400 passed in 3.10s =========================",
+        ]
+    )
+
+
+@pytest.mark.parametrize("level", [LIGHT, STANDARD, AGGRESSIVE])
+def test_pytest_failing_block_keeps_whole_assertion_diff(level: Level) -> None:
+    """v1 review M12 (probed): the failing test's ``E`` lines and the failing source line are
+    what the agent needs to fix the test; none is elided, at any level."""
+    detail = ["E       AssertionError: assert {'id': 1, ...} == {'id': 1, ...}", "E         "]
+    detail += [f"E         {{'line_{k}': {k}}} != {{'line_{k}': {k + 1}}}" for k in range(15)]
+    detail += ["E         Full diff:", "E           {"]
+    for k in range(15):
+        detail += [f"E         -     'line_{k}': {k + 1},", f"E         +     'line_{k}': {k},"]
+    detail.append("E           }")
+    text = _pytest_one_failure(detail)
+    res = TestReportCompressor().compress(text, level, NO_CTX)
+    out = res.text.split("\n")
+    for line in [*detail, ">       assert got == EXPECTED"]:
+        assert line in out, line
+    assert "step_39 = prepare(39)" not in res.text  # the setup lines are still capped
+    assert len(res.text) < len(text) // 2
+
+
+def test_jest_failing_block_keeps_expected_received_diff() -> None:
+    body = [
+        "  ● Orders › totals",
+        "",
+        "    expect(received).toEqual(expected) // deep equality",
+        "",
+    ]
+    body += ["    - Expected  - 14", "    + Received  + 14", "", "      Object {"]
+    for k in range(14):
+        body += [f'    -   "line_{k}": {k + 1},', f'    +   "line_{k}": {k},']
+    body += ["      }", ""]
+    body += [f"      {k} |   const line{k} = compute({k});" for k in range(10, 40)]
+    body += ["    > 40 |   expect(totals()).toEqual(EXPECTED);", "         |                    ^"]
+    passes = [f"PASS src/c{i}.test.ts" for i in range(60)]
+    text = "\n".join(
+        [
+            *passes,
+            "FAIL src/orders.test.ts",
+            *body,
+            "",
+            "Test Suites: 1 failed, 60 passed, 61 total",
+            "Tests:       1 failed, 300 passed, 301 total",
+        ]
+    )
+    out = TestReportCompressor().compress(text, AGGRESSIVE, NO_CTX).text.split("\n")
+    for line in body:
+        if line.lstrip().startswith(("-", "+", ">")):
+            assert line in out, line
+    assert "      35 |   const line35 = compute(35);" not in out
+
+
+def test_cargo_failing_block_keeps_left_right() -> None:
+    passes = [f"test mod_a::case_{i} ... ok" for i in range(300)]
+    block = ["---- mod_b::bad_sum stdout ----"]
+    block += [f"computing step {k}" for k in range(40)]
+    block += [
+        "thread 'mod_b::bad_sum' panicked at src/b.rs:12:5:",
+        "assertion `left == right` failed",
+        "  left: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]",
+        " right: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13]",
+        "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
+    ]
+    text = "\n".join(
+        [
+            "running 301 tests",
+            *passes,
+            "test mod_b::bad_sum ... FAILED",
+            "",
+            "failures:",
+            "",
+            *block,
+            "",
+            "failures:",
+            "    mod_b::bad_sum",
+            "",
+            "test result: FAILED. 300 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out",
+        ]
+    )
+    out = TestReportCompressor().compress(text, AGGRESSIVE, NO_CTX).text.split("\n")
+    assert "  left: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]" in out
+    assert " right: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13]" in out
 
 
 def test_test_report_unknown_runner_falls_back_to_text() -> None:

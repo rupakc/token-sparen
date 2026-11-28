@@ -91,7 +91,7 @@ def test_run_preserves_exit_code_and_compresses(
     assert rc == 3
     assert "[token-sparen: kept " in out and len(out) < len(text)
     assert "FAILED tests/test_cache.py::test_cache_eviction" in out
-    m = re.search(r"token-sparen show ([0-9a-f]{12})", out)
+    m = re.search(r" show ([0-9a-f]{12})`\]", out)
     assert m
     saved = Path.cwd() / ".token-sparen" / "outputs" / f"{m.group(1)}.txt"
     assert saved.read_text(encoding="utf-8") == text
@@ -413,9 +413,10 @@ def test_slash_command_is_a_skill() -> None:
     # `prune restore` only removes deny rules token-sparen wrote: always safe
     safe = ("stats", "show", "doctor", "session disable", "prune restore")
     boot = 'python3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"'
+    win = 'py -3 -I "${CLAUDE_PLUGIN_ROOT}/hooks/run_cli.py"'  # Windows form (v1 review M9)
     assert tools == [f"Bash(token-sparen {c}:*)" for c in safe] + [
         f"Bash({boot} {c}:*)" for c in safe
-    ]
+    ] + [f"Bash({win} {c}:*)" for c in safe]
     assert not any("session:" in t or "session enable" in t for t in tools)
     assert "argument-hint:" in front
     for bare in ("python3:*", "python:*", "sh:*", "bash:*", "token-sparen:*", 'run_cli.py":*'):
@@ -425,6 +426,7 @@ def test_slash_command_is_a_skill() -> None:
     assert [t for t in tools if " prune" in t] == [
         "Bash(token-sparen prune restore:*)",
         f"Bash({boot} prune restore:*)",
+        f"Bash({win} prune restore:*)",
     ]
     assert "permission prompt" in body
     assert "explicitly" in body and "/token-sparen" in body
@@ -440,7 +442,7 @@ def test_skill_file() -> None:
     front = text.split("---")[1]
     assert "name: token-sparen" in front
     assert "Use when the user asks about token usage, trimmed outputs" in front
-    assert len(text.splitlines()) <= 80
+    assert len(text.splitlines()) <= 85  # 80 lines of body plus the Windows pre-approvals
     for needle in ("token-sparen show", "token-sparen stats", "TOKEN_SPAREN_DISABLE"):
         assert needle in text
 
@@ -495,18 +497,36 @@ def test_explicit_session_beats_last_active(env: dict[str, str]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("platform", "found", "needles"),
+    ("platform", "found", "argv"),
     [
-        ("win32", {"py", "python"}, ("py -3 -m token_sparen", "python3")),
-        ("win32", {"python"}, ("python -m token_sparen", "python3")),
-        ("win32", set(), ("python.org", "python3")),
-        ("linux", set(), ("hooks run python3",)),
+        ("win32", {"py", "python", "python3"}, ["py", "-3"]),
+        ("win32", {"python", "python3"}, ["python"]),
+        ("win32", {"python3"}, ["python3"]),
+        ("win32", set(), None),
+        ("linux", {"py", "python", "python3"}, ["python3"]),
+        ("linux", {"py", "python"}, None),
     ],
 )
-def test_python3_missing_hint(platform: str, found: set[str], needles: tuple[str, ...]) -> None:
+def test_hook_interpreter_matches_hooks_json(
+    platform: str, found: set[str], argv: list[str] | None
+) -> None:
+    """v1 review M9: doctor checks the interpreter hooks.json starts on this platform (Windows:
+    the py launcher, else python, else python3; elsewhere python3)."""
     import token_sparen.cli as cli
 
-    text = cli.python3_missing_hint(platform, lambda name: f"/x/{name}" if name in found else None)
+    which = lambda name: f"/x/{name}" if name in found else None  # noqa: E731
+    got = cli.hook_interpreter(platform, which)
+    assert got == (None if argv is None else [f"/x/{argv[0]}", *argv[1:]])
+
+
+@pytest.mark.parametrize(
+    ("platform", "needles"),
+    [("win32", ("py -3", "python.org")), ("linux", ("hooks run python3",))],
+)
+def test_python3_missing_hint(platform: str, needles: tuple[str, ...]) -> None:
+    import token_sparen.cli as cli
+
+    text = cli.python3_missing_hint(platform)
     for needle in needles:
         assert needle in text
     if platform != "win32":
@@ -518,11 +538,11 @@ def test_doctor_windows_hint(
 ) -> None:
     import token_sparen.cli as cli
 
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "C:/py.exe" if name == "py" else None)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
     monkeypatch.setattr(cli, "_host_platform", lambda: "win32")
     main(["doctor"])
     captured = capsys.readouterr()
-    assert "py -3 -m token_sparen" in captured.out, captured.err
+    assert "py -3" in captured.out and "python.org" in captured.out, captured.err
 
 
 def test_config_set_session_layer_reaches_hooks(

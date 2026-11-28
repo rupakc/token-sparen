@@ -475,7 +475,9 @@ def test_pythonpath_cannot_inject_modules(tmp_path: Path, forced: bool) -> None:
     env = _hook_env(tmp_path, **extra)
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
     for groups in hooks.values():
-        assert groups[0]["hooks"][0]["command"].startswith("python3 -I ")
+        command = groups[0]["hooks"][0]["command"]
+        for name in ("python3", "py.exe -3", "python.exe"):  # each starts isolated
+            assert f"{name} -I " in command, (name, command)
     proc = subprocess.run(
         [sys.executable, "-I", str(ROOT / "hooks" / "run.py"), "PostToolUse"],
         input=_post_payload(tmp_path / "proj"),
@@ -493,6 +495,113 @@ def test_pythonpath_cannot_inject_modules(tmp_path: Path, forced: bool) -> None:
     if forced:
         calls = log.read_text(encoding="utf-8").splitlines()
         assert calls and all(c.startswith("-I ") for c in calls)  # probe and re-exec
+
+
+def _fake(bindir: Path, name: str, log: Path, *, drop: str | None = None, rc: int = 0) -> None:
+    """A fake interpreter on PATH that logs its name; it runs the current Python (dropping one
+    ``drop`` argument, as ``py`` consumes ``-3``), or exits ``rc`` like the Store alias stub."""
+    body = f'echo "{name} $*" >> "{log}"\n'
+    if rc:
+        body += f"exit {rc}\n"
+    else:
+        shift = f'[ "$1" = "{drop}" ] && shift\n' if drop else ""
+        body += f'{shift}exec "{sys.executable}" "$@"\n'
+    path = bindir / name
+    path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _fake_tool(bindir: Path, name: str, out: str) -> None:
+    path = bindir / name
+    path.write_text(f"#!/bin/sh\necho '{out}'\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _run_hook_command(tmp_path: Path, path: str, event: str = "PostToolUse") -> Any:
+    env = _hook_env(tmp_path, PATH=path)
+    hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    command = hooks[event][0]["hooks"][0]["command"]
+    return subprocess.run(
+        ["/bin/sh", "-c", command.replace("${CLAUDE_PLUGIN_ROOT}", ROOT.as_posix())],
+        input=_post_payload(tmp_path / "proj"),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path / "proj",
+        env=env,
+        timeout=60,
+        check=False,
+    )
+
+
+# shell: "posix" (no cygpath), "wsl" (Windows PATH appended: py.exe and the python.exe stub are
+# there, uname -r names microsoft; a cygpath decoy too), "gitbash" (cygpath, MINGW kernel)
+@posix_only
+@pytest.mark.parametrize(
+    ("shell", "present", "used"),
+    [
+        ("posix", ("python3", "py", "python"), "python3"),  # a POSIX ``py`` may be another tool
+        ("posix", ("python3", "py.exe", "python.exe"), "python3"),  # .exe never on POSIX
+        ("wsl", ("python3", "py.exe", "python.exe", "cygpath"), "python3"),
+        ("gitbash", ("python3", "py.exe", "python.exe", "cygpath"), "py.exe"),  # python3: stub
+        ("gitbash", ("python3", "python.exe", "cygpath"), "python.exe"),
+    ],
+)
+def test_hook_command_resolves_the_interpreter_per_platform(
+    tmp_path: Path, shell: str, present: tuple[str, ...], used: str
+) -> None:
+    """v1 review M9 and C1: in a Windows shell the hooks start ``py.exe -3`` or ``python.exe``,
+    never a bare ``python3`` (often missing or the Store alias stub); every POSIX shell, WSL
+    included, starts ``python3`` and never a Windows ``.exe`` (it cannot open a Linux path and
+    exits 2, which would block every tool call)."""
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir()
+    log = tmp_path / "interp.log"
+    for name in present:
+        if name == "cygpath":
+            _fake_tool(bindir, name, "C:\\")
+            continue
+        stub = name == "python3" and shell == "gitbash"
+        windows_only = name.endswith(".exe") and shell != "gitbash"  # exit 2 like the real one
+        decoy = name == "py"  # e.g. an unrelated ``py`` tool: must not run
+        rc = 9009 if stub else 2 if (decoy or windows_only) else 0
+        _fake(bindir, name, log, drop="-3" if name == "py.exe" else None, rc=rc)
+    kernel = {"wsl": "5.15.153.1-microsoft-standard-WSL2", "gitbash": "3.5.4-0bc1222b.x86_64"}
+    if shell in kernel:
+        _fake_tool(bindir, "uname", kernel[shell])
+    proc = _run_hook_command(tmp_path, os.pathsep.join([str(bindir), "/usr/bin", "/bin"]))
+    assert proc.returncode == 0, proc.stderr
+    assert "[token-sparen: kept " in proc.stdout, proc.stdout[:300] + proc.stderr
+    if shell == "posix":  # a normal hook run on a POSIX shell prints nothing to stderr
+        assert proc.stderr == "", proc.stderr
+    assert "not found" not in proc.stderr, proc.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    assert calls and calls[0].split()[0] == used, calls
+    assert all(c.split()[0] == used for c in calls), calls  # one interpreter, no stub call
+    assert " -I " in f" {calls[0]} "
+
+
+@posix_only
+@pytest.mark.parametrize("case", ["failing", "missing", "wsl-exe-only"])
+def test_hook_command_fails_open(tmp_path: Path, case: str) -> None:
+    """v1 review C1: whatever goes wrong before the hook can answer (the interpreter fails or is
+    missing, only Windows interpreters exist under WSL), the command prints the no-op ``{}`` and
+    exits 0, so the host never blocks a prompt or tool call because of token-sparen."""
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir()
+    log = tmp_path / "interp.log"
+    if case == "failing":
+        _fake(bindir, "python3", log, rc=1)
+    if case == "wsl-exe-only":
+        _fake(bindir, "py.exe", log, rc=2)
+        _fake(bindir, "python.exe", log, rc=2)
+        _fake_tool(bindir, "uname", "5.15.153.1-microsoft-standard-WSL2")
+    for event in ("PreToolUse", "UserPromptSubmit", "PostToolUse"):
+        proc = _run_hook_command(tmp_path, str(bindir), event)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == "{}", proc.stdout
+    if case == "wsl-exe-only":
+        assert not log.exists() or "exe" not in log.read_text(encoding="utf-8")
 
 
 # --- TOKEN_SPAREN_PYTHON safety (a committed settings env can set it) ----------------------------

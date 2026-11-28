@@ -39,6 +39,19 @@ trimming is worth its risk. Quality comes first: when in doubt, nothing is trimm
 - `doctor` reports the plugin version, the interpreter the hooks use and a warning when the
   command-line tool and the plugin differ.
 - The plugin installs from the `release/claude` branch, which is updated only by releases.
+- Read de-duplication is off by default (opt in with `[read_dedupe] enabled = true` in
+  `~/.token-sparen/config.toml`): a `/rewind` with an edited prompt cannot be detected, so a
+  pointer could refer to content no longer in context. When on, pointers stay within one
+  context epoch (compaction, `/clear`, resume, fork, a re-sent earlier prompt) and 30 minutes.
+- More failure lines are always kept (`npm ERR!`, segmentation faults, `Killed`, permission
+  errors, `undefined reference`, `command not found`); a failing test keeps its whole
+  assertion diff; a subagent's report is never trimmed.
+- The recovery marker names the bundled command-line tool when `token-sparen` is not
+  installed; Windows hooks (Git Bash) start `py -3` or `python` instead of `python3`, WSL and
+  other POSIX shells keep `python3`, and a hook whose interpreter is missing or fails answers
+  "no change" instead of blocking.
+- Tool pruning keeps its settings backup inside the git-ignored `.token-sparen/` folder, and
+  `doctor` lists deny rules left without an ownership record.
 
 ### Upgrade notes
 

@@ -12,8 +12,8 @@ Other surfaces can add a directory plugin (the claude.ai chat, Cowork), but they
 |---|---|
 | macOS | Supported |
 | Linux | Supported |
-| Windows | Hooks supported: they start with a `python3` on `PATH`, then the launcher finds a Python 3.11 or newer (also `py -3.x`); the statusline is not supported |
-| Python | 3.11 or newer somewhere on your machine; the hooks start `python3 -I` and, if that is older, the launcher finds a newer one (see [Troubleshooting](troubleshooting.md#the-launcher-and-token_sparen_python)). Tested in CI on Python 3.11, 3.12 and 3.13 |
+| Windows | Hooks supported in Git Bash (Claude Code's default shell on Windows): they start the Python launcher `py -3`, else `python`, never a bare `python3` (often missing or the Microsoft Store alias); then the launcher finds a Python 3.11 or newer (also `py -3.x`). A PowerShell-only setup (no Git Bash) and the statusline are not supported |
+| Python | 3.11 or newer somewhere on your machine; the hooks start `python3 -I` (Windows: `py -3 -I`, else `python -I`) and, if that is older, the launcher finds a newer one (see [Troubleshooting](troubleshooting.md#the-launcher-and-token_sparen_python)). Tested in CI on Python 3.11, 3.12 and 3.13 |
 | Claude Code | Minimum Claude Code version: 2.1.121 (declared in the plugin manifest) |
 | Claude Code, last tested | 2.1.332 |
 | Runtime dependencies | None (standard library only) |
@@ -24,4 +24,5 @@ Replacing a tool result needs the `updatedToolOutput` hook feature, which older 
 
 - Other agent hosts (planned for later, not v1.0).
 - The statusline on Windows.
+- Windows without Git Bash (hooks in PowerShell).
 - Claude surfaces that are not Claude Code, as above.

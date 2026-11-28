@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +75,48 @@ def _private_user_home(
 
     monkeypatch.setattr(Path, "home", staticmethod(guarded_home))
     monkeypatch.setattr(config, "_tighten_root", guarded_root)
+    monkeypatch.setattr(subprocess.Popen, "__init__", _guarded_popen_init)
+
+
+_REAL_POPEN_INIT = subprocess.Popen.__init__
+_HOME_VARS = ("USERPROFILE",) if os.name == "nt" else ("HOME",)
+
+
+def _runs_token_sparen(argv: Any) -> bool:
+    """A Python interpreter, the hooks or bundled CLI (also inside an ``sh -c`` string), or the
+    ``token-sparen`` console script."""
+    parts = [argv] if isinstance(argv, str | os.PathLike) else list(argv or [])
+    if not parts:
+        return False
+    first = os.path.basename(os.fspath(parts[0])).lower()
+    if first.startswith(("python", "token-sparen")) or first in ("py", "py.exe"):
+        return True
+    for part in parts:
+        text = os.fspath(part).replace("\\", "/")
+        if "hooks/run.py" in text or "hooks/run_cli.py" in text or text == "token_sparen":
+            return True
+    return os.fspath(parts[0]) == sys.executable
+
+
+def _guarded_popen_init(self: subprocess.Popen[Any], *args: Any, **kwargs: Any) -> None:
+    """v1 review m-Q4: a child process falls back to the real ``~/.token-sparen`` when its
+    ``TOKEN_SPAREN_HOME`` is rejected (inside the project, not ours) and its home is the real one,
+    which an explicit ``env`` without ``HOME`` gives it (the password database is consulted). Such
+    a probe wrote to the real state root once; every token-sparen process started with an
+    explicit environment must carry a temporary home (git, uv and other tools are not checked)."""
+    env = kwargs.get("env")
+    if env is None and len(args) > 9:  # positional ``env`` (never used in this suite)
+        env = args[9]
+    if env is not None and _runs_token_sparen(args[0] if args else kwargs.get("args")):
+        for name in _HOME_VARS:
+            value = env.get(name)
+            if not value or _is_real(Path(value)):
+                raise AssertionError(
+                    f"a test starts a subprocess whose {name} is "
+                    f"{'missing' if not value else 'the real home'}: set it to a temporary "
+                    "directory (a rejected TOKEN_SPAREN_HOME falls back to ~/.token-sparen)"
+                )
+    _REAL_POPEN_INIT(self, *args, **kwargs)
 
 
 _REAL_HOME = Path(os.path.expanduser("~")).resolve()  # read at import, before any fixture

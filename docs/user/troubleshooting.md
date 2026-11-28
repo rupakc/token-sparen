@@ -8,7 +8,7 @@ Hooks fail open: any internal error, or a hook slower than 400 ms, returns "no c
 
 Work through these in order.
 
-1. **Hooks need Python ≥ 3.11.** The hooks start `python3 -I`; if that is older (macOS ships 3.9, Ubuntu 22.04 3.10) the launcher looks for a newer Python and re-runs the hook on it. If it finds none, the hooks keep your session working (fail open), show an "inactive" warning at most once a day and log one line a day to `~/.token-sparen/logs/errors.jsonl` (`"kind": "launcher"`). Install Python 3.11 or newer (python.org, Homebrew, your package manager, or `uv python install 3.12`) or set `TOKEN_SPAREN_PYTHON`, and restart Claude Code. Details below.
+1. **Hooks need Python ≥ 3.11.** The hooks start `python3 -I` (on Windows `py -3 -I`, else `python -I`); if that is older (macOS ships 3.9, Ubuntu 22.04 3.10) the launcher looks for a newer Python and re-runs the hook on it. If it finds none, the hooks keep your session working (fail open), show an "inactive" warning at most once a day and log one line a day to `~/.token-sparen/logs/errors.jsonl` (`"kind": "launcher"`). Install Python 3.11 or newer (python.org, Homebrew, your package manager, or `uv python install 3.12`) or set `TOKEN_SPAREN_PYTHON`, and restart Claude Code. Details below.
 2. **Claude Code is too old.** Replacing a tool result needs the `updatedToolOutput` hook feature. The minimum is in the [support matrix](support.md); older hosts run the hooks but nothing is trimmed.
 3. **The content type is not allowed.** Only diffs, search results, test reports, compiler output, build logs, JSON, `pplx` results and timestamped logs are offered for trimming. File contents (the Read tool, `cat`, `head`, ...), plain text, tables and stack traces are shown in full by default. See [Output compression](mechanisms/compression.md).
 4. **The output is below the floor.** Results under 2000 estimated tokens are never modified.
@@ -48,4 +48,4 @@ Read `~/.token-sparen/logs/errors.jsonl` (one JSON line per error) and the sampl
 
 ## Reset
 
-`rm -r ~/.token-sparen` is always safe: learning restarts conservatively. Delete `<project>/.token-sparen/` to drop recovery files for one project. To remove everything see [Uninstall](uninstall.md).
+`rm -r ~/.token-sparen` resets learning, which restarts conservatively. Two settings edits outside it depend on its records, so undo them first: if you enabled [tool pruning](mechanisms/tool-pruning.md), run `token-sparen prune restore --all` in each such project (the deny rules would otherwise stay with nothing that restores them; `token-sparen doctor` lists the ones it can attribute to tool pruning through its backup), and if you installed the statusline, run `token-sparen statusline uninstall` (it points at a launcher inside that folder). Delete `<project>/.token-sparen/` to drop recovery files for one project. To remove everything see [Uninstall](uninstall.md).
