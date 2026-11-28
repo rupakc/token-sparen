@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hookcmd import hook_command
 from userconf import to_user_config
 
 import token_sparen
@@ -345,12 +346,7 @@ def test_plugin_manifest_valid() -> None:
         (hook,) = group["hooks"]
         assert hook["type"] == "command"
         assert hook["timeout"] == 10
-        script = f'"${{CLAUDE_PLUGIN_ROOT}}/hooks/run.py" {event}'
-        assert hook["command"] == (  # v1 review M9: Windows never starts a bare python3
-            f"hash py.exe 2>&- && exec py.exe -3 -I {script}; "
-            f"hash python.exe 2>&- && exec python.exe -I {script}; "
-            f"exec python3 -I {script}"
-        )
+        assert hook["command"] == hook_command(event)  # v1 review M9 and C1
 
 
 def test_pipeline_wiring_uses_entry_env(tmp_path: Path) -> None:

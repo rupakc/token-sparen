@@ -7,6 +7,8 @@ import re
 import tomllib
 from pathlib import Path
 
+from hookcmd import hook_command
+
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
 PLUGIN_TREE = ("hooks", "skills", ".claude-plugin", "token_sparen")
@@ -19,14 +21,9 @@ ID_TOKEN_JOBS = frozenset({"provenance", "publish-pypi", "deploy-pages", "docs",
 _USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)(.*)$")
 _PINNED = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}")
 # isolated (`-I`): a repository's committed settings env must not inject PYTHONPATH/PYTHONSTARTUP
-# Windows (Git Bash): the py launcher, else python.exe, never a bare python3 (often missing or
-# the Store alias stub); elsewhere python3 (v1 review M9). Every interpreter starts with -I.
-_HOOK_SCRIPT = r'"\$\{CLAUDE_PLUGIN_ROOT\}/hooks/[a-z_]+\.py"( \w+)?'
-_HOOK_COMMAND = re.compile(
-    rf"hash py\.exe 2>&- && exec py\.exe -3 -I (?P<script>{_HOOK_SCRIPT}); "
-    rf"hash python\.exe 2>&- && exec python\.exe -I (?P=script); "
-    rf"exec python3 -I (?P=script)"
-)
+# The exact command (tests/hookcmd.py): python3 on POSIX shells and WSL, the py launcher or
+# python.exe only in a Windows shell, every interpreter with -I, and a fail-open `{}` fallback.
+_HOOK_EVENT = re.compile(r'"\$\{CLAUDE_PLUGIN_ROOT\}/hooks/run\.py" (\w+)')
 
 
 def _workflows() -> list[Path]:
@@ -205,7 +202,8 @@ def test_hook_commands_only_plugin_root() -> None:
     ]
     assert commands
     for command in commands:
-        assert _HOOK_COMMAND.fullmatch(command), command
+        m = _HOOK_EVENT.search(command)
+        assert m and command == hook_command(m.group(1)), command
         script = command.split('"')[1].replace("${CLAUDE_PLUGIN_ROOT}/", "")
         assert (ROOT / script).is_file(), script
 
