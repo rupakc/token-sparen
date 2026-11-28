@@ -415,6 +415,56 @@ def test_cases():
         ],
         command="pytest -q",
     )
+    # v1 review M12: one failure among 400 passes with a long assertion diff; the "Full diff"
+    # lines are what the agent needs to fix the test, so they stay inline.
+    t = pytest_report(33, 16, [], verbose=True).splitlines()
+    cut = t.index(
+        "=================================== FAILURES ==================================="
+    )
+    t[cut - 1 : cut - 1] = ["tests/test_orders.py::test_order_totals FAILED [ 99%]"]
+    cut += 1
+    diff = ["E       AssertionError: assert {'id': 1, ...} == {'id': 1, ...}", "E         "]
+    diff += ["E         Omitting 4 identical items, use -vv to show", "E         Differing items:"]
+    diff += [
+        f"E         {{'line_{k}': {k * 10}}} != {{'line_{k}': {k * 10 + 1}}}" for k in range(12)
+    ]
+    diff += ["E         ", "E         Full diff:", "E           {"]
+    for k in range(12):
+        diff += [
+            f"E         -     'line_{k}': {k * 10 + 1},",
+            f"E         +     'line_{k}': {k * 10},",
+        ]
+    diff += [
+        "E         -     'currency': 'EUR',",
+        "E         +     'currency': 'eur',",
+        "E           }",
+    ]
+    t[cut + 1 : cut + 1] = [
+        "_______ test_order_totals _______",
+        "",
+        "    def test_order_totals():",
+        "        got = totals(load_orders())",
+        ">       assert got == EXPECTED",
+        *diff,
+        "",
+        "tests/test_orders.py:41: AssertionError",
+    ]
+    t.insert(-1, "FAILED tests/test_orders.py::test_order_totals - AssertionError: assert {...")
+    t[-1] = t[-1].replace("0 failed, 400 passed", "1 failed, 400 passed")
+    m12 = [
+        "E         +     'currency': 'eur',",
+        "E         -     'line_11': 111,",
+        "E         +     'line_11': 110,",
+        ">       assert got == EXPECTED",
+    ]
+    add(
+        "pytest_assert_diff.txt",
+        "\n".join(t) + "\n",
+        ["test_report"],
+        [*m12, "1 failed, 400 passed"],
+        must_inline=m12,
+        command="pytest -v",
+    )
     # error buried mid-output (sniffed, no command)
     t = pytest_report(32, 25, [], verbose=True).splitlines()
     mid = len(t) // 2

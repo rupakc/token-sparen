@@ -338,6 +338,24 @@ must_inline = [
 ]
 
 [[case]]
+file = "pytest_assert_diff.txt"
+command = "pytest -v"
+types = ["test_report"]
+needles = [
+  "E         +     'currency': 'eur',",
+  "E         -     'line_11': 111,",
+  "E         +     'line_11': 110,",
+  ">       assert got == EXPECTED",
+  "1 failed, 400 passed",
+]
+must_inline = [
+  "E         +     'currency': 'eur',",
+  "E         -     'line_11': 111,",
+  "E         +     'line_11': 110,",
+  ">       assert got == EXPECTED",
+]
+
+[[case]]
 file = "pytest_error_buried.txt"
 types = ["test_report"]
 needles = [

@@ -321,6 +321,18 @@ def failing_tests(lines: list[str]) -> tuple[list[str], list[str]] | None:
     return ids, first
 
 
+# A failing test's assertion detail: pytest's failing source line (``>``), diff lines
+# (``- Expected`` / ``+ Received``, ``-``/``+`` items, ``---``/``+++`` headers), a jest code-frame
+# pointer (``> 40 |``), and labelled values (jest ``Expected:``/``Received:``, testify
+# ``expected:``/``actual:``, cargo ``left:``/``right:``).
+_ASSERT_DETAIL = re.compile(
+    r"^(?:>\s"
+    r"|\s*(?:[-+](?:\s|$)|(?:---|\+\+\+)\s|>\s*\d+\s*\|"
+    r"|(?:Expected|Received|expected|actual|left|right)\b[^:]{0,24}:))",
+    re.ASCII,
+)
+
+
 class TestReportCompressor:
     __test__ = False  # not a pytest class despite the name
 
@@ -368,9 +380,12 @@ class TestReportCompressor:
         e_prefix: str | None,
         out: list[str],
     ) -> int:
-        pinned = {i for i in body if i in err}
+        # v1 review M12: the assertion detail of a failing test (pytest ``E`` lines and failing
+        # source line, jest/testify expected/received diffs, cargo left/right) is what the agent
+        # needs to fix it, so all of it is kept; only the rest of the block is capped at ``n``.
+        pinned = {i for i in body if i in err or _ASSERT_DETAIL.match(lines[i])}
         if e_prefix is not None:
-            pinned.update([i for i in body if lines[i].startswith(e_prefix)][:n])
+            pinned.update(i for i in body if lines[i].startswith(e_prefix))
         return _select(lines, body, n, pinned, out)
 
 
