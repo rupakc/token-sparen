@@ -93,6 +93,7 @@ def test_project_cannot_change_the_breaker_window(tmp_path: Path) -> None:
         assert load_config(proj, env).get("learn.breaker_window") == 50
 
 
+@pytest.mark.env_drop_expected
 def test_env_cannot_release_a_hold(tmp_path: Path) -> None:
     """A committed Claude Code settings file can set environment variables: TOKEN_SPAREN_* may
     only narrow, like a project file (ruling, M6 security review)."""
@@ -103,6 +104,7 @@ def test_env_cannot_release_a_hold(tmp_path: Path) -> None:
     assert load_config(proj, env).get("learn.hold.subagent_brief") is True  # packaged hold
 
 
+@pytest.mark.env_drop_expected
 def test_env_may_only_tighten_numbers(tmp_path: Path) -> None:
     proj, env = _setup(tmp_path)
     default = load_config(proj, env).get("learn.tau.medium")
@@ -112,6 +114,7 @@ def test_env_may_only_tighten_numbers(tmp_path: Path) -> None:
     assert load_config(proj, env).get("learn.tau.medium") == default / 2
 
 
+@pytest.mark.env_drop_expected
 def test_env_loosening_is_relative_to_the_user(tmp_path: Path) -> None:
     """The user's file and session overrides may widen; env may then narrow from there."""
     proj, env = _setup(tmp_path, user="[learn.tau]\nmedium = 0.3\n")
@@ -536,6 +539,7 @@ def test_user_may_set_any_loop_guard_key(tmp_path: Path) -> None:
     assert policy_for(("loopguard", "min_k")) == "max"
 
 
+@pytest.mark.env_drop_expected
 def test_project_config_cannot_enable_pruning(tmp_path: Path) -> None:
     """Threat model (malicious repository): neither a committed token-sparen.toml nor a
     TOKEN_SPAREN_* variable (a committed Claude Code settings file can set environment
@@ -583,6 +587,7 @@ def test_state_home_env_inside_repo_ignored(tmp_path: Path) -> None:
         ("TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS", "adapter.latency_budget_ms", "999999"),
     ],
 )
+@pytest.mark.env_drop_expected
 def test_env_cannot_widen(tmp_path: Path, var: str, key: str, raw: str) -> None:
     """Threat model (malicious repository): a cloned repository's committed
     .claude/settings.json can set TOKEN_SPAREN_* in its ``env`` block, so an environment value

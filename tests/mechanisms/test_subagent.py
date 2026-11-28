@@ -112,6 +112,7 @@ def test_entry_wiring_rewrites_with_on_policy(tmp_path: Path, monkeypatch: Any) 
         "CLAUDE_PROJECT_DIR": str(tmp_path / "proj"),
         "TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS": "5000",
     }
+    env = to_user_config(env)
     (tmp_path / "proj").mkdir(exist_ok=True)
     payload = {"session_id": "s", "tool_name": "Task", "tool_input": {"prompt": "go"}}
     out = io.StringIO()

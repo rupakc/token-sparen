@@ -70,6 +70,9 @@ values = [5000000, 10000000]
 point = "guards"
 measured_by = "none"
 
+# Note: "counterfactual" is admissible only after the strict absolute hook-p95 check passes on the
+# target machine (TOKEN_SPAREN_PERF_STRICT=1 pytest -m perf tests/perf/test_counterfactual_reward.py
+# --no-cov); CI gates only its ratio to the default reward.
 # --- learning (sim lane): reward mode, ladder retry, designed priors on the snapped grid
 #     (means in {0.02, 0.05, 0.1, 0.2, 0.3, 0.5} plus the current default)
 

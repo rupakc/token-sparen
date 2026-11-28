@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
+from userconf import to_user_config
 
 from token_sparen.config import Config, load_config
 from token_sparen.events import Action, Event, EventKind, ToolCall
@@ -253,6 +254,7 @@ def test_precompact_composes_with_read_dedupe_via_entry(tmp_path: Path) -> None:
         "CLAUDE_PROJECT_DIR": str(tmp_path / "proj"),
         "TOKEN_SPAREN_ADAPTER__LATENCY_BUDGET_MS": "5000",
     }
+    env = to_user_config(env)
     (tmp_path / "proj").mkdir(exist_ok=True)
 
     def run(name: str, payload: dict[str, Any]) -> str:
