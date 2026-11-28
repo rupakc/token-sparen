@@ -38,6 +38,7 @@ from bench.e4 import (
     DISCLOSURE_CODES,
     EXCLUSION_CAUSES,
     EXCLUSION_REASONS,
+    GATE_ANCHOR_FIELDS,
     GATE_REASON_CODES,
     MARGIN_PP,
     TREATMENT_ARM,
@@ -322,6 +323,13 @@ DISCLOSURE_TEXT: Mapping[str, str] = {
     "headroom_proxy": "headroom ({ran}): `headroom wrap` puts a local proxy on the request path, "
     "so the proxy process handles the OAuth token and all API traffic; its egress was not "
     "restricted either.",
+    "anchor_window_operator_trust": "Tamper evidence: the confirmation ledger and grades are "
+    "hash-chained, and their chain heads were published to a public branch during the campaign "
+    "at least once per five-hour window; the release gate checks that every published head lies "
+    "on the final chains, and a publication may anchor no more graded runs than the per-window run "
+    "cap allows since the plan was published. Anchoring bounds operator rewriting but cannot "
+    "exclude it: records written after the last published anchor could still have been rewritten "
+    "by the operator within that window, before the next publication.",
     "platform": "Platform: the pool holds only SWE-bench Verified tasks with an arm64 image (the "
     "agent runs in the image it is graded in); the counts of tasks without one are listed "
     "above, and tasks excluded by the grading preflight are listed below.",
@@ -605,6 +613,7 @@ def _document(
     if gate is not None:
         gate_doc = {"verdict": gate.verdict, "reasons": list(gate.reasons)}
         gate_doc |= {f: getattr(gate, f) for f in PLAN_FIELDS}
+        gate_doc |= {f: getattr(gate, f, None) for f in GATE_ANCHOR_FIELDS}
     return {
         "schema_version": E4_SCHEMA_VERSION,
         "source": "E4",
@@ -981,8 +990,11 @@ def build_report(
     (no ``ts-style`` runs) or ``keep_off``; ``preflight`` = the grading preflight's
     ``preflight.json`` (its exclusions are disclosed). Nothing is written when the document is
     invalid, a run or the gate differs from the plan in the ledger header, or any artefact
-    holds private data."""
+    holds private data. An advisory gate (no server receipts; `GateResult.advisory`) is
+    refused: only the release-job-verified gate may be published."""
     assert_e4_source(ledger)
+    if gate is not None and getattr(gate, "advisory", False):
+        raise ReportError("advisory gate result (no server receipts): not publishable")
     doc = _document(
         Ledger(ledger),
         grades,

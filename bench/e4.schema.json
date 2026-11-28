@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/rupakc/token-sparen/bench/e4.schema.json",
   "title": "token-sparen E4 benchmark evidence (e4.json)",
-  "description": "Published by `python -m bench report --publish` (confirmation: docs/evidence/e4.json); read by the M6 release gate. Cross-field rules checked by bench.e4.validate_e4 beyond this schema: exactly one result with metric resolved_diff_pp and confirmatory true, which compares arm token-sparen to baseline baseline with margin_pp -5 and non_inferior == (ci95[0] > margin_pp); no other result is confirmatory; every result arm/baseline names a listed arm; arm names unique and include baseline and token-sparen; date.from <= date.to; ci95[0] <= ci95[1]; screening has power null, gate null or not passed, and style_rule not recommend_opt_in; confirmation has power and gate; gate passed needs non_inferior and power powered; gate underpowered needs power underpowered. Free text is closed: exclusions[].reason and .cause, gate.reasons[] and report.disclosures[] are codes from the $defs enums (the report renders their prose from fixed templates). Additional fields are allowed (additive changes keep schema_version); removing or changing a field bumps it.",
+  "description": "Published by `python -m bench report --publish` (confirmation: docs/evidence/e4.json); read by the M6 release gate. Cross-field rules checked by bench.e4.validate_e4 beyond this schema: exactly one result with metric resolved_diff_pp and confirmatory true, which compares arm token-sparen to baseline baseline with margin_pp -5 and non_inferior == (ci95[0] > margin_pp); no other result is confirmatory; every result arm/baseline names a listed arm; arm names unique and include baseline and token-sparen; date.from <= date.to; ci95[0] <= ci95[1]; screening has power null, gate null or not passed, and style_rule not recommend_opt_in; confirmation has power and gate, and the gate carries plan_sha256, ledger_chain_head and grades_chain_head (the recorded plan's hash and the heads of the verified ledger and grades hash chains, anchored by the signed release commit); gate passed needs non_inferior and power powered; gate underpowered needs power underpowered. Free text is closed: exclusions[].reason and .cause, gate.reasons[] and report.disclosures[] are codes from the $defs enums (the report renders their prose from fixed templates). Additional fields are allowed (additive changes keep schema_version); removing or changing a field bumps it.",
   "type": "object",
   "required": [
     "schema_version",
@@ -106,7 +106,10 @@
       "required": ["verdict", "reasons"],
       "properties": {
         "verdict": {"enum": ["passed", "failed", "underpowered"]},
-        "reasons": {"type": "array", "items": {"$ref": "#/$defs/gate_reason"}}
+        "reasons": {"type": "array", "items": {"$ref": "#/$defs/gate_reason"}},
+        "plan_sha256": {"$ref": "#/$defs/sha256"},
+        "ledger_chain_head": {"$ref": "#/$defs/sha256"},
+        "grades_chain_head": {"$ref": "#/$defs/sha256"}
       }
     },
     "style_rule": {"enum": ["recommend_opt_in", "keep_off", "not_run"]},
@@ -118,6 +121,7 @@
     }
   },
   "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "exclusion_reason": {
       "enum": [
         "run_unrunnable",
@@ -172,7 +176,8 @@
         "tokeneconomizer_headless",
         "caveman_inert",
         "headroom_proxy",
-        "platform"
+        "platform",
+        "anchor_window_operator_trust"
       ]
     },
     "result": {

@@ -32,6 +32,9 @@ class FakeGate:
     plugin_hash: str = HASH
     model: str = "claude-sonnet-x"
     claude_code_version: str = "2.1.121"
+    plan_sha256: str = "1" * 64
+    ledger_chain_head: str = "2" * 64
+    grades_chain_head: str = "3" * 64
 
 
 @pytest.fixture(autouse=True)
@@ -350,6 +353,9 @@ def test_e4_json_validates_and_has_confirmatory_diff(tmp_path: Path) -> None:
         "plugin_hash": HASH,
         "model": "claude-sonnet-x",
         "claude_code_version": "2.1.121",
+        "plan_sha256": "1" * 64,
+        "ledger_chain_head": "2" * 64,
+        "grades_chain_head": "3" * 64,
     }
     # the M6 README renderer consumes it unchanged
     assert "resolved_diff_pp (confirmatory)" in render_evidence.render_evidence(out / "e4.json")

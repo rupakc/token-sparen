@@ -88,6 +88,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read  # the anchor-receipt workflow runs (E4 anchor check)
     outputs:
       version: ${{ steps.meta.outputs.version }}
       plugin_hash: ${{ steps.meta.outputs.plugin_hash }}
@@ -118,6 +119,20 @@ jobs:
       - name: Release check (dry run)
         if: github.event_name != 'push'
         run: python scripts/release_check.py --mode dry-run
+      # The authoritative E4 anchor check: a fresh fetch of the public bench-anchors branch and
+      # the server receipts of every push to it (anchor-receipt workflow runs); the last anchor
+      # must be the chain heads e4.json publishes. Screening or absent evidence: nothing to do.
+      - name: E4 anchors (server receipts)
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -f docs/evidence/e4.json ]; then
+            git fetch --no-tags --force origin "+refs/heads/bench-anchors:refs/remotes/origin/bench-anchors"
+            python -m bench.anchors verify-release --evidence docs/evidence/e4.json --repo . --ref origin/bench-anchors --github-repo "$REPO"
+          fi
       - name: Build wheel and sdist
         run: |
           set -euo pipefail

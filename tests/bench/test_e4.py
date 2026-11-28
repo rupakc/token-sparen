@@ -143,13 +143,25 @@ def test_gate_consistent_with_non_inferiority_and_power() -> None:
     _confirmatory(doc)["ci95"] = [-6.0, 2.4]
     _confirmatory(doc)["non_inferior"] = False
     assert any("gate" in e for e in e4.validate_e4(doc))  # passed while not non-inferior
-    doc["gate"] = {"verdict": "failed", "reasons": ["lower_bound_not_above_margin"]}
+    anchors = {f: doc["gate"][f] for f in e4.GATE_ANCHOR_FIELDS}
+    doc["gate"] = {"verdict": "failed", "reasons": ["lower_bound_not_above_margin"]} | anchors
     assert e4.validate_e4(doc) == []
     doc = _doc()
     doc["power"]["verdict"] = "underpowered"
     assert any("gate" in e for e in e4.validate_e4(doc))
-    doc["gate"] = {"verdict": "underpowered", "reasons": ["underpowered_owner_decides"]}
+    doc["gate"] = {"verdict": "underpowered", "reasons": ["underpowered_owner_decides"]} | anchors
     assert e4.validate_e4(doc) == []
+
+
+def test_confirmation_gate_carries_its_anchors() -> None:
+    """M5 Task 10 ruling N4: plan hash and both chain heads, 64 hex each."""
+    for name in e4.GATE_ANCHOR_FIELDS:
+        doc = _doc()
+        del doc["gate"][name]
+        assert any(f"gate.{name}" in e for e in e4.validate_e4(doc))
+        doc = _doc()
+        doc["gate"][name] = "not-a-hash"
+        assert any(f"gate.{name}" in e for e in e4.validate_e4(doc))
 
 
 def test_screening_has_null_power_and_no_gate_pass_or_style_recommendation() -> None:

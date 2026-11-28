@@ -47,7 +47,14 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, get_args
 
 from bench.leak import TOKEN_ENV, scan_for_token, token_from_env
-from bench.ledger import FinalRun
+from bench.ledger import (
+    CHAIN_FIELD,
+    GENESIS,
+    PROTECTED_STAGE,
+    FinalRun,
+    chain_head,
+    record_sha256,
+)
 from bench.tasks import arm64_image
 from token_sparen.store.jsonstore import locked
 
@@ -466,9 +473,37 @@ def _records(path: Path) -> list[dict[str, Any]]:
     return [json.loads(x) for x in lines if x.strip()]
 
 
+def _chain_tail(records: Sequence[Mapping[str, Any]]) -> str:
+    """Hash of the last confirmation record (`GENESIS` without one)."""
+    for rec in reversed(records):
+        if rec.get("stage") == PROTECTED_STAGE:
+            return record_sha256(rec)
+    return GENESIS
+
+
+def grades_chain_head(path: Path) -> str:
+    """Verify the hash chain of the confirmation records of ``path`` (M5 Task 10 ruling N4:
+    each carries the sha256 of the previous one, the first `GENESIS`) and return its head,
+    published in e4.json; `bench.ledger.LedgerError` on any break."""
+    return chain_head(
+        [r for r in _records(path) if r.get("stage") == PROTECTED_STAGE], genesis=GENESIS
+    )
+
+
 def _append(path: Path, records: Sequence[Mapping[str, Any]]) -> None:
+    """Append records; confirmation records are hash-chained (``prev_sha256``) to the
+    previous confirmation record of the file."""
     if not records:
         return
+    if any(r.get("stage") == PROTECTED_STAGE for r in records):
+        prev = _chain_tail(_records(path))
+        chained: list[Mapping[str, Any]] = []
+        for r in records:
+            if r.get("stage") == PROTECTED_STAGE:
+                r = {k: v for k, v in r.items() if k != CHAIN_FIELD} | {CHAIN_FIELD: prev}
+                prev = record_sha256(r)
+            chained.append(r)
+        records = chained
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(fd, "ab") as fh:

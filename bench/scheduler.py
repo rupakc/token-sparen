@@ -410,6 +410,10 @@ class _Campaign:
             self.ledger.append(
                 {"kind": "graded", "at": self.clock(), "stage": self.stage, "instance_id": iid}
             )
+            if self.ledger.chained:  # M5 Task 10: heads for external anchoring
+                from bench.anchors import record_anchor  # anchors imports grade
+
+                record_anchor(self.ledger, at=self.clock())
 
     def _retry_one_sided(self, iid: str) -> bool:
         """A fresh round of attempts for each unrunnable key of the block whose other arms
@@ -495,6 +499,19 @@ class _Campaign:
             attempt=int(end.get("attempt", 1)),
         )
 
+    def _plan_sha256(self, key: RunKey) -> str | None:
+        """Confirmation only (M5 Task 10 ruling N1): the recorded plan's hash, written into
+        every start and end; `bench.stages.PlanError` (the campaign stops) without a valid
+        plan or for a key outside it."""
+        if self.stage != "confirmation":
+            return None
+        from bench.stages import PlanError, read_plan  # stages imports this module
+
+        plan = read_plan(self.ledger)
+        if key.instance_id not in plan.tasks or key.arm not in plan.arms or key.seed != plan.seed:
+            raise PlanError(f"{key.id} is not in the recorded confirmation plan")
+        return plan.sha256
+
     def _run_one(self, key: RunKey, task: Task) -> None:
         arm = self.arms[key.arm]
         attempt = self.ledger.next_attempt(key)
@@ -517,6 +534,7 @@ class _Campaign:
             campaign=self.campaign,
             problem_statement=self.problems.get(task.instance_id, ""),
         )
+        plan_sha = self._plan_sha256(key)
         self.account.record_start(key.id, at=self.clock())
         self.ledger.append(
             {
@@ -527,6 +545,7 @@ class _Campaign:
                 "container": container_name(key.id, attempt),
                 "plugin_hash": frozen_hash,
                 "run_dir": self._rel(run_dir),
+                **({"plan_sha256": plan_sha} if plan_sha else {}),
             }
         )
         with locked(self.workspace / BENCH_LOCK, timeout=BENCH_LOCK_TIMEOUT_S):
@@ -577,6 +596,9 @@ class _Campaign:
             "problems": list(out.problems),
             "run_dir": self._rel(run_dir),
         }
+        plan_sha = self._plan_sha256(key)
+        if plan_sha:
+            end["plan_sha256"] = plan_sha
         self.ledger.append(end)  # the commit point of the run
         if graded and arm.state == "stream" and out.state_out is not None:
             self._promote(key, end)

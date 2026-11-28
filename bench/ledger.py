@@ -23,7 +23,9 @@ Every later record has ``kind`` (one of `RECORD_KINDS`) and ``at`` (epoch second
   ``status = "infra_fail"``, ``sub = "disk"`` (never counted by the breaker).
 * ``invalidate`` (operator command): ``key`` or a time range ``from`` / ``to`` over the ``at`` of
   earlier ``end`` records, and ``reason``. It reopens the key(s): their earlier ends no longer
-  count, as final or as infra attempts. It does not cascade: the later keys of a
+  count, as final or as infra attempts. In confirmation it may reopen only keys without a
+  graded end (`Ledger.invalidate` refuses otherwise; the gate refuses a ledger where one was
+  reopened anyway: `Ledger.reopened_graded`). It does not cascade: the later keys of a
   ``state = "stream"`` stream keep their finals built on the reopened key's old state; to rerun
   a stream from a point, invalidate a time range covering it.
 * ``promote``: ``stream``, ``key`` and ``attempt``: that attempt's learner state became the
@@ -34,6 +36,16 @@ Every later record has ``kind`` (one of `RECORD_KINDS`) and ``at`` (epoch second
   bounded rounds).
 * ``excluded``: the fields of `Ledger.excluded_after_retries` for a key that stays unrunnable
   after its rounds (an audit record; the method computes the live list).
+In a confirmation ledger every record after the header also carries ``prev_sha256``, the
+sha256 of the previous record's canonical JSON (`record_sha256`; the header's for the first),
+so an edited, inserted or removed record breaks the chain (`Ledger.chain_head`).
+
+* ``plan`` (confirmation only, before the first ``start``; `bench.stages.write_plan`):
+  ``plan`` (planned tasks, arms, seed, model, Claude Code version, plugin_hash, power verdict)
+  and ``plan_sha256`` over its canonical JSON. Every confirmation ``start`` and ``end`` carries
+  that ``plan_sha256`` (the scheduler refuses a confirmation run without a valid plan or outside
+  it); `bench.stages.read_plan` refuses a plan recorded after a confirmation run or runs with
+  another hash.
 
 A key's final outcome is its last non-invalidated ``end`` with status ``ok`` or ``agent_fail``;
 ``infra_fail`` is never final. These shapes are what `bench.stats.summarise` (Task 9) reads.
@@ -48,7 +60,7 @@ import hashlib
 import json
 import os
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -70,7 +82,18 @@ HEADER_KEYS = (
     "claude_code_version",
 )
 RECORD_KINDS = frozenset(
-    {"start", "end", "quota", "pause", "invalidate", "promote", "graded", "retry", "excluded"}
+    {
+        "start",
+        "end",
+        "quota",
+        "pause",
+        "invalidate",
+        "promote",
+        "graded",
+        "retry",
+        "excluded",
+        "plan",
+    }
 )
 GRADED = frozenset({"ok", "agent_fail"})
 MAX_INFRA_ATTEMPTS = 3
@@ -78,6 +101,11 @@ MAX_INFRA_ATTEMPTS = 3
 # cause that is not the key's (rate, disk floor, an expired token, a leak)
 NOT_AN_ATTEMPT = frozenset({"rate", "disk", "auth", "leak"})
 LOCK_TIMEOUT_S = 30.0
+# the stage whose graded runs are never reopened (M5 Task 10 ruling N3) and whose records are
+# hash-chained (ruling N4): each carries the sha256 of the previous record
+PROTECTED_STAGE = "confirmation"
+CHAIN_FIELD = "prev_sha256"
+GENESIS = "0" * 64  # the chain origin of a file without a header (grades.jsonl)
 
 
 class LedgerError(ValueError):
@@ -87,6 +115,45 @@ class LedgerError(ValueError):
 def sha256_text(text: str) -> str:
     """sha256 of a patch's on-disk bytes (`bench.patch.patch_bytes`)."""
     return hashlib.sha256(patch_bytes(text)).hexdigest()
+
+
+def record_sha256(rec: Mapping[str, Any]) -> str:
+    """sha256 of a record's canonical JSON (sorted keys, compact, ASCII): the chain link."""
+    text = json.dumps(rec, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+    return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+def chain_head(records: Sequence[Mapping[str, Any]], *, genesis: str) -> str:
+    """Verify that each record's `CHAIN_FIELD` is the hash of the one before (the first's is
+    ``genesis``); return the hash of the last record (``genesis`` when empty)."""
+    prev = genesis
+    for i, rec in enumerate(records):
+        if rec.get(CHAIN_FIELD) != prev:
+            raise LedgerError(f"hash chain broken at record {i + 1}")
+        prev = record_sha256(rec)
+    return prev
+
+
+def _last_doc(path: Path) -> dict[str, Any] | None:
+    """The last complete record of ``path`` (a torn tail is skipped), reading backwards."""
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return None
+    data = b""
+    with path.open("rb") as fh:
+        pos = size
+        while pos > 0:
+            start = max(0, pos - 65536)
+            fh.seek(start)
+            data = fh.read(pos - start) + data
+            pos = start
+            body = data[: data.rfind(b"\n") + 1]
+            lines = [x for x in body.split(b"\n") if x.strip()]
+            if len(lines) >= 2 or (pos == 0 and lines):
+                doc = json.loads(lines[-1].decode("utf-8"))
+                return doc if isinstance(doc, dict) else None
+    return None
 
 
 @dataclass(frozen=True)
@@ -230,14 +297,37 @@ class Ledger:
     def campaign(self) -> str:
         return str(self.header["campaign"])
 
+    @property
+    def chained(self) -> bool:
+        return self.header.get("stage") == PROTECTED_STAGE
+
     def append(self, rec: Mapping[str, Any]) -> None:
+        """Append one record. In a confirmation ledger the record is hash-chained to the
+        previous one, and a ``start`` for a key that already has a graded final is refused
+        (ruling N4: a graded confirmation run is never re-run)."""
         if rec.get("kind") not in RECORD_KINDS:
             raise LedgerError(f"unknown ledger record kind: {rec.get('kind')!r}")
         doc = dict(rec)
         doc.setdefault("at", time.time())
         doc["at"] = float(doc["at"])
+        doc.pop(CHAIN_FIELD, None)
+        if self.chained and doc["kind"] == "start" and isinstance(doc.get("key"), str):
+            key = RunKey.from_id(doc["key"])
+            if key.stage == PROTECTED_STAGE and self.final(key) is not None:
+                raise LedgerError(f"{key.id} has a graded outcome: confirmation never re-runs it")
         with locked(self.path, timeout=LOCK_TIMEOUT_S):
+            if self.chained:
+                last = _last_doc(self.path)
+                doc[CHAIN_FIELD] = record_sha256(last if last is not None else self.header)
             _write_line(self.path, doc)
+
+    def chain_head(self) -> str:
+        """Verify the hash chain of a confirmation ledger (from its header) and return its
+        head: the hash of the last record, published in e4.json and anchored by the signed
+        release commit. `LedgerError` on any break (an edited, inserted or removed record)."""
+        if not self.chained:
+            raise LedgerError("only a confirmation ledger is hash-chained")
+        return chain_head(self.records(), genesis=record_sha256(self.header))
 
     def records(self) -> list[dict[str, Any]]:
         """Every record after the header, in append order (re-read when the file changed;
@@ -376,6 +466,30 @@ class Ledger:
             runs.append(FinalRun(key_id, key.stage, key.arm, key.seed, key.instance_id, patch))
         return runs
 
+    def reopened_graded(self, stage: str) -> list[str]:
+        """Keys of ``stage`` whose graded end (``ok`` / ``agent_fail``) was reopened by an
+        ``invalidate`` (by key or time range) or a ``retry`` record. In confirmation this is
+        never allowed (M5 Task 10 ruling N3: re-running a graded run is outcome-selective);
+        the release gate refuses while any exists."""
+        ends: dict[str, list[dict[str, Any]]] = {}
+        hit: set[str] = set()
+        for rec in self.records():
+            kind, key = rec.get("kind"), rec.get("key")
+            if kind == "end" and isinstance(key, str):
+                ends.setdefault(key, []).append(rec)
+            elif kind in ("retry", "invalidate") and isinstance(key, str):
+                if any(e.get("status") in GRADED for e in ends.get(key, [])):
+                    hit.add(key)
+                ends[key] = []
+            elif kind == "invalidate" and rec.get("from") is not None and rec.get("to") is not None:
+                lo, hi = float(rec["from"]), float(rec["to"])
+                for k, lst in ends.items():
+                    gone = [e for e in lst if lo <= float(e.get("at", 0.0)) <= hi]
+                    if any(e.get("status") in GRADED for e in gone):
+                        hit.add(k)
+                    ends[k] = [e for e in lst if e not in gone]
+        return sorted(k for k in hit if _stage_of(k) == stage)
+
     def invalidate(
         self,
         key: RunKey | None,
@@ -384,7 +498,20 @@ class Ledger:
         start: float | None = None,
         end: float | None = None,
     ) -> None:
-        """Operator command: reopen ``key``, or every key whose ``end`` lies in [start, end]."""
+        """Operator command: reopen ``key``, or every key whose ``end`` lies in [start, end].
+        Refused when it would reopen a graded confirmation run (ruling N3): only keys whose
+        attempts all ended in infra failures may be re-run there."""
+        if key is not None and key.stage == PROTECTED_STAGE and self.final(key) is not None:
+            raise LedgerError(f"{key.id} has a graded outcome: confirmation runs are never re-run")
+        if key is None and start is not None and end is not None:
+            for k, lst in self._ends().items():
+                if _stage_of(k) == PROTECTED_STAGE and any(
+                    e.get("status") in GRADED and start <= float(e.get("at", 0.0)) <= end
+                    for e in lst
+                ):
+                    raise LedgerError(
+                        f"the range reopens {k}, a graded outcome: confirmation never re-runs those"
+                    )
         if key is not None:
             self.append({"kind": "invalidate", "key": key.id, "reason": reason})
         elif start is not None and end is not None and start <= end:
@@ -394,6 +521,11 @@ class Ledger:
 
     def iter_kind(self, kind: str) -> Iterator[dict[str, Any]]:
         return (r for r in self.records() if r.get("kind") == kind)
+
+
+def _stage_of(key_id: str) -> str | None:
+    parts = key_id.split("/")
+    return parts[1] if len(parts) == 5 else None
 
 
 def _final_of(ends: list[dict[str, Any]]) -> dict[str, Any] | None:

@@ -1,0 +1,24 @@
+name: Anchor receipt
+
+# Server-side receipt of each push to the bench-anchors branch (E4 confirmation anchors): the
+# run's `created_at` and `head_sha` from the GitHub API date the publication. The release job
+# reads them (`python -m bench.anchors verify-release`); a push without a receipt fails it.
+# GitHub runs push workflows from the pushed tree, so bench-anchors must carry this file too
+# (the branch is created from main). It only records the head: no checkout, no token use.
+on:
+  push:
+    branches: [bench-anchors]
+
+permissions:
+  contents: read
+
+jobs:
+  receipt:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Record the pushed head
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: echo "bench-anchors head $HEAD_SHA received"
